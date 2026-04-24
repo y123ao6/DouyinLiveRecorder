@@ -6,6 +6,8 @@ from .. import utils
 OptionalStr = str | None
 OptionalDict = Dict[str, Any] | None
 
+# 全局连接池配置，提高 HTTP 请求性能
+_httpx_limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
 
 async def async_req(
         url: str,
@@ -27,10 +29,24 @@ async def async_req(
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
         if data or json_data:
-            async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify, http2=http2) as client:
+            # async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify, http2=http2) as client:
+            async with httpx.AsyncClient(
+                proxy=proxy_addr,
+                timeout=timeout,
+                verify=verify,
+                http2=http2,
+                limits=_httpx_limits
+            ) as client:
                 response = await client.post(url, data=data, json=json_data, headers=headers)
         else:
-            async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify, http2=http2) as client:
+            # async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify, http2=http2) as client:
+            async with httpx.AsyncClient(
+                proxy=proxy_addr,
+                timeout=timeout,
+                verify=verify,
+                http2=http2,
+                limits=_httpx_limits
+            ) as client:
                 response = await client.get(url, headers=headers, follow_redirects=True)
 
         if redirect_url:
@@ -51,7 +67,13 @@ async def get_response_status(url: str, proxy_addr: OptionalStr = None, headers:
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify) as client:
+        #async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify) as client:
+        async with httpx.AsyncClient(
+            proxy=proxy_addr,
+            timeout=timeout,
+            verify=verify,
+            limits=_httpx_limits
+        ) as client:
             response = await client.head(url, headers=headers, follow_redirects=True)
             return response.status_code == 200
     except Exception as e:

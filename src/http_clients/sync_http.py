@@ -6,6 +6,42 @@ import requests
 import ssl
 import json
 import urllib.request
+from typing import Optional, Dict, Any
+
+# 全局 Session 对象，复用 TCP 连接，提升性能
+_session_pool: Optional[requests.Session] = None
+_no_proxy_session: Optional[requests.Session] = None
+
+def get_session(use_proxy: bool = True) -> requests.Session:
+    """获取复用的 Session 对象，避免重复创建连接"""
+    global _session_pool, _no_proxy_session
+
+    if use_proxy:
+        if _session_pool is None:
+            _session_pool = requests.Session()
+            # 配置连接池参数
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=50,
+                pool_maxsize=50,
+                pool_block=False,
+                max_retries=2
+            )
+            _session_pool.mount('http://', adapter)
+            _session_pool.mount('https://', adapter)
+        return _session_pool
+    else:
+        if _no_proxy_session is None:
+            _no_proxy_session = requests.Session()
+            _no_proxy_session.proxies.update({'http': '', 'https': ''})
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=50,
+                pool_maxsize=50,
+                pool_block=False,
+                max_retries=2
+            )
+            _no_proxy_session.mount('http://', adapter)
+            _no_proxy_session.mount('https://', adapter)
+        return _no_proxy_session
 
 no_proxy_handler = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(no_proxy_handler)
@@ -32,16 +68,18 @@ def sync_req(
         headers = {}
     try:
         if proxy_addr:
-            proxies = {
+            # 使用带代理的 Session，复用连接
+            session = get_session(use_proxy=True)
+            session.proxies.update({
                 'http': proxy_addr,
                 'https': proxy_addr
-            }
+                })
             if data or json_data:
-                response = requests.post(
-                    url, data=data, json=json_data, headers=headers, proxies=proxies, timeout=timeout
+                response = session.post(
+                    url, data=data, json=json_data, headers=headers, timeout=timeout
                 )
             else:
-                response = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
+                response = session.get(url, headers=headers, timeout=timeout)
             if redirect_url:
                 return response.url
             resp_str = response.text

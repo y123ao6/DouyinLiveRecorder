@@ -521,27 +521,37 @@ def md5(data) -> str:
     return hashlib.md5(data.encode('utf-8')).hexdigest()
 
 
-async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> List[str]:
-
-    url = f'https://www.douyu.com/{rid}'
-    html_str = await async_req(url=url, proxy_addr=proxy_addr)
-    result = re.search(r'(vdwdae325w_64we[\s\S]*function ub98484234[\s\S]*?)function', html_str).group(1)
-    func_ub9 = re.sub(r'eval.*?;}', 'strc;}', result)
-    js = execjs.compile(func_ub9)
-    res = js.call('ub98484234')
-
-    t10 = str(int(time.time()))
-    v = re.search(r'v=(\d+)', res).group(1)
-    rb = md5(rid + did + t10 + v)
-
-    func_sign = re.sub(r'return rt;}\);?', 'return rt;}', res)
-    func_sign = func_sign.replace('(function (', 'function sign(')
-    func_sign = func_sign.replace('CryptoJS.MD5(cb).toString()', '"' + rb + '"')
-
-    js = execjs.compile(func_sign)
-    params = js.call('sign', rid, did, t10)
-    params_list = re.findall('=(.*?)(?=&|$)', params)
-    return params_list
+async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> dict:
+    try:
+        key_url = f'https://www.douyu.com/wgapi/livenc/liveweb/websec/getEncryption?did={did}'
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/120.0.0.0 Safari/537.36',
+            'Referer': f'https://www.douyu.com/{rid}'
+        }
+        json_str = await async_req(url=key_url, proxy_addr=proxy_addr, headers=headers)
+        key_data = json.loads(json_str)
+        if key_data.get('error') != 0:
+            return {}
+        enc_key = key_data['data']
+        ts = int(time.time())
+        rand_str = enc_key['rand_str']
+        key = enc_key['key']
+        enc_time = enc_key['enc_time']
+        sign_str = '' if enc_key.get('is_special') == 1 else f'{rid}{ts}'
+        auth = rand_str
+        for _ in range(enc_time):
+            auth = md5(auth + key)
+        auth = md5(auth + key + sign_str)
+        return {
+            'enc_data': enc_key['enc_data'],
+            'did': did,
+            'ts': ts,
+            'auth': auth
+        }
+    except Exception as e:
+        print(f"Get douyu sign params error: {e}")
+        return {}
 
 
 @trace_error_decorator
@@ -583,28 +593,27 @@ async def get_douyu_info_data(url: str, proxy_addr: OptionalStr = None, cookies:
 async def get_douyu_stream_data(rid: str, rate: str = '-1', proxy_addr: OptionalStr = None,
                           cookies: OptionalStr = None) -> dict:
     did = '10000000000000000000000000003306'
-    params_list = await get_token_js(rid, did, proxy_addr=proxy_addr)
+    sign_params = await get_token_js(rid, did, proxy_addr=proxy_addr)
+    if not sign_params:
+        return {"error": -1, "msg": "Failed to get sign params", "data": {}}
     headers = {
-        'User-Agent': 'ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))',
-        'Referer': 'https://m.douyu.com/3125893?rid=3125893&dyshid=0-96003918aa5365bc6dcb4933000316p1&dyshci=181',
-        'Cookie': 'dy_did=413b835d2ae00270f0c69f6400031601; acf_did=413b835d2ae00270f0c69f6400031601; Hm_lvt_e99aee90ec1b2106afe7ec3b199020a7=1692068308,1694003758; m_did=96003918aa5365bc6dcb4933000316p1; dy_teen_mode=%7B%22uid%22%3A%22472647365%22%2C%22status%22%3A0%2C%22birthday%22%3A%22%22%2C%22password%22%3A%22%22%7D; PHPSESSID=td59qi2fu2gepngb8mlehbeme3; acf_auth=94fc9s%2FeNj%2BKlpU%2Br8tZC3Jo9sZ0wz9ClcHQ1akL2Nhb6ZyCmfjVWSlR3LFFPuePWHRAMo0dt9vPSCoezkFPOeNy4mYcdVOM1a8CbW0ZAee4ipyNB%2Bflr58; dy_auth=bec5yzM8bUFYe%2FnVAjmUAljyrsX%2FcwRW%2FyMHaoArYb5qi8FS9tWR%2B96iCzSnmAryLOjB3Qbeu%2BBD42clnI7CR9vNAo9mva5HyyL41HGsbksx1tEYFOEwxSI; wan_auth37wan=5fd69ed5b27fGM%2FGoswWwDo%2BL%2FRMtnEa4Ix9a%2FsH26qF0sR4iddKMqfnPIhgfHZUqkAk%2FA1d8TX%2B6F7SNp7l6buIxAVf3t9YxmSso8bvHY0%2Fa6RUiv8; acf_uid=472647365; acf_username=472647365; acf_nickname=%E7%94%A8%E6%88%B776576662; acf_own_room=0; acf_groupid=1; acf_phonestatus=1; acf_avatar=https%3A%2F%2Fapic.douyucdn.cn%2Fupload%2Favatar%2Fdefault%2F24_; acf_ct=0; acf_ltkid=25305099; acf_biz=1; acf_stk=90754f8ed18f0c24; Hm_lpvt_e99aee90ec1b2106afe7ec3b199020a7=1694003778'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/120.0.0.0 Safari/537.36',
+        'Referer': f'https://www.douyu.com/{rid}',
+        'Content-Type': 'application/x-www-form-urlencoded'
     }
     if cookies:
         headers['Cookie'] = cookies
 
-    data = {
-        'v': params_list[0],
-        'did': params_list[1],
-        'tt': params_list[2],
-        'sign': params_list[3],  # 10分钟有效期
-        'ver': '22011191',
-        'rid': rid,
-        'rate': rate,  # 0蓝光、3超清、2高清、-1默认
-    }
-
-    # app_api = 'https://m.douyu.com/hgapi/livenc/room/getStreamUrl'
-    app_api = f'https://www.douyu.com/lapi/live/getH5Play/{rid}'
-    json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers, data=data)
+    post_data = (
+        f"enc_data={sign_params['enc_data']}"
+        f"&tt={sign_params['ts']}"
+        f"&did={sign_params['did']}"
+        f"&auth={sign_params['auth']}"
+        f"&cdn=&rate={rate}&hevc=0&fa=0&ive=0"
+    )
+    app_api = f'https://www.douyu.com/lapi/live/getH5PlayV1/{rid}'
+    json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers, data=post_data)
     json_data = json.loads(json_str)
     return json_data
 
@@ -3036,10 +3045,8 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     if cookies:
         headers['Cookie'] = cookies
 
-    if '_m_h5_tk' not in headers['Cookie']:
-        print('Error: Cookies is empty! please input correct cookies')
+    live_id = get_params(url, 'liveId')
 
-    live_id = get_params(url, 'id')
     if not live_id:
         html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
         redirect_url = re.findall("var url = '(.*?)';", html_str)[0]
@@ -3062,16 +3069,23 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     }
 
     for i in range(2):
-        app_key = '12574478'
-        _m_h5_tk = re.findall('_m_h5_tk=(.*?);', headers['Cookie'])[0]
+
         t13 = int(time.time() * 1000)
-        pre_sign_str = f'{_m_h5_tk.split("_")[0]}&{t13}&{app_key}&' + params['data']
-        sign = execjs.compile(open(f'{JS_SCRIPT_PATH}/taobao-sign.js').read()).call('sign', pre_sign_str)
-        params |= {'sign': sign, 't': t13}
+        params['t'] = t13
+
+        if '_m_h5_tk' in headers['Cookie']:
+            app_key = '12574478'
+            _m_h5_tk = re.findall('_m_h5_tk=(.*?);', headers['Cookie'])[0]
+            pre_sign_str = f'{_m_h5_tk.split("_")[0]}&{t13}&{app_key}&' + params['data']
+            sign = hashlib.md5(pre_sign_str.encode("utf-8")).hexdigest()
+            params['sign'] = sign
+
         api = f'https://h5api.m.taobao.com/h5/mtop.mediaplatform.live.livedetail/4.0/?{urllib.parse.urlencode(params)}'
         jsonp_str, new_cookie = await async_req(url=api, proxy_addr=proxy_addr, headers=headers, timeout=20,
                                                 return_cookies=True, include_cookies=True)
         json_data = utils.jsonp_to_json(jsonp_str)
+        if '哎哟喂,被挤爆啦,请稍后重试' in json_data['ret'][0]:
+            raise RuntimeError(f"Please change your taobao cookie: {json_data['ret']}")
 
         ret_msg = json_data['ret']
         if ret_msg == ['SUCCESS::调用成功']:
@@ -3092,16 +3106,14 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
 
                 play_url_list = sorted(play_url_list, key=get_sort_key, reverse=True)
                 result |= {"is_live": True, "title": live_title, "play_url_list": play_url_list, 'live_id': live_id}
-
             return result
-        else:
-            print(f'Error: Taobao live data fetch failed, {ret_msg[0]}')
 
-        if '_m_h5_tk' in new_cookie and '_m_h5_tk_enc' in new_cookie:
-            headers['Cookie'] = re.sub('_m_h5_tk=(.*?);', new_cookie['_m_h5_tk'], headers['Cookie'])
-            headers['Cookie'] = re.sub('_m_h5_tk_enc=(.*?);', new_cookie['_m_h5_tk_enc'], headers['Cookie'])
         else:
-            print('Error: Try to update cookie failed, please update the cookies in the configuration file')
+            if '_m_h5_tk' not in new_cookie or '_m_h5_tk_enc' not in new_cookie:
+                raise RuntimeError('Try to update cookie failed, please update the cookies in the configuration file')
+            new_cookie_str = utils.dict_to_cookie_str(new_cookie)
+            headers['Cookie'] = new_cookie_str
+            utils.update_config(f'{script_path}/config/config.ini', 'Cookie', 'taobao_cookie', new_cookie_str)
 
 
 @trace_error_decorator
