@@ -91,14 +91,16 @@ class SM3:
         else:
             # 否则分块处理
             self.chunk.extend(a[:f])
-
-            while len(self.chunk) >= 64:
-                self._compress(self.chunk)
-                if f < len(a):
-                    self.chunk = a[f:min(f + 64, len(a))]
-                else:
-                    self.chunk = []
-                f += 64
+            f = len(self.chunk)
+            
+            # 优化：使用 for 循环替代 while 循环处理完整的数据块
+            for i in range(0, f, 64):
+                if i + 64 <= f:
+                    self._compress(self.chunk[i:i+64])
+            
+            # 处理剩余不足 64 字节的部分
+            remainder = f % 64
+            self.chunk = self.chunk[-remainder:] if remainder > 0 else []
 
     def _fill(self):
         # 计算比特长度

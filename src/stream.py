@@ -60,8 +60,8 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr:
         m3u8_url_list: list = list(m3u8_url_dict.values())
 
         if len(flv_url_list) < 5:
-            flv_url_list.extend([flv_url_list[-1]] * (5 - len(flv_url_list)))
-            m3u8_url_list.extend([m3u8_url_list[-1]] * (5 - len(m3u8_url_list)))
+            flv_url_list += [flv_url_list[-1]] * (5 - len(flv_url_list))
+            m3u8_url_list += [m3u8_url_list[-1]] * (5 - len(m3u8_url_list))
 
         video_quality, quality_index = get_quality_index(video_quality)
         m3u8_url = m3u8_url_list[quality_index]
@@ -129,9 +129,9 @@ async def get_tiktok_stream_url(json_data: dict, video_quality: str, proxy_addr:
         m3u8_url_list = get_video_quality_url(stream_data, 'hls')
 
         if len(flv_url_list) < 5:
-            flv_url_list.extend([flv_url_list[-1]] * (5 - len(flv_url_list)))
+            flv_url_list += [flv_url_list[-1]] * (5 - len(flv_url_list))
         if len(m3u8_url_list) < 5:
-            m3u8_url_list.extend([m3u8_url_list[-1]] * (5 - len(m3u8_url_list)))
+            m3u8_url_list += [m3u8_url_list[-1]] * (5 - len(m3u8_url_list))
         video_quality, quality_index = get_quality_index(video_quality)
         flv_dict: dict = flv_url_list[quality_index]
         m3u8_dict: dict = m3u8_url_list[quality_index]
@@ -177,7 +177,7 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str) -> dict:
             if 'm3u8_url_list' in json_data:
                 m3u8_url_list = json_data['m3u8_url_list'][::-1]
                 if len(m3u8_url_list) < 5:
-                    m3u8_url_list.extend([m3u8_url_list[-1]] * (5 - len(m3u8_url_list)))
+                    m3u8_url_list += [m3u8_url_list[-1]] * (5 - len(m3u8_url_list))
                 m3u8_url = m3u8_url_list[quality_index]['url']
                 result['m3u8_url'] = m3u8_url
 
@@ -202,7 +202,7 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str) -> dict:
                 else:
                     flv_url_list = json_data['flv_url_list'][::-1]
                     if len(flv_url_list) < 5:
-                        flv_url_list.extend([flv_url_list[-1]] * (5 - len(flv_url_list)))
+                        flv_url_list += [flv_url_list[-1]] * (5 - len(flv_url_list))
                     flv_url = flv_url_list[quality_index]['url']
                     result |= {'flv_url': flv_url, 'record_url': flv_url}
             result['is_live'] = True
@@ -275,7 +275,7 @@ async def get_huya_stream_url(json_data: dict, video_quality: str) -> dict:
         if len(quality_list) > 1 and video_quality not in ["OD", "BD"]:
             quality_list = list(QUALITY_PATTERN.findall(quality_list[1]))[::-1]
             if len(quality_list) < 5:
-                quality_list.extend([quality_list[-1]] * (5 - len(quality_list)))
+                quality_list += [quality_list[-1]] * (5 - len(quality_list))
 
             video_quality_options = {
                 "UHD": quality_list[0],
@@ -392,12 +392,13 @@ async def get_netease_stream_url(json_data: dict, video_quality: str) -> dict:
         stream_list = json_data['stream_list']['resolution']
         order = ['blueray', 'ultra', 'high', 'standard']
         sorted_keys = [key for key in order if key in stream_list]
+        # 优化：使用切片和乘法一次性填充列表
         if len(sorted_keys) < 5:
-            sorted_keys.extend([sorted_keys[-1]] * (5 - len(sorted_keys)))
+            sorted_keys += [sorted_keys[-1]] * (5 - len(sorted_keys))
         video_quality, quality_index = get_quality_index(video_quality)
         selected_quality = sorted_keys[quality_index]
         flv_url_list = stream_list[selected_quality]['cdn']
-        selected_cdn = list(flv_url_list.keys())[0]
+        selected_cdn = next(iter(flv_url_list.keys()))
         flv_url = flv_url_list[selected_cdn]
 
     return {
@@ -417,8 +418,9 @@ async def get_stream_url(json_data: dict, video_quality: str, url_type: str = 'm
         return json_data
 
     play_url_list = json_data['play_url_list']
+    # 优化：使用切片和乘法一次性填充列表
     if len(play_url_list) < 5:
-        play_url_list.extend([play_url_list[-1]] * (5 - len(play_url_list)))
+        play_url_list += [play_url_list[-1]] * (5 - len(play_url_list))
 
     video_quality, selected_quality = get_quality_index(video_quality)
     data = {

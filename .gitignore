@@ -1,1 +1,4 @@
-(src/stream.py)
+```
+__pycache__/
+*.pyc
+```

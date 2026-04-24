@@ -1699,10 +1699,10 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
         _files = [f for f in files if f.startswith(os.path.basename(file_path))]
         _files.sort(key=lambda x: os.path.getmtime(os.path.join(backup_dir_path, x)))
 
-        while len(_files) > limit_counts:
-            oldest_file = _files[0]
-            os.remove(os.path.join(backup_dir_path, oldest_file))
-            _files = _files[1:]
+        # 优化：使用切片直接删除多余文件，避免 while 循环
+        if len(_files) > limit_counts:
+            for oldest_file in _files[:-limit_counts]:
+                os.remove(os.path.join(backup_dir_path, oldest_file))
 
     except Exception as e:
         logger.error(f'\r备份配置文件 {file_path} 失败：{str(e)}')
@@ -2160,7 +2160,8 @@ while True:
                         color_obj.print_colored(f"\r{origin_line.strip()} 本行包含未知链接.此条跳过", color_obj.YELLOW)
                         update_file(url_config_file, old_str=origin_line, new_str=origin_line, start_str='#')
 
-        while len(need_update_line_list):
+        # 优化：使用 deque 的 pop 方法直接遍历，避免 while len() 模式
+        while need_update_line_list:
             a = need_update_line_list.pop()
             replace_words = a.split('|')
             if replace_words[0] != replace_words[1]:
