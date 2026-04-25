@@ -591,7 +591,7 @@ async def get_douyu_info_data(url: str, proxy_addr: OptionalStr = None, cookies:
 
 @trace_error_decorator
 async def get_douyu_stream_data(rid: str, rate: str = '-1', proxy_addr: OptionalStr = None,
-                          cookies: OptionalStr = None) -> dict:
+                                cookies: OptionalStr = None) -> dict:
     did = '10000000000000000000000000003306'
     sign_params = await get_token_js(rid, did, proxy_addr=proxy_addr)
     if not sign_params:
@@ -3046,7 +3046,6 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
         headers['Cookie'] = cookies
 
     live_id = get_params(url, 'liveId')
-
     if not live_id:
         html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
         redirect_url = re.findall("var url = '(.*?)';", html_str)[0]
@@ -3069,7 +3068,6 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     }
 
     for i in range(2):
-
         t13 = int(time.time() * 1000)
         params['t'] = t13
 
@@ -3079,7 +3077,6 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
             pre_sign_str = f'{_m_h5_tk.split("_")[0]}&{t13}&{app_key}&' + params['data']
             sign = hashlib.md5(pre_sign_str.encode("utf-8")).hexdigest()
             params['sign'] = sign
-
         api = f'https://h5api.m.taobao.com/h5/mtop.mediaplatform.live.livedetail/4.0/?{urllib.parse.urlencode(params)}'
         jsonp_str, new_cookie = await async_req(url=api, proxy_addr=proxy_addr, headers=headers, timeout=20,
                                                 return_cookies=True, include_cookies=True)
@@ -3106,8 +3103,8 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
 
                 play_url_list = sorted(play_url_list, key=get_sort_key, reverse=True)
                 result |= {"is_live": True, "title": live_title, "play_url_list": play_url_list, 'live_id': live_id}
-            return result
 
+            return result
         else:
             if '_m_h5_tk' not in new_cookie or '_m_h5_tk_enc' not in new_cookie:
                 raise RuntimeError('Try to update cookie failed, please update the cookies in the configuration file')

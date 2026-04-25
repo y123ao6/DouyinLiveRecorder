@@ -44,7 +44,11 @@ def get_lanzou_download_link(url: str, password: str | None = None) -> str | Non
                           'Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
         }
         response = requests.get(url, headers=headers)
-        sign = re.search("var skdklds = '(.*?)';", response.text).group(1)
+        sign_match = re.search("var skdklds = '(.*?)';", response.text)
+        if not sign_match:
+            logger.error("Failed to extract sign from lanzou page")
+            return None
+        sign = sign_match.group(1)
         data = {
             'action': 'downprocess',
             'sign': sign,
@@ -88,13 +92,15 @@ def install_ffmpeg_windows():
             result = subprocess.run(["ffmpeg", "-version"], capture_output=True)
             if result.returncode == 0:
                 logger.debug('ffmpeg installation was successful')
+                return True
             else:
                 logger.error('ffmpeg installation failed. Please manually install ffmpeg by yourself')
-            return True
+                return False
         else:
             logger.error("Please manually install ffmpeg by yourself")
     except Exception as e:
         logger.error(f"type: {type(e).__name__}, ffmpeg installation failed {e}")
+    return False
 
 
 def install_ffmpeg_mac():
@@ -112,6 +118,7 @@ def install_ffmpeg_mac():
         logger.error("Please install ffmpeg manually or check your Homebrew installation.")
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
+    return False
 
 
 def install_ffmpeg_linux():
@@ -173,30 +180,13 @@ def install_ffmpeg() -> bool:
 
 def ensure_ffmpeg_installed(func):
     def wrapper(*args, **kwargs):
-        try:
-            result = subprocess.run(['ffmpeg', '-version'], capture_output=True)
-            version = result.stdout.strip()
-            if result.returncode == 0 and version:
-                return func(*args, **kwargs)
-        except FileNotFoundError:
-            pass
-        return False
-
-    def wrapped_func(*args, **kwargs):
-        if sys.version_info >= (3, 7):
-            res = wrapper(*args, **kwargs)
-        else:
-            res = wrapper(*args, **kwargs)
-        if not res:
+        if not check_ffmpeg_installed():
             install_ffmpeg()
-            res = wrapper(*args, **kwargs)
-
-        if not res:
+        if not check_ffmpeg_installed():
             raise RuntimeError("ffmpeg is not installed.")
-
         return func(*args, **kwargs)
 
-    return wrapped_func
+    return wrapper
 
 
 def check_ffmpeg_installed() -> bool:
@@ -208,10 +198,10 @@ def check_ffmpeg_installed() -> bool:
     except FileNotFoundError:
         pass
     except OSError as e:
-        print(f"OSError occurred: {e}. ffmpeg may not be installed correctly or is not available in the system PATH.")
-        print("Please delete the ffmpeg and try to download and install again.")
+        logger.warning(f"OSError occurred: {e}. ffmpeg may not be installed correctly or is not available in the system PATH.")
+        logger.warning("Please delete the ffmpeg and try to download and install again.")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}")
     return False
 
 

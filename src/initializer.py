@@ -38,7 +38,7 @@ def install_nodejs_windows():
     try:
         logger.warning("Node.js is not installed.")
         logger.debug("Installing the stable version of Node.js for Windows...")
-        response = requests.get('https://nodejs.cn/en/download/current')
+        response = requests.get('https://nodejs.cn/download/')
         if response.status_code == 200:
             match = re.search('https://npmmirror.com/mirrors/node/(v.*?)/node-(v.*?)-x64.msi',
                               response.text)

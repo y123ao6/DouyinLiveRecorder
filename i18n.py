@@ -1,14 +1,13 @@
 import os
 import sys
 import gettext
-import inspect
 import builtins
 from pathlib import Path
 
 
 def init_gettext(locale_dir, locale_name):
-    gettext.bindtextdomain('zh_CN', locale_dir)
-    gettext.textdomain('zh_CN')
+    gettext.bindtextdomain(locale_name, locale_dir)
+    gettext.textdomain(locale_name)
     os.environ['LANG'] = f'{locale_name}.utf8'
     return gettext.gettext
 
@@ -24,9 +23,18 @@ package_name = 'src'
 
 
 def translated_print(*args, **kwargs):
+    try:
+        caller_file = sys._getframe(1).f_code.co_filename
+        should_translate = package_name in caller_file
+    except (ValueError, AttributeError):
+        should_translate = False
+
+    sep = kwargs.get('sep', ' ')
+    translated_args = []
     for arg in args:
-        if package_name in inspect.stack()[1].filename:
-            translated_arg = _tr(str(arg))
-        else:
-            translated_arg = str(arg)
-        original_print(translated_arg, **kwargs)
+        text = str(arg)
+        if should_translate:
+            text = _tr(text)
+        translated_args.append(text)
+
+    original_print(sep.join(translated_args), **kwargs)

@@ -14,7 +14,6 @@ import json
 import time
 import random
 import re
-from operator import itemgetter
 import urllib.parse
 import urllib.request
 from .utils import trace_error_decorator
@@ -24,6 +23,15 @@ from .spider import (
 from .http_clients.async_http import get_response_status
 
 QUALITY_MAPPING = {"OD": 0, "BD": 0, "UHD": 1, "HD": 2, "SD": 3, "LD": 4}
+QUALITY_MAPPING_BIT = {'OD': 99999, 'BD': 4000, 'UHD': 2000, 'HD': 1000, 'SD': 800, 'LD': 600}
+
+
+def _pad_list(url_list: list, min_length: int = 5) -> list:
+    if not url_list:
+        return url_list
+    while len(url_list) < min_length:
+        url_list.append(url_list[-1])
+    return url_list
 
 
 def get_quality_index(quality) -> tuple:
@@ -33,8 +41,13 @@ def get_quality_index(quality) -> tuple:
     quality_str = str(quality).upper()
     if quality_str.isdigit():
         quality_int = int(quality_str[0])
-        quality_str = list(QUALITY_MAPPING.keys())[quality_int]
-    return quality_str, QUALITY_MAPPING.get(quality_str, 0)
+        keys = list(QUALITY_MAPPING.keys())
+        if quality_int >= len(keys):
+            quality_int = 0
+        quality_str = keys[quality_int]
+    if quality_str not in QUALITY_MAPPING:
+        quality_str = list(QUALITY_MAPPING.keys())[0]
+    return quality_str, QUALITY_MAPPING[quality_str]
 
 
 @trace_error_decorator
@@ -55,9 +68,8 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr:
         m3u8_url_dict = stream_url['hls_pull_url_map']
         m3u8_url_list: list = list(m3u8_url_dict.values())
 
-        while len(flv_url_list) < 5:
-            flv_url_list.append(flv_url_list[-1])
-            m3u8_url_list.append(m3u8_url_list[-1])
+        _pad_list(flv_url_list)
+        _pad_list(m3u8_url_list)
 
         video_quality, quality_index = get_quality_index(video_quality)
         m3u8_url = m3u8_url_list[quality_index]
@@ -104,7 +116,6 @@ async def get_tiktok_stream_url(json_data: dict, video_quality: str, proxy_addr:
                 width, height = map(int, resolution.split('x'))
                 play_list.append({'url': play_url, 'vbitrate': vbitrate, 'resolution': (width, height)})
 
-        play_list.sort(key=itemgetter('vbitrate'), reverse=True)
         play_list.sort(key=lambda x: (-x['vbitrate'], -x['resolution'][0], -x['resolution'][1]))
         return play_list
 
@@ -124,10 +135,8 @@ async def get_tiktok_stream_url(json_data: dict, video_quality: str, proxy_addr:
         flv_url_list = get_video_quality_url(stream_data, 'flv')
         m3u8_url_list = get_video_quality_url(stream_data, 'hls')
 
-        while len(flv_url_list) < 5:
-            flv_url_list.append(flv_url_list[-1])
-        while len(m3u8_url_list) < 5:
-            m3u8_url_list.append(m3u8_url_list[-1])
+        _pad_list(flv_url_list)
+        _pad_list(m3u8_url_list)
         video_quality, quality_index = get_quality_index(video_quality)
         flv_dict: dict = flv_url_list[quality_index]
         m3u8_dict: dict = m3u8_url_list[quality_index]
@@ -166,14 +175,12 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str) -> dict:
     }
 
     if live_status:
-        quality_mapping_bit = {'OD': 99999, 'BD': 4000, 'UHD': 2000, 'HD': 1000, 'SD': 800, 'LD': 600}
         if video_quality in QUALITY_MAPPING:
 
             quality, quality_index = get_quality_index(video_quality)
             if 'm3u8_url_list' in json_data:
                 m3u8_url_list = json_data['m3u8_url_list'][::-1]
-                while len(m3u8_url_list) < 5:
-                    m3u8_url_list.append(m3u8_url_list[-1])
+                _pad_list(m3u8_url_list)
                 m3u8_url = m3u8_url_list[quality_index]['url']
                 result['m3u8_url'] = m3u8_url
 
@@ -183,9 +190,9 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str) -> dict:
                     flv_url_list = sorted(flv_url_list, key=lambda x: x['bitrate'], reverse=True)
                     quality_str = str(video_quality).upper()
                     if quality_str.isdigit():
-                        video_quality, quality_index_bitrate_value = list(quality_mapping_bit.items())[int(quality_str)]
+                        video_quality, quality_index_bitrate_value = list(QUALITY_MAPPING_BIT.items())[int(quality_str)]
                     else:
-                        quality_index_bitrate_value = quality_mapping_bit.get(quality_str, 99999)
+                        quality_index_bitrate_value = QUALITY_MAPPING_BIT.get(quality_str, 99999)
                         video_quality = quality_str
                     quality_index = next(
                         (i for i, x in enumerate(flv_url_list) if x['bitrate'] <= quality_index_bitrate_value), None)
@@ -197,8 +204,7 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str) -> dict:
                     result['record_url'] = flv_url
                 else:
                     flv_url_list = json_data['flv_url_list'][::-1]
-                    while len(flv_url_list) < 5:
-                        flv_url_list.append(flv_url_list[-1])
+                    _pad_list(flv_url_list)
                     flv_url = flv_url_list[quality_index]['url']
                     result |= {'flv_url': flv_url, 'record_url': flv_url}
             result['is_live'] = True
@@ -271,8 +277,7 @@ async def get_huya_stream_url(json_data: dict, video_quality: str) -> dict:
         if len(quality_list) > 1 and video_quality not in ["OD", "BD"]:
             pattern = r"(?<=264_)\d+"
             quality_list = list(re.findall(pattern, quality_list[1]))[::-1]
-            while len(quality_list) < 5:
-                quality_list.append(quality_list[-1])
+            _pad_list(quality_list)
 
             video_quality_options = {
                 "UHD": quality_list[0],
@@ -302,7 +307,7 @@ async def get_huya_stream_url(json_data: dict, video_quality: str) -> dict:
 @trace_error_decorator
 async def get_douyu_stream_url(json_data: dict, video_quality: str, cookies: str, proxy_addr: str) -> dict:
     if not json_data["is_live"]:
-        return json_data
+        return {"anchor_name": json_data.get("anchor_name"), "is_live": False}
 
     video_quality_options = {
         "OD": '0',
@@ -314,15 +319,20 @@ async def get_douyu_stream_url(json_data: dict, video_quality: str, cookies: str
     }
 
     rid = str(json_data["room_id"])
-    json_data.pop("room_id")
     rate = video_quality_options.get(video_quality, '0')
     flv_data = await get_douyu_stream_data(rid, rate, cookies=cookies, proxy_addr=proxy_addr)
     rtmp_url = flv_data['data'].get('rtmp_url')
     rtmp_live = flv_data['data'].get('rtmp_live')
+
+    result = {
+        "anchor_name": json_data.get('anchor_name'),
+        "is_live": True,
+        "quality": video_quality,
+    }
     if rtmp_live:
         flv_url = f'{rtmp_url}/{rtmp_live}'
-        json_data |= {'quality': video_quality, 'flv_url': flv_url, 'record_url': flv_url}
-    return json_data
+        result |= {'flv_url': flv_url, 'record_url': flv_url}
+    return result
 
 
 @trace_error_decorator
@@ -366,7 +376,7 @@ async def get_bilibili_stream_url(json_data: dict, video_quality: str, proxy_add
         "LD": '80'
     }
 
-    select_quality = video_quality_options[video_quality]
+    select_quality = video_quality_options.get(video_quality, '0')
     play_url = await get_bilibili_stream_data(
         room_url, qn=select_quality, platform='web', proxy_addr=proxy_addr, cookies=cookies)
     return {
@@ -389,8 +399,7 @@ async def get_netease_stream_url(json_data: dict, video_quality: str) -> dict:
         stream_list = json_data['stream_list']['resolution']
         order = ['blueray', 'ultra', 'high', 'standard']
         sorted_keys = [key for key in order if key in stream_list]
-        while len(sorted_keys) < 5:
-            sorted_keys.append(sorted_keys[-1])
+        _pad_list(sorted_keys)
         video_quality, quality_index = get_quality_index(video_quality)
         selected_quality = sorted_keys[quality_index]
         flv_url_list = stream_list[selected_quality]['cdn']
@@ -414,8 +423,7 @@ async def get_stream_url(json_data: dict, video_quality: str, url_type: str = 'm
         return json_data
 
     play_url_list = json_data['play_url_list']
-    while len(play_url_list) < 5:
-        play_url_list.append(play_url_list[-1])
+    _pad_list(play_url_list)
 
     video_quality, selected_quality = get_quality_index(video_quality)
     data = {

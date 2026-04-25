@@ -25,7 +25,6 @@ from pathlib import Path
 import urllib.request
 from urllib.error import URLError, HTTPError
 from typing import Any
-from collections import deque
 import configparser
 import httpx
 from src import spider, stream
@@ -45,29 +44,24 @@ platforms = ("\n国内站点：抖音|快手|虎牙|斗鱼|YY|B站|小红书|big
              "\n海外站点：TikTok|SOOP|PandaTV|WinkTV|FlexTV|PopkonTV|TwitchTV|LiveMe|ShowRoom|CHZZK|Shopee|"
              "Youtube|Faceit|Picarto")
 
-# 全局变量定义 - 使用 deque 限制最大长度以防止内存无限增长
 recording = set()
 error_count = 0
 pre_max_request = 10
 max_request_lock = threading.Lock()
-error_window = deque(maxlen=10)  # 使用固定长度的 deque
+error_window = []
+error_window_size = 10
 error_threshold = 5
 monitoring = 0
-running_list = deque(maxlen=1000)  # 使用 deque 限制最大长度
+running_list = []
 url_tuples_list = []
-# 配置数据清理阈值
-MAX_RECORDING_TIME_LIST_SIZE = 1000  # recording_time_list 最大条目数
-MAX_URL_COMMENTS_SIZE = 5000  # url_comments 最大条目数
-MAX_NOT_RECORD_LIST_SIZE = 1000  # not_record_list 最大条目数
-MAX_NEED_UPDATE_LINE_LIST_SIZE = 500  # need_update_line_list 最大条目数
-url_comments = deque(maxlen=MAX_URL_COMMENTS_SIZE)  # 使用 deque 自动清理旧数据
+url_comments = []
 text_no_repeat_url = []
 create_var = locals()
 first_start = True
 exit_recording = False
-need_update_line_list = deque(maxlen=MAX_NEED_UPDATE_LINE_LIST_SIZE)  # 使用 deque 自动清理旧数据
+need_update_line_list = []
 first_run = True
-not_record_list = deque(maxlen=MAX_NOT_RECORD_LIST_SIZE)  # 使用 deque 自动清理旧数据
+not_record_list = []
 start_display_time = datetime.datetime.now()
 global_proxy = False
 recording_time_list = {}
@@ -84,6 +78,126 @@ os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
+
+PLATFORM_HOST = [
+    'live.douyin.com',
+    'v.douyin.com',
+    'www.douyin.com',
+    'live.kuaishou.com',
+    'www.huya.com',
+    'www.douyu.com',
+    'www.yy.com',
+    'live.bilibili.com',
+    'www.redelight.cn',
+    'www.xiaohongshu.com',
+    'xhslink.com',
+    'www.bigo.tv',
+    'slink.bigovideo.tv',
+    'app.blued.cn',
+    'cc.163.com',
+    'qiandurebo.com',
+    'fm.missevan.com',
+    'look.163.com',
+    'twitcasting.tv',
+    'live.baidu.com',
+    'weibo.com',
+    'fanxing.kugou.com',
+    'fanxing2.kugou.com',
+    'mfanxing.kugou.com',
+    'www.huajiao.com',
+    'www.7u66.com',
+    'wap.7u66.com',
+    'live.acfun.cn',
+    'm.acfun.cn',
+    'live.tlclw.com',
+    'wap.tlclw.com',
+    'live.ybw1666.com',
+    'wap.ybw1666.com',
+    'www.inke.cn',
+    'www.zhihu.com',
+    'www.haixiutv.com',
+    "h5webcdnp.vvxqiu.com",
+    "17.live",
+    'www.lang.live',
+    "m.pp.weimipopo.com",
+    "v.6.cn",
+    "m.6.cn",
+    'www.lehaitv.com',
+    'h.catshow168.com',
+    'e.tb.cn',
+    'm.tb.cn',
+    'tbzb.taobao.com',
+    'huodong.m.taobao.com',
+    '3.cn',
+    'eco.m.jd.com',
+    'www.miguvideo.com',
+    'm.miguvideo.com',
+    'show.lailianjie.com',
+    'www.imkktv.com',
+    'www.picarto.tv',
+    'www.tiktok.com',
+    'play.sooplive.co.kr',
+    'm.sooplive.co.kr',
+    'www.sooplive.com',
+    'm.sooplive.com',
+    'www.pandalive.co.kr',
+    'www.winktv.co.kr',
+    'www.flextv.co.kr',
+    'www.ttinglive.com',
+    'www.popkontv.com',
+    'www.twitch.tv',
+    'www.liveme.com',
+    'www.showroom-live.com',
+    'chzzk.naver.com',
+    'm.chzzk.naver.com',
+    'live.shopee.',
+    '.shp.ee',
+    'www.youtube.com',
+    'youtu.be',
+    'www.faceit.com',
+]
+
+OVERSEAS_PLATFORM_HOST = [
+    'www.tiktok.com',
+    'play.sooplive.co.kr',
+    'm.sooplive.co.kr',
+    'www.sooplive.com',
+    'm.sooplive.com',
+    'www.pandalive.co.kr',
+    'www.winktv.co.kr',
+    'www.flextv.co.kr',
+    'www.ttinglive.com',
+    'www.popkontv.com',
+    'www.twitch.tv',
+    'www.liveme.com',
+    'www.showroom-live.com',
+    'chzzk.naver.com',
+    'm.chzzk.naver.com',
+    'live.shopee.',
+    '.shp.ee',
+    'www.youtube.com',
+    'youtu.be',
+    'www.faceit.com',
+]
+
+CLEAN_URL_HOST_LIST = (
+    "live.douyin.com",
+    "live.bilibili.com",
+    "www.huajiao.com",
+    "www.zhihu.com",
+    "www.huya.com",
+    "chzzk.naver.com",
+    "www.liveme.com",
+    "www.haixiutv.com",
+    "v.6.cn",
+    "m.6.cn",
+    'www.lehaitv.com',
+)
+
+
+def contains_url(string: str) -> bool:
+    pattern = r"(https?://)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+(:\d+)?(/.*)?"
+    return re.search(pattern, string) is not None
 
 
 def signal_handler(_signal, _frame):
@@ -129,12 +243,9 @@ def display_info() -> None:
                 no_repeat_recording = list(set(recording))
                 print(f"正在录制{len(no_repeat_recording)}个直播: ")
                 for recording_live in no_repeat_recording:
-                    # 使用 get 方法防止 KeyError
-                    record_info = recording_time_list.get(recording_live)
-                    if record_info:
-                        rt, qa = record_info
-                        have_record_time = now_time - rt
-                        print(f"{recording_live}[{qa}] 正在录制中 {str(have_record_time).split('.')[0]}")
+                    rt, qa = recording_time_list[recording_live]
+                    have_record_time = now_time - rt
+                    print(f"{recording_live}[{qa}] 正在录制中 {str(have_record_time).split('.')[0]}")
 
                 # print('\n本软件已运行：'+str(now_time - start_display_time).split('.')[0])
                 print("x" * 60)
@@ -228,11 +339,14 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
 def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> None:
     try:
         if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
-            if converts_to_h265:
-                color_obj.print_colored("正在转码为MP4格式并重新编码为h265\n", color_obj.YELLOW)
+            if converts_to_h264:
+                color_obj.print_colored("正在转码为MP4格式并重新编码为h264\n", color_obj.YELLOW)
                 ffmpeg_command = [
                     "ffmpeg", "-i", converts_file_path,
-                    "-c:v", "libx265",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "23",
+                    "-vf", "format=yuv420p",
                     "-c:a", "copy",
                     "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
                 ]
@@ -302,7 +416,7 @@ def generate_subtitles(record_name: str, ass_filename: str, sub_format: str = 's
 
 
 def adjust_max_request() -> None:
-    global max_request, error_count, pre_max_request
+    global max_request, error_count, pre_max_request, error_window
     preset = max_request
 
     while True:
@@ -322,10 +436,11 @@ def adjust_max_request() -> None:
 
             if pre_max_request != max_request:
                 pre_max_request = max_request
-                print(f"\r同一时间访问网络的线程数动态改为 {max_request}")
+                logger.debug(f"同一时间访问网络的线程数动态改为 {max_request}")
 
-        # deque 自动维护最大长度，无需手动 pop
         error_window.append(error_count)
+        if len(error_window) > error_window_size:
+            error_window.pop(0)
         error_count = 0
 
 
@@ -352,8 +467,8 @@ def push_message(record_name: str, live_url: str, content: str) -> None:
         if platform in live_status_push.upper():
             try:
                 result = func()
-                print(f'提示信息：已经将[{record_name}]直播状态消息推送至你的{platform},'
-                      f' 成功{len(result["success"])}, 失败{len(result["error"])}')
+                logger.info(f'提示信息：已经将[{record_name}]直播状态消息推送至你的{platform},'
+                            f' 成功{len(result["success"])}, 失败{len(result["error"])}')
             except Exception as e:
                 color_obj.print_colored(f"直播消息推送到{platform}失败: {e}", color_obj.RED)
 
@@ -377,45 +492,10 @@ def run_script(command: str) -> None:
         logger.error(e)
         logger.error('Please add `#!/bin/bash` at the beginning of your bash script file.')
 
-def clean_record_info_cache() -> None:
-    """清理录制相关缓存数据，防止内存无限增长"""
-    global recording_time_list
-    
-    # 清理 recording_time_list - 只保留仍在录制的条目
-    if len(recording_time_list) > MAX_RECORDING_TIME_LIST_SIZE:
-        cleaned = {k: v for k, v in recording_time_list.items() if k in recording}
-        removed_count = len(recording_time_list) - len(cleaned)
-        recording_time_list = cleaned
-        if removed_count > 0:
-            logger.info(f"已清理 {removed_count} 条已结束的录制时间记录")
-    
-    # url_comments, not_record_list, need_update_line_list 使用 deque 自动管理长度
-    # 只需记录当前状态用于日志
-    logger.debug(f"当前缓存状态 - url_comments: {len(url_comments)}, "
-                 f"not_record_list: {len(not_record_list)}, "
-                 f"need_update_line_list: {len(need_update_line_list)}, "
-                 f"running_list: {len(running_list)}")
-
-
-def periodic_clean_cache() -> None:
-    """定期清理缓存数据的后台任务，每 5 分钟执行一次"""
-    while True:
-        time.sleep(300)  # 5 分钟
-        try:
-            clean_record_info_cache()
-            # 调用 Python 垃圾回收器
-            import gc
-            gc.collect()
-            logger.debug("已完成定期缓存清理和垃圾回收")
-        except Exception as e:
-            logger.error(f"定期清理缓存时出错：{e}")
 
 def clear_record_info(record_name: str, record_url: str) -> None:
     global monitoring
     recording.discard(record_name)
-    # 清理 recording_time_list 中对应的条目
-    if record_name in recording_time_list:
-        del recording_time_list[record_name]
     if record_url in url_comments and record_url in running_list:
         running_list.remove(record_url)
         monitoring -= 1
@@ -540,7 +620,7 @@ def clean_name(input_text):
 
 
 def get_quality_code(qn):
-    QUALITY_MAPPING = {
+    quality_zh_to_en = {
         "原画": "OD",
         "蓝光": "BD",
         "超清": "UHD",
@@ -548,7 +628,7 @@ def get_quality_code(qn):
         "标清": "SD",
         "流畅": "LD"
     }
-    return QUALITY_MAPPING.get(qn)
+    return quality_zh_to_en.get(qn)
 
 
 def get_record_headers(platform, live_url):
@@ -1032,10 +1112,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                         platform = 'faceit'
                         with semaphore:
                             if global_proxy or proxy_address:
-                                with semaphore:
-                                    json_data = asyncio.run(spider.get_faceit_stream_data(
-                                        url=record_url, proxy_addr=proxy_address, cookies=faceit_cookie))
-                                    port_info = asyncio.run(stream.get_stream_url(json_data, record_quality, spec=True))
+                                json_data = asyncio.run(spider.get_faceit_stream_data(
+                                    url=record_url, proxy_addr=proxy_address, cookies=faceit_cookie))
+                                port_info = asyncio.run(stream.get_stream_url(json_data, record_quality, spec=True))
                             else:
                                 logger.error("错误信息: 网络异常，请检查本网络是否能正常访问faceit直播平台")
 
@@ -1203,7 +1282,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 probesize = "10000000"
                                 bufsize = "8000k"
                                 max_muxing_queue_size = "1024"
-                                for pt_host in overseas_platform_host:
+                                for pt_host in OVERSEAS_PLATFORM_HOST:
                                     if pt_host in record_url:
                                         rw_timeout = "50000000"
                                         analyzeduration = "40000000"
@@ -1731,6 +1810,7 @@ def backup_file_start() -> None:
 
 
 def check_ffmpeg_existence() -> bool:
+    ffmpeg_exists = False
     try:
         result = subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True, text=True)
         if result.returncode == 0:
@@ -1743,12 +1823,9 @@ def check_ffmpeg_existence() -> bool:
         logger.error(e)
     except FileNotFoundError:
         pass
-    finally:
-        if check_ffmpeg():
-            time.sleep(1)
-            ffmpeg_exists = True
-        else:
-            ffmpeg_exists = False
+    if check_ffmpeg():
+        time.sleep(1)
+        ffmpeg_exists = True
     return ffmpeg_exists
 
 
@@ -1863,7 +1940,7 @@ while True:
     disk_space_limit = float(read_config_value(config, '录制设置', '录制空间剩余阈值(gb)', 1.0))
     split_time = str(read_config_value(config, '录制设置', '视频分段时间(秒)', 1800))
     converts_to_mp4 = options.get(read_config_value(config, '录制设置', '录制完成后自动转为mp4格式', "否"), False)
-    converts_to_h265 = options.get(read_config_value(config, '录制设置', 'mp4格式重新编码为h265', "否"), False)
+    converts_to_h264 = options.get(read_config_value(config, '录制设置', 'mp4格式重新编码为h264', "否"), False)
     delete_origin_file = options.get(read_config_value(config, '录制设置', '追加格式后删除原文件', "否"), False)
     create_time_file = options.get(read_config_value(config, '录制设置', '生成时间字幕文件', "否"), False)
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
@@ -1981,17 +2058,9 @@ while True:
             sys.exit(-1)
 
 
-    def contains_url(string: str) -> bool:
-        pattern = r"(https?://)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+(:\d+)?(/.*)?"
-        return re.search(pattern, string) is not None
-
-
     try:
-        # url_comments, line_list, url_line_list = [[] for _ in range(3)]
-        line_list, url_line_list = [], []
+        url_comments, line_list, url_line_list = [[] for _ in range(3)]
         seen_urls = set()
-        # 清空 url_comments 但保持其 deque 类型和 maxlen 属性
-        url_comments.clear()
         with (open(url_config_file, "r", encoding=text_encoding, errors='ignore') as file):
             for origin_line in file:
                 if origin_line in line_list:
@@ -2038,106 +2107,11 @@ while True:
                 url = 'https://' + url if '://' not in url else url
                 url_host = url.split('/')[2]
 
-                platform_host = [
-                    'live.douyin.com',
-                    'v.douyin.com',
-                    'www.douyin.com',
-                    'live.kuaishou.com',
-                    'www.huya.com',
-                    'www.douyu.com',
-                    'www.yy.com',
-                    'live.bilibili.com',
-                    'www.redelight.cn',
-                    'www.xiaohongshu.com',
-                    'xhslink.com',
-                    'www.bigo.tv',
-                    'slink.bigovideo.tv',
-                    'app.blued.cn',
-                    'cc.163.com',
-                    'qiandurebo.com',
-                    'fm.missevan.com',
-                    'look.163.com',
-                    'twitcasting.tv',
-                    'live.baidu.com',
-                    'weibo.com',
-                    'fanxing.kugou.com',
-                    'fanxing2.kugou.com',
-                    'mfanxing.kugou.com',
-                    'www.huajiao.com',
-                    'www.7u66.com',
-                    'wap.7u66.com',
-                    'live.acfun.cn',
-                    'm.acfun.cn',
-                    'live.tlclw.com',
-                    'wap.tlclw.com',
-                    'live.ybw1666.com',
-                    'wap.ybw1666.com',
-                    'www.inke.cn',
-                    'www.zhihu.com',
-                    'www.haixiutv.com',
-                    "h5webcdnp.vvxqiu.com",
-                    "17.live",
-                    'www.lang.live',
-                    "m.pp.weimipopo.com",
-                    "v.6.cn",
-                    "m.6.cn",
-                    'www.lehaitv.com',
-                    'h.catshow168.com',
-                    'e.tb.cn',
-                    'm.tb.cn',
-                    'tbzb.taobao.com',
-                    'huodong.m.taobao.com',
-                    '3.cn',
-                    'eco.m.jd.com',
-                    'www.miguvideo.com',
-                    'm.miguvideo.com',
-                    'show.lailianjie.com',
-                    'www.imkktv.com',
-                    'www.picarto.tv'
-                ]
-                overseas_platform_host = [
-                    'www.tiktok.com',
-                    'play.sooplive.co.kr',
-                    'm.sooplive.co.kr',
-                    'www.sooplive.com',
-                    'm.sooplive.com',
-                    'www.pandalive.co.kr',
-                    'www.winktv.co.kr',
-                    'www.flextv.co.kr',
-                    'www.ttinglive.com',
-                    'www.popkontv.com',
-                    'www.twitch.tv',
-                    'www.liveme.com',
-                    'www.showroom-live.com',
-                    'chzzk.naver.com',
-                    'm.chzzk.naver.com',
-                    'live.shopee.',
-                    '.shp.ee',
-                    'www.youtube.com',
-                    'youtu.be',
-                    'www.faceit.com'
-                ]
-
-                platform_host.extend(overseas_platform_host)
-                clean_url_host_list = (
-                    "live.douyin.com",
-                    "live.bilibili.com",
-                    "www.huajiao.com",
-                    "www.zhihu.com",
-                    "www.huya.com",
-                    "chzzk.naver.com",
-                    "www.liveme.com",
-                    "www.haixiutv.com",
-                    "v.6.cn",
-                    "m.6.cn",
-                    'www.lehaitv.com'
-                )
-
                 if 'live.shopee.' in url_host or '.shp.ee' in url_host:
                     url_host = 'live.shopee.' if 'live.shopee.' in url_host else '.shp.ee'
 
-                if url_host in platform_host or any(ext in url for ext in (".flv", ".m3u8")):
-                    if url_host in clean_url_host_list:
+                if url_host in PLATFORM_HOST or any(ext in url for ext in (".flv", ".m3u8")):
+                    if url_host in CLEAN_URL_HOST_LIST:
                         url = update_file(url_config_file, old_str=url, new_str=url.split('?')[0])
 
                     if 'xiaohongshu' in url:
@@ -2145,11 +2119,8 @@ while True:
                         if host_id:
                             new_url = url.split('?')[0] + f'?host_id={host_id.group(1)}'
                             url = update_file(url_config_file, old_str=url, new_str=new_url)
-
                     seen_urls.add(url)
-                    # 使用 deque 的过滤方式，移除包含该 url 的旧条目
-                    url_comments = deque([i for i in url_comments if url not in i], maxlen=url_comments.maxlen)
-                    # url_comments = [i for i in url_comments if url not in i]
+                    url_comments = [i for i in url_comments if url not in i]
                     if is_comment_line:
                         url_comments.append(url)
                     else:
@@ -2171,19 +2142,11 @@ while True:
                     start_with = None
                     new_word = replace_words[1]
                 update_file(url_config_file, old_str=replace_words[0], new_str=new_word, start_str=start_with)
-
-        # 清理 running_list 中已结束的录制项（不在 seen_urls 中且不在 url_comments 中）
         running_snapshot = list(running_list)
         for running_url in running_snapshot:
             if running_url not in seen_urls and running_url not in url_comments:
                 url_comments.append(running_url)
-        
-        # deque 自动管理长度，无需手动清理
-        # 清理 running_list，移除已经在 url_comments 中的 URL（录制已停止）
-        # if len(running_list) > 1000:  # 设置一个合理的上限
-        #    running_list = [url for url in running_list if url not in url_comments]
-        
-        # text_no_repeat_url 仅作为临时变量使用，无需保留为全局变量
+
         text_no_repeat_url = list(set(url_tuples_list))
 
         if len(text_no_repeat_url) > 0:
@@ -2213,13 +2176,6 @@ while True:
         t.start()
         t2 = threading.Thread(target=adjust_max_request, args=(), daemon=True)
         t2.start()
-        # 启动定期清理任务
-        t3 = threading.Thread(target=periodic_clean_cache, args=(), daemon=True)
-        t3.start()
         first_run = False
 
-    # 每次循环前也执行一次清理（轻量级）
-    clean_record_info_cache()
-
     time.sleep(3)
-    

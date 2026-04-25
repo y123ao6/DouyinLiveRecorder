@@ -20,8 +20,19 @@ class ProxyInfo:
         if (self.ip and not self.port) or (not self.ip and self.port):
             raise ValueError("IP or port cannot be empty")
 
-        if (self.ip and self.port) and (not self.port.isdigit() or not (1 <= int(self.port) <= 65535)):
-            raise ValueError("Port must be a digit between 1 and 65535")
+        if (self.ip and self.port):
+            # 验证端口格式
+            if not self.port.isdigit() or not (1 <= int(self.port) <= 65535):
+                raise ValueError("Port must be a digit between 1 and 65535")
+            
+            # 验证 IP 地址格式
+            import re
+            ip_pattern = r'^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+            if not re.match(ip_pattern, self.ip):
+                # 检查是否是域名
+                domain_pattern = r'^([a-zA-Z0-9][a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$'
+                if not re.match(domain_pattern, self.ip):
+                    raise ValueError("Invalid IP address or domain format")
 
 
 class ProxyDetector:
@@ -68,9 +79,9 @@ class ProxyDetector:
             if self.winreg.QueryValueEx(self.__INTERNET_SETTINGS, "ProxyEnable")[0] == 1:
                 return True
         except FileNotFoundError as err:
-            print("No proxy information found: " + str(err))
+            logger.warning("No proxy information found: " + str(err))
         except Exception as err:
-            print("An error occurred: " + str(err))
+            logger.error("An error occurred: " + str(err))
         return False
 
     @staticmethod
@@ -83,10 +94,20 @@ class ProxyDetector:
         ip = port = ""
         for proto, proxy in proxies.items():
             if proxy:
-                ip, port = proxy.split(':')
-                break
+                # 处理代理 URL 格式，例如 http://ip:port
+                if '://' in proxy:
+                    proxy = proxy.split('://')[1]
+                # 分割 IP 和端口
+                if ':' in proxy:
+                    ip, port = proxy.split(':', 1)
+                    break
         return ip, port
 
     def _is_proxy_enabled_linux(self) -> bool:
-        proxies = self._get_proxy_info_linux()
-        return any(proxy != '' for proxy in proxies)
+        # 直接检查环境变量是否存在
+        proxies = {
+            'http': os.getenv('http_proxy'),
+            'https': os.getenv('https_proxy'),
+            'ftp': os.getenv('ftp_proxy')
+        }
+        return any(proxy for proxy in proxies.values())
