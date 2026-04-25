@@ -9,7 +9,7 @@ import functools
 import hashlib
 import re
 import traceback
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 from collections import OrderedDict
 import execjs
@@ -35,7 +35,7 @@ class Color:
         print(f"{color}{text}{Color.RESET}")
 
 
-def trace_error_decorator(func: callable) -> callable:
+def trace_error_decorator(func: Callable) -> Callable:
     @functools.wraps(func)
     def wrapper(*args: list, **kwargs: dict) -> Any:
         try:
@@ -109,7 +109,7 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
 
 def get_file_paths(directory: str) -> list:
     file_paths = []
-    for root, dirs, files in os.walk(directory):
+    for root, _, files in os.walk(directory):
         for file in files:
             file_paths.append(os.path.join(root, file))
     return file_paths

@@ -42,17 +42,17 @@ class SystemTray:
 
         return image
 
-    def on_show(self, icon=None):
+    def on_show(self, icon=None):  # type: ignore[assignment]
         """显示主窗口"""
         if self.gui.root:
             self.gui.root.deiconify()
             self.gui.root.lift()
 
-    def on_exit(self, icon=None):
+    def on_exit(self, icon=None):  # type: ignore[assignment]
         """退出程序"""
         self.gui.quit_application()
 
-    def on_minimize(self, icon=None):
+    def on_minimize(self, icon=None):  # type: ignore[assignment]
         """最小化到托盘"""
         if self.gui.root:
             self.gui.root.withdraw()
@@ -72,7 +72,6 @@ class SystemTray:
             menu
         )
         self.running = True
-        self.icon.on_activate = self.on_show
         self.icon.run()
 
     def stop(self):
@@ -177,8 +176,8 @@ class LiveRecorderGUI:
         self.output_thread = None
         self.running = False
 
-        self.system_tray = None
-        self.tray_thread = None
+        self.system_tray: SystemTray | None = None
+        self.tray_thread: threading.Thread | None = None
 
         self._setup_style()
         self._setup_ui()
@@ -299,7 +298,7 @@ class LiveRecorderGUI:
         if os.path.exists(self.main_config_file):
             try:
                 config = configparser.ConfigParser()
-                config.optionxform = str
+                config.optionxform = str  # type: ignore[assignment]
                 config.read(self.main_config_file, encoding='utf-8-sig')
 
                 # 循环检测时间（节：[录制设置]，键：循环时间(秒)）
@@ -461,6 +460,8 @@ class LiveRecorderGUI:
         """读取子进程输出"""
         while self.running and self.process:
             try:
+                if not self.process.stdout:
+                    break
                 line = self.process.stdout.readline()
                 if not line:
                     if self.process.poll() is not None:

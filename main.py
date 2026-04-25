@@ -74,10 +74,17 @@ rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
 default_path = f'{script_path}/downloads'
 os.makedirs(default_path, exist_ok=True)
 file_update_lock = threading.Lock()
+
+
+def _get_error_line(e: BaseException) -> str:
+    tb = e.__traceback__
+    return str(tb.tb_lineno) if tb else "unknown"
+
+
 os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
-os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
+os.environ['PATH'] = ffmpeg_path + os.pathsep + (current_env_path or '')
 
 PLATFORM_HOST = [
     'live.douyin.com',
@@ -215,7 +222,7 @@ def display_info() -> None:
             sys.stdout.flush()
             time.sleep(5)
             if Path(sys.executable).name != 'pythonw.exe':
-                os.system(clear_command)
+                subprocess.run(clear_command, shell=True)
             print(f"\r共监测{monitoring}个直播中", end=" | ")
             print(f"同一时间访问网络的线程数: {max_request}", end=" | ")
             print(f"是否开启代理录制: {'是' if use_proxy else '否'}", end=" | ")
@@ -251,10 +258,10 @@ def display_info() -> None:
                 print("x" * 60)
                 start_display_time = now_time
         except Exception as e:
-            logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+            logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
 
 
-def update_file(file_path: str, old_str: str, new_str: str, start_str: str = None) -> str | None:
+def update_file(file_path: str, old_str: str, new_str: str, start_str: str | None = None) -> str | None:
     if old_str == new_str and start_str is None:
         return old_str
     with file_update_lock:
@@ -269,7 +276,7 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str = Non
                     if text_line not in file_data:
                         file_data.append(text_line)
             except RuntimeError as e:
-                logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                 if ini_URL_content:
                     with open(file_path, "w", encoding=text_encoding) as f2:
                         f2.write(ini_URL_content)
@@ -533,7 +540,7 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
                 print()
                 return True
     except Exception as e:
-        logger.error(f"FLV下载错误: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+        logger.error(f"FLV下载错误: {e} 发生错误的行数: {_get_error_line(e)}")
         return False
 
 
@@ -677,14 +684,14 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             record_quality = get_quality_code(record_quality_zh)
             proxy_address = proxy_addr
             platform = '未知平台'
-            live_domain = '/'.join(record_url.split('/')[0:3])
 
             if proxy_addr:
                 proxy_address = None
-                for platform in enable_proxy_platform_list:
-                    if platform and platform.strip() in record_url:
-                        proxy_address = proxy_addr
-                        break
+                if enable_proxy_platform_list:
+                    for platform in enable_proxy_platform_list:
+                        if platform and platform.strip() in record_url:
+                            proxy_address = proxy_addr
+                            break
 
             if not proxy_address:
                 if extra_enable_proxy_platform_list:
@@ -696,7 +703,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             # print(f'\r全局代理:{global_proxy}')
             while True:
                 try:
-                    port_info = []
+                    port_info = {}
                     if record_url.find("douyin.com/") > -1:
                         platform = '抖音直播'
                         with semaphore:
@@ -1160,7 +1167,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                     if anchor_name:
                         if '主播:' in anchor_name:
-                            anchor_split: list = anchor_name.split('主播:')
+                            anchor_split: list[str] = anchor_name.split('主播:')
                             if len(anchor_split) > 1 and anchor_split[1].strip():
                                 anchor_name = anchor_split[1].strip()
                             else:
@@ -1263,7 +1270,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     if not os.path.exists(full_path):
                                         os.makedirs(full_path)
                                 except Exception as e:
-                                    logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
 
                                 if platform != '自定义录制直播':
                                     if enable_https_recording and real_url.startswith("http://"):
@@ -1419,7 +1426,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             return
 
                                     except subprocess.CalledProcessError as e:
-                                        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                        logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                                         with max_request_lock:
                                             error_count += 1
                                             error_window.append(1)
@@ -1463,7 +1470,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         color_obj.print_colored(
                                             f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制出错,请检查网络\n",
                                             color_obj.RED)
-                                        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                        logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                                         with max_request_lock:
                                             error_count += 1
                                             error_window.append(1)
@@ -1511,7 +1518,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             return
 
                                     except subprocess.CalledProcessError as e:
-                                        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                        logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                                         with max_request_lock:
                                             error_count += 1
                                             error_window.append(1)
@@ -1585,7 +1592,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             return
 
                                     except subprocess.CalledProcessError as e:
-                                        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                        logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                                         with max_request_lock:
                                             error_count += 1
                                             error_window.append(1)
@@ -1632,7 +1639,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             return
 
                                     except subprocess.CalledProcessError as e:
-                                        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                        logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                                         with max_request_lock:
                                             error_count += 1
                                             error_window.append(1)
@@ -1681,7 +1688,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                         except subprocess.CalledProcessError as e:
                                             logger.error(
-                                                f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                                f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                                             with max_request_lock:
                                                 error_count += 1
                                                 error_window.append(1)
@@ -1715,7 +1722,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 return
 
                                         except subprocess.CalledProcessError as e:
-                                            logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                            logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                                             with max_request_lock:
                                                 error_count += 1
                                                 error_window.append(1)
@@ -1723,7 +1730,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 count_time = time.time()
 
                 except Exception as e:
-                    logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
                     with max_request_lock:
                         error_count += 1
                         error_window.append(1)
@@ -1757,7 +1764,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                 if loop_time:
                     print('\r检测直播间中...', end="")
         except Exception as e:
-            logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+            logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
             with max_request_lock:
                 error_count += 1
                 error_window.append(1)
@@ -2072,7 +2079,7 @@ while True:
 
                 line_spilt = line.split('主播: ')
                 if len(line_spilt) > 2:
-                    line = update_file(url_config_file, line, f'{line_spilt[0]}主播: {line_spilt[-1]}')
+                    line = update_file(url_config_file, line, f'{line_spilt[0]}主播: {line_spilt[-1]}') or line
 
                 is_comment_line = line.startswith("#")
                 if is_comment_line:
@@ -2112,13 +2119,13 @@ while True:
 
                 if url_host in PLATFORM_HOST or any(ext in url for ext in (".flv", ".m3u8")):
                     if url_host in CLEAN_URL_HOST_LIST:
-                        url = update_file(url_config_file, old_str=url, new_str=url.split('?')[0])
+                        url = update_file(url_config_file, old_str=url, new_str=url.split('?')[0]) or url
 
                     if 'xiaohongshu' in url:
                         host_id = re.search('&host_id=(.*?)(?=&|$)', url)
                         if host_id:
                             new_url = url.split('?')[0] + f'?host_id={host_id.group(1)}'
-                            url = update_file(url_config_file, old_str=url, new_str=new_url)
+                            url = update_file(url_config_file, old_str=url, new_str=new_url) or url
                     seen_urls.add(url)
                     url_comments = [i for i in url_comments if url not in i]
                     if is_comment_line:
@@ -2169,7 +2176,7 @@ while True:
         first_start = False
 
     except Exception as err:
-        logger.error(f"错误信息: {err} 发生错误的行数: {err.__traceback__.tb_lineno}")
+        logger.error(f"错误信息: {err} 发生错误的行数: {_get_error_line(err)}")
 
     if first_run:
         t = threading.Thread(target=display_info, args=(), daemon=True)

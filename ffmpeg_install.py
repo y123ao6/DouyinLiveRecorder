@@ -88,7 +88,7 @@ def install_ffmpeg_windows():
                             f.write(data)
 
             unzip_file(zip_file_path, execute_dir)
-            os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
+            os.environ['PATH'] = ffmpeg_path + os.pathsep + (current_env_path or "")
             result = subprocess.run(["ffmpeg", "-version"], capture_output=True)
             if result.returncode == 0:
                 logger.debug('ffmpeg installation was successful')

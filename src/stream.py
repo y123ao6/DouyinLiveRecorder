@@ -51,7 +51,7 @@ def get_quality_index(quality) -> tuple:
 
 
 @trace_error_decorator
-async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr: str) -> dict:
+async def get_douyin_stream_url(json_data: dict, video_quality: str | None = None, proxy_addr: str | None = None) -> dict:
     anchor_name = json_data.get('anchor_name')
 
     result = {
@@ -91,7 +91,7 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr:
 
 
 @trace_error_decorator
-async def get_tiktok_stream_url(json_data: dict, video_quality: str, proxy_addr: str) -> dict:
+async def get_tiktok_stream_url(json_data: dict | None, video_quality: str | None = None, proxy_addr: str | None = None) -> dict:
     if not json_data:
         return {"anchor_name": None, "is_live": False}
 
@@ -163,7 +163,7 @@ async def get_tiktok_stream_url(json_data: dict, video_quality: str, proxy_addr:
 
 
 @trace_error_decorator
-async def get_kuaishou_stream_url(json_data: dict, video_quality: str) -> dict:
+async def get_kuaishou_stream_url(json_data: dict, video_quality: str | None = None) -> dict:
     if json_data['type'] == 1 and not json_data["is_live"]:
         return json_data
     live_status = json_data['is_live']
@@ -213,7 +213,7 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str) -> dict:
 
 
 @trace_error_decorator
-async def get_huya_stream_url(json_data: dict, video_quality: str) -> dict:
+async def get_huya_stream_url(json_data: dict, video_quality: str | None = None) -> dict:
     game_live_info = json_data['data'][0]['gameLiveInfo']
     live_title = game_live_info['introduction']
     stream_info_list = json_data['data'][0]['gameStreamInfoList']
@@ -305,7 +305,8 @@ async def get_huya_stream_url(json_data: dict, video_quality: str) -> dict:
 
 
 @trace_error_decorator
-async def get_douyu_stream_url(json_data: dict, video_quality: str, cookies: str, proxy_addr: str) -> dict:
+async def get_douyu_stream_url(json_data: dict, video_quality: str | None = None, cookies: str = '',
+                               proxy_addr: str | None = None) -> dict:
     if not json_data["is_live"]:
         return {"anchor_name": json_data.get("anchor_name"), "is_live": False}
 
@@ -357,7 +358,8 @@ async def get_yy_stream_url(json_data: dict) -> dict:
 
 
 @trace_error_decorator
-async def get_bilibili_stream_url(json_data: dict, video_quality: str, proxy_addr: str, cookies: str) -> dict:
+async def get_bilibili_stream_url(json_data: dict, video_quality: str | None = None,
+                                  proxy_addr: str | None = None, cookies: str = '') -> dict:
     anchor_name = json_data["anchor_name"]
     if not json_data["live_status"]:
         return {
@@ -389,7 +391,7 @@ async def get_bilibili_stream_url(json_data: dict, video_quality: str, proxy_add
 
 
 @trace_error_decorator
-async def get_netease_stream_url(json_data: dict, video_quality: str) -> dict:
+async def get_netease_stream_url(json_data: dict, video_quality: str | None = None) -> dict:
     if not json_data['is_live']:
         return json_data
 
@@ -417,7 +419,7 @@ async def get_netease_stream_url(json_data: dict, video_quality: str) -> dict:
     }
 
 
-async def get_stream_url(json_data: dict, video_quality: str, url_type: str = 'm3u8', spec: bool = False,
+async def get_stream_url(json_data: dict, video_quality: str | None = None, url_type: str = 'm3u8', spec: bool = False,
                          hls_extra_key: str | int = None, flv_extra_key: str | int = None) -> dict:
     if not json_data['is_live']:
         return json_data

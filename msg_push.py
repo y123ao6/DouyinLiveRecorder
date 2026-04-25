@@ -23,7 +23,7 @@ opener = urllib.request.build_opener(no_proxy_handler)
 headers: Dict[str, str] = {'Content-Type': 'application/json'}
 
 
-def dingtalk(url: str, content: str, number: str = None, is_atall: bool = False) -> Dict[str, Any]:
+def dingtalk(url: str, content: str, number: str | None = None, is_atall: bool = False) -> Dict[str, Any]:
     success = []
     error = []
     api_list = url.replace('，', ',').split(',') if url.strip() else []
@@ -84,7 +84,8 @@ def xizhi(url: str, title: str, content: str) -> Dict[str, Any]:
 
 
 def send_email(email_host: str, login_email: str, email_pass: str, sender_email: str, sender_name: str,
-               to_email: str, title: str, content: str, smtp_port: str = None, open_ssl: bool = True) -> Dict[str, Any]:
+               to_email: str, title: str, content: str, smtp_port: str | None = None,
+               open_ssl: bool = True) -> Dict[str, Any]:
     receivers = to_email.replace('，', ',').split(',') if to_email.strip() else []
     smtp_obj = None
 
@@ -92,7 +93,7 @@ def send_email(email_host: str, login_email: str, email_pass: str, sender_email:
         message = MIMEMultipart()
         send_name = base64.b64encode(sender_name.encode("utf-8")).decode()
         message['From'] = f'=?UTF-8?B?{send_name}?= <{sender_email}>'
-        message['Subject'] = Header(title, 'utf-8')
+        message['Subject'] = str(Header(title, 'utf-8'))
         if len(receivers) == 1:
             message['To'] = receivers[0]
 
@@ -100,11 +101,11 @@ def send_email(email_host: str, login_email: str, email_pass: str, sender_email:
         message.attach(t_apart)
 
         if open_ssl:
-            smtp_port = int(smtp_port) or 465
-            smtp_obj = smtplib.SMTP_SSL(email_host, smtp_port)
+            port = int(smtp_port) if smtp_port else 465
+            smtp_obj = smtplib.SMTP_SSL(email_host, port)
         else:
-            smtp_port = int(smtp_port) or 25
-            smtp_obj = smtplib.SMTP(email_host, smtp_port)
+            port = int(smtp_port) if smtp_port else 25
+            smtp_obj = smtplib.SMTP(email_host, port)
         smtp_obj.login(login_email, email_pass)
         smtp_obj.sendmail(sender_email, receivers, message.as_string())
         return {"success": receivers, "error": []}
@@ -176,13 +177,16 @@ def bark(api: str, title: str = "message", content: str = 'test', level: str = "
     return {"success": success, "error": error}
 
 
-def ntfy(api: str, title: str = "message", content: str = 'test', tags: str = 'tada', priority: int = 3,
+def ntfy(api: str, title: str = "message", content: str = 'test', tags: str | list[str] = 'tada', priority: int = 3,
          action_url: str = "", attach: str = "", filename: str = "", click: str = "", icon: str = "",
          delay: str = "", email: str = "", call: str = "") -> Dict[str, Any]:
     success = []
     error = []
     api_list = api.replace('，', ',').split(',') if api.strip() else []
-    tags = tags.replace('，', ',').split(',') if tags else ['partying_face']
+    if isinstance(tags, str):
+        tags = tags.replace('，', ',').split(',') if tags else ['partying_face']
+    elif not tags:
+        tags = ['partying_face']
     actions = [{"action": "view", "label": "view live", "url": action_url}] if action_url else []
     for _api in api_list:
         server, topic = _api.rsplit('/', maxsplit=1)
