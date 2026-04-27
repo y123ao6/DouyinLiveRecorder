@@ -13,6 +13,8 @@ from datetime import datetime
 import pystray
 from PIL import Image, ImageDraw
 
+MAX_LOG_LINES = 5000
+
 
 class SystemTray:
     """系统托盘管理器"""
@@ -85,6 +87,8 @@ class SystemTray:
         if self.icon:
             try:
                 self.icon.notify(message, title)
+            except NotImplementedError:
+                pass
             except Exception:
                 pass
 
@@ -175,6 +179,9 @@ class LiveRecorderGUI:
         self.process_pid = None
         self.output_thread = None
         self.running = False
+        self._process_lock = threading.Lock()
+        self._closing_dialog_open = False
+        self.refresh_job = None
 
         self.system_tray: SystemTray | None = None
         self.tray_thread: threading.Thread | None = None
@@ -335,6 +342,17 @@ class LiveRecorderGUI:
             self._log(f"保存配置文件失败: {e}", "error")
             messagebox.showerror("错误", f"保存配置文件失败: {e}")
 
+    def _auto_save_url_config(self):
+        """静默保存 URL 配置文件（启动录制前自动调用）"""
+        try:
+            content = self.config_text.get(1.0, tk.END).rstrip('\n')
+            if content and not content.endswith('\n'):
+                content += '\n'
+            with open(self.url_config_file, 'w', encoding='utf-8-sig') as f:
+                f.write(content)
+        except Exception:
+            pass
+
     def open_downloads_folder(self):
         """打开下载目录"""
         downloads_path = self.downloads_dir
@@ -358,11 +376,13 @@ class LiveRecorderGUI:
 
     def start_recording(self):
         """开始录制"""
-        if self.process is not None:
-            messagebox.showwarning("警告", "录制已在运行中！")
-            return
+        with self._process_lock:
+            if self.process is not None:
+                messagebox.showwarning("警告", "录制已在运行中！")
+                return
 
         try:
+            self._auto_save_url_config()
             if sys.platform == 'win32':
                 python_exe = os.path.join(self.script_dir, "venv", "Scripts", "python.exe")
                 if not os.path.exists(python_exe):
@@ -372,33 +392,28 @@ class LiveRecorderGUI:
 
             main_py = os.path.join(self.script_dir, "main.py")
 
-            # --- 修改开始 ---
-            # 1. 定义启动参数
             startupinfo = None
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+
             if sys.platform == 'win32':
-                # 2. 关键设置：告诉 Windows 不要为这个子进程创建控制台窗口
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = subprocess.SW_HIDE
-                env = os.environ.copy()
-                env['PYTHONIOENCODING'] = 'utf-8'  # <--- 新增：设置环境变量，确保子进程使用 utf-8 编码
 
             self.process = subprocess.Popen(
                 [python_exe, main_py],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                # encoding=locale.getpreferredencoding(False),
-                encoding='utf-8',  # <--- 修改：强制使用 utf-8
+                encoding='utf-8',
                 errors='replace',
                 bufsize=1,
                 cwd=self.script_dir,
-                # 3. 传入参数
-                env=env,           # <--- 新增：传入环境变量
+                env=env,
                 startupinfo=startupinfo,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0 
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             )
-            # --- 修改结束 ---
 
             self.process_pid = self.process.pid
             self.running = True
@@ -423,25 +438,26 @@ class LiveRecorderGUI:
 
     def stop_recording(self):
         """停止录制"""
-        if self.process is None:
-            messagebox.showwarning("警告", "没有正在运行的录制进程！")
-            return
+        with self._process_lock:
+            if self.process is None:
+                messagebox.showwarning("警告", "没有正在运行的录制进程！")
+                return
+            current_process = self.process
+            self.process = None
+            self.process_pid = None
+            self.running = False
 
         try:
             self._log("=" * 50)
             self._log(f"[{self._get_timestamp()}] 正在停止录制...")
 
-            self.process.terminate()
+            current_process.terminate()
 
             try:
-                self.process.wait(timeout=3)
+                current_process.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                current_process.kill()
                 self._log("进程已强制终止")
-
-            self.running = False
-            self.process = None
-            self.process_pid = None
 
             self.start_btn.state(['!disabled'])
             self.stop_btn.state(['disabled'])
@@ -460,11 +476,13 @@ class LiveRecorderGUI:
         """读取子进程输出"""
         while self.running and self.process:
             try:
-                if not self.process.stdout:
+                with self._process_lock:
+                    current_process = self.process
+                if not current_process or not current_process.stdout:
                     break
-                line = self.process.stdout.readline()
+                line = current_process.stdout.readline()
                 if not line:
-                    if self.process.poll() is not None:
+                    if current_process.poll() is not None:
                         self.root.after(0, self._process_ended)
                         break
                     continue
@@ -479,9 +497,13 @@ class LiveRecorderGUI:
 
     def _process_ended(self):
         """子进程结束回调"""
-        self.running = False
-        self.process = None
-        self.process_pid = None
+        with self._process_lock:
+            if self.process is None:
+                return
+            self.process = None
+            self.process_pid = None
+            self.running = False
+
         self.start_btn.state(['!disabled'])
         self.stop_btn.state(['disabled'])
 
@@ -504,6 +526,11 @@ class LiveRecorderGUI:
             tag = "normal"
 
         self.log_text.insert(tk.END, display_text, tag)
+
+        line_count = int(self.log_text.index('end-1c').split('.')[0])
+        if line_count > MAX_LOG_LINES:
+            self.log_text.delete(1.0, f"{line_count - MAX_LOG_LINES}.0")
+
         self.log_text.see(tk.END)
         self.log_text.tag_config("error", foreground="#ff5555")
 
@@ -545,12 +572,19 @@ class LiveRecorderGUI:
         if self.system_tray:
             self.system_tray.stop()
 
+        if self.refresh_job is not None:
+            self.root.after_cancel(self.refresh_job)
+            self.refresh_job = None
+
         self.root.quit()
         self.root.destroy()
-        sys.exit(0)
 
     def on_closing(self):
         """窗口关闭事件处理"""
+        if self._closing_dialog_open:
+            return
+        self._closing_dialog_open = True
+
         dialog = tk.Toplevel(self.root)
         dialog.title("关闭选项")
         dialog.geometry("300x120")
@@ -569,10 +603,12 @@ class LiveRecorderGUI:
         btn_frame.pack(pady=10)
 
         def minimize_to_tray_and_close():
+            self._closing_dialog_open = False
             self.minimize_to_tray()
             dialog.destroy()
 
         def quit_and_close():
+            self._closing_dialog_open = False
             dialog.destroy()
             self.quit_application()
 
@@ -581,6 +617,8 @@ class LiveRecorderGUI:
 
         tk.Button(btn_frame, text="❌ 彻底退出", command=quit_and_close,
                   width=15, bg="#d32f2f", fg="white", font=("Arial", 10)).grid(row=0, column=1, padx=5)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: (setattr(self, '_closing_dialog_open', False), dialog.destroy()))
 
 
 def main():
@@ -592,7 +630,7 @@ def main():
     app.tray_thread = threading.Thread(target=app.system_tray.run, daemon=True)
     app.tray_thread.start()
 
-    app._update_status_bar()
+    app._schedule_status_refresh()
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 

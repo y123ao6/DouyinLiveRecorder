@@ -7,76 +7,81 @@ from ..logger import logger
 OptionalStr = str | None
 OptionalDict = Dict[str, Any] | None
 
-# 全局连接池配置，提高 HTTP 请求性能
 _httpx_limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+
 
 async def async_req(
         url: str,
         proxy_addr: OptionalStr = None,
         headers: OptionalDict = None,
-        data: dict | bytes | None = None,
+        data: Any = None,
         json_data: dict | list | None = None,
         timeout: int = 20,
         redirect_url: bool = False,
         return_cookies: bool = False,
         include_cookies: bool = False,
-        abroad: bool = False,
-        content_encoding: str = 'utf-8',
         verify: bool = False,
         http2: bool = True
-) -> OptionalDict | OptionalStr | tuple:
+) -> str | dict[str, str] | tuple[str, dict[str, str]]:
     if headers is None:
         headers = {}
+    proxy_addr = utils.handle_proxy_addr(proxy_addr)
+    
     try:
-        proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        if data or json_data:
-            # async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify, http2=http2) as client:
-            async with httpx.AsyncClient(
-                proxy=proxy_addr,
-                timeout=timeout,
-                verify=verify,
-                http2=http2,
-                limits=_httpx_limits
-            ) as client:
-                response = await client.post(url, data=data, json=json_data, headers=headers)
-        else:
-            # async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify, http2=http2) as client:
-            async with httpx.AsyncClient(
-                proxy=proxy_addr,
-                timeout=timeout,
-                verify=verify,
-                http2=http2,
-                limits=_httpx_limits
-            ) as client:
-                response = await client.get(url, headers=headers, follow_redirects=True)
-
-        if redirect_url:
-            return str(response.url)
-        elif return_cookies:
-            cookies_dict = {name: value for name, value in response.cookies.items()}
-            return (response.text, cookies_dict) if include_cookies else cookies_dict
-        else:
-            resp_str = response.text
-    except Exception as e:
-        resp_str = str(e)
-
-    return resp_str
-
-
-async def get_response_status(url: str, proxy_addr: OptionalStr = None, headers: OptionalDict = None,
-                              timeout: int = 10, abroad: bool = False, verify: bool = False, http2=False) -> bool:
-
-    try:
-        proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        #async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify) as client:
         async with httpx.AsyncClient(
             proxy=proxy_addr,
             timeout=timeout,
             verify=verify,
+            http2=http2,
+            limits=_httpx_limits
+        ) as client:
+            if data or json_data:
+                response = await client.post(
+                    url, 
+                    data=data, 
+                    json=json_data, 
+                    headers=headers,
+                    follow_redirects=True
+                )
+            else:
+                response = await client.get(url, headers=headers, follow_redirects=True)
+            
+            response.raise_for_status()
+
+            if redirect_url:
+                return str(response.url)
+            elif return_cookies:
+                cookies_dict = {name: value for name, value in response.cookies.items()}
+                return (response.text, cookies_dict) if include_cookies else cookies_dict
+            else:
+                return response.text
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP status error for {url}: {e.response.status_code} - {e}")
+        raise
+    except httpx.RequestError as e:
+        logger.error(f"Request error for {url}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error for {url}: {e}")
+        raise
+
+
+async def get_response_status(url: str, proxy_addr: OptionalStr = None, headers: OptionalDict = None,
+                              timeout: int = 10, verify: bool = False, http2: bool = False) -> bool:
+
+    try:
+        proxy_addr = utils.handle_proxy_addr(proxy_addr)
+        async with httpx.AsyncClient(
+            proxy=proxy_addr,
+            timeout=timeout,
+            verify=verify,
+            http2=http2,
             limits=_httpx_limits
         ) as client:
             response = await client.head(url, headers=headers, follow_redirects=True)
-            return response.status_code == 200
+            return 200 <= response.status_code < 300
+    except httpx.HTTPError as e:
+        logger.debug(f"HTTP error checking {url}: {e}")
     except Exception as e:
-        logger.debug(e)
+        logger.debug(f"Error checking {url}: {e}")
     return False

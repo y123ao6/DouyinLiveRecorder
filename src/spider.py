@@ -9,34 +9,73 @@ Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
 Function: Get live stream data.
 """
 
+import asyncio
 import hashlib
 import random
-import subprocess
 import time
 import uuid
+import base64
 from operator import itemgetter
 import urllib.parse
-import urllib.error
 from typing import List
 import httpx
-import ssl
 import re
 import json
 import execjs
 import urllib.request
 from . import JS_SCRIPT_PATH, utils
 from .utils import trace_error_decorator, generate_random_string
-from .logger import script_path
+from .logger import script_path, logger
 from .room import get_sec_user_id, get_unique_id, UnsupportedUrlError
 from .http_clients.async_http import async_req
 from .ab_sign import ab_sign
 
 
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
 OptionalStr = str | None
 OptionalDict = dict | None
+
+
+def _get_str_from_response(resp) -> str:
+    """从 async_req 的返回值中安全获取字符串"""
+    if isinstance(resp, tuple):
+        return resp[0]
+    if isinstance(resp, dict):
+        return str(resp)
+    return resp
+
+
+def _safe_json_loads(resp):
+    """安全处理 async_req 的返回值并 json.loads"""
+    json_str = _get_str_from_response(resp)
+    return json.loads(json_str)
+
+
+def _safe_re_search(pattern, resp, flags=0):
+    """安全执行 re.search，先确保 resp 是字符串"""
+    str_val = _get_str_from_response(resp)
+    return re.search(pattern, str_val, flags)
+
+
+def _safe_re_findall(pattern, resp, flags=0):
+    """安全执行 re.findall，先确保 resp 是字符串"""
+    str_val = _get_str_from_response(resp)
+    return re.findall(pattern, str_val, flags)
+
+
+def _safe_get_cookies_dict(resp):
+    """安全获取 cookies dict"""
+    if isinstance(resp, dict):
+        return resp
+    if isinstance(resp, tuple) and len(resp) > 1 and isinstance(resp[1], dict):
+        return resp[1]
+    return {}
+
+_TIKTOK_REGION_BLOCKED = "We regret to inform you that we have discontinued operating TikTok"
+_UNEXPECTED_EOF = 'UNEXPECTED_EOF_WHILE_READING'
+_HTTP_ERROR_400 = 'HTTP Error 400'
+_HTTP_ERROR_400_BAD_REQUEST = 'HTTP Error 400: Bad Request'
+_HTTP_403_FORBIDDEN = '403: Forbidden'
+_NOT_FOUND = 'Not Found'
 
 
 def get_params(url: str, params: str) -> OptionalStr:
@@ -45,27 +84,32 @@ def get_params(url: str, params: str) -> OptionalStr:
 
     if params in query_params:
         return query_params[params][0]
+    return None
 
 
-async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: OptionalDict = None,
-                            abroad: bool = False) -> List[str]:
-    resp = await async_req(url=m3u8, proxy_addr=proxy, headers=header, abroad=abroad)
+@trace_error_decorator
+async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: OptionalDict = None, **kwargs) -> List[str]:
+    resp = await async_req(url=m3u8, proxy_addr=proxy, headers=header)
+    # 确保 resp 是字符串类型
+    resp_str = _get_str_from_response(resp)
     play_url_list = []
-    for i in resp.split('\n'):
+    for i in resp_str.split('\n'):
         if i.startswith('https://'):
             play_url_list.append(i.strip())
     if not play_url_list:
-        for i in resp.split('\n'):
+        for i in resp_str.split('\n'):
             if i.strip().endswith('m3u8'):
                 play_url_list.append(i.strip())
     bandwidth_pattern = re.compile(r'BANDWIDTH=(\d+)')
-    bandwidth_list = bandwidth_pattern.findall(resp)
-    url_to_bandwidth = {url: int(bandwidth) for bandwidth, url in zip(bandwidth_list, play_url_list)}
-    play_url_list = sorted(play_url_list, key=lambda url: url_to_bandwidth[url], reverse=True)
+    bandwidth_list = bandwidth_pattern.findall(resp_str)
+    if bandwidth_list and len(bandwidth_list) == len(play_url_list):
+        url_to_bandwidth = {url: int(bandwidth) for bandwidth, url in zip(bandwidth_list, play_url_list)}
+        play_url_list = sorted(play_url_list, key=lambda url: url_to_bandwidth.get(url, 0), reverse=True)
     return play_url_list
 
 
-async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
+@trace_error_decorator
+async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
     headers = {
         'cookie': 'ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
                   '%7Cab35197d5cfb21df6cbb2fa7ef1c9262206b062c315b9d04da746d0b37dfbc7d',
@@ -99,7 +143,7 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
             json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
             if not json_str:
                 raise Exception("it triggered risk control")
-            json_data = json.loads(json_str)['data']
+            json_data = _safe_json_loads(json_str)['data']
             if not json_data['data']:
                 raise Exception(f"{url} VR live is not supported")
             room_data = json_data['data'][0]
@@ -121,7 +165,7 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     json_str = pull_datas[key]['stream_data']
                 else:
                     json_str = live_core_sdk_data['pull_data']['stream_data']
-                json_data = json.loads(json_str)
+                json_data = _safe_json_loads(json_str)
                 if 'origin' in json_data['data']:
                     stream_data = live_core_sdk_data['pull_data']['stream_data']
                     origin_data = json.loads(stream_data)['data']['origin']['main']
@@ -136,7 +180,9 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     room_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
                     room_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
     except Exception as e:
-        print(f"Error message: {e} Error line: {e.__traceback__.tb_lineno}")
+        tb = e.__traceback__
+        error_line = tb.tb_lineno if tb else -1
+        logger.error(f"Error message: {e} Error line: {error_line}")
         room_data = {'anchor_name': ""}
     return room_data
 
@@ -170,7 +216,7 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
             json_str2 = await async_req(url=api2, proxy_addr=proxy_addr, headers=headers)
             if not json_str2:
                 raise Exception("it triggered risk control")
-            json_data2 = json.loads(json_str2)['data']
+            json_data2 = _safe_json_loads(json_str2)['data']
             if not json_data2.get('room'):
                 raise Exception(f"{url} VR live is not supported")
             room_data2 = json_data2['room']
@@ -186,8 +232,11 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
         else:
             try:
                 data = await get_sec_user_id(url, proxy_addr=proxy_addr)
-                _room_id, _sec_uid = data
-                room_data = await get_app_data(_room_id, _sec_uid)
+                if data:
+                    _room_id, _sec_uid = data
+                    room_data = await get_app_data(_room_id, _sec_uid)
+                else:
+                    raise UnsupportedUrlError("Failed to get sec_user_id")
             except UnsupportedUrlError:
                 unique_id = await get_unique_id(url, proxy_addr=proxy_addr)
                 return await get_douyin_stream_data(f'https://live.douyin.com/{unique_id}')
@@ -206,7 +255,7 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     json_str = pull_datas[key]['stream_data']
                 else:
                     json_str = live_core_sdk_data['pull_data']['stream_data']
-                json_data = json.loads(json_str)
+                json_data = _safe_json_loads(json_str)
                 if 'origin' in json_data['data']:
                     stream_data = live_core_sdk_data['pull_data']['stream_data']
                     origin_data = json.loads(stream_data)['data']['origin']['main']
@@ -221,7 +270,9 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     room_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
                     room_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
     except Exception as e:
-        print(f"Error message: {e} Error line: {e.__traceback__.tb_lineno}")
+        tb = e.__traceback__
+        error_line = tb.tb_lineno if tb else -1
+        logger.error(f"Error message: {e} Error line: {error_line}")
         room_data = {'anchor_name': ""}
     return room_data
 
@@ -240,20 +291,28 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
     try:
         origin_url_list = None
         html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
-        match_json_str = re.search(r'(\{\\"state\\":.*?)]\\n"]\)', html_str)
+        match_json_str = _safe_re_search(r'(\{\\"state\\":.*?)]\\n"]\)', html_str)
         if not match_json_str:
-            match_json_str = re.search(r'(\{\\"common\\":.*?)]\\n"]\)</script><div hidden', html_str)
+            match_json_str = _safe_re_search(r'(\{\\"common\\":.*?)]\\n"]\)</script><div hidden', html_str)
+        if not match_json_str:
+            raise AttributeError("Could not find JSON data in page")
         json_str = match_json_str.group(1)
         cleaned_string = json_str.replace('\\', '').replace(r'u0026', r'&')
-        room_store = re.search('"roomStore":(.*?),"linkmicStore"', cleaned_string, re.DOTALL).group(1)
-        anchor_name = re.search('"nickname":"(.*?)","avatar_thumb', room_store, re.DOTALL).group(1)
+        room_store_match = re.search('"roomStore":(.*?),"linkmicStore"', cleaned_string, re.DOTALL)
+        if not room_store_match:
+            raise AttributeError("Could not find roomStore")
+        room_store = room_store_match.group(1)
+        anchor_name_match = re.search('"nickname":"(.*?)","avatar_thumb', room_store, re.DOTALL)
+        if not anchor_name_match:
+            raise AttributeError("Could not find anchor name")
+        anchor_name = anchor_name_match.group(1)
         room_store = room_store.split(',"has_commerce_goods"')[0] + '}}}'
         json_data = json.loads(room_store)['roomInfo']['room']
         json_data['anchor_name'] = anchor_name
         if 'status' in json_data and json_data['status'] == 4:
             return json_data
         stream_orientation = json_data['stream_url']['stream_orientation']
-        match_json_str2 = re.findall(r'"(\{\\"common\\":.*?)"]\)</script><script nonce=', html_str)
+        match_json_str2 = _safe_re_findall(r'"(\{\\"common\\":.*?)"]\)</script><script nonce=', html_str)
         if match_json_str2:
             json_str = match_json_str2[0] if stream_orientation == 1 else match_json_str2[1]
             json_data2 = json.loads(
@@ -262,6 +321,7 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
                 origin_url_list = json_data2['data']['origin']['main']
 
         else:
+            html_str = _get_str_from_response(html_str)
             html_str = html_str.replace('\\', '').replace('u0026', '&')
             match_json_str3 = re.search('"origin":\\{"main":(.*?),"dash"', html_str, re.DOTALL)
             if match_json_str3:
@@ -278,7 +338,7 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
         return json_data
 
     except Exception as e:
-        print(f"First data retrieval failed: {url} Preparing to switch parsing methods due to {e}")
+        logger.warning(f"First data retrieval failed: {url} Preparing to switch parsing methods due to {e}")
         return await get_douyin_app_stream_data(url=url, proxy_addr=proxy_addr, cookies=cookies)
 
 
@@ -293,23 +353,29 @@ async def get_tiktok_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
     }
 
     for i in range(3):
-        html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers, abroad=True, http2=False)
-        time.sleep(1)
-        if "We regret to inform you that we have discontinued operating TikTok" in html_str:
+        html_str = _get_str_from_response(
+            await async_req(url=url, proxy_addr=proxy_addr, headers=headers, http2=False)
+        )
+        await asyncio.sleep(1)
+        if _TIKTOK_REGION_BLOCKED in html_str:
             msg = re.search('<p>\n\\s+(We regret to inform you that we have discontinu.*?)\\.\n\\s+</p>', html_str)
             raise ConnectionError(
                 "Your proxy node's regional network is blocked from accessing TikTok; please switch to a node in "
                 f"another region to access. {msg.group(1) if msg else ''}"
             )
-        if 'UNEXPECTED_EOF_WHILE_READING' not in html_str:
+        if _UNEXPECTED_EOF not in html_str:
             try:
-                json_str = re.findall(
+                json_match_list = re.findall(
                     '<script id="SIGI_STATE" type="application/json">(.*?)</script>',
-                    html_str, re.DOTALL)[0]
+                    html_str, re.DOTALL)
+                if not json_match_list:
+                    raise ConnectionError("Please check if your network can access the TikTok website normally")
+                json_str = json_match_list[0]
             except Exception:
                 raise ConnectionError("Please check if your network can access the TikTok website normally")
-            json_data = json.loads(json_str)
+            json_data = _safe_json_loads(json_str)
             return json_data
+    raise ConnectionError("Failed to retrieve TikTok data after 3 attempts due to network issues")
 
 
 @trace_error_decorator
@@ -321,28 +387,35 @@ async def get_kuaishou_stream_data(url: str, proxy_addr: OptionalStr = None, coo
     if cookies:
         headers['Cookie'] = cookies
     try:
-        html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
+        html_str = _get_str_from_response(
+            await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
+        )
     except Exception as e:
-        print(f"Failed to fetch data from {url}.{e}")
+        logger.error(f"Failed to fetch data from {url}.{e}")
         return {"type": 1, "is_live": False}
 
     try:
-        json_str = re.search('<script>window.__INITIAL_STATE__=(.*?);\\(function\\(\\)\\{var s;', html_str).group(1)
-        play_list = re.findall('(\\{"liveStream".*?),"gameInfo', json_str)[0] + "}"
-        play_list = json.loads(play_list)
+        match_obj = re.search('<script>window.__INITIAL_STATE__=(.*?);\\(function\\(\\)\\{var s;', html_str)
+        if not match_obj:
+            raise AttributeError("No match found")
+        json_str = match_obj.group(1)
+        play_list_match = re.findall('(\\{"liveStream".*?),"gameInfo', json_str)
+        if not play_list_match:
+            raise IndexError("No play list match found")
+        play_list = json.loads(play_list_match[0] + "}")
     except (AttributeError, IndexError, json.JSONDecodeError) as e:
-        print(f"Failed to parse JSON data from {url}. Error: {e}")
+        logger.error(f"Failed to parse JSON data from {url}. Error: {e}")
         return {"type": 1, "is_live": False}
 
     result = {"type": 2, "is_live": False}
 
     if 'errorType' in play_list or 'liveStream' not in play_list:
         error_msg = play_list['errorType']['title'] + play_list['errorType']['content']
-        print(f"Failed URL: {url} Error message: {error_msg}")
+        logger.error(f"Failed URL: {url} Error message: {error_msg}")
         return result
 
     if not play_list.get('liveStream'):
-        print("IP banned. Please change device or network.")
+        logger.warning("IP banned. Please change device or network.")
         return result
 
     anchor_name = play_list['author'].get('name', '')
@@ -354,8 +427,13 @@ async def get_kuaishou_stream_data(url: str, proxy_addr: OptionalStr = None, coo
                 return result
             play_url_list = play_list['liveStream']['playUrls']['h264']['adaptationSet']['representation']
         else:
-            # TODO: Old version which not working at 20241128, could be removed if not working confirmed
-            play_url_list = play_list['liveStream']['playUrls'][0]['adaptationSet']['representation']
+            play_url_list = play_list['liveStream']['playUrls']
+            if isinstance(play_url_list, dict):
+                play_url_list = list(play_url_list.values())
+            if play_url_list:
+                play_url_list = play_url_list[0]['adaptationSet']['representation']
+            else:
+                return result
         result.update({"flv_url_list": play_url_list, "is_live": True})
 
     return result
@@ -377,7 +455,7 @@ async def get_kuaishou_stream_data2(url: str, proxy_addr: OptionalStr = None, co
         data = {"source": 5, "eid": eid, "shareMethod": "card", "clientType": "WEB_OUTSIDE_SHARE_H5"}
         app_api = 'https://livev.m.chenzhongtech.com/rest/k/live/byUser?kpn=GAME_ZONE&captchaToken='
         json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers, data=data)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         live_stream = json_data['liveStream']
         anchor_name = live_stream['user']['user_name']
         result = {
@@ -400,7 +478,7 @@ async def get_kuaishou_stream_data2(url: str, proxy_addr: OptionalStr = None, co
         if result['anchor_name']:
             return result
     except Exception as e:
-        print(f"{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.")
+        logger.warning(f"{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.")
     return await get_kuaishou_stream_data(url, cookies=cookies, proxy_addr=proxy_addr)
 
 
@@ -416,7 +494,10 @@ async def get_huya_stream_data(url: str, proxy_addr: OptionalStr = None, cookies
         headers['Cookie'] = cookies
 
     html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
-    json_str = re.findall('stream: (\\{"data".*?),"iWebDefaultBitRate"', html_str)[0]
+    match_result = _safe_re_findall('stream: (\\{"data".*?),"iWebDefaultBitRate"', html_str)
+    if not match_result:
+        raise RuntimeError(f"Failed to parse Huya stream data from {url}")
+    json_str = match_result[0]
     json_data = json.loads(json_str + '}')
     return json_data
 
@@ -436,7 +517,7 @@ async def get_huya_app_stream_url(url: str, proxy_addr: OptionalStr = None, cook
 
     if any(char.isalpha() for char in room_id):
         html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
-        room_id = re.search('ProfileRoom":(.*?),"sPrivateHost', html_str)
+        room_id = _safe_re_search('ProfileRoom":(.*?),"sPrivateHost', html_str)
         if room_id:
             room_id = room_id.group(1)
         else:
@@ -450,7 +531,7 @@ async def get_huya_app_stream_url(url: str, proxy_addr: OptionalStr = None, cook
     }
     wx_app_api = f'https://mp.huya.com/cache.php?{urllib.parse.urlencode(params)}'
     json_str = await async_req(url=wx_app_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['data']['profileInfo']['nick']
     live_status = json_data['data']['realLiveStatus']
     live_title = json_data['data']['liveData']['introduction']
@@ -521,6 +602,7 @@ def md5(data) -> str:
     return hashlib.md5(data.encode('utf-8')).hexdigest()
 
 
+@trace_error_decorator
 async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> dict:
     try:
         key_url = f'https://www.douyu.com/wgapi/livenc/liveweb/websec/getEncryption?did={did}'
@@ -530,7 +612,7 @@ async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> di
             'Referer': f'https://www.douyu.com/{rid}'
         }
         json_str = await async_req(url=key_url, proxy_addr=proxy_addr, headers=headers)
-        key_data = json.loads(json_str)
+        key_data = _safe_json_loads(json_str)
         if key_data.get('error') != 0:
             return {}
         enc_key = key_data['data']
@@ -550,7 +632,7 @@ async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> di
             'auth': auth
         }
     except Exception as e:
-        print(f"Get douyu sign params error: {e}")
+        logger.error(f"Get douyu sign params error: {e}")
         return {}
 
 
@@ -568,16 +650,19 @@ async def get_douyu_info_data(url: str, proxy_addr: OptionalStr = None, cookies:
     if match_rid:
         rid = match_rid.group(1)
     else:
-        rid = re.search('douyu.com/(.*?)(?=\\?|$)', url).group(1)
+        rid_match = re.search('douyu.com/(.*?)(?=\\?|$)', url)
+        if not rid_match:
+            return {"anchor_name": '', "is_live": False}
+        rid = rid_match.group(1)
         html_str = await async_req(url=f'https://m.douyu.com/{rid}', proxy_addr=proxy_addr, headers=headers)
-        json_str = re.findall('<script id="vike_pageContext" type="application/json">(.*?)</script>', html_str)[0]
-        json_data = json.loads(json_str)
+        json_str = _safe_re_findall('<script id="vike_pageContext" type="application/json">(.*?)</script>', html_str)[0]
+        json_data = _safe_json_loads(json_str)
         rid = json_data['pageProps']['room']['roomInfo']['roomInfo']['rid']
 
     headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
     url2 = f'https://www.douyu.com/betard/{rid}'
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     result = {
         "anchor_name": json_data['room']['nickname'],
         "is_live": False
@@ -614,7 +699,7 @@ async def get_douyu_stream_data(rid: str, rate: str = '-1', proxy_addr: Optional
     )
     app_api = f'https://www.douyu.com/lapi/live/getH5PlayV1/{rid}'
     json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers, data=post_data)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     return json_data
 
 
@@ -630,8 +715,12 @@ async def get_yy_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: 
         headers['Cookie'] = cookies
 
     html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
-    anchor_name = re.search('nick: "(.*?)",\n\\s+logo', html_str).group(1)
-    cid = re.search('sid : "(.*?)",\n\\s+ssid', html_str, re.DOTALL).group(1)
+    anchor_match = _safe_re_search('nick: "(.*?)",\n\\s+logo', html_str)
+    cid_match = _safe_re_search('sid : "(.*?)",\n\\s+ssid', html_str, re.DOTALL)
+    if not anchor_match or not cid_match:
+        raise RuntimeError(f"Failed to parse YY stream data from {url}")
+    anchor_name = anchor_match.group(1)
+    cid = cid_match.group(1)
 
     data = '{"head":{"seq":1701869217590,"appidstr":"0","bidstr":"121","cidstr":"' + cid + '","sidstr":"' + cid + '","uid64":0,"client_type":108,"client_ver":"5.17.0","stream_sys_ver":1,"app":"yylive_web","playersdk_ver":"5.17.0","thundersdk_ver":"0","streamsdk_ver":"5.17.0"},"client_attribute":{"client":"web","model":"web0","cpu":"","graphics_card":"","os":"chrome","osversion":"0","vsdk_version":"","app_identify":"","app_version":"","business":"","width":"1920","height":"1080","scale":"","client_type":8,"h265":0},"avp_parameter":{"version":1,"client_type":8,"service_type":0,"imsi":0,"send_time":1701869217,"line_seq":-1,"gear":4,"ssl":1,"stream_format":0}}'
     data_bytes = data.encode('utf-8')
@@ -645,7 +734,7 @@ async def get_yy_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: 
     }
     url2 = f'https://stream-manager.yy.com/v3/channel/streams?{urllib.parse.urlencode(params)}'
     json_str = await async_req(url=url2, data=data_bytes, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     json_data['anchor_name'] = anchor_name
 
     params = {
@@ -656,7 +745,7 @@ async def get_yy_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: 
     }
     detail_api = f'https://www.yy.com/live/detail?{urllib.parse.urlencode(params)}'
     json_str2 = await async_req(detail_api, proxy_addr=proxy_addr, headers=headers)
-    json_data2 = json.loads(json_str2)
+    json_data2 = _safe_json_loads(json_str2)
     json_data['title'] = json_data2['data']['roomName']
     return json_data
 
@@ -677,7 +766,7 @@ async def get_bilibili_room_info_h5(url: str, proxy_addr: OptionalStr = None, co
     room_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
     api = f'https://api.live.bilibili.com/xlive/web-room/v1/index/getH5InfoByRoom?room_id={room_id}'
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    room_info = json.loads(json_str)
+    room_info = _safe_json_loads(json_str)
     title = room_info['data']['room_info'].get('title') if room_info.get('data') else ''
     return title
 
@@ -696,19 +785,19 @@ async def get_bilibili_room_info(url: str, proxy_addr: OptionalStr = None, cooki
         room_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
         json_str = await async_req(f'https://api.live.bilibili.com/room/v1/Room/room_init?id={room_id}',
                            proxy_addr=proxy_addr, headers=headers)
-        room_info = json.loads(json_str)
+        room_info = _safe_json_loads(json_str)
         uid = room_info['data']['uid']
         live_status = True if room_info['data']['live_status'] == 1 else False
 
         api = f'https://api.live.bilibili.com/live_user/v1/Master/info?uid={uid}'
         json_str2 = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
-        anchor_info = json.loads(json_str2)
+        anchor_info = _safe_json_loads(json_str2)
         anchor_name = anchor_info['data']['info']['uname']
 
         title = await get_bilibili_room_info_h5(url, proxy_addr, cookies)
         return {"anchor_name": anchor_name, "live_status": live_status, "room_url": url, "title": title}
     except Exception as e:
-        print(e)
+        logger.error(str(e))
         return {"anchor_name": '', "live_status": False, "room_url": url}
 
 
@@ -732,12 +821,15 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
     }
     play_api = f'https://api.live.bilibili.com/room/v1/Room/playUrl?{urllib.parse.urlencode(params)}'
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
-    if json_data and json_data['code'] == 0:
-        for i in json_data['data']['durl']:
-            if 'd1--cn-gotcha' in i['url']:
-                return i['url']
-        return json_data['data']['durl'][-1]['url']
+    json_data = _safe_json_loads(json_str)
+    if json_data and json_data.get('code') == 0:
+        durl_list = json_data.get('data', {}).get('durl', [])
+        if durl_list:
+            for i in durl_list:
+                if 'd1--cn-gotcha' in i['url']:
+                    return i['url']
+            return durl_list[-1]['url']
+        return ''
     else:
         params = {
             "room_id": room_id,
@@ -755,9 +847,9 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         # 此接口因网页上有限制, 需要配置登录后的cookie才能获取最高画质
         api = f'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?{urllib.parse.urlencode(params)}'
         json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         if json_data['data']['live_status'] == 0:
-            print("The anchor did not start broadcasting.")
+            logger.info("The anchor did not start broadcasting.")
             return
         playurl_info = json_data['data']['playurl_info']
         format_list = playurl_info['playurl']['stream'][0]['format']
@@ -773,6 +865,7 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         extra = stream_data['url_info'][0]['extra']
         m3u8_url = host + base_url + extra
         return m3u8_url
+    return ''
 
 @trace_error_decorator
 async def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
@@ -785,44 +878,51 @@ async def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: 
         headers['Cookie'] = cookies
 
     if "xhslink.com" in url:
-        url = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+        url = _get_str_from_response(await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True))
 
     host_id = get_params(url, "host_id")
     user_id = re.search("/user/profile/(.*?)(?=/|\\?|$)", url)
     user_id = user_id.group(1) if user_id else host_id
     result = {"anchor_name": '', "is_live": False}
     html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
-    match_data = re.search("<script>window.__INITIAL_STATE__=(.*?)</script>", html_str)
+    match_data = _safe_re_search("<script>window.__INITIAL_STATE__=(.*?)</script>", html_str)
 
     if match_data:
         json_str = match_data.group(1).replace("undefined", "null")
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
 
         if json_data.get("liveStream"):
             stream_data = json_data["liveStream"]
             if stream_data.get("liveStatus") == "success":
                 room_info = stream_data["roomData"]["roomInfo"]
                 title = room_info.get("roomTitle")
+                live_link = None
+                anchor_name = None
+                flv_url = None
+                m3u8_url = None
                 if title and "回放" not in title:
                     live_link = room_info["deeplink"]
+                if live_link:
                     anchor_name = get_params(live_link, "host_nickname")
                     flv_url = get_params(live_link, "flvUrl")
-                    room_id = flv_url.split('live/')[1].split('.')[0]
-                    flv_url = f"http://live-source-play.xhscdn.com/live/{room_id}.flv"
-                    m3u8_url = flv_url.replace('.flv', '.m3u8')
-                    result |= {
-                        "anchor_name": anchor_name,
-                        "is_live": True,
-                        "title": title,
-                        "flv_url": flv_url,
-                        "m3u8_url": m3u8_url,
-                        'record_url': flv_url
-                    }
-                    return result
+                    if flv_url and 'live/' in flv_url:
+                        room_id = flv_url.split('live/')[1].split('.')[0]
+                        flv_url = f"http://live-source-play.xhscdn.com/live/{room_id}.flv"
+                        m3u8_url = flv_url.replace('.flv', '.m3u8')
+                    if flv_url:
+                        result |= {
+                            "anchor_name": anchor_name,
+                            "is_live": True,
+                            "title": title,
+                            "flv_url": flv_url,
+                            "m3u8_url": m3u8_url,
+                            'record_url': flv_url
+                        }
+                        return result
 
     profile_url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
     html_str = await async_req(profile_url, proxy_addr=proxy_addr, headers=headers)
-    anchor_name = re.search("<title>@(.*?) 的个人主页</title>", html_str)
+    anchor_name = _safe_re_search("<title>@(.*?) 的个人主页</title>", html_str)
     if anchor_name:
         result["anchor_name"] = anchor_name.group(1)
 
@@ -842,10 +942,12 @@ async def get_bigo_stream_url(url: str, proxy_addr: OptionalStr = None, cookies:
 
     if 'bigo.tv' not in url:
         html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
-        web_url = re.search(
+        web_url = _safe_re_search(
             '<meta data-n-head="ssr" data-hid="al:web:url" property="al:web:url" content="(.*?)">',
-            html_str).group(1)
-        room_id = web_url.split('&amp;h=')[-1]
+            html_str)
+        if not web_url:
+            raise RuntimeError("Failed to parse Bigo stream URL")
+        room_id = web_url.group(1).split('&amp;h=')[-1]
     else:
         if '&h=' in url:
             room_id = url.split('&h=')[-1]
@@ -855,7 +957,7 @@ async def get_bigo_stream_url(url: str, proxy_addr: OptionalStr = None, cookies:
     data = {'siteId': room_id}  # roomId
     url2 = 'https://ta.bigo.tv/official_website/studio/getInternalStudioInfo'
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['data']['nick_name']
     live_status = json_data['data']['alive']
     result = {"anchor_name": anchor_name, "is_live": False}
@@ -869,13 +971,13 @@ async def get_bigo_stream_url(url: str, proxy_addr: OptionalStr = None, cookies:
     elif result['anchor_name'] == '':
         html_str = await async_req(url=f'https://www.bigo.tv/{url.split("/")[3]}/{room_id}',
                                    proxy_addr=proxy_addr, headers=headers)
-        match_anchor_name = re.search('<title>欢迎来到(.*?)的直播间</title>', html_str, re.DOTALL)
+        match_anchor_name = _safe_re_search('<title>欢迎来到(.*?)的直播间</title>', html_str, re.DOTALL)
         if match_anchor_name:
             anchor_name = match_anchor_name.group(1)
         else:
-            match_anchor_name = re.search('<meta data-n-head="ssr" data-hid="og:title" property="og:title" '
+            match_anchor_name = _safe_re_search('<meta data-n-head="ssr" data-hid="og:title" property="og:title" '
                                           'content="(.*?) - BIGO LIVE">', html_str, re.DOTALL)
-            anchor_name = match_anchor_name.group(1)
+            anchor_name = match_anchor_name.group(1) if match_anchor_name else anchor_name
         result['anchor_name'] = anchor_name
 
     return result
@@ -892,9 +994,12 @@ async def get_blued_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
         headers['Cookie'] = cookies
 
     html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
-    json_str = re.search('decodeURIComponent\\(\"(.*?)\"\\)\\),window\\.Promise', html_str, re.DOTALL).group(1)
+    json_match = _safe_re_search('decodeURIComponent\\("(.*?)"\\)\\),window\\.Promise', html_str, re.DOTALL)
+    if not json_match:
+        raise RuntimeError("Failed to parse Blued stream data")
+    json_str = json_match.group(1)
     json_str = urllib.parse.unquote(json_str)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['userInfo']['name']
     live_status = json_data['userInfo']['onLive']
     result = {"anchor_name": anchor_name, "is_live": False}
@@ -932,12 +1037,18 @@ async def login_sooplive(username: str, password: str, proxy_addr: OptionalStr =
     url = 'https://login.sooplive.co.kr/app/LoginAction.php'
 
     try:
-        cookie_dict = await async_req(url, proxy_addr=proxy_addr, headers=headers,
+        cookie_result = await async_req(url, proxy_addr=proxy_addr, headers=headers,
                                       data=data, return_cookies=True, timeout=20)
+        if isinstance(cookie_result, dict):
+            cookie_dict = cookie_result
+        elif isinstance(cookie_result, tuple):
+            cookie_dict = cookie_result[1]
+        else:
+            raise RuntimeError("Failed to get cookies from response")
         cookie_str = '; '.join([f"{k}={v}" for k, v in cookie_dict.items()])
         return cookie_str
     except Exception as e:
-        print(f"An error occurred during login: {e}")
+        logger.error(f"An error occurred during login: {e}")
         raise Exception(
             "sooplive login failed, please check if the account password in the configuration file is correct."
         )
@@ -964,8 +1075,10 @@ async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, co
     }
 
     url2 = 'http://livestream-manager.sooplive.co.kr/broad_stream_assign.html?' + urllib.parse.urlencode(params)
-    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = _get_str_from_response(
+        await async_req(url=url2, proxy_addr=proxy_addr, headers=headers)
+    )
+    json_data = _safe_json_loads(json_str)
 
     return json_data
 
@@ -1001,8 +1114,8 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
     }
 
     url2 = f'https://live.sooplive.co.kr/afreeca/player_live_api.php?bjid={bj_id}'
-    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data)
+    json_data = _safe_json_loads(json_str)
 
     if rtype == 'aid':
         token = json_data["CHANNEL"]["AID"]
@@ -1013,7 +1126,7 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
         return f"{bj_name}-{bj_id}", json_data['CHANNEL']['BNO']
 
 
-def get_soop_headers(cookies):
+def get_soop_headers(cookies: OptionalStr = None) -> dict:
     headers = {
         'client-id': str(uuid.uuid4()),
         'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, '
@@ -1028,7 +1141,7 @@ async def _get_soop_channel_info_global(bj_id, proxy_addr: OptionalStr = None, c
     headers = get_soop_headers(cookies)
     api = 'https://api.sooplive.com/v2/channel/info/' + str(bj_id)
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     nickname = json_data['data']['streamerChannelInfo']['nickname']
     channelId = json_data['data']['streamerChannelInfo']['channelId']
     anchor_name = f"{nickname}-{channelId}"
@@ -1039,7 +1152,7 @@ async def _get_soop_stream_info_global(bj_id, proxy_addr: OptionalStr = None, co
     headers = get_soop_headers(cookies)
     api = 'https://api.sooplive.com/v2/stream/info/' + str(bj_id)
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     status = json_data['data']['isStream']
     title = json_data['data']['title']
     return status, title
@@ -1061,7 +1174,9 @@ async def _fetch_web_stream_data_global(url: str, proxy_addr: OptionalStr = None
             }
             if cookies:
                 headers['cookie'] = cookies
-            resp = await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers)
+            resp = _get_str_from_response(
+                await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers)
+            )
             play_url_list = []
             url_prefix = '/'.join(m3u8.split('/')[0:3])
             for i in resp.split('\n'):
@@ -1114,8 +1229,8 @@ async def get_sooplive_stream_data(
 
     url2 = 'http://api.m.sooplive.co.kr/broad/a/watch'
 
-    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data)
+    json_data = _safe_json_loads(json_str)
 
     if 'user_nick' in json_data['data']:
         anchor_name = json_data['data']['user_nick']
@@ -1127,7 +1242,9 @@ async def get_sooplive_stream_data(
     result = {"anchor_name": anchor_name or '' ,"is_live": False}
 
     async def get_url_list(m3u8: str) -> List[str]:
-        resp = await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers, abroad=True)
+        resp = _get_str_from_response(
+            await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers)
+        )
         play_url_list = []
         url_prefix = m3u8.rsplit('/', maxsplit=1)[0] + '/'
         for i in resp.split('\n'):
@@ -1143,7 +1260,7 @@ async def get_sooplive_stream_data(
         async def handle_login() -> OptionalStr:
             cookie = await login_sooplive(username, password, proxy_addr=proxy_addr)
             if 'AuthTicket=' in cookie:
-                print("sooplive platform login successful! Starting to fetch live streaming data...")
+                logger.info("sooplive platform login successful! Starting to fetch live streaming data...")
                 return cookie
 
         async def fetch_data(cookie, _result) -> dict:
@@ -1162,12 +1279,12 @@ async def get_sooplive_stream_data(
             return _result
 
         if json_data['data']['code'] == -3001:
-            print("sooplive live stream failed to retrieve, the live stream just ended.")
+            logger.warning("sooplive live stream failed to retrieve, the live stream just ended.")
             return result
 
         elif json_data['data']['code'] == -3002:
-            print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
-            print("Attempting to log in to the sooplive live streaming platform with your account and password, "
+            logger.warning("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
+            logger.info("Attempting to log in to the sooplive live streaming platform with your account and password, "
                   "please ensure it is configured.")
             new_cookie = await handle_login()
             if new_cookie and len(new_cookie) > 0:
@@ -1180,7 +1297,7 @@ async def get_sooplive_stream_data(
             else:
                 raise RuntimeError("sooplive login failed, please check if the account and password are correct")
         elif json_data['data']['code'] == -6001:
-            print("error message：Please check if the input sooplive live room address "
+            logger.error("error message：Please check if the input sooplive live room address "
                   "is correct.")
             return result
     if json_data['result'] == 1 and anchor_name:
@@ -1207,9 +1324,12 @@ async def get_netease_stream_data(url: str, proxy_addr: OptionalStr = None, cook
     url = url + '/' if url[-1] != '/' else url
 
     html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
-    json_str = re.search('<script id="__NEXT_DATA__" .* crossorigin="anonymous">(.*?)</script></body>',
-                         html_str, re.DOTALL).group(1)
-    json_data = json.loads(json_str)
+    json_match = _safe_re_search('<script id="__NEXT_DATA__" .* crossorigin="anonymous">(.*?)</script></body>',
+                         html_str, re.DOTALL)
+    if not json_match:
+        raise RuntimeError("Failed to parse Netease stream data")
+    json_str = json_match.group(1)
+    json_data = _safe_json_loads(json_str)
     room_data = json_data['props']['pageProps']['roomInfoInitData']
     live_data = room_data['live']
     result = {"is_live": False}
@@ -1238,13 +1358,16 @@ async def get_qiandurebo_stream_data(url: str, proxy_addr: OptionalStr = None, c
         headers['Cookie'] = cookies
 
     html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
-    data = re.search('var user = (.*?)\r\n\\s+user\\.play_url', html_str, re.DOTALL).group(1)
-    anchor_name = re.findall('"zb_nickname": "(.*?)",\r\n', data)
+    data_match = _safe_re_search('var user = (.*?)\r\n\\s+user\\.play_url', html_str, re.DOTALL)
+    if not data_match:
+        raise RuntimeError("Failed to parse Qiandurebo stream data")
+    data = data_match.group(1)
+    anchor_name = _safe_re_findall('"zb_nickname": "(.*?)",\r\n', data)
 
     result = {"anchor_name": "", "is_live": False}
     if len(anchor_name) > 0:
         result['anchor_name'] = anchor_name[0]
-        play_url = re.findall('"play_url": "(.*?)",\r\n', data)
+        play_url = _safe_re_findall('"play_url": "(.*?)",\r\n', data)
 
         if len(play_url) > 0 and 'common-text-center" style="display:block' not in html_str:
             result |= {
@@ -1284,8 +1407,8 @@ async def get_pandatv_stream_data(url: str, proxy_addr: OptionalStr = None, cook
 
     result = {"anchor_name": "", "is_live": False}
     json_str = await async_req('https://api.pandalive.co.kr/v1/member/bj',
-                       proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
-    json_data = json.loads(json_str)
+                       proxy_addr=proxy_addr, headers=headers, data=data)
+    json_data = _safe_json_loads(json_str)
     if "bjInfo" not in json_data:
         raise RuntimeError(json_data.get("message", 'Unknown error'))
     anchor_id = json_data['bjInfo']['id']
@@ -1294,8 +1417,8 @@ async def get_pandatv_stream_data(url: str, proxy_addr: OptionalStr = None, cook
     live_status = 'media' in json_data
 
     if live_status:
-        json_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers, data=data2, abroad=True)
-        json_data = json.loads(json_str)
+        json_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers, data=data2)
+        json_data = _safe_json_loads(json_str)
         if 'errorData' in json_data:
             if json_data['errorData']['code'] == 'needAdult':
                 raise RuntimeError(f"{url} The live room requires login and is only accessible to adults. Please "
@@ -1303,7 +1426,7 @@ async def get_pandatv_stream_data(url: str, proxy_addr: OptionalStr = None, cook
             else:
                 raise RuntimeError(json_data['errorData']['code'], json_data['message'])
         play_url = json_data['PlayList']['hls'][0]['url']
-        play_url_list = await get_play_url_list(m3u8=play_url, proxy=proxy_addr, header=headers, abroad=True)
+        play_url_list = await get_play_url_list(m3u8=play_url, proxy=proxy_addr, header=headers)
         result |= {'is_live': True, 'm3u8_url': play_url, 'play_url_list': play_url_list}
     return result
 
@@ -1323,7 +1446,7 @@ async def get_maoerfm_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
     url2 = f'https://fm.missevan.com/api/v2/live/{room_id}'
 
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
 
     anchor_name = json_data['info']['creator']['username']
     live_status = False
@@ -1358,8 +1481,8 @@ async def get_winktv_bj_info(url: str, proxy_addr: OptionalStr = None, cookies: 
     }
 
     info_api = 'https://api.winktv.co.kr/v1/member/bj'
-    json_str = await async_req(url=info_api, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(url=info_api, proxy_addr=proxy_addr, headers=headers, data=data)
+    json_data = _safe_json_loads(json_str)
     live_status = 'media' in json_data
     anchor_id = json_data['bjInfo']['id']
     anchor_name = f"{json_data['bjInfo']['nick']}-{anchor_id}"
@@ -1394,10 +1517,12 @@ async def get_winktv_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
     result = {"anchor_name": anchor_name, "is_live": live_status}
     if live_status:
         play_api = 'https://api.winktv.co.kr/v1/live/play'
-        json_str = await async_req(url=play_api, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
-        if '403: Forbidden' in json_str:
+        json_str = _get_str_from_response(
+            await async_req(url=play_api, proxy_addr=proxy_addr, headers=headers, data=data)
+        )
+        if _HTTP_403_FORBIDDEN in json_str:
             raise ConnectionError(f"Your network has been banned from accessing WinkTV ({json_str})")
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         if 'errorData' in json_data:
             if json_data['errorData']['code'] == 'needAdult':
                 raise RuntimeError(f"{url} The live stream is only accessible to logged-in adults. Please ensure that "
@@ -1405,7 +1530,7 @@ async def get_winktv_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
             else:
                 raise RuntimeError(json_data['errorData']['code'], json_data['message'])
         m3u8_url = json_data['PlayList']['hls'][0]['url']
-        play_url_list = await get_play_url_list(m3u8=m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
+        play_url_list = await get_play_url_list(m3u8=m3u8_url, proxy=proxy_addr, header=headers)
         result['m3u8_url'] = m3u8_url
         result['play_url_list'] = play_url_list
     return result
@@ -1432,24 +1557,31 @@ async def login_flextv(username: str, password: str, proxy_addr: OptionalStr = N
     url = 'https://www.ttinglive.com/v2/api/auth/signin'
 
     try:
-        print("Logging into FlexTV platform...")
-        cookie_dict = await async_req(url, proxy_addr=proxy_addr, headers=headers, json_data=data,
+        logger.info("Logging into FlexTV platform...")
+        cookie_result = await async_req(url, proxy_addr=proxy_addr, headers=headers, json_data=data,
                                       return_cookies=True, timeout=20)
+        if isinstance(cookie_result, dict):
+            cookie_dict = cookie_result
+        elif isinstance(cookie_result, tuple):
+            cookie_dict = cookie_result[1]
+        else:
+            raise RuntimeError("Failed to get cookies from response")
 
         if cookie_dict and 'flx_oauth_access' in cookie_dict:
             cookie_str = '; '.join([f"{k}={v}" for k, v in cookie_dict.items()])
             return cookie_str
         else:
-            print("Please check if the FlexTV account and password in the configuration file are correct.")
+            logger.error("Please check if the FlexTV account and password in the configuration file are correct.")
             return None
 
     except Exception as e:
-        print(f"FlexTV login request exception: {e}")
+        logger.error(f"FlexTV login request exception: {e}")
         raise Exception(
             "FlexTV login failed, please check if the account and password in the configuration file are correct."
         )
 
 
+@trace_error_decorator
 async def get_flextv_stream_url(
         url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> str:
@@ -1464,17 +1596,20 @@ async def get_flextv_stream_url(
         if cookie:
             headers['Cookie'] = cookie
         play_api = f'https://www.ttinglive.com/api/channels/{user_id}/stream?option=all'
-        json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers, abroad=True)
-        if 'HTTP Error 400: Bad Request' in json_str:
+        json_str = _get_str_from_response(
+            await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
+        )
+        if _HTTP_ERROR_400_BAD_REQUEST in json_str:
             raise ConnectionError(
                 "Failed to retrieve FlexTV live streaming data, please switch to a different proxy and try again."
             )
-        return json.loads(json_str)
+        return _safe_json_loads(json_str)
 
     json_data = await fetch_data(cookies)
     if 'sources' in json_data and len(json_data['sources']) > 0:
         play_url = json_data['sources'][0]['url']
         return play_url
+    return ''
 
 
 @trace_error_decorator
@@ -1495,28 +1630,35 @@ async def get_flextv_stream_data(
     new_cookies = None
     try:
         url2 = f'https://www.ttinglive.com/channels/{user_id}/live'
-        html_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers, abroad=True)
-        json_str = re.search('<script id="__NEXT_DATA__" type=".*">(.*?)</script>', html_str).group(1)
-        json_data = json.loads(json_str)
+        html_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers)
+        json_match = _safe_re_search('<script id="__NEXT_DATA__" type=".*">(.*?)</script>', html_str)
+        if not json_match:
+            raise RuntimeError("Failed to parse FlexTV stream data")
+        json_str = json_match.group(1)
+        json_data = _safe_json_loads(json_str)
         channel_data = json_data['props']['pageProps']['channel']
         login_need = 'message' in channel_data and '로그인후 이용이 가능합니다.' in channel_data.get('message')
         if login_need:
-            print("FlexTV live stream retrieval failed [not logged in]: 19+ live streams are only available for "
+            logger.warning("FlexTV live stream retrieval failed [not logged in]: 19+ live streams are only available for "
                   "logged-in adults.")
-            print("Attempting to log in to the FlexTV live streaming platform, please ensure your account and "
+            logger.info("Attempting to log in to the FlexTV live streaming platform, please ensure your account and "
                   "password are correctly filled in the configuration file.")
-            if len(username) < 6 or len(password) < 8:
+            if (not username or len(username) < 6) or (not password or len(password) < 8):
                 raise RuntimeError("FlexTV登录失败！请在config.ini配置文件中填写正确的FlexTV平台的账号和密码")
             new_cookies = await login_flextv(username, password, proxy_addr=proxy_addr)
             if new_cookies:
-                print("Logged into FlexTV platform successfully! Starting to fetch live streaming data...")
+                logger.info("Logged into FlexTV platform successfully! Starting to fetch live streaming data...")
             else:
                 raise RuntimeError("FlexTV login failed")
             cookies = new_cookies if new_cookies else cookies
-            headers['Cookie'] = cookies
-            html_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers, abroad=True)
-            json_str = re.search('<script id="__NEXT_DATA__" type=".*">(.*?)</script>', html_str).group(1)
-            json_data = json.loads(json_str)
+            if cookies:
+                headers['Cookie'] = cookies
+            html_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers)
+            json_match = _safe_re_search('<script id="__NEXT_DATA__" type=".*">(.*?)</script>', html_str)
+            if not json_match:
+                raise RuntimeError("Failed to parse FlexTV stream data after login")
+            json_str = json_match.group(1)
+            json_data = _safe_json_loads(json_str)
             channel_data = json_data['props']['pageProps']['channel']
 
         live_status = 'message' not in channel_data
@@ -1528,7 +1670,7 @@ async def get_flextv_stream_data(
             if play_url:
                 result['is_live'] = True
                 if '.m3u8' in play_url:
-                    play_url_list = await get_play_url_list(m3u8=play_url, proxy=proxy_addr, header=headers, abroad=True)
+                    play_url_list = await get_play_url_list(m3u8=play_url, proxy=proxy_addr, header=headers)
                     if play_url_list:
                         result['m3u8_url'] = play_url
                         result['play_url_list'] = play_url_list
@@ -1537,18 +1679,19 @@ async def get_flextv_stream_data(
                     result['record_url'] = play_url
         else:
             url2 = f'https://www.ttinglive.com/channels/{user_id}'
-            html_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers, abroad=True)
-            anchor_name = re.search('<meta name="twitter:title" content="(.*?)의', html_str).group(1)
+            html_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers)
+            anchor_match = _safe_re_search('<meta name="twitter:title" content="(.*?)의', html_str)
+            if not anchor_match:
+                raise RuntimeError("Failed to parse FlexTV anchor name")
+            anchor_name = anchor_match.group(1)
             result["anchor_name"] = anchor_name
     except Exception as e:
-        print("Failed to retrieve data from FlexTV live room", e)
+        logger.error(f"Failed to retrieve data from FlexTV live room {e}")
     result['new_cookies'] = new_cookies
     return result
 
 
 def get_looklive_secret_data(text) -> tuple:
-    # 本算法参考项目：https://github.com/785415581/MusicBox/blob/b8f716d43d/doc/analysis/analyze_captured_data.md
-
     modulus = '00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee' \
               '341f56135fccf695280104e0312ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe487' \
               '5d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7'
@@ -1556,7 +1699,6 @@ def get_looklive_secret_data(text) -> tuple:
     public_key = '010001'
     from Crypto.Cipher import AES
     from Crypto.Util.Padding import pad
-    import base64
     import binascii
     import secrets
 
@@ -1591,6 +1733,7 @@ def get_looklive_secret_data(text) -> tuple:
     return enc_text.decode(), enc_sec_key
 
 
+@trace_error_decorator
 async def get_looklive_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
     """
     通过PC网页端的接口获取完整直播源，只有params和encSecKey这两个加密请求参数。
@@ -1609,19 +1752,22 @@ async def get_looklive_stream_url(url: str, proxy_addr: OptionalStr = None, cook
     if cookies:
         headers['Cookie'] = cookies
 
-    room_id = re.search('live\\?id=(.*?)&', url).group(1)
+    room_match = _safe_re_search('live\\?id=(.*?)&', url)
+    if not room_match:
+        raise RuntimeError("Failed to parse LookLive room ID")
+    room_id = room_match.group(1)
     params, secretkey = get_looklive_secret_data({"liveRoomNo": room_id})
     request_data = {'params': params, 'encSecKey': secretkey}
     api = 'https://api.look.163.com/weapi/livestream/room/get/v3'
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers, data=request_data)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['data']['anchor']['nickName']
     live_status = json_data['data']['liveStatus']
     result = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
         result["is_live"] = True
         if json_data['data']['roomInfo']['liveType'] == 1:
-            print("Look live currently only supports audio live streaming, not video live streaming!")
+            logger.warning("Look live currently only supports audio live streaming, not video live streaming!")
         else:
             play_url_list = json_data['data']['roomInfo']['liveUrl']
             live_title = json_data['data']['roomInfo']['title']
@@ -1673,10 +1819,10 @@ async def login_popkontv(
             else:
                 raise Exception(f"popkontv login failed, {json_data.get('statusMsg', 'unknown error')}")
     except httpx.HTTPStatusError as e:
-        print(f"HTTP status error occurred during login: {e.response.status_code}")
+        logger.error(f"HTTP status error occurred during login: {e.response.status_code}")
         raise
     except Exception as e:
-        print(f"An exception occurred during popkontv login: {e}")
+        logger.error(f"An exception occurred during popkontv login: {e}")
         raise
 
 
@@ -1695,9 +1841,15 @@ async def get_popkontv_stream_data(
     if cookies:
         headers['Cookie'] = cookies
     if 'mcid' in url:
-        anchor_id = re.search('mcid=(.*?)&', url).group(1)
+        anchor_match = _safe_re_search('mcid=(.*?)&', url)
+        if not anchor_match:
+            raise RuntimeError("Failed to parse PopKonTV anchor ID from mcid")
+        anchor_id = anchor_match.group(1)
     else:
-        anchor_id = re.search('castId=(.*?)(?=&|$)', url).group(1)
+        anchor_match = _safe_re_search('castId=(.*?)(?=&|$)', url)
+        if not anchor_match:
+            raise RuntimeError("Failed to parse PopKonTV anchor ID from castId")
+        anchor_id = anchor_match.group(1)
 
     data = {
         'partnerCode': code,
@@ -1706,8 +1858,8 @@ async def get_popkontv_stream_data(
     }
 
     api = 'https://www.popkontv.com/api/proxy/broadcast/v1/search/all'
-    json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers, json_data=data, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers, json_data=data)
+    json_data = _safe_json_loads(json_str)
 
     partner_code = ''
     anchor_name = 'Unknown'
@@ -1720,19 +1872,24 @@ async def get_popkontv_stream_data(
 
     if not partner_code:
         if 'mcPartnerCode' in url:
-            regex_result = re.search('mcPartnerCode=(P-\\d+)', url)
+            regex_result = _safe_re_search('mcPartnerCode=(P-\\d+)', url)
         else:
-            regex_result = re.search('partnerCode=(P-\\d+)', url)
+            regex_result = _safe_re_search('partnerCode=(P-\\d+)', url)
         partner_code = regex_result.group(1) if regex_result else code
         notices_url = f'https://www.popkontv.com/channel/notices?mcid={anchor_id}&mcPartnerCode={partner_code}'
-        notices_response = await async_req(notices_url, proxy_addr=proxy_addr, headers=headers, abroad=True)
-        mc_name_match = re.search(r'"mcNickName":"([^"]+)"', notices_response)
+        notices_response = _get_str_from_response(
+            await async_req(notices_url, proxy_addr=proxy_addr, headers=headers)
+        )
+        mc_name_match = _safe_re_search(r'"mcNickName":"([^"]+)"', notices_response)
         mc_name = mc_name_match.group(1) if mc_name_match else 'Unknown'
         anchor_name = f"{anchor_id}-{mc_name}"
 
     live_url = f"https://www.popkontv.com/live/view?castId={anchor_id}&partnerCode={partner_code}"
-    html_str2 = await async_req(live_url, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_str2 = re.search('<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html_str2).group(1)
+    html_str2 = await async_req(live_url, proxy_addr=proxy_addr, headers=headers)
+    json_match2 = _safe_re_search('<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html_str2)
+    if not json_match2:
+        raise RuntimeError("Failed to parse PopKonTV NEXT_DATA")
+    json_str2 = json_match2.group(1)
     json_data2 = json.loads(json_str2)
     if 'mcData' in json_data2['props']['pageProps']:
         room_data = json_data2['props']['pageProps']['mcData']['data']
@@ -1778,7 +1935,7 @@ async def get_popkontv_stream_url(
             raise RuntimeError(f"Failed to retrieve live room data because {anchor_name}'s room is a private room. "
                                f"Please configure the room password and try again.")
 
-        async def fetch_data(header: dict = None, code: str = None) -> str:
+        async def fetch_data(header: dict | None = None, code: str | None = None) -> str:
             data = {
                 'androidStore': 0,
                 'castCode': f'{mc_sign_id}-{cast_start_date_code}',
@@ -1788,46 +1945,48 @@ async def get_popkontv_stream_url(
                 'commandType': 0,
                 'exePath': 5,
                 'isSecret': is_private,
-                'partnerCode': code,
+                'partnerCode': code or 'P-00001',
                 'password': room_password,
                 'signId': username,
                 'version': '4.6.2',
             }
             play_api = 'https://www.popkontv.com/api/proxy/broadcast/v1/castwatchonoffguest'
-            return await async_req(play_api, proxy_addr=proxy_addr, json_data=data, headers=header, abroad=True)
+            return _get_str_from_response(
+                await async_req(play_api, proxy_addr=proxy_addr, json_data=data, headers=header)
+            )
 
         json_str = await fetch_data(headers, partner_code)
 
-        if 'HTTP Error 400' in json_str or 'statusCd":"E5000' in json_str:
-            print("Failed to retrieve popkontv live stream [token does not exist or has expired]: Please log in to "
+        if _HTTP_ERROR_400 in json_str or 'statusCd":"E5000' in json_str:
+            logger.warning("Failed to retrieve popkontv live stream [token does not exist or has expired]: Please log in to "
                   "watch.")
-            print("Attempting to log in to the popkontv live streaming platform, please ensure your account "
+            logger.info("Attempting to log in to the popkontv live streaming platform, please ensure your account "
                   "and password are correctly filled in the configuration file.")
-            if len(username) < 4 or len(password) < 10:
+            if (not username or len(username) < 4) or (not password or len(password) < 10):
                 raise RuntimeError("popkontv login failed! Please enter the correct account and password for the "
                                    "popkontv platform in the config.ini file.")
-            print("Logging into popkontv platform...")
+            logger.info("Logging into popkontv platform...")
             new_access_token, new_partner_code = await login_popkontv(
                 username=username, password=password, proxy_addr=proxy_addr, code=partner_code
             )
             if new_access_token and len(new_access_token) == 640:
-                print("Logged into popkontv platform successfully! Starting to fetch live streaming data...")
+                logger.info("Logged into popkontv platform successfully! Starting to fetch live streaming data...")
                 headers['Authorization'] = f'Bearer {new_access_token}'
                 new_token = f'Bearer {new_access_token}'
                 json_str = await fetch_data(headers, new_partner_code)
             else:
                 raise RuntimeError("popkontv login failed, please check if the account and password are correct")
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         status_msg = json_data["statusMsg"]
         if json_data['statusCd'] == "L000A":
-            print("Failed to retrieve live stream source,", status_msg)
+            logger.error(f"Failed to retrieve live stream source, {status_msg}")
             raise RuntimeError("You are an unverified member. After logging into the popkontv official website, "
                                "please verify your mobile phone at the bottom of the 'My Page' > 'Edit My "
                                "Information' to use the service.")
         elif json_data['statusCd'] == "L0001":
             cast_start_date_code = int(cast_start_date_code) - 1
             json_str = await fetch_data(headers, partner_code)
-            json_data = json.loads(json_str)
+            json_data = _safe_json_loads(json_str)
             m3u8_url = json_data['data']['castHlsUrl']
             result |= {"m3u8_url": m3u8_url, "record_url": m3u8_url}
         elif json_data['statusCd'] == "L0000":
@@ -1864,7 +2023,10 @@ async def login_twitcasting(
         login_api = 'https://twitcasting.tv/indexcaslogin.php?redir=/indexloginwindow.php?next=%2F&keep=1'
 
     html_str = await async_req(login_url, proxy_addr=proxy_addr, headers=headers)
-    cs_session_id = re.search('<input type="hidden" name="cs_session_id" value="(.*?)">', html_str).group(1)
+    cs_match = _safe_re_search('<input type="hidden" name="cs_session_id" value="(.*?)">', html_str)
+    if not cs_match:
+        raise RuntimeError("Failed to parse TwitCasting cs_session_id")
+    cs_session_id = cs_match.group(1)
 
     data = {
         'username': username,
@@ -1873,13 +2035,19 @@ async def login_twitcasting(
         'cs_session_id': cs_session_id,
     }
     try:
-        cookie_dict = await async_req(login_api, proxy_addr=proxy_addr, headers=headers,
+        cookie_result = await async_req(login_api, proxy_addr=proxy_addr, headers=headers,
                                       data=data, return_cookies=True, timeout=20)
+        if isinstance(cookie_result, dict):
+            cookie_dict = cookie_result
+        elif isinstance(cookie_result, tuple):
+            cookie_dict = cookie_result[1]
+        else:
+            raise RuntimeError("Failed to get cookies from response")
         if 'tc_ss' in cookie_dict:
             cookie = utils.dict_to_cookie_str(cookie_dict)
             return cookie
     except Exception as e:
-        print("TwitCasting login error,", e)
+        logger.error(f"TwitCasting login error, {e}")
 
 
 @trace_error_decorator
@@ -1904,10 +2072,12 @@ async def get_twitcasting_stream_url(
 
     async def get_data(header) -> tuple:
         html_str = await async_req(url, proxy_addr=proxy_addr, headers=header)
-        anchor = re.search("<title>(.*?) \\(@(.*?)\\)  的直播 - Twit", html_str)
-        title = re.search('<meta name="twitter:title" content="(.*?)">\n\\s+<meta', html_str)
-        status = re.search('data-is-onlive="(.*?)"\n\\s+data-view-mode', html_str)
-        movie_id = re.search('data-movie-id="(.*?)" data-audience-id', html_str)
+        anchor = _safe_re_search("<title>(.*?) \\(@(.*?)\\)  的直播 - Twit", html_str)
+        title = _safe_re_search('<meta name="twitter:title" content="(.*?)">\n\\s+<meta', html_str)
+        status = _safe_re_search('data-is-onlive="(.*?)"\n\\s+data-view-mode', html_str)
+        movie_id = _safe_re_search('data-movie-id="(.*?)" data-audience-id', html_str)
+        if not anchor or not status or not title or not movie_id:
+            raise AttributeError("Failed to parse TwitCasting stream data")
         return f'{anchor.group(1).strip()}-{anchor.group(2)}-{movie_id.group(1)}', status.group(1), title.group(1)
 
     result = {"anchor_name": '', "is_live": False}
@@ -1915,23 +2085,23 @@ async def get_twitcasting_stream_url(
     try:
         to_login = get_params(url, "login")
         if to_login == 'true':
-            print("Attempting to log in to TwitCasting...")
+            logger.info("Attempting to log in to TwitCasting...")
             new_cookie = await login_twitcasting(
                 account_type=account_type, username=username, password=password, proxy_addr=proxy_addr, cookies=cookies)
             if not new_cookie:
                 raise RuntimeError("TwitCasting login failed, please check if the account password in the "
                                    "configuration file is correct")
-            print("TwitCasting login successful! Starting to fetch data...")
+            logger.info("TwitCasting login successful! Starting to fetch data...")
             headers['Cookie'] = new_cookie
         anchor_name, live_status, live_title = await get_data(headers)
     except AttributeError:
-        print("Failed to retrieve TwitCasting data, attempting to log in...")
+        logger.warning("Failed to retrieve TwitCasting data, attempting to log in...")
         new_cookie = await login_twitcasting(
             account_type=account_type, username=username, password=password, proxy_addr=proxy_addr, cookies=cookies)
         if not new_cookie:
             raise RuntimeError("TwitCasting login failed, please check if the account and password in the "
                                "configuration file are correct")
-        print("TwitCasting login successful! Starting to fetch data...")
+        logger.info("TwitCasting login successful! Starting to fetch data...")
         headers['Cookie'] = new_cookie
         anchor_name, live_status, live_title = await get_data(headers)
 
@@ -1939,7 +2109,7 @@ async def get_twitcasting_stream_url(
     if live_status == 'true':
         url_streamserver = f"https://twitcasting.tv/streamserver.php?target={anchor_id}&mode=client&player=pc_web"
         stream_data = await async_req(url_streamserver, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(stream_data)
+        json_data = _safe_json_loads(stream_data)
         if not json_data.get('tc-hls') or not json_data['tc-hls'].get("streams"):
             raise RuntimeError("No m3u8_url,please check the url")
 
@@ -1968,7 +2138,10 @@ async def get_baidu_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
         'h5-c7c6dc14064a136be4215b452fab9eea',
         'h5-4581281f80bb8968bd9a9dfba6050d3a'
     ])
-    room_id = re.search('room_id=(.*?)&', url).group(1)
+    room_match = _safe_re_search('room_id=(.*?)&', url)
+    if not room_match:
+        raise RuntimeError("Failed to parse Baidu stream room_id")
+    room_id = room_match.group(1)
     params = {
         'cmd': '371',
         'action': 'star',
@@ -1987,7 +2160,7 @@ async def get_baidu_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
     }
     app_api = f'https://mbd.baidu.com/searchbox?{urllib.parse.urlencode(params)}'
     json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     key = list(json_data['data'].keys())[0]
     data = json_data['data'][key]
     anchor_name = data['host']['name']
@@ -2030,7 +2203,7 @@ async def get_weibo_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
         uid = url.split('?')[0].rsplit('/u/', maxsplit=1)[1]
         web_api = f'https://weibo.com/ajax/statuses/mymblog?uid={uid}&page=1&feature=0'
         json_str = await async_req(web_api, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         for i in json_data['data']['list']:
             if 'page_info' in i and i['page_info']['object_type'] == 'live':
                 room_id = i['page_info']['object_id']
@@ -2041,7 +2214,7 @@ async def get_weibo_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
         app_api = f'https://weibo.com/l/pc/anchor/live?live_id={room_id}'
         # app_api = f'https://weibo.com/l/!/2/wblive/room/show_pc_live.json?live_id={room_id}'
         json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         anchor_name = json_data['data']['user_info']['name']
         result["anchor_name"] = anchor_name
         live_status = json_data['data']['item']['status']
@@ -2071,13 +2244,16 @@ async def get_kugou_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
         headers['Cookie'] = cookies
 
     if 'roomId' in url:
-        room_id = re.search('roomId=(\\d+)', url).group(1)
+        room_match = _safe_re_search('roomId=(\\d+)', url)
+        if not room_match:
+            raise RuntimeError("Failed to parse Kugou roomId")
+        room_id = room_match.group(1)
     else:
         room_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
 
     app_api = f'https://service2.fanxing.kugou.com/roomcen/room/web/cdn/getEnterRoomInfo?roomId={room_id}'
     json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['data']['normalRoomInfo']['nickName']
     result = {"anchor_name": anchor_name, "is_live": False}
     if not anchor_name:
@@ -2100,7 +2276,7 @@ async def get_kugou_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
         }
         api = f'https://fx1.service.kugou.com/video/pc/live/pull/mutiline/streamaddr?{urllib.parse.urlencode(params)}'
         json_str2 = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-        json_data2 = json.loads(json_str2)
+        json_data2 = _safe_json_loads(json_str2)
         stream_data = json_data2['data']['lines']
         if stream_data:
             flv_url = stream_data[-1]['streamProfiles'][0]['httpsFlv'][0]
@@ -2108,6 +2284,7 @@ async def get_kugou_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
     return result
 
 
+@trace_error_decorator
 async def get_twitchtv_room_info(url: str, token: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> tuple:
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
@@ -2137,8 +2314,8 @@ async def get_twitchtv_room_info(url: str, token: str, proxy_addr: OptionalStr =
     ]
 
     json_str = await async_req('https://gql.twitch.tv/gql', proxy_addr=proxy_addr, headers=headers,
-                               json_data=data, abroad=True)
-    json_data = json.loads(json_str)
+                               json_data=data)
+    json_data = _safe_json_loads(json_str)
     user_data = json_data[0]['data']['userOrError']
     login_name = user_data["login"]
     nickname = f"{user_data['displayName']}-{login_name}"
@@ -2178,8 +2355,8 @@ async def get_twitchtv_stream_data(url: str, proxy_addr: OptionalStr = None, coo
     }
 
     json_str = await async_req('https://gql.twitch.tv/gql', proxy_addr=proxy_addr, headers=headers,
-                               json_data=data, abroad=True)
-    json_data = json.loads(json_str)
+                               json_data=data)
+    json_data = _safe_json_loads(json_str)
     token = json_data['data']['streamPlaybackAccessToken']['value']
     sign = json_data['data']['streamPlaybackAccessToken']['signature']
 
@@ -2209,7 +2386,7 @@ async def get_twitchtv_stream_data(url: str, proxy_addr: OptionalStr = None, coo
         }
         access_key = urllib.parse.urlencode(params)
         m3u8_url = f'https://usher.ttvnw.net/api/channel/hls/{uid}.m3u8?{access_key}'
-        play_url_list = await get_play_url_list(m3u8=m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
+        play_url_list = await get_play_url_list(m3u8=m3u8_url, proxy=proxy_addr, header=headers)
         result |= {'m3u8_url': m3u8_url, 'play_url_list': play_url_list}
     return result
 
@@ -2225,8 +2402,8 @@ async def get_liveme_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
         headers['Cookie'] = cookies
 
     if 'index.html' not in url:
-        html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers, abroad=True)
-        match_url = re.search('<meta property="og:url" content="(.*?)">', html_str)
+        html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
+        match_url = _safe_re_search('<meta property="og:url" content="(.*?)">', html_str)
         if match_url:
             url = match_url.group(1)
 
@@ -2245,8 +2422,8 @@ async def get_liveme_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     }
 
     api = f'https://live.liveme.com/live/queryinfosimple?{urllib.parse.urlencode(params)}'
-    json_str = await async_req(api, data=sign_data, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(api, data=sign_data, proxy_addr=proxy_addr, headers=headers)
+    json_data = _safe_json_loads(json_str)
     stream_data = json_data['data']['video_info']
     anchor_name = stream_data['uname']
     live_status = stream_data['status']
@@ -2263,6 +2440,7 @@ async def get_liveme_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     return result
 
 
+@trace_error_decorator
 async def get_huajiao_sn(url: str, cookies: OptionalStr = None, proxy_addr: OptionalStr = None) -> tuple | None:
     headers = {
         'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
@@ -2277,8 +2455,11 @@ async def get_huajiao_sn(url: str, cookies: OptionalStr = None, proxy_addr: Opti
     api = f'https://www.huajiao.com/l/{live_id}'
     try:
         html_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
-        json_str = re.search('var feed = (.*?});', html_str).group(1)
-        json_data = json.loads(json_str)
+        json_match = _safe_re_search('var feed = (.*?});', html_str)
+        if not json_match:
+            raise RuntimeError("Failed to parse Huajiao feed data")
+        json_str = json_match.group(1)
+        json_data = _safe_json_loads(json_str)
         sn = json_data['feed']['sn']
         uid = json_data['author']['uid']
         nickname = json_data['author']['nickname']
@@ -2290,6 +2471,7 @@ async def get_huajiao_sn(url: str, cookies: OptionalStr = None, proxy_addr: Opti
                            "the anchor's homepage address for recording.")
 
 
+@trace_error_decorator
 async def get_huajiao_user_info(url: str, cookies: OptionalStr = None, proxy_addr: OptionalStr = None) -> OptionalDict:
     headers = {
         'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
@@ -2310,10 +2492,13 @@ async def get_huajiao_user_info(url: str, cookies: OptionalStr = None, proxy_add
 
         api = f'https://webh.huajiao.com/User/getUserFeeds?{urllib.parse.urlencode(params)}'
         json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
 
         html_str = await async_req(url=f'https://www.huajiao.com/user/{uid}', proxy_addr=proxy_addr, headers=headers)
-        anchor_name = re.search('<title>(.*?)的主页.*</title>', html_str).group(1)
+        anchor_match = _safe_re_search('<title>(.*?)的主页.*</title>', html_str)
+        if not anchor_match:
+            raise RuntimeError("Failed to parse Huajiao anchor name")
+        anchor_name = anchor_match.group(1)
         if json_data['data'] and 'sn' in json_data['data']['feeds'][0]['feed']:
             feed = json_data['data']['feeds'][0]['feed']
             return {
@@ -2328,6 +2513,7 @@ async def get_huajiao_user_info(url: str, cookies: OptionalStr = None, proxy_add
             return {"anchor_name": anchor_name, "is_live": False}
 
 
+@trace_error_decorator
 async def get_huajiao_stream_url_app(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> OptionalDict:
     headers = {
         'User-Agent': 'living/9.4.0 (com.huajiao.seeding; build:2410231746; iOS 17.0.0) Alamofire/9.4.0',
@@ -2339,10 +2525,10 @@ async def get_huajiao_stream_url_app(url: str, proxy_addr: OptionalStr = None, c
     room_id = url.rsplit('/', maxsplit=1)[1]
     api = f'https://live.huajiao.com/feed/getFeedInfo?relateid={room_id}'
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
 
     if json_data['errmsg'] or not json_data['data'].get('creatime'):
-        print("Failed to retrieve live room data, the Huajiao live room address is not fixed, please manually change "
+        logger.warning("Failed to retrieve live room data, the Huajiao live room address is not fixed, please manually change "
               "the address for recording.")
         return
     data = json_data['data']
@@ -2373,9 +2559,10 @@ async def get_huajiao_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
             return result
         room_data = await get_huajiao_user_info(url, cookies, proxy_addr)
     else:
-        url = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+        url_result = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+        url = _get_str_from_response(url_result)
         if url.rstrip('/') == 'https://www.huajiao.com':
-            print(
+            logger.warning(
                 "Failed to retrieve live room data, the Huajiao live room address is not fixed, please manually change "
                 "the address for recording.")
             return result
@@ -2396,7 +2583,7 @@ async def get_huajiao_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
 
             api = f'https://live.huajiao.com/live/substream?{urllib.parse.urlencode(params)}'
             json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
-            json_data = json.loads(json_str)
+            json_data = _safe_json_loads(json_str)
             result |= {
                 'is_live': True,
                 'flv_url': json_data['data']['h264_url'],
@@ -2425,7 +2612,7 @@ async def get_liuxing_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
     }
     api = f'https://wap.7u66.com/api/ui/room/v1.0.0/live.ashx?{urllib.parse.urlencode(params)}'
     json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     room_info = json_data['data']['roomInfo']
     anchor_name = room_info['nickname']
     live_status = room_info["live_stat"]
@@ -2450,20 +2637,23 @@ async def get_showroom_stream_data(url: str, proxy_addr: OptionalStr = None, coo
     if '/room/profile' in url:
         room_id = url.split('room_id=')[-1]
     else:
-        html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers, abroad=True)
-        room_id = re.search('href="/room/profile\\?room_id=(.*?)"', html_str).group(1)
+        html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
+        room_match = _safe_re_search('href="/room/profile\\?room_id=(.*?)"', html_str)
+        if not room_match:
+            raise RuntimeError("Failed to parse Showroom room_id")
+        room_id = room_match.group(1)
     info_api = f'https://www.showroom-live.com/api/live/live_info?room_id={room_id}'
-    json_str = await async_req(info_api, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(info_api, proxy_addr=proxy_addr, headers=headers)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['room_name']
     result = {"anchor_name": anchor_name, "is_live": False}
     live_status = json_data['live_status']
     if live_status == 2:
         result["is_live"] = True
         web_api = f'https://www.showroom-live.com/api/live/streaming_url?room_id={room_id}&abr_available=1'
-        json_str = await async_req(web_api, proxy_addr=proxy_addr, headers=headers, abroad=True)
+        json_str = await async_req(web_api, proxy_addr=proxy_addr, headers=headers)
         if json_str:
-            json_data = json.loads(json_str)
+            json_data = _safe_json_loads(json_str)
             streaming_url_list = json_data['streaming_url_list']
 
             for i in streaming_url_list:
@@ -2471,7 +2661,7 @@ async def get_showroom_stream_data(url: str, proxy_addr: OptionalStr = None, coo
                     m3u8_url = i['url']
                     result['m3u8_url'] = m3u8_url
                     if m3u8_url:
-                        m3u8_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
+                        m3u8_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers)
                         if m3u8_url_list:
                             result['play_url_list'] = [f"{m3u8_url.rsplit('/', maxsplit=1)[0]}/{i}" for i in
                                                        m3u8_url_list]
@@ -2497,7 +2687,7 @@ async def get_acfun_sign_params(proxy_addr: OptionalStr = None, cookies: Optiona
     }
     api = 'https://id.app.acfun.cn/rest/app/visitor/login'
     json_str = await async_req(api, data=data, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     user_id = json_data["userId"]
     visitor_st = json_data["acfun.api.visitor_st"]
     return user_id, did, visitor_st
@@ -2515,7 +2705,7 @@ async def get_acfun_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
     author_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
     user_info_api = f'https://live.acfun.cn/rest/pc-direct/user/userInfo?userId={author_id}'
     json_str = await async_req(user_info_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['profile']['name']
     status = 'liveId' in json_data['profile']
     result = {"anchor_name": anchor_name, "is_live": False}
@@ -2537,10 +2727,10 @@ async def get_acfun_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
         }
         play_api = f'https://api.kuaishouzt.com/rest/zt/live/web/startPlay?{urllib.parse.urlencode(params)}'
         json_str = await async_req(play_api, data=data, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         live_title = json_data['data']['caption']
         videoPlayRes = json_data['data']['videoPlayRes']
-        play_url_list = json.loads(videoPlayRes)['liveAdaptiveManifest'][0]['adaptationSet']['representation']
+        play_url_list = _safe_json_loads(videoPlayRes)['liveAdaptiveManifest'][0]['adaptationSet']['representation']
         play_url_list = sorted(play_url_list, key=itemgetter('bitrate'), reverse=True)
         result |= {'play_url_list': play_url_list, 'title': live_title}
     return result
@@ -2564,14 +2754,17 @@ async def get_changliao_stream_url(url: str, proxy_addr: OptionalStr = None, coo
     }
     play_api = f'https://wap.tlclw.com/api/ui/room/v1.0.0/live.ashx?{urllib.parse.urlencode(params)}'
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['data']['roomInfo']['nickname']
     live_status = json_data['data']['roomInfo']['live_stat']
 
     async def get_live_domain(page_url):
         html_str = await async_req(page_url, proxy_addr=proxy_addr, headers=headers)
-        config_json_str = re.findall("var config = (.*?)config.webskins",
-                                     html_str, re.DOTALL)[0].rsplit(";", maxsplit=1)[0].strip()
+        config_json_matches = _safe_re_findall("var config = (.*?)config.webskins",
+                                     html_str, re.DOTALL)
+        if not config_json_matches:
+            raise RuntimeError("Failed to parse Changliao config")
+        config_json_str = config_json_matches[0].rsplit(";", maxsplit=1)[0].strip()
         config_json_data = json.loads(config_json_str)
         stream_flv_domain = config_json_data['domainpullstream_flv']
         stream_hls_domain = config_json_data['domainpullstream_hls']
@@ -2608,7 +2801,7 @@ async def get_yingke_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
 
     api = f'https://webapi.busi.inke.cn/web/live_share_pc?{urllib.parse.urlencode(params)}'
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['data']['media_info']['nick']
     live_status = json_data['data']['status']
 
@@ -2638,15 +2831,18 @@ async def get_yinbo_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
     }
     play_api = f'https://wap.ybw1666.com/api/ui/room/v1.0.0/live.ashx?{urllib.parse.urlencode(params)}'
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     room_data = json_data['data']['roomInfo']
     anchor_name = room_data['nickname']
     live_status = room_data['live_stat']
 
     async def get_live_domain(page_url):
         html_str = await async_req(page_url, proxy_addr=proxy_addr, headers=headers)
-        config_json_str = re.findall("var config = (.*?)config.webskins",
-                                     html_str, re.DOTALL)[0].rsplit(";", maxsplit=1)[0].strip()
+        config_json_matches = _safe_re_findall("var config = (.*?)config.webskins",
+                                     html_str, re.DOTALL)
+        if not config_json_matches:
+            raise RuntimeError("Failed to parse Changliao config")
+        config_json_str = config_json_matches[0].rsplit(";", maxsplit=1)[0].strip()
         config_json_data = json.loads(config_json_str)
         stream_flv_domain = config_json_data['domainpullstream_flv']
         stream_hls_domain = config_json_data['domainpullstream_hls']
@@ -2675,14 +2871,17 @@ async def get_zhihu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
         user_id = url.split('people/')[1]
         api = f'https://api.zhihu.com/people/{user_id}/profile?profile_new_version='
         json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         live_page_url = json_data['drama']['living_theater']['theater_url']
     else:
         live_page_url = url
 
     web_id = live_page_url.split('?')[0].rsplit('/', maxsplit=1)[-1]
     html_str = await async_req(live_page_url, proxy_addr=proxy_addr, headers=headers)
-    json_str2 = re.findall('<script id="js-initialData" type="text/json">(.*?)</script>', html_str)[0]
+    json_str2_matches = _safe_re_findall('<script id="js-initialData" type="text/json">(.*?)</script>', html_str)
+    if not json_str2_matches:
+        raise RuntimeError("Failed to parse Zhihu initial data")
+    json_str2 = json_str2_matches[0]
     json_data2 = json.loads(json_str2)
     live_data = json_data2['initialState']['theater']['theaters'][web_id]
     anchor_name = live_data['actor']['name']
@@ -2715,17 +2914,17 @@ async def get_chzzk_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
 
     room_id = url.split('?')[0].rsplit('/', maxsplit=1)[-1]
     play_api = f'https://api.chzzk.naver.com/service/v3/channels/{room_id}/live-detail'
-    json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
+    json_data = _safe_json_loads(json_str)
     live_data = json_data['content']
     anchor_name = live_data['channel']['channelName']
     live_status = live_data['status']
 
     result = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 'OPEN':
-        play_data = json.loads(live_data['livePlaybackJson'])
+        play_data = _safe_json_loads(live_data['livePlaybackJson'])
         m3u8_url = play_data['media'][0]['path']
-        m3u8_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
+        m3u8_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers)
         prefix = m3u8_url.split('?')[0].rsplit('/', maxsplit=1)[0]
         m3u8_url_list = [prefix + '/' + i for i in m3u8_url_list]
         result |= {"is_live": True, "m3u8_url": m3u8_url, "play_url_list": m3u8_url_list}
@@ -2768,8 +2967,8 @@ async def get_haixiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
         headers['referer'] = 'https://www.lehaitv.com'
         api = f'https://service.lehaitv.com/v2/room/{room_id}/media/advanceInfoRoom?{urllib.parse.urlencode(params)}'
 
-    json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
+    json_data = _safe_json_loads(json_str)
 
     stream_data = json_data['data']
     anchor_name = stream_data['nickname']
@@ -2794,9 +2993,11 @@ async def get_vvxqiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
         headers['Cookie'] = cookies
 
     room_id = get_params(url, "roomId")
+    if not room_id:
+        return {"anchor_name": "", "is_live": False}
     api_1 = f'https://h5p.vvxqiu.com/activity-center/fanclub/activity/captain/banner?roomId={room_id}&product=vvstar'
     json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data['data']['anchorName']
     if not anchor_name:
         params = {
@@ -2810,13 +3011,14 @@ async def get_vvxqiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
             f'https://h5p.vvxqiu.com/activity-center/halloween2023/banner?{urllib.parse.urlencode(params)}',
             proxy_addr=proxy_addr, headers=headers
         )
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         anchor_name = json_data['data']['memberVO']['memberName']
 
     result = {"anchor_name": anchor_name, "is_live": False}
     m3u8_url = f'https://liveplay-pro.wasaixiu.com/live/1400442770_{room_id}_{room_id[2:]}_single.m3u8'
     resp = await async_req(m3u8_url, proxy_addr=proxy_addr, headers=headers)
-    if 'Not Found' not in resp:
+    resp_str = _get_str_from_response(resp)
+    if _NOT_FOUND not in resp_str:
         result |= {'is_live': True, 'm3u8_url': m3u8_url, 'record_url': m3u8_url}
     return result
 
@@ -2835,7 +3037,7 @@ async def get_17live_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     room_id = url.split('?')[0].rsplit('/', maxsplit=1)[-1]
     api_1 = f'https://wap-api.17app.co/api/v1/user/room/{room_id}'
     json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     anchor_name = json_data["displayName"]
     result = {"anchor_name": anchor_name, "is_live": False}
     json_data = {
@@ -2843,7 +3045,7 @@ async def get_17live_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     }
     api_1 = f'https://wap-api.17app.co/api/v1/lives/{room_id}/viewers/alive'
     json_str = await async_req(api_1, json_data=json_data, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     live_status = json_data.get("status")
     if live_status and live_status == 2:
         flv_url = json_data['pullURLsInfo']['rtmpURLs'][0]['urlHighQuality']
@@ -2864,8 +3066,8 @@ async def get_langlive_stream_url(url: str, proxy_addr: OptionalStr = None, cook
 
     room_id = url.split('?')[0].rsplit('/', maxsplit=1)[-1]
     api_1 = f'https://api.lang.live/langweb/v1/room/liveinfo?room_id={room_id}'
-    json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers)
+    json_data = _safe_json_loads(json_str)
     live_info = json_data['data']['live_info']
     anchor_name = live_info['nickname']
     live_status = live_info['live_status']
@@ -2902,7 +3104,7 @@ async def get_pplive_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     else:
         api = 'https://api.pp.weimipopo.com/live/preview'
     json_str = await async_req(api, json_data=json_data, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     live_info = json_data['data']
     anchor_name = live_info['name']
     live_status = live_info['living']
@@ -2926,7 +3128,10 @@ async def get_6room_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
 
     room_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
     html_str = await async_req(f'https://v.6.cn/{room_id}', proxy_addr=proxy_addr, headers=headers)
-    room_id = re.search('rid: \'(.*?)\',\n\\s+roomid', html_str).group(1)
+    room_match = _safe_re_search('rid: \'(.*?)\',\n\\s+roomid', html_str)
+    if not room_match:
+        raise RuntimeError("Failed to parse 6room room_id")
+    room_id = room_match.group(1)
     data = {
         'av': '3.1',
         'encpass': '',
@@ -2938,7 +3143,7 @@ async def get_6room_stream_url(url: str, proxy_addr: OptionalStr = None, cookies
     }
     api = 'https://v.6.cn/coop/mobile/index.php?padapi=coop-mobile-inroom.php'
     json_str = await async_req(api, data=data, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     flv_title = json_data['content']['liveinfo']['flvtitle']
     anchor_name = json_data['content']['roominfo']['alias']
     result = {"anchor_name": anchor_name, "is_live": False}
@@ -2964,7 +3169,7 @@ async def get_shopee_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     is_living = False
 
     if 'live.shopee' not in url and 'uid' not in url:
-        url = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True, abroad=True)
+        url = _get_str_from_response(await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True))
 
     if 'live.shopee' in url:
         host_suffix = url.split('/')[2].rsplit('.', maxsplit=1)[1]
@@ -2977,23 +3182,23 @@ async def get_shopee_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     session_id = get_params(url, 'session')
     if uid:
         json_str = await async_req(f'{api_host}/api/v1/shop_page/live/ongoing?uid={uid}',
-                           proxy_addr=proxy_addr, headers=headers, abroad=True)
-        json_data = json.loads(json_str)
+                           proxy_addr=proxy_addr, headers=headers)
+        json_data = _safe_json_loads(json_str)
         if json_data['data']['ongoing_live']:
             session_id = json_data['data']['ongoing_live']['session_id']
             is_living = True
         else:
             json_str = await async_req(f'{api_host}/api/v1/shop_page/live/replay_list?offset=0&limit=1&uid={uid}',
-                               proxy_addr=proxy_addr, headers=headers, abroad=True)
-            json_data = json.loads(json_str)
+                               proxy_addr=proxy_addr, headers=headers)
+            json_data = _safe_json_loads(json_str)
             if json_data['data']['replay']:
                 result['anchor_name'] = json_data['data']['replay'][0]['nick_name']
                 return result
 
-    json_str = await async_req(f'{api_host}/api/v1/session/{session_id}', proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    json_str = await async_req(f'{api_host}/api/v1/session/{session_id}', proxy_addr=proxy_addr, headers=headers)
+    json_data = _safe_json_loads(json_str)
     if not json_data.get('data'):
-        print("Fetch shopee live data failed, please update the address of the live broadcast room and try again.")
+        logger.error("Fetch shopee live data failed, please update the address of the live broadcast room and try again.")
         return result
     uid = json_data['data']['session']['uid']
     anchor_name = json_data['data']['session']['nickname']
@@ -3017,19 +3222,22 @@ async def get_youtube_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
     if cookies:
         headers['Cookie'] = cookies
 
-    html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_str = re.search('var ytInitialPlayerResponse = (.*?);var meta = document\\.createElement', html_str).group(1)
-    json_data = json.loads(json_str)
+    html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
+    json_match = _safe_re_search('var ytInitialPlayerResponse = (.*?);var meta = document\\.createElement', html_str)
+    if not json_match:
+        raise RuntimeError("Failed to parse YouTube player response")
+    json_str = json_match.group(1)
+    json_data = _safe_json_loads(json_str)
     result = {"anchor_name": "", "is_live": False}
     if 'videoDetails' not in json_data:
-        print("Error: Please log in to YouTube on your device's webpage and configure cookies in the config.ini")
+        logger.error("Error: Please log in to YouTube on your device's webpage and configure cookies in the config.ini")
         return result
     result['anchor_name'] = json_data['videoDetails']['author']
     live_status = json_data['videoDetails'].get('isLive')
     if live_status:
         live_title = json_data['videoDetails']['title']
         m3u8_url = json_data['streamingData']["hlsManifestUrl"]
-        play_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
+        play_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers)
         result |= {"is_live": True, "title": live_title, "m3u8_url": m3u8_url, "play_url_list": play_url_list}
     return result
 
@@ -3048,8 +3256,14 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
     live_id = get_params(url, 'liveId')
     if not live_id:
         html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
-        redirect_url = re.findall("var url = '(.*?)';", html_str)[0]
+        redirect_url_matches = _safe_re_findall("var url = '(.*?)';", html_str)
+        if not redirect_url_matches:
+            raise RuntimeError("Failed to parse Taobao redirect url")
+        redirect_url = redirect_url_matches[0]
         live_id = get_params(redirect_url, 'id')
+    
+    if not live_id:
+        raise RuntimeError("Failed to parse Taobao live id")
 
     params = {
         'jsv': '2.7.0',
@@ -3069,17 +3283,29 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
 
     for i in range(2):
         t13 = int(time.time() * 1000)
-        params['t'] = t13
+        params['t'] = str(t13)
 
         if '_m_h5_tk' in headers['Cookie']:
             app_key = '12574478'
-            _m_h5_tk = re.findall('_m_h5_tk=(.*?);', headers['Cookie'])[0]
+            _m_h5_tk_matches = _safe_re_findall('_m_h5_tk=(.*?);', headers['Cookie'])
+            if not _m_h5_tk_matches:
+                raise RuntimeError("Failed to parse Taobao _m_h5_tk from cookie")
+            _m_h5_tk = _m_h5_tk_matches[0]
             pre_sign_str = f'{_m_h5_tk.split("_")[0]}&{t13}&{app_key}&' + params['data']
             sign = hashlib.md5(pre_sign_str.encode("utf-8")).hexdigest()
             params['sign'] = sign
         api = f'https://h5api.m.taobao.com/h5/mtop.mediaplatform.live.livedetail/4.0/?{urllib.parse.urlencode(params)}'
-        jsonp_str, new_cookie = await async_req(url=api, proxy_addr=proxy_addr, headers=headers, timeout=20,
-                                                return_cookies=True, include_cookies=True)
+        resp_tuple = await async_req(url=api, proxy_addr=proxy_addr, headers=headers, timeout=20,
+                                        return_cookies=True, include_cookies=True)
+        if isinstance(resp_tuple, tuple) and len(resp_tuple) == 2:
+            jsonp_str, new_cookie = resp_tuple
+        elif isinstance(resp_tuple, dict):
+            new_cookie = resp_tuple
+            jsonp_str = ""
+        else:
+            jsonp_str = resp_tuple
+            new_cookie = {}
+        jsonp_str = _get_str_from_response(jsonp_str)
         json_data = utils.jsonp_to_json(jsonp_str)
         if '哎哟喂,被挤爆啦,请稍后重试' in json_data['ret'][0]:
             raise RuntimeError(f"Please change your taobao cookie: {json_data['ret']}")
@@ -3111,6 +3337,7 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
             new_cookie_str = utils.dict_to_cookie_str(new_cookie)
             headers['Cookie'] = new_cookie_str
             utils.update_config(f'{script_path}/config/config.ini', 'Cookie', 'taobao_cookie', new_cookie_str)
+    return {"anchor_name": '', "is_live": False}
 
 
 @trace_error_decorator
@@ -3125,11 +3352,11 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
     if cookies:
         headers['Cookie'] = cookies
 
-    redirect_url = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+    redirect_url = _get_str_from_response(await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True))
     author_id = get_params(redirect_url, 'authorId')
     result = {"anchor_name": '', "is_live": False}
     if not author_id:
-        live_id = re.search('#/(.*?)\\?origin', redirect_url)
+        live_id = _safe_re_search('#/(.*?)\\?origin', redirect_url)
         if not live_id:
             return result
         live_id = live_id.group(1)
@@ -3142,7 +3369,7 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
         }
         info_api = 'https://api.m.jd.com/talent_head_findTalentMsg'
         json_str = await async_req(info_api, data=data, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
+        json_data = _safe_json_loads(json_str)
         anchor_name = json_data['result']['talentName']
         result['anchor_name'] = anchor_name
         if 'livingRoomJump' not in json_data['result']:
@@ -3157,7 +3384,7 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
     api = f'https://api.m.jd.com/client.action?{urllib.parse.urlencode(params)}'
     # backup_api: https://api.m.jd.com/api
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     live_status = json_data['data']['status']
     if live_status == 1:
         if author_id:
@@ -3169,7 +3396,7 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
             }
             json_str2 = await async_req('https://api.m.jd.com/jdTalentContentList', data=data,
                                 proxy_addr=proxy_addr, headers=headers)
-            json_data2 = json.loads(json_str2)
+            json_data2 = _safe_json_loads(json_str2)
             result['title'] = json_data2['result']['content'][0]['title']
 
         flv_url = json_data['data']['videoUrl']
@@ -3188,14 +3415,17 @@ async def get_faceit_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
 
     if cookies:
         headers['Cookie'] = cookies
-    nickname = re.findall('/players/(.*?)/stream', url)[0]
+    nickname_matches = _safe_re_findall('/players/(.*?)/stream', url)
+    if not nickname_matches:
+        raise RuntimeError("Failed to parse FaceIt nickname from url")
+    nickname = nickname_matches[0]
     api = f'https://www.faceit.com/api/users/v1/nicknames/{nickname}'
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     user_id = json_data['payload']['id']
     api2 = f'https://www.faceit.com/api/stream/v1/streamings?userId={user_id}'
     json_str2 = await async_req(api2, proxy_addr=proxy_addr, headers=headers)
-    json_data2 = json.loads(json_str2)
+    json_data2 = _safe_json_loads(json_str2)
     platform_info = json_data2['payload'][0]
     anchor_name = platform_info.get('userNickname')
     anchor_id = platform_info.get('platformId')
@@ -3226,7 +3456,7 @@ async def get_migu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies:
     web_id = url.split('?')[0].rsplit('/')[-1]
     api = f'https://vms-sc.miguvideo.com/vms-match/v6/staticcache/basic/basic-data/{web_id}/miguvideo'
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
 
     anchor_name = json_data['body']['title']
     live_title = json_data['body'].get('title') + '-' + json_data['body'].get('detailPageTitle', '')
@@ -3249,7 +3479,7 @@ async def get_migu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies:
 
     api = f'https://webapi.miguvideo.com/gateway/playurl/v3/play/playurl?{urllib.parse.urlencode(params)}'
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
     live_status = json_data['body']['content']['currentLive']
     if live_status != '1':
         return result
@@ -3259,21 +3489,23 @@ async def get_migu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies:
 
         async def _get_dd_calcu(url):
             try:
-                result = subprocess.run(
-                    ["node", f"{JS_SCRIPT_PATH}/migu.js", url],
-                    capture_output=True,
-                    text=True,
-                    check=True
+                process = await asyncio.create_subprocess_exec(
+                    "node", f"{JS_SCRIPT_PATH}/migu.js", url,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
                 )
-                return result.stdout.strip()
+                stdout, _ = await process.communicate()
+                if process.returncode != 0:
+                    raise RuntimeError(f"Node.js process failed with return code {process.returncode}")
+                return stdout.decode().strip()
             except execjs.ProgramError:
                 raise execjs.ProgramError('Failed to execute JS code. Please check if the Node.js environment')
 
         ddCalcu = await _get_dd_calcu(source_url)
         real_source_url = f'{source_url}&ddCalcu={ddCalcu}&sv=10010'
         if '.m3u8' in real_source_url:
-            m3u8_url = await async_req(
-                real_source_url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+            m3u8_url = _get_str_from_response(await async_req(
+                real_source_url, proxy_addr=proxy_addr, headers=headers, redirect_url=True))
             result['m3u8_url'] = m3u8_url
             result['record_url'] = m3u8_url
         else:
@@ -3297,7 +3529,7 @@ async def get_lianjie_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
     room_id = url.split('?')[0].rsplit('lailianjie.com/', maxsplit=1)[-1]
     play_api = f'https://api.lailianjie.com/ApiServices/service/live/getRoomInfo?&_$t=&_sign=&roomNumber={room_id}'
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
 
     room_data = json_data['data']
     anchor_name = room_data['nickname']
@@ -3359,11 +3591,11 @@ async def get_laixiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
         headers['cookie'] = cookies
 
     pattern = r"(?:roomId|anchorId)=(.*?)(?=&|$)"
-    match = re.search(pattern, url)
+    match = _safe_re_search(pattern, url)
     room_id = match.group(1) if match else ''
     play_api = f'https://api.imkktv.com/liveroom/getShareLiveVideo?roomId={room_id}'
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
 
     room_data = json_data['data']
     anchor_name = room_data['nickname']
@@ -3391,7 +3623,7 @@ async def get_picarto_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
     api = f'https://ptvintern.picarto.tv/api/channel/detail/{anchor_id}'
 
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)
+    json_data = _safe_json_loads(json_str)
 
     anchor_name = json_data['channel']['name']
     live_status = json_data['channel']['online']

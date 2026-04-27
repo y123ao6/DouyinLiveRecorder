@@ -20,13 +20,17 @@ from src.logger import logger
 
 no_proxy_handler = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(no_proxy_handler)
+proxy_aware_opener = urllib.request.build_opener()
 headers: Dict[str, str] = {'Content-Type': 'application/json'}
+
+_SMTP_TIMEOUT = 15
 
 
 def dingtalk(url: str, content: str, number: str | None = None, is_atall: bool = False) -> Dict[str, Any]:
     success = []
     error = []
     api_list = url.replace('，', ',').split(',') if url.strip() else []
+    at_mobiles = [number] if number else []
     for api in api_list:
         json_data = {
             'msgtype': 'text',
@@ -34,9 +38,7 @@ def dingtalk(url: str, content: str, number: str | None = None, is_atall: bool =
                 'content': content,
             },
             "at": {
-                "atMobiles": [
-                    number
-                ],
+                "atMobiles": at_mobiles,
                 "isAtAll": is_atall
             },
         }
@@ -86,6 +88,10 @@ def xizhi(url: str, title: str, content: str) -> Dict[str, Any]:
 def send_email(email_host: str, login_email: str, email_pass: str, sender_email: str, sender_name: str,
                to_email: str, title: str, content: str, smtp_port: str | None = None,
                open_ssl: bool = True) -> Dict[str, Any]:
+    if not email_host or not login_email or not email_pass or not sender_email or not to_email:
+        logger.warning('邮件推送失败: 缺少必要的邮件配置参数')
+        return {"success": [], "error": to_email.replace('，', ',').split(',') if to_email.strip() else []}
+
     receivers = to_email.replace('，', ',').split(',') if to_email.strip() else []
     smtp_obj = None
 
@@ -102,10 +108,10 @@ def send_email(email_host: str, login_email: str, email_pass: str, sender_email:
 
         if open_ssl:
             port = int(smtp_port) if smtp_port else 465
-            smtp_obj = smtplib.SMTP_SSL(email_host, port)
+            smtp_obj = smtplib.SMTP_SSL(email_host, port, timeout=_SMTP_TIMEOUT)
         else:
             port = int(smtp_port) if smtp_port else 25
-            smtp_obj = smtplib.SMTP(email_host, port)
+            smtp_obj = smtplib.SMTP(email_host, port, timeout=_SMTP_TIMEOUT)
         smtp_obj.login(login_email, email_pass)
         smtp_obj.sendmail(sender_email, receivers, message.as_string())
         return {"success": receivers, "error": []}
@@ -123,19 +129,23 @@ def send_email(email_host: str, login_email: str, email_pass: str, sender_email:
                 pass
 
 
-def tg_bot(chat_id: int, token: str, content: str) -> Dict[str, Any]:
+def tg_bot(chat_id: int | str, token: str, content: str) -> Dict[str, Any]:
     try:
         json_data = {
-            "chat_id": chat_id,
+            "chat_id": str(chat_id),
             'text': content
         }
         url = f'https://api.telegram.org/bot{token}/sendMessage'
         data = json.dumps(json_data).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers=headers)
-        response = opener.open(req, timeout=15)
+        response = proxy_aware_opener.open(req, timeout=15)
         json_str = response.read().decode('utf-8')
-        json.loads(json_str)
-        return {"success": [1], "error": []}
+        result = json.loads(json_str)
+        if result.get('ok'):
+            return {"success": [1], "error": []}
+        else:
+            logger.warning(f'tg推送失败, 聊天ID：{chat_id}, 错误信息：{result.get("description", "未知错误")}')
+            return {"success": [], "error": [1]}
     except Exception as e:
         logger.warning(f'tg推送失败, 聊天ID：{chat_id}, 错误信息:{e}')
         return {"success": [], "error": [1]}
@@ -189,7 +199,19 @@ def ntfy(api: str, title: str = "message", content: str = 'test', tags: str | li
         tags = ['partying_face']
     actions = [{"action": "view", "label": "view live", "url": action_url}] if action_url else []
     for _api in api_list:
-        server, topic = _api.rsplit('/', maxsplit=1)
+        if '/' not in _api:
+            error.append(_api)
+            logger.warning(f'ntfy推送失败, 推送地址格式错误：{_api}')
+            continue
+
+        parts = _api.rsplit('/', maxsplit=1)
+        server = parts[0]
+        topic = parts[1] if len(parts) > 1 else ''
+        if not topic:
+            error.append(_api)
+            logger.warning(f'ntfy推送失败, 无法从地址中提取topic：{_api}')
+            continue
+
         json_data = {
             "topic": topic,
             "title": title,

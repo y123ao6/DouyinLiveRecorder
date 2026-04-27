@@ -19,8 +19,11 @@ from tqdm import tqdm
 from .logger import logger
 
 current_platform = platform.system()
-execute_dir = os.path.split(os.path.realpath(sys.argv[0]))[0]
-current_env_path = os.environ.get('PATH')
+try:
+    execute_dir = os.path.split(os.path.realpath(sys.argv[0]))[0]
+except Exception:
+    execute_dir = str(Path.cwd())
+current_env_path = os.environ.get('PATH', '')
 
 
 def unzip_file(zip_path: str | Path, extract_to: str | Path, delete: bool = True) -> None:
@@ -34,7 +37,7 @@ def unzip_file(zip_path: str | Path, extract_to: str | Path, delete: bool = True
         os.remove(zip_path)
 
 
-def install_nodejs_windows():
+def install_nodejs_windows() -> bool:
     try:
         logger.warning("Node.js is not installed.")
         logger.debug("Installing the stable version of Node.js for Windows...")
@@ -48,7 +51,7 @@ def install_nodejs_windows():
                 url = f'https://npmmirror.com/mirrors/node/{version}/node-{version}-win-{system_bit}.zip'
             else:
                 logger.error("Failed to retrieve the download URL for the latest version of Node.js...")
-                return
+                return False
 
             full_file_name = url.rsplit('/', maxsplit=1)[-1]
             zip_file_path = Path(execute_dir) / full_file_name
@@ -85,16 +88,17 @@ def install_nodejs_windows():
 
     except Exception as e:
         logger.error(f"type: {type(e).__name__}, Node.js installation failed {e}")
+    return False
 
 
-def install_nodejs_centos():
+def install_nodejs_centos() -> bool:
     try:
         logger.warning("Node.js is not installed.")
         logger.debug("Installing the latest version of Node.js for CentOS...")
         result = subprocess.run(['yum', 'install', '-y', 'epel-release'], capture_output=True)
         if result.returncode != 0:
             logger.error("Failed to install EPEL repository")
-            return
+            return False
 
         result = subprocess.run(['yum', 'install', '-y', 'nodejs'], capture_output=True)
         if result.returncode == 0:
@@ -105,9 +109,10 @@ def install_nodejs_centos():
 
     except Exception as e:
         logger.error(f"type: {type(e).__name__}, Node.js installation failed {e}")
+    return False
 
 
-def install_nodejs_ubuntu():
+def install_nodejs_ubuntu() -> bool:
     try:
         logger.warning("Node.js is not installed.")
         logger.debug("Installing the latest version of Node.js for Ubuntu...")
@@ -120,9 +125,10 @@ def install_nodejs_ubuntu():
             logger.error("Node.js installation failed")
     except Exception as e:
         logger.error(f"type: {type(e).__name__}, Node.js installation failed, {e}")
+    return False
 
 
-def install_nodejs_mac():
+def install_nodejs_mac() -> bool:
     logger.warning("Node.js is not installed.")
     logger.debug("Installing the latest version of Node.js for macOS...")
     try:
@@ -137,6 +143,7 @@ def install_nodejs_mac():
         logger.error("Please install Node.js manually or check your Homebrew installation.")
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
+    return False
 
 
 def get_package_manager():
@@ -165,6 +172,9 @@ def install_nodejs() -> bool:
 
 
 def ensure_nodejs_installed(func):
+    import functools
+
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             result = subprocess.run(['node', '-v'], capture_output=True)
@@ -173,23 +183,20 @@ def ensure_nodejs_installed(func):
                 return func(*args, **kwargs)
         except FileNotFoundError:
             pass
-        return False
 
-    def wrapped_func(*args, **kwargs):
-        if sys.version_info >= (3, 7):
-            res = wrapper(*args, **kwargs)
-        else:
-            res = wrapper(*args, **kwargs)
-        if not res:
-            install_nodejs()
-            res = wrapper(*args, **kwargs)
+        install_nodejs()
 
-        if not res:
-            raise RuntimeError("Node.js is not installed.")
+        try:
+            result = subprocess.run(['node', '-v'], capture_output=True)
+            version = result.stdout.strip()
+            if result.returncode == 0 and version:
+                return func(*args, **kwargs)
+        except FileNotFoundError:
+            pass
 
-        return func(*args, **kwargs)
+        raise RuntimeError("Node.js is not installed.")
 
-    return wrapped_func
+    return wrapper
 
 
 def check_nodejs_installed() -> bool:
@@ -205,4 +212,5 @@ def check_nodejs_installed() -> bool:
 
 def check_node() -> bool:
     if not check_nodejs_installed():
-        return install_nodejs()
+        return bool(install_nodejs())
+    return True

@@ -13,6 +13,7 @@ import execjs
 import httpx
 import urllib.request
 from . import JS_SCRIPT_PATH, utils
+from .logger import logger
 
 no_proxy_handler = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(no_proxy_handler)
@@ -39,17 +40,23 @@ HEADERS_PC = {
 
 
 # X-bogus算法
+_xbogus_js = None
+
+
 async def get_xbogus(url: str, headers: dict | None = None) -> str:
+    global _xbogus_js
     if not headers or 'user-agent' not in (k.lower() for k in headers):
         headers = HEADERS
     query = urllib.parse.urlparse(url).query
-    xbogus = execjs.compile(open(f'{JS_SCRIPT_PATH}/x-bogus.js').read()).call(
-        'sign', query, headers.get("User-Agent", "user-agent"))
+    if _xbogus_js is None:
+        with open(f'{JS_SCRIPT_PATH}/x-bogus.js', encoding='utf-8') as f:
+            _xbogus_js = execjs.compile(f.read())
+    xbogus = _xbogus_js.call('sign', query, headers.get("User-Agent", "user-agent"))
     return xbogus
 
 
 # 获取房间ID和用户secID
-async def get_sec_user_id(url: str, proxy_addr: str | None = None, headers: dict | None = None) -> tuple | None:
+async def get_sec_user_id(url: str, proxy_addr: str | None = None, headers: dict | None = None) -> tuple[str, str] | None:
     if not headers or all(k.lower() not in ['user-agent', 'cookie'] for k in headers):
         headers = HEADERS
 
@@ -136,15 +143,20 @@ async def get_live_room_id(room_id: str, sec_user_id: str, proxy_addr: str | Non
             json_data = response.json()
             return json_data['data']['room']['owner']['web_rid']
     except httpx.HTTPStatusError as e:
-        print(f"HTTP status error occurred: {e.response.status_code}")
+        logger.error(f"HTTP status error occurred: {e.response.status_code}")
         raise
     except Exception as e:
-        print(f"An exception occurred during get_live_room_id: {e}")
+        logger.error(f"An exception occurred during get_live_room_id: {e}")
         raise
 
 
 if __name__ == '__main__':
+    import asyncio
     room_url = "https://v.douyin.com/iQLgKSj/"
-    _room_id, sec_uid = get_sec_user_id(room_url)
-    web_rid = get_live_room_id(_room_id, sec_uid)
-    print("return web_rid:", web_rid)
+    result = asyncio.run(get_sec_user_id(room_url))
+    if result:
+        _room_id, sec_uid = result
+        web_rid = asyncio.run(get_live_room_id(_room_id, sec_uid))
+        print("return web_rid:", web_rid)
+    else:
+        print("Could not get room_id and sec_user_id")

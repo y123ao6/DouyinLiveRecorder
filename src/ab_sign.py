@@ -1,6 +1,7 @@
 # -*- encoding: utf-8 -*-
 import math
 import time
+from typing import Any
 
 
 def rc4_encrypt(plaintext: str, key: str) -> str:
@@ -60,8 +61,8 @@ def gg_j(j: int, x: int, y: int, z: int) -> int:
 
 class SM3:
     def __init__(self):
-        self.reg = []
-        self.chunk = []
+        self.reg: list[int] = []
+        self.chunk: list[int] = []
         self.size = 0
         self.reset()
 
@@ -74,13 +75,17 @@ class SM3:
         self.chunk = []
         self.size = 0
 
-    def write(self, data):
+    def write(self, data: str | list[int] | bytes | bytearray):
         # 将输入转换为字节数组
         if isinstance(data, str):
             # 直接转换为UTF-8字节列表
             a = list(data.encode('utf-8'))
-        else:
+        elif isinstance(data, bytes) or isinstance(data, bytearray):
+            a = list(data)
+        elif isinstance(data, list):
             a = data
+        else:
+            a = list(data)
 
         self.size += len(a)
         f = 64 - len(self.chunk)
@@ -127,7 +132,7 @@ class SM3:
         for i in range(4):
             self.chunk.append((bit_length >> (8 * (3 - i))) & 0xFF)
 
-    def _compress(self, data):
+    def _compress(self, data: Any):
         if len(data) < 64:
             raise ValueError("compress error: not enough data")
         else:
@@ -177,7 +182,7 @@ class SM3:
             self.reg[6] ^= g
             self.reg[7] ^= h
 
-    def sum(self, data=None, output_format=None):
+    def sum(self, data: str | list[int] | bytes | None = None, output_format: str | None = None) -> str | list[int]:
         """
         计算哈希值
         """
@@ -194,7 +199,7 @@ class SM3:
 
         if output_format == 'hex':
             # 十六进制输出
-            result = ''.join(f'{val:08x}' for val in self.reg)
+            result: str | list[int] = ''.join(f'{val:08x}' for val in self.reg)
         else:
             # 字节数组输出
             result = []
@@ -209,7 +214,7 @@ class SM3:
         return result
 
 
-def result_encrypt(long_str: str, num: str | None = None) -> str:
+def result_encrypt(long_str: str, num: str = "s0") -> str:
     # 魔改base64编码表
     encoding_tables = {
         "s0": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=",
