@@ -37,13 +37,14 @@ class Color:
 
 def trace_error_decorator(func: Callable) -> Callable:
     @functools.wraps(func)
-    def wrapper(*args: list, **kwargs: dict) -> Any:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
         except execjs.ProgramError:
-            logger.warning('Failed to execute JS code. Please check if the Node.js environment')
+            logger.warning('Failed to execute JS code. Please check if the Node.js environment is installed correctly.')
         except Exception as e:
-            error_line = traceback.extract_tb(e.__traceback__)[-1].lineno
+            tb = e.__traceback__
+            error_line = traceback.extract_tb(tb)[-1].lineno if tb else -1
             error_info = f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
             logger.error(error_info)
             return []
@@ -68,16 +69,16 @@ def read_config_value(file_path: str | Path, section: str, key: str) -> str | No
     try:
         config.read(file_path, encoding='utf-8-sig')
     except Exception as e:
-        print(f"Error occurred while reading the configuration file: {e}")
+        logger.error(f"Error occurred while reading the configuration file: {e}")
         return None
 
     if section in config:
         if key in config[section]:
             return config[section][key]
         else:
-            print(f"Key [{key}] does not exist in section [{section}].")
+            logger.warning(f"Key [{key}] does not exist in section [{section}].")
     else:
-        print(f"Section [{section}] does not exist in the file.")
+        logger.warning(f"Section [{section}] does not exist in the file.")
 
     return None
 
@@ -88,11 +89,11 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     try:
         config.read(file_path, encoding='utf-8-sig')
     except Exception as e:
-        print(f"An error occurred while reading the configuration file: {e}")
+        logger.error(f"An error occurred while reading the configuration file: {e}")
         return
 
     if section not in config:
-        print(f"Section [{section}] does not exist in the file.")
+        logger.warning(f"Section [{section}] does not exist in the file.")
         return
 
     # 转义%字符
@@ -102,9 +103,9 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     try:
         with open(file_path, 'w', encoding='utf-8-sig') as configfile:
             config.write(configfile)
-        print(f"The value of {key} under [{section}] in the configuration file has been updated.")
+        logger.info(f"The value of {key} under [{section}] in the configuration file has been updated.")
     except Exception as e:
-        print(f"Error occurred while writing to the configuration file: {e}")
+        logger.error(f"Error occurred while writing to the configuration file: {e}")
 
 
 def get_file_paths(directory: str) -> list:
@@ -159,7 +160,7 @@ def check_disk_capacity(file_path: str | Path, show: bool = False) -> float:
     return free_space_gb
 
 
-def handle_proxy_addr(proxy_addr):
+def handle_proxy_addr(proxy_addr: str | None) -> str | None:
     if proxy_addr:
         if not proxy_addr.startswith('http'):
             proxy_addr = 'http://' + proxy_addr
@@ -174,7 +175,7 @@ def generate_random_string(length: int) -> str:
     return random_string
 
 
-def jsonp_to_json(jsonp_str: str) -> OptionalDict:
+def jsonp_to_json(jsonp_str: str) -> dict:
     pattern = r'(\w+)\((.*)\);?$'
     match = re.search(pattern, jsonp_str)
 

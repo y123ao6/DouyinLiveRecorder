@@ -154,29 +154,82 @@
           <p>&copy; 2023 <a href='https://github.com/ihmily/DouyinLiveRecorder' class="no_style" target="_blank">Hmily</a>. All rights reserved.</p>
         </div>
 	    <script>
+    	    var hlsPlayer = null;
+    	    var flvPlayer = null;
+
+    	    function destroyPlayers() {
+    	        if (hlsPlayer) {
+    	            hlsPlayer.destroy();
+    	            hlsPlayer = null;
+    	        }
+    	        if (flvPlayer) {
+    	            flvPlayer.pause();
+    	            flvPlayer.unload();
+    	            flvPlayer.detachMediaElement();
+    	            flvPlayer.destroy();
+    	            flvPlayer = null;
+    	        }
+    	    }
+
     	    function httpToHttps(url) {
               if (url.startsWith("http://")) {
                 return url.replace("http://", "https://");
               }
               return url;
             }
+
+    	    function isValidUrl(url) {
+    	        try {
+    	            var parsed = new URL(url);
+    	            return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    	        } catch (e) {
+    	            return false;
+    	        }
+    	    }
+
 	        function playVideo() {
-            let videoUrl = document.getElementById('videoUrlInput').value;
+            let videoUrl = document.getElementById('videoUrlInput').value.trim();
             const video = document.querySelector('#videoPlayer video');
             const description = document.querySelector('.description');
             if (videoUrl == ''){
                 alert('请输入视频链接');
                 return;
             }
+
+            if (!isValidUrl(videoUrl)) {
+                alert('请输入有效的视频链接地址');
+                return;
+            }
+
+            destroyPlayers();
             videoUrl = httpToHttps(videoUrl);
             if (videoUrl.includes('.m3u8')) {
                 videoPlayer.style.display = 'block';
                 description.style.display = 'none';
                 if (Hls.isSupported()) {
-                    const hls = new Hls();
-                    hls.attachMedia(video);
-                    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-                        hls.loadSource(videoUrl);
+                    hlsPlayer = new Hls();
+                    hlsPlayer.attachMedia(video);
+                    hlsPlayer.on(Hls.Events.MEDIA_ATTACHED, () => {
+                        hlsPlayer.loadSource(videoUrl);
+                    });
+                    hlsPlayer.on(Hls.Events.ERROR, (event, data) => {
+                        if (data.fatal) {
+                            switch (data.type) {
+                                case Hls.ErrorTypes.NETWORK_ERROR:
+                                    console.error('HLS网络错误，尝试恢复...');
+                                    hlsPlayer.startLoad();
+                                    break;
+                                case Hls.ErrorTypes.MEDIA_ERROR:
+                                    console.error('HLS媒体错误，尝试恢复...');
+                                    hlsPlayer.recoverMediaError();
+                                    break;
+                                default:
+                                    console.error('HLS致命错误，无法恢复');
+                                    destroyPlayers();
+                                    alert('视频播放失败，请检查链接是否有效。');
+                                    break;
+                            }
+                        }
                     });
                 } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                     video.src = videoUrl;
@@ -187,13 +240,18 @@
                 }
             } else if (videoUrl.includes('.flv')) {
                 if (flvjs.isSupported()) {
-                    const flvPlayer = flvjs.createPlayer({
+                    flvPlayer = flvjs.createPlayer({
                         type: 'flv',
                         url: videoUrl
                     });
                     flvPlayer.attachMediaElement(video);
                     flvPlayer.load();
                     flvPlayer.play();
+                    flvPlayer.on(flvjs.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+                        console.error('FLV播放错误:', errorType, errorDetail);
+                        alert('FLV视频播放失败，请检查链接是否有效。');
+                        destroyPlayers();
+                    });
                 } else {
                     alert('FLV 格式不受您的浏览器支持。');
                     console.error('FLV 格式不受您的浏览器支持。');

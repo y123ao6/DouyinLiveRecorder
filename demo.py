@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 import asyncio
 from src.logger import logger
-from src import spider
 
-# 以下示例直播间链接不保证时效性，请自行查看链接是否能正常访问
-# Please note that the following example live room links may not be up-to-date
+try:
+    from src import spider
+except ImportError as e:
+    logger.error(f"Failed to import spider module: {e}")
+    logger.error("Please ensure all dependencies are installed: pip install -r requirements.txt")
+    raise
+
 LIVE_STREAM_CONFIG = {
     "douyin": {
         "url": "https://live.douyin.com/745964462470",
@@ -209,12 +213,30 @@ LIVE_STREAM_CONFIG = {
     }
 }
 
+_event_loop = None
+
+
+def _get_event_loop():
+    global _event_loop
+    try:
+        if _event_loop is None or _event_loop.is_closed():
+            _event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_event_loop)
+        return _event_loop
+    except RuntimeError:
+        _event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_event_loop)
+        return _event_loop
+
 
 def test_live_stream(platform_name: str, proxy_addr=None, cookies=None) -> None:
     if platform_name in LIVE_STREAM_CONFIG:
         config = LIVE_STREAM_CONFIG[platform_name]
         try:
-            stream_data = asyncio.run(config['func'](config['url'], proxy_addr=proxy_addr, cookies=cookies))
+            loop = _get_event_loop()
+            stream_data = loop.run_until_complete(
+                config['func'](config['url'], proxy_addr=proxy_addr, cookies=cookies)
+            )
             logger.debug(f"Stream data for {platform_name}: {stream_data}")
         except Exception as e:
             logger.error(f"Error fetching stream data for {platform_name}: {e}")
