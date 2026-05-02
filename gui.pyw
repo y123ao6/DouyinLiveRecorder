@@ -179,9 +179,21 @@ class LiveRecorderGUI:
         self.system_tray: SystemTray | None = None
         self.tray_thread: threading.Thread | None = None
 
+        self._last_url_config_mtime = 0.0
+        self._url_config_dirty = False
+        self._refresh_job_id: str | None = None
+        self._anchor_refresh_counter = 0
+        self._anchor_refreshing = False
+
+        self._status_cache_mtime = 0.0
+        self._status_cache: tuple[str, str, str] | None = None
+
+        self._nickname_pattern = re.compile(r'"nickname":"(.*?)","avatar_thumb')
+
         self._setup_style()
         self._setup_ui()
         self._load_config()
+        self._schedule_status_refresh()
 
     def _setup_style(self):
         """设置 ttk 样式"""
@@ -243,6 +255,7 @@ class LiveRecorderGUI:
 
         self.config_text = scrolledtext.ScrolledText(config_frame, wrap=tk.WORD, font=("Consolas", 10), height=10)
         self.config_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.config_text.bind('<<Modified>>', self._on_config_text_modified)
 
         hint_label = tk.Label(config_frame,
                               text="💡 格式说明: 每行一个直播链接，支持 # 开头的注释行 | 点击窗口关闭按钮（X）将最小化到系统托盘",
@@ -253,7 +266,10 @@ class LiveRecorderGUI:
         save_frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.save_btn = ttk.Button(save_frame, text="💾 保存 URL 配置", command=self.save_config, width=20)
-        self.save_btn.pack()
+        self.save_btn.pack(side=tk.LEFT, padx=5)
+
+        self.reload_btn = ttk.Button(save_frame, text="📂 重新读取配置", command=self._manual_reload_config, width=20)
+        self.reload_btn.pack(side=tk.LEFT, padx=5)
 
         log_frame = ttk.LabelFrame(self.root, text="运行日志 (main.py 输出)", padding=5)
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -263,7 +279,6 @@ class LiveRecorderGUI:
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         self.status_var = tk.StringVar()
-        # self.status_var.set("就绪 | 循环检测: 120秒 | 格式: ts → mp4 | 托盘: 启用")
         self._update_status_bar()
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, padding=(5, 2))
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
@@ -280,43 +295,58 @@ class LiveRecorderGUI:
         try:
             with open(self.url_config_file, 'r', encoding='utf-8-sig') as f:
                 content = f.read()
+
+            current_content = self.config_text.get(1.0, tk.END).rstrip('\n')
+            if content == current_content:
+                self._last_url_config_mtime = os.path.getmtime(self.url_config_file)
+                self._url_config_dirty = False
+                self.config_text.edit_modified(False)
+                return
+
             self.config_text.delete(1.0, tk.END)
             self.config_text.insert(1.0, content)
+            self._last_url_config_mtime = os.path.getmtime(self.url_config_file)
+            self._url_config_dirty = False
+            self.config_text.edit_modified(False)
             self._log("配置文件已加载")
         except Exception as e:
             self._log(f"加载配置文件失败: {e}", "error")
 
     def _get_dynamic_status_info(self):
-        """
-        动态读取 config/config.ini 中的配置信息
-        返回: (循环时间, 输出格式, 托盘状态)
-        """
         check_interval = "120秒"
         output_format = "ts → mp4"
         tray_status = "启用" if self.system_tray and self.system_tray.running else "未启动"
 
-        if os.path.exists(self.main_config_file):
-            try:
-                config = configparser.ConfigParser()
-                config.optionxform = str  # type: ignore[assignment]
-                config.read(self.main_config_file, encoding='utf-8-sig')
+        if not os.path.exists(self.main_config_file):
+            return check_interval, output_format, tray_status
 
-                # 循环检测时间（节：[录制设置]，键：循环时间(秒)）
-                if '录制设置' in config:
-                    interval = config['录制设置'].get('循环时间(秒)', '120')
-                    check_interval = f"{interval}秒"
+        try:
+            file_mtime = os.path.getmtime(self.main_config_file)
+            if self._status_cache is not None and file_mtime == self._status_cache_mtime:
+                ci, ofmt, ts = self._status_cache
+                ts = "启用" if self.system_tray and self.system_tray.running else "未启动"
+                return ci, ofmt, ts
 
-                    # 输出格式
-                    fmt = config['录制设置'].get('录制完成后自动转为mp4格式', '否')
-                    if fmt == '是':
-                        output_format = "ts → mp4"
-                    else:
-                        # 读取保存格式
-                        save_fmt = config['录制设置'].get('视频保存格式ts|mkv|flv|mp4|mp3音频|m4a音频', 'ts')
-                        output_format = f"ts → {save_fmt}"
+            config = configparser.ConfigParser()
+            config.optionxform = lambda optionstr: optionstr
+            config.read(self.main_config_file, encoding='utf-8-sig')
 
-            except Exception:
-                pass
+            if '录制设置' in config:
+                interval = config['录制设置'].get('循环时间(秒)', '120')
+                check_interval = f"{interval}秒"
+
+                fmt = config['录制设置'].get('录制完成后自动转为mp4格式', '否')
+                if fmt == '是':
+                    output_format = "ts → mp4"
+                else:
+                    save_fmt = config['录制设置'].get('视频保存格式ts|mkv|flv|mp4|mp3音频|m4a音频', 'ts')
+                    output_format = f"ts → {save_fmt}"
+
+            self._status_cache = (check_interval, output_format, tray_status)
+            self._status_cache_mtime = file_mtime
+
+        except Exception:
+            pass
 
         return check_interval, output_format, tray_status
 
@@ -329,6 +359,9 @@ class LiveRecorderGUI:
 
             with open(self.url_config_file, 'w', encoding='utf-8-sig') as f:
                 f.write(content)
+            self._last_url_config_mtime = os.path.getmtime(self.url_config_file)
+            self._url_config_dirty = False
+            self.config_text.edit_modified(False)
             self._log("URL 配置已保存")
             messagebox.showinfo("成功", "URL 配置已保存成功！")
         except Exception as e:
@@ -562,6 +595,10 @@ class LiveRecorderGUI:
         self.log_text.see(tk.END)
         self.log_text.tag_config("error", foreground="#ff5555")
 
+        line_count = int(self.log_text.index('end-1c').split('.')[0])
+        if line_count > 500:
+            self.log_text.delete('1.0', f'{line_count - 500}.0')
+
     def _get_timestamp(self):
         """获取当前时间戳"""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -579,9 +616,39 @@ class LiveRecorderGUI:
 
     # --- 新增方法：定时刷新状态栏 ---
     def _schedule_status_refresh(self):
-        """每5秒自动调用 _update_status_bar 以反映配置文件的实时变化"""
+        """每5秒自动刷新状态栏和监控 URL 配置文件变化"""
         self._update_status_bar()
-        self.refresh_job = self.root.after(5000, self._schedule_status_refresh)
+        self._watch_url_config()
+        self._refresh_job_id = self.root.after(5000, self._schedule_status_refresh)
+
+    def _on_config_text_modified(self, event=None):
+        """当用户在编辑器中修改内容时置脏标志"""
+        self._url_config_dirty = True
+
+    def _watch_url_config(self):
+        """监控 URL_config.ini 文件变化，外部修改时自动重新加载"""
+        if not os.path.exists(self.url_config_file):
+            return
+        try:
+            current_mtime = os.path.getmtime(self.url_config_file)
+            if current_mtime != self._last_url_config_mtime:
+                if self._url_config_dirty:
+                    self._log("检测到 URL 配置文件已被外部修改，但编辑器中有未保存的更改，跳过自动刷新", "error")
+                    self._log("提示：请先保存或放弃当前编辑内容，再手动点击「� 重新读取配置」或「�� 保存 URL 配置」")
+                    self._last_url_config_mtime = current_mtime
+                else:
+                    self._log("检测到 URL 配置文件已被外部修改，正在自动刷新...", "error")
+                    self._load_config()
+        except Exception as e:
+            self._log(f"监控 URL 配置文件变化时出错: {e}", "error")
+
+    def _manual_reload_config(self):
+        """手动从磁盘重新读取 URL_config.ini 到编辑器"""
+        if self._url_config_dirty:
+            if not messagebox.askyesno("确认重新读取", "编辑器中有未保存的更改，重新读取将会丢失这些更改。\n\n确定要重新读取吗？"):
+                return
+        self._log("手动重新读取 URL 配置文件...")
+        self._load_config()
 
     def minimize_to_tray(self):
         """最小化到托盘"""
@@ -603,6 +670,10 @@ class LiveRecorderGUI:
             self._cleanup_zombie_ffmpeg()
         except Exception as e:
             self._log(f"清理 ffmpeg 进程时出错: {e}")
+
+        if self._refresh_job_id:
+            self.root.after_cancel(self._refresh_job_id)
+            self._refresh_job_id = None
 
         if self.system_tray:
             self.system_tray.stop()
@@ -693,7 +764,6 @@ def main():
     app.tray_thread = threading.Thread(target=app.system_tray.run, daemon=True)
     app.tray_thread.start()
 
-    app._update_status_bar()
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 
