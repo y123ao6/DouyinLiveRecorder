@@ -144,7 +144,10 @@ async def get_live_room_id(room_id: str, sec_user_id: str, proxy_addr: str | Non
 
 
 if __name__ == '__main__':
+    import asyncio
     room_url = "https://v.douyin.com/iQLgKSj/"
-    _room_id, sec_uid = get_sec_user_id(room_url)
-    web_rid = get_live_room_id(_room_id, sec_uid)
-    print("return web_rid:", web_rid)
+    result = asyncio.run(get_sec_user_id(room_url))
+    if result is not None:
+        _room_id, sec_uid = result
+        web_rid = asyncio.run(get_live_room_id(_room_id, sec_uid))
+        print("return web_rid:", web_rid)
