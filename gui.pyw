@@ -1,4 +1,5 @@
 # -*- encoding: utf-8 -*-
+from __future__ import annotations
 
 import os
 import sys
@@ -9,6 +10,7 @@ import configparser
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 from datetime import datetime
+from typing import Any
 
 import pystray  # type: ignore[import-not-found]
 from PIL import Image, ImageDraw
@@ -42,17 +44,17 @@ class SystemTray:
 
         return image
 
-    def on_show(self, icon=None):  # type: ignore[assignment]
+    def on_show(self, _icon: Any | None = None) -> None:  # pyright: ignore[reportExplicitAny]
         """显示主窗口"""
         if self.gui.root:
             self.gui.root.deiconify()
             self.gui.root.lift()
 
-    def on_exit(self, icon=None):  # type: ignore[assignment]
+    def on_exit(self, _icon: Any | None = None) -> None:  # pyright: ignore[reportExplicitAny]
         """退出程序"""
         self.gui.quit_application()
 
-    def on_minimize(self, icon=None):  # type: ignore[assignment]
+    def on_minimize(self, _icon: Any | None = None) -> None:  # pyright: ignore[reportExplicitAny]
         """最小化到托盘"""
         if self.gui.root:
             self.gui.root.withdraw()
@@ -80,7 +82,7 @@ class SystemTray:
             self.icon.stop()
             self.running = False
 
-    def notify(self, message, title='直播录制器'):
+    def notify(self, message: str, title: str = '直播录制器') -> None:
         """显示托盘通知"""
         if self.icon:
             try:
@@ -180,16 +182,10 @@ class LiveRecorderGUI:
         self.tray_thread: threading.Thread | None = None
 
         self._last_url_config_mtime = 0.0
-        self._url_config_dirty = False
-        self._loading_config = False
         self._refresh_job_id: str | None = None
-        self._anchor_refresh_counter = 0
-        self._anchor_refreshing = False
 
         self._status_cache_mtime = 0.0
         self._status_cache: tuple[str, str, str] | None = None
-
-        self._nickname_pattern = re.compile(r'"nickname":"(.*?)","avatar_thumb')
 
         self._setup_style()
         self._setup_ui()
@@ -256,7 +252,6 @@ class LiveRecorderGUI:
 
         self.config_text = scrolledtext.ScrolledText(config_frame, wrap=tk.WORD, font=("Consolas", 10), height=10)
         self.config_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.config_text.bind('<<Modified>>', self._on_config_text_modified)
 
         hint_label = tk.Label(config_frame,
                               text="💡 格式说明: 每行一个直播链接，支持 # 开头的注释行 | 点击窗口关闭按钮（X）将最小化到系统托盘",
@@ -286,35 +281,27 @@ class LiveRecorderGUI:
 
     def _load_config(self):
         """加载 URL 配置文件"""
-        self._loading_config = True
+        config_dir = os.path.dirname(self.url_config_file)
+        os.makedirs(config_dir, exist_ok=True)
+
+        if not os.path.exists(self.url_config_file):
+            with open(self.url_config_file, 'w', encoding='utf-8-sig') as f:
+                f.write("")
+
         try:
-            config_dir = os.path.dirname(self.url_config_file)
-            os.makedirs(config_dir, exist_ok=True)
-
-            if not os.path.exists(self.url_config_file):
-                with open(self.url_config_file, 'w', encoding='utf-8-sig') as f:
-                    f.write("")
-
             with open(self.url_config_file, 'r', encoding='utf-8-sig') as f:
                 content = f.read()
 
             current_content = self.config_text.get(1.0, tk.END).rstrip('\n')
             if content == current_content:
                 self._last_url_config_mtime = os.path.getmtime(self.url_config_file)
-                self._url_config_dirty = False
-                self.config_text.edit_modified(False)
                 return
 
             self.config_text.delete(1.0, tk.END)
             self.config_text.insert(1.0, content)
             self._last_url_config_mtime = os.path.getmtime(self.url_config_file)
-            self._url_config_dirty = False
-            self.config_text.edit_modified(False)
-            self._log("配置文件已加载")
         except Exception as e:
             self._log(f"加载配置文件失败: {e}", "error")
-        finally:
-            self._loading_config = False
 
     def _get_dynamic_status_info(self):
         check_interval = "120秒"
@@ -364,8 +351,6 @@ class LiveRecorderGUI:
             with open(self.url_config_file, 'w', encoding='utf-8-sig') as f:
                 f.write(content)
             self._last_url_config_mtime = os.path.getmtime(self.url_config_file)
-            self._url_config_dirty = False
-            self.config_text.edit_modified(False)
             self._log("URL 配置已保存")
             messagebox.showinfo("成功", "URL 配置已保存成功！")
         except Exception as e:
@@ -605,12 +590,6 @@ class LiveRecorderGUI:
         self._watch_url_config()
         self._refresh_job_id = self.root.after(5000, self._schedule_status_refresh)
 
-    def _on_config_text_modified(self, event=None):
-        """当用户在编辑器中修改内容时置脏标志"""
-        if self._loading_config:
-            return
-        self._url_config_dirty = True
-
     def _watch_url_config(self):
         """监控 URL_config.ini 文件变化，外部修改时自动重新加载"""
         if not os.path.exists(self.url_config_file):
@@ -618,22 +597,12 @@ class LiveRecorderGUI:
         try:
             current_mtime = os.path.getmtime(self.url_config_file)
             if current_mtime != self._last_url_config_mtime:
-                if self._url_config_dirty:
-                    self._log("检测到 URL 配置文件已被外部修改，但编辑器中有未保存的更改，跳过自动刷新", "error")
-                    self._log("提示：请先保存或放弃当前编辑内容，再手动点击「� 重新读取配置」或「�� 保存 URL 配置」")
-                    self._last_url_config_mtime = current_mtime
-                else:
-                    self._log("检测到 URL 配置文件已被外部修改，正在自动刷新...", "error")
-                    self._load_config()
-        except Exception as e:
-            self._log(f"监控 URL 配置文件变化时出错: {e}", "error")
+                self._load_config()
+        except OSError:
+            pass
 
     def _manual_reload_config(self):
         """手动从磁盘重新读取 URL_config.ini 到编辑器"""
-        if self._url_config_dirty:
-            if not messagebox.askyesno("确认重新读取", "编辑器中有未保存的更改，重新读取将会丢失这些更改。\n\n确定要重新读取吗？"):
-                return
-        self._log("手动重新读取 URL 配置文件...")
         self._load_config()
 
     def minimize_to_tray(self):

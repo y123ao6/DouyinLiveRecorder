@@ -1601,7 +1601,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             recording_time_list[record_name] = [start_record_time, record_quality_zh]
 
                                             download_success = direct_download_stream(
-                                                flv_url, save_file_path, record_name, record_url, platform
+                                                flv_url,  # pyright: ignore[reportArgumentType]
+                                                save_file_path, record_name, record_url, platform
                                             )
 
                                             if download_success:
