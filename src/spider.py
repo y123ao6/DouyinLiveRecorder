@@ -3711,23 +3711,33 @@ async def browser_fallback_extract(
     proxy_addr: OptionalStr = None,
     cookies: OptionalStr = None,
     timeout: int = 30,
+    mode: str = "fallback",
+    output_path: OptionalStr = None,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 30,
 ) -> dict:
     platform = _get_browser_fallback_platform(url)
     if not platform:
         return {"anchor_name": "", "is_live": False}
 
     try:
-        from .browser_extractor import browser_extract_stream
-        logger.info(f"Trying browser fallback for {platform}: {url}")
-        result = await browser_extract_stream(
+        from .browser_extractor import browser_record
+        logger.info(f"Trying browser {mode} for {platform}: {url}")
+        result = await browser_record(
             url=url,
+            mode=mode,
             platform=platform,
             proxy_addr=proxy_addr,
             cookies=cookies,
             timeout=timeout,
+            output_path=output_path,
+            width=width,
+            height=height,
+            fps=fps,
         )
         if result.get("is_live"):
-            logger.info(f"Browser fallback succeeded for {platform}: {url}")
+            logger.info(f"Browser {mode} succeeded for {platform}: {url}")
         return result
     except ImportError:
         logger.warning(
@@ -3736,5 +3746,5 @@ async def browser_fallback_extract(
         )
         return {"anchor_name": "", "is_live": False}
     except Exception as e:
-        logger.error(f"Browser fallback failed: {e}")
+        logger.error(f"Browser {mode} failed: {e}")
         return {"anchor_name": "", "is_live": False}

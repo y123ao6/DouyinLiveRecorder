@@ -450,6 +450,46 @@ async def browser_extract_stream(
     return await recorder.extract_stream(url, platform, proxy_addr, cookies, timeout)
 
 
+async def browser_record(
+    url: str,
+    mode: str = BROWSER_MODE_FALLBACK,
+    platform: str = "",
+    proxy_addr: OptionalStr = None,
+    cookies: OptionalStr = None,
+    timeout: int = 30,
+    output_path: OptionalStr = None,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 30,
+) -> dict:
+    """Unified entry point that dispatches to fallback or screencast mode
+    
+    For fallback mode: returns stream info dict with record_url
+    For screencast mode: starts browser recording, returns dict with stop_callback
+    """
+    if mode == BROWSER_MODE_SCREENCAST and output_path:
+        recorder = await get_browser_recorder()
+        stop_fn = await recorder.start_screencast(
+            url=url,
+            output_path=output_path,
+            proxy_addr=proxy_addr,
+            cookies=cookies,
+            width=width,
+            height=height,
+            fps=fps,
+        )
+        return {
+            "anchor_name": "",
+            "is_live": True,
+            "mode": BROWSER_MODE_SCREENCAST,
+            "stop_callback": stop_fn,
+        }
+    else:
+        result = await browser_extract_stream(url, platform, proxy_addr, cookies, timeout)
+        result["mode"] = BROWSER_MODE_FALLBACK
+        return result
+
+
 async def close_browser():
     global _browser_recorder
     if _browser_recorder:

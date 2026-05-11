@@ -1362,10 +1362,20 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         proxy_addr=proxy_address,
                                         cookies=fallback_cookie,
                                         timeout=browser_fallback_timeout,
+                                        mode=browser_recording_mode,
+                                        output_path=None,
+                                        width=browser_resolution_w,
+                                        height=browser_resolution_h,
+                                        fps=browser_fps,
                                     ))
                                 finally:
                                     loop.close()
-                                if fallback_info and fallback_info.get("anchor_name"):
+
+                                if fallback_info and fallback_info.get("mode") == "screencast":
+                                    port_info = fallback_info
+                                    anchor_name = "browser_screencast"
+                                    logger.info(f"浏览器屏幕录制模式已启动")
+                                elif fallback_info and fallback_info.get("anchor_name"):
                                     port_info = fallback_info
                                     anchor_name = port_info.get("anchor_name", '')
                                     logger.info(f"浏览器回退成功: {anchor_name}")
@@ -1435,6 +1445,61 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                             if disable_record:
                                 time.sleep(push_check_seconds)
+                                continue
+
+                            if port_info.get("mode") == "screencast":
+                                now = datetime.datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
+                                full_path = f'{default_path}/{platform}'
+                                try:
+                                    if len(video_save_path) > 0:
+                                        if not video_save_path.endswith(('/', '\\')):
+                                            full_path = f'{video_save_path}/{platform}'
+                                        else:
+                                            full_path = f'{video_save_path}{platform}'
+                                    full_path = full_path.replace("\\", '/')
+                                    if folder_by_author:
+                                        full_path = f'{full_path}/{anchor_name}'
+                                    if folder_by_time:
+                                        full_path = f'{full_path}/{now[:10]}'
+                                    if not os.path.exists(full_path):
+                                        os.makedirs(full_path)
+                                except Exception as e:
+                                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+
+                                screencast_output = os.path.join(full_path, f'{now}_screencast.webm')
+                                stop_callback = port_info.get("stop_callback")
+                                logger.info(f"浏览器屏幕录制中: {screencast_output}")
+
+                                try:
+                                    loop = asyncio.new_event_loop()
+                                    try:
+                                        from src.browser_extractor import browser_record
+                                        screencast_result = loop.run_until_complete(browser_record(
+                                            url=record_url,
+                                            mode="screencast",
+                                            proxy_addr=proxy_address,
+                                            cookies=fallback_cookie if 'fallback_cookie' in dir() else None,
+                                            timeout=browser_fallback_timeout,
+                                            output_path=screencast_output,
+                                            width=browser_resolution_w,
+                                            height=browser_resolution_h,
+                                            fps=browser_fps,
+                                        ))
+                                        stop_callback = screencast_result.get("stop_callback")
+                                    finally:
+                                        loop.close()
+
+                                    if stop_callback:
+                                        while not exit_recording:
+                                            time.sleep(5)
+                                            if not os.path.exists(full_path):
+                                                break
+                                        stop_callback()
+                                        logger.info(f"浏览器屏幕录制已停止: {screencast_output}")
+                                except Exception as e:
+                                    logger.error(f"浏览器屏幕录制错误: {e}")
+
+                                time.sleep(delay_default)
                                 continue
 
                             real_url = select_source_url(record_url, port_info)
@@ -2162,6 +2227,13 @@ while True:
     browser_recording_mode = read_config_value(config, '录制设置', '浏览器录制模式(fallback/screencast)', "fallback")
     browser_resolution = read_config_value(config, '录制设置', '浏览器屏幕录制分辨率(宽x高)', "1920x1080")
     browser_fps = int(read_config_value(config, '录制设置', '浏览器屏幕录制帧率', 30))
+    try:
+        _res_parts = browser_resolution.lower().split('x')
+        browser_resolution_w = int(_res_parts[0].strip())
+        browser_resolution_h = int(_res_parts[1].strip())
+    except Exception:
+        browser_resolution_w = 1920
+        browser_resolution_h = 1080
     live_status_push = read_config_value(config, '推送配置', '直播状态推送渠道', "")
     dingtalk_api_url = read_config_value(config, '推送配置', '钉钉推送接口链接', "")
     xizhi_api_url = read_config_value(config, '推送配置', '微信推送接口链接', "")

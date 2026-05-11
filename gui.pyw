@@ -665,18 +665,36 @@ class LiveRecorderGUI:
             )
 
     def _save_browser_mode_to_config(self, mode: str):
-        """将浏览器录制模式写入 config.ini"""
+        """将浏览器录制模式写入 config.ini（保留原文件格式）"""
         try:
-            config = configparser.ConfigParser()
-            config.optionxform = lambda optionstr: optionstr
-            config.read(self.main_config_file, encoding='utf-8-sig')
+            key = '浏览器录制模式(fallback/screencast)'
+            with open(self.main_config_file, 'r', encoding='utf-8-sig') as f:
+                content = f.read()
 
-            if '录制设置' not in config:
-                config.add_section('录制设置')
-            config['录制设置']['浏览器录制模式(fallback/screencast)'] = mode
+            lines = content.split('\n')
+            found = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith(key) and '=' in stripped:
+                    lines[i] = f'{key} = {mode}'
+                    found = True
+                    break
+
+            if not found:
+                for i, line in enumerate(lines):
+                    if '浏览器录制回退超时时间' in line:
+                        lines.insert(i + 1, f'{key} = {mode}')
+                        found = True
+                        break
+                if not found:
+                    for i, line in enumerate(lines):
+                        if '额外使用代理录制的平台' in line:
+                            lines.insert(i + 1, f'{key} = {mode}')
+                            found = True
+                            break
 
             with open(self.main_config_file, 'w', encoding='utf-8-sig') as f:
-                config.write(f)
+                f.write('\n'.join(lines))
         except Exception as e:
             self._log(f"保存浏览器录制模式失败: {e}", "error")
 
