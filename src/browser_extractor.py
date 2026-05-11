@@ -81,7 +81,7 @@ PLATFORM_STREAM_PATTERNS = {
         "wait_time": 12000,
     },
     "twitch": {
-        "url_patterns": [".m3u8", "twitch.tv", "ttvnw.net", "jtvnw.net"],
+        "url_patterns": [".m3u8", "ttvnw.net", "jtvnw.net", "usher.ttvnw.net"],
         "anchor_selectors": [
             '[data-a-target="channel-display-name"]',
         ],
@@ -159,12 +159,17 @@ class BrowserStreamExtractor:
     _lock = None
 
     def __init__(self):
-        if BrowserStreamExtractor._lock is None:
-            BrowserStreamExtractor._lock = asyncio.Lock()
+        pass
+
+    @classmethod
+    def _get_lock(cls):
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        return cls._lock
 
     @classmethod
     async def _get_browser(cls, proxy_addr: OptionalStr = None):
-        async with cls._lock:
+        async with cls._get_lock():
             if cls._browser is not None and cls._browser.is_connected():
                 return cls._browser
             try:
@@ -190,7 +195,7 @@ class BrowserStreamExtractor:
 
     @classmethod
     async def close(cls):
-        async with cls._lock:
+        async with cls._get_lock():
             if cls._browser:
                 try:
                     await cls._browser.close()
@@ -244,10 +249,17 @@ class BrowserStreamExtractor:
             for pattern in patterns:
                 if pattern in resp_url:
                     try:
-                        headers = await response.all_headers()
+                        raw_headers = await response.all_headers()
+                        headers = {}
+                        if isinstance(raw_headers, dict):
+                            headers = raw_headers
+                        elif isinstance(raw_headers, (list, tuple)):
+                            for item in raw_headers:
+                                if isinstance(item, (list, tuple)) and len(item) == 2:
+                                    headers[item[0]] = item[1]
                         captured_streams.append({
                             "url": resp_url,
-                            "headers": dict(headers),
+                            "headers": headers,
                             "content_type": headers.get("content-type", ""),
                         })
                     except Exception:

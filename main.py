@@ -157,7 +157,11 @@ def safe_exit(signum, frame):
     color_obj.print_colored("\n正在安全退出...", color_obj.YELLOW)
     try:
         from src.browser_extractor import close_browser
-        asyncio.run(close_browser())
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(close_browser())
+        finally:
+            loop.close()
     except Exception:
         pass
     cleanup_all_ffmpeg_processes()
@@ -1351,12 +1355,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 elif 'twitch.tv' in record_url:
                                     fallback_cookie = twitch_cookie
 
-                                fallback_info = asyncio.run(browser_fallback_extract(
-                                    url=record_url,
-                                    proxy_addr=proxy_address,
-                                    cookies=fallback_cookie,
-                                    timeout=browser_fallback_timeout,
-                                ))
+                                loop = asyncio.new_event_loop()
+                                try:
+                                    fallback_info = loop.run_until_complete(browser_fallback_extract(
+                                        url=record_url,
+                                        proxy_addr=proxy_address,
+                                        cookies=fallback_cookie,
+                                        timeout=browser_fallback_timeout,
+                                    ))
+                                finally:
+                                    loop.close()
                                 if fallback_info and fallback_info.get("anchor_name"):
                                     port_info = fallback_info
                                     anchor_name = port_info.get("anchor_name", '')
