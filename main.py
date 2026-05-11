@@ -1355,30 +1355,35 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 elif 'twitch.tv' in record_url:
                                     fallback_cookie = twitch_cookie
 
-                                loop = asyncio.new_event_loop()
-                                try:
-                                    fallback_info = loop.run_until_complete(browser_fallback_extract(
-                                        url=record_url,
-                                        proxy_addr=proxy_address,
-                                        cookies=fallback_cookie,
-                                        timeout=browser_fallback_timeout,
-                                        mode=browser_recording_mode,
-                                        output_path=None,
-                                        width=browser_resolution_w,
-                                        height=browser_resolution_h,
-                                        fps=browser_fps,
-                                    ))
-                                finally:
-                                    loop.close()
-
-                                if fallback_info and fallback_info.get("mode") == "screencast":
-                                    port_info = fallback_info
+                                if browser_recording_mode == "screencast":
+                                    port_info = {
+                                        "anchor_name": "browser_screencast",
+                                        "is_live": True,
+                                        "mode": "screencast",
+                                    }
                                     anchor_name = "browser_screencast"
                                     logger.info(f"浏览器屏幕录制模式已启动")
-                                elif fallback_info and fallback_info.get("anchor_name"):
-                                    port_info = fallback_info
-                                    anchor_name = port_info.get("anchor_name", '')
-                                    logger.info(f"浏览器回退成功: {anchor_name}")
+                                else:
+                                    loop = asyncio.new_event_loop()
+                                    try:
+                                        fallback_info = loop.run_until_complete(browser_fallback_extract(
+                                            url=record_url,
+                                            proxy_addr=proxy_address,
+                                            cookies=fallback_cookie,
+                                            timeout=browser_fallback_timeout,
+                                            mode="fallback",
+                                            output_path=None,
+                                            width=browser_resolution_w,
+                                            height=browser_resolution_h,
+                                            fps=browser_fps,
+                                        ))
+                                    finally:
+                                        loop.close()
+
+                                    if fallback_info and fallback_info.get("anchor_name"):
+                                        port_info = fallback_info
+                                        anchor_name = port_info.get("anchor_name", '')
+                                        logger.info(f"浏览器回退成功: {anchor_name}")
                             except Exception as e:
                                 logger.debug(f"浏览器回退失败: {e}")
 
@@ -1467,7 +1472,26 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
 
                                 screencast_output = os.path.join(full_path, f'{now}_screencast.webm')
-                                stop_callback = port_info.get("stop_callback")
+                                screencast_cookie = None
+                                if 'douyin.com' in record_url:
+                                    screencast_cookie = dy_cookie
+                                elif 'tiktok.com' in record_url:
+                                    screencast_cookie = tiktok_cookie
+                                elif 'kuaishou.com' in record_url:
+                                    screencast_cookie = ks_cookie
+                                elif 'huya.com' in record_url:
+                                    screencast_cookie = hy_cookie
+                                elif 'douyu.com' in record_url:
+                                    screencast_cookie = douyu_cookie
+                                elif 'bilibili.com' in record_url:
+                                    screencast_cookie = bili_cookie
+                                elif 'xiaohongshu.com' in record_url or 'xhslink.com' in record_url:
+                                    screencast_cookie = xhs_cookie
+                                elif 'youtube.com' in record_url or 'youtu.be' in record_url:
+                                    screencast_cookie = youtube_cookie
+                                elif 'twitch.tv' in record_url:
+                                    screencast_cookie = twitch_cookie
+
                                 logger.info(f"浏览器屏幕录制中: {screencast_output}")
 
                                 try:
@@ -1478,20 +1502,20 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             url=record_url,
                                             mode="screencast",
                                             proxy_addr=proxy_address,
-                                            cookies=fallback_cookie if 'fallback_cookie' in dir() else None,
+                                            cookies=screencast_cookie,
                                             timeout=browser_fallback_timeout,
                                             output_path=screencast_output,
                                             width=browser_resolution_w,
                                             height=browser_resolution_h,
                                             fps=browser_fps,
                                         ))
-                                        stop_callback = screencast_result.get("stop_callback")
                                     finally:
                                         loop.close()
 
+                                    stop_callback = screencast_result.get("stop_callback") if screencast_result else None
                                     if stop_callback:
                                         while not exit_recording:
-                                            time.sleep(5)
+                                            time.sleep(1)
                                             if not os.path.exists(full_path):
                                                 break
                                         stop_callback()

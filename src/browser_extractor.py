@@ -9,7 +9,6 @@ Function: Browser-based live stream recorder with two modes:
 
 import asyncio
 import os
-import signal
 from typing import Optional, Dict, List, Callable
 from .logger import logger
 from .utils import trace_error_decorator
@@ -126,21 +125,23 @@ SCREENCAST_LAUNCH_ARGS = LAUNCH_ARGS + [
 ]
 
 
+_PLATFORM_MAP = {
+    "douyin.com": "douyin",
+    "tiktok.com": "tiktok",
+    "bilibili.com": "bilibili",
+    "kuaishou.com": "kuaishou",
+    "huya.com": "huya",
+    "douyu.com": "douyu",
+    "xiaohongshu.com": "xiaohongshu",
+    "xhslink.com": "xiaohongshu",
+    "youtube.com": "youtube",
+    "youtu.be": "youtube",
+    "twitch.tv": "twitch",
+}
+
+
 def _get_platform_key(url: str) -> str:
-    platform_map = {
-        "douyin.com": "douyin",
-        "tiktok.com": "tiktok",
-        "bilibili.com": "bilibili",
-        "kuaishou.com": "kuaishou",
-        "huya.com": "huya",
-        "douyu.com": "douyu",
-        "xiaohongshu.com": "xiaohongshu",
-        "xhslink.com": "xiaohongshu",
-        "youtube.com": "youtube",
-        "youtu.be": "youtube",
-        "twitch.tv": "twitch",
-    }
-    for domain, key in platform_map.items():
+    for domain, key in _PLATFORM_MAP.items():
         if domain in url:
             return key
     return "default"
@@ -168,20 +169,18 @@ class BrowserRecorder:
     _playwright = None
     _browser = None
     _lock = None
+    _initialized = False
 
     def __init__(self):
         self._screencast_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
-
-    @classmethod
-    def _get_lock(cls):
-        if cls._lock is None:
-            cls._lock = asyncio.Lock()
-        return cls._lock
+        if not BrowserRecorder._initialized:
+            BrowserRecorder._lock = asyncio.Lock()
+            BrowserRecorder._initialized = True
 
     @classmethod
     async def _get_browser(cls, proxy_addr: OptionalStr = None, headless: bool = True):
-        async with cls._get_lock():
+        async with cls._lock:
             if cls._browser is not None and cls._browser.is_connected():
                 return cls._browser
             try:
@@ -208,7 +207,7 @@ class BrowserRecorder:
 
     @classmethod
     async def close(cls):
-        async with cls._get_lock():
+        async with cls._lock:
             if cls._browser:
                 try:
                     await cls._browser.close()
@@ -256,28 +255,18 @@ class BrowserRecorder:
         page = await context.new_page()
 
         captured_streams: List[dict] = []
+        stream_found = asyncio.Event()
 
         async def on_response(response):
+            if stream_found.is_set():
+                return
             resp_url = response.url
             patterns = config.get("url_patterns", [".m3u8", ".flv"])
             for pattern in patterns:
                 if pattern in resp_url:
-                    try:
-                        raw_headers = await response.all_headers()
-                        headers = {}
-                        if isinstance(raw_headers, dict):
-                            headers = raw_headers
-                        elif isinstance(raw_headers, (list, tuple)):
-                            for item in raw_headers:
-                                if isinstance(item, (list, tuple)) and len(item) == 2:
-                                    headers[item[0]] = item[1]
-                        captured_streams.append({
-                            "url": resp_url,
-                            "headers": headers,
-                            "content_type": headers.get("content-type", ""),
-                        })
-                    except Exception:
-                        captured_streams.append({"url": resp_url, "headers": {}})
+                    captured_streams.append({"url": resp_url})
+                    if ".m3u8" in resp_url or ".flv" in resp_url:
+                        stream_found.set()
                     break
 
         page.on("response", on_response)
@@ -286,7 +275,10 @@ class BrowserRecorder:
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             wait_time = config.get("wait_time", 8000)
-            await page.wait_for_timeout(wait_time)
+            try:
+                await asyncio.wait_for(stream_found.wait(), timeout=wait_time / 1000)
+            except asyncio.TimeoutError:
+                pass
 
             anchor_name = await self._extract_anchor_name(page, config)
         except Exception as e:

@@ -296,6 +296,7 @@ class LiveRecorderGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, font=("Consolas", 9),
                                                    bg="#1e1e1e", fg="#00ff00", height=10)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.log_text.tag_config("error", foreground="#ff5555")
 
         self.status_var = tk.StringVar()
         self._update_status_bar()
@@ -585,7 +586,6 @@ class LiveRecorderGUI:
 
         self.log_text.insert(tk.END, display_text, tag)
         self.log_text.see(tk.END)
-        self.log_text.tag_config("error", foreground="#ff5555")
 
         line_count = int(self.log_text.index('end-1c').split('.')[0])
         if line_count > 500:
