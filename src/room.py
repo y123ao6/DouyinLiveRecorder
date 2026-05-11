@@ -25,17 +25,26 @@ HEADERS = {
     'Cookie': 's_v_web_id=verify_lk07kv74_QZYCUApD_xhiB_405x_Ax51_GYO9bUIyZQVf'
 }
 
-# X-bogus算法
+_xbogus_js_context = None
+
+
+def _get_xbogus_context():
+    global _xbogus_js_context
+    if _xbogus_js_context is None:
+        with open(f'{JS_SCRIPT_PATH}/x-bogus.js', 'r', encoding='utf-8') as f:
+            _xbogus_js_context = execjs.compile(f.read())
+    return _xbogus_js_context
+
+
 async def get_xbogus(url: str, headers: dict | None = None) -> str:
     if not headers or 'user-agent' not in (k.lower() for k in headers):
         headers = HEADERS
     query = urllib.parse.urlparse(url).query
-    xbogus = execjs.compile(open(f'{JS_SCRIPT_PATH}/x-bogus.js').read()).call(
-        'sign', query, headers.get("User-Agent", "user-agent"))
+    ctx = _get_xbogus_context()
+    xbogus = ctx.call('sign', query, headers.get("User-Agent", "user-agent"))
     return xbogus
 
 
-# 获取房间ID和用户secID
 async def get_sec_user_id(url: str, proxy_addr: str | None = None, headers: dict | None = None) -> tuple | None:
     if not headers or all(k.lower() not in ['user-agent', 'cookie'] for k in headers):
         headers = HEADERS
@@ -61,7 +70,6 @@ async def get_sec_user_id(url: str, proxy_addr: str | None = None, headers: dict
         raise RuntimeError(f"An error occurred: {e}")
 
 
-# 获取抖音号
 async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict | None = None) -> str | None:
     if not headers or all(k.lower() not in ['user-agent', 'cookie'] for k in headers):
         headers = HEADERS
@@ -92,7 +100,6 @@ async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict |
         raise RuntimeError(f"An error occurred: {e}")
 
 
-# 获取直播间webID
 async def get_live_room_id(room_id: str, sec_user_id: str, proxy_addr: str | None = None, params: dict | None = None,
                            headers: dict | None = None) -> str:
     if not headers or all(k.lower() not in ['user-agent', 'cookie'] for k in headers):

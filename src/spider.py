@@ -38,6 +38,15 @@ ssl_context.verify_mode = ssl.CERT_NONE
 OptionalStr = str | None
 OptionalDict = dict | None
 
+_js_context_cache: dict[str, Any] = {}
+
+
+def _get_js_context(js_file: str) -> Any:
+    if js_file not in _js_context_cache:
+        with open(js_file, 'r', encoding='utf-8') as f:
+            _js_context_cache[js_file] = execjs.compile(f.read())
+    return _js_context_cache[js_file]
+
 
 def _get_str_response(resp):
     """安全地将 async_req 的响应转换为 str"""
@@ -2409,7 +2418,7 @@ async def get_liveme_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
             url = match_url.group(1)
 
     room_id = url.split("/index.html")[0].rsplit('/', maxsplit=1)[-1]
-    sign_data = execjs.compile(open(f'{JS_SCRIPT_PATH}/liveme.js').read()).call('sign', room_id,
+    sign_data = _get_js_context(f'{JS_SCRIPT_PATH}/liveme.js').call('sign', room_id,
                                                                                 f'{JS_SCRIPT_PATH}/crypto-js.min.js')
     lm_s_sign = sign_data.pop("lm_s_sign")
     tongdun_black_box = sign_data.pop("tongdun_black_box")
@@ -2974,7 +2983,7 @@ async def get_haixiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
         "c": "10138100100000",
         "_st1": int(time.time() * 1000)
     }
-    ajax_data = execjs.compile(open(f'{JS_SCRIPT_PATH}/haixiu.js').read()).call('sign', params,
+    ajax_data = _get_js_context(f'{JS_SCRIPT_PATH}/haixiu.js').call('sign', params,
                                                                                 f'{JS_SCRIPT_PATH}/crypto-js.min.js')
 
     params["accessToken"] = urllib.parse.unquote(urllib.parse.unquote(access_token))

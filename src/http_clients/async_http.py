@@ -7,8 +7,29 @@ from ..logger import logger
 OptionalStr = str | None
 OptionalDict = Dict[str, Any] | None
 
-# 全局连接池配置，提高 HTTP 请求性能
 _httpx_limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+
+_client_cache: dict[str, httpx.AsyncClient] = {}
+
+
+def _get_client_key(proxy_addr: OptionalStr, timeout: int, verify: bool, http2: bool) -> str:
+    return f"{proxy_addr}|{timeout}|{verify}|{http2}"
+
+
+async def _get_client(proxy_addr: OptionalStr, timeout: int, verify: bool, http2: bool) -> httpx.AsyncClient:
+    key = _get_client_key(proxy_addr, timeout, verify, http2)
+    client = _client_cache.get(key)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            proxy=proxy_addr,
+            timeout=timeout,
+            verify=verify,
+            http2=http2,
+            limits=_httpx_limits
+        )
+        _client_cache[key] = client
+    return client
+
 
 async def async_req(
         url: str,
@@ -29,25 +50,18 @@ async def async_req(
         headers = {}
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(
-            proxy=proxy_addr,
-            timeout=timeout,
-            verify=verify,
-            http2=http2,
-            limits=_httpx_limits
-        ) as client:
-            if data or json_data:
-                if isinstance(data, (bytes, bytearray, memoryview)):
-                    # 将 memoryview 转换为 bytes
-                    content_data = bytes(data)
-                    response = await client.post(url, content=content_data, json=json_data, headers=headers)
-                elif isinstance(data, str):
-                    response = await client.post(url, content=data, json=json_data, headers=headers)
-                else:
-                    # data 是 dict 或 None
-                    response = await client.post(url, data=data, json=json_data, headers=headers)
+        client = await _get_client(proxy_addr, timeout, verify, http2)
+
+        if data or json_data:
+            if isinstance(data, (bytes, bytearray, memoryview)):
+                content_data = bytes(data)
+                response = await client.post(url, content=content_data, json=json_data, headers=headers)
+            elif isinstance(data, str):
+                response = await client.post(url, content=data, json=json_data, headers=headers)
             else:
-                response = await client.get(url, headers=headers, follow_redirects=True)
+                response = await client.post(url, data=data, json=json_data, headers=headers)
+        else:
+            response = await client.get(url, headers=headers, follow_redirects=True)
 
         if redirect_url:
             return str(response.url)
@@ -67,15 +81,16 @@ async def get_response_status(url: str, proxy_addr: OptionalStr = None, headers:
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(
-            proxy=proxy_addr,
-            timeout=timeout,
-            verify=verify,
-            http2=http2,
-            limits=_httpx_limits
-        ) as client:
-            response = await client.head(url, headers=headers, follow_redirects=True)
-            return response.status_code == 200
+        client = await _get_client(proxy_addr, timeout, verify, http2)
+        response = await client.head(url, headers=headers, follow_redirects=True)
+        return response.status_code == 200
     except Exception as e:
         logger.debug(e)
     return False
+
+
+async def close_all_clients():
+    for key, client in list(_client_cache.items()):
+        if not client.is_closed:
+            await client.aclose()
+    _client_cache.clear()

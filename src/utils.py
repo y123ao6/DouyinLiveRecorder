@@ -19,6 +19,25 @@ import configparser
 OptionalStr = str | None
 OptionalDict = dict | None
 
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F1E0-\U0001F1FF"
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FA6F"
+    "\U0001FA70-\U0001FAFF"
+    "\U00002702-\U000027B0"
+    "]+",
+    flags=re.UNICODE
+)
+
+_JSONP_PATTERN = re.compile(r'(\w+)\((.*)\);?$')
+
 
 class Color:
     RED = "\033[31m"
@@ -52,9 +71,11 @@ def trace_error_decorator(func: Callable) -> Callable:
 
 
 def check_md5(file_path: str | Path) -> str:
+    md5_hash = hashlib.md5()
     with open(file_path, 'rb') as fp:
-        file_md5 = hashlib.md5(fp.read()).hexdigest()
-    return file_md5
+        for chunk in iter(lambda: fp.read(8192), b''):
+            md5_hash.update(chunk)
+    return md5_hash.hexdigest()
 
 
 def dict_to_cookie_str(cookies_dict: dict) -> str:
@@ -95,7 +116,6 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
         print(f"Section [{section}] does not exist in the file.")
         return
 
-    # 转义%字符
     escaped_value = new_value.replace('%', '%%')
     config[section][key] = escaped_value
 
@@ -116,23 +136,7 @@ def get_file_paths(directory: str) -> list:
 
 
 def remove_emojis(text: str, replace_text: str = '') -> str:
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
-        "\U0001F300-\U0001F5FF"  # symbols & pictographs
-        "\U0001F600-\U0001F64F"  # emoticons
-        "\U0001F680-\U0001F6FF"  # transport & map symbols
-        "\U0001F700-\U0001F77F"  # alchemical symbols
-        "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
-        "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
-        "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
-        "\U0001FA00-\U0001FA6F"  # Chess Symbols
-        "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
-        "\U00002702-\U000027B0"  # Dingbats
-        "]+",
-        flags=re.UNICODE
-    )
-    return emoji_pattern.sub(replace_text, text)
+    return _EMOJI_PATTERN.sub(replace_text, text)
 
 
 def remove_duplicate_lines(file_path: str | Path) -> None:
@@ -175,8 +179,7 @@ def generate_random_string(length: int) -> str:
 
 
 def jsonp_to_json(jsonp_str: str) -> OptionalDict:
-    pattern = r'(\w+)\((.*)\);?$'
-    match = re.search(pattern, jsonp_str)
+    match = _JSONP_PATTERN.search(jsonp_str)
 
     if match:
         _, json_str = match.groups()
@@ -203,4 +206,3 @@ def get_query_params(url: str, param_name: OptionalStr) -> dict | list[str]:
     else:
         values = query_params.get(param_name, [])
         return values
-    
