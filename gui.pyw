@@ -239,29 +239,6 @@ class LiveRecorderGUI:
         ttk.Button(right_btn_frame, text="⚙️ 高级设置", command=self.open_advanced_settings,
                    style='Action.TButton', width=15).grid(row=0, column=1, padx=3, pady=3)
 
-        browser_frame = ttk.LabelFrame(top_frame, text="浏览器录制模式", padding=5)
-        browser_frame.pack(side=tk.RIGHT, padx=10)
-
-        self.browser_mode_var = tk.StringVar(value="fallback")
-        self.fallback_rb = ttk.Radiobutton(
-            browser_frame, text="🔗 网络拦截", variable=self.browser_mode_var,
-            value="fallback", command=self._on_browser_mode_change
-        )
-        self.fallback_rb.grid(row=0, column=0, padx=5, pady=2)
-
-        self.screencast_rb = ttk.Radiobutton(
-            browser_frame, text="🖥️ 屏幕录制", variable=self.browser_mode_var,
-            value="screencast", command=self._on_browser_mode_change
-        )
-        self.screencast_rb.grid(row=0, column=1, padx=5, pady=2)
-
-        self.browser_mode_hint = tk.Label(
-            browser_frame, text="", fg="gray", font=("Arial", 8)
-        )
-        self.browser_mode_hint.grid(row=1, column=0, columnspan=2, padx=2, pady=(0, 2))
-
-        self._load_browser_mode_from_config()
-
         status_frame = ttk.Frame(self.root)
         status_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
 
@@ -269,6 +246,29 @@ class LiveRecorderGUI:
 
         self.status_label = tk.Label(status_frame, text="🔴 未运行", fg="#d32f2f", font=("Arial", 10, "bold"))
         self.status_label.pack(side=tk.LEFT)
+
+        browser_frame = ttk.LabelFrame(status_frame, text="浏览器录制模式", padding=2)
+        browser_frame.pack(side=tk.RIGHT, padx=5)
+
+        self.browser_mode_var = tk.StringVar(value="fallback")
+        self.fallback_rb = ttk.Radiobutton(
+            browser_frame, text="🔗 网络拦截", variable=self.browser_mode_var,
+            value="fallback", command=self._on_browser_mode_change
+        )
+        self.fallback_rb.pack(side=tk.LEFT, padx=5)
+
+        self.screencast_rb = ttk.Radiobutton(
+            browser_frame, text="🖥️ 屏幕录制", variable=self.browser_mode_var,
+            value="screencast", command=self._on_browser_mode_change
+        )
+        self.screencast_rb.pack(side=tk.LEFT, padx=5)
+
+        self.browser_mode_hint = tk.Label(
+            browser_frame, text="", fg="gray", font=("Arial", 8)
+        )
+        self.browser_mode_hint.pack(side=tk.LEFT, padx=3)
+
+        self._load_browser_mode_from_config()
 
         config_frame = ttk.LabelFrame(self.root, text="URL 配置编辑区 (config/URL_config.ini)", padding=5)
         config_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
