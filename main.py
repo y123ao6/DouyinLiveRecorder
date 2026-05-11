@@ -1333,60 +1333,77 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                     else:
                         anchor_name = port_info.get("anchor_name", '')
 
-                    if not port_info.get("anchor_name", ''):
-                        if enable_browser_fallback:
-                            try:
-                                fallback_cookie = None
-                                if 'douyin.com' in record_url:
-                                    fallback_cookie = dy_cookie
-                                elif 'tiktok.com' in record_url:
-                                    fallback_cookie = tiktok_cookie
-                                elif 'kuaishou.com' in record_url:
-                                    fallback_cookie = ks_cookie
-                                elif 'huya.com' in record_url:
-                                    fallback_cookie = hy_cookie
-                                elif 'douyu.com' in record_url:
-                                    fallback_cookie = douyu_cookie
-                                elif 'bilibili.com' in record_url:
-                                    fallback_cookie = bili_cookie
-                                elif 'xiaohongshu.com' in record_url or 'xhslink.com' in record_url:
-                                    fallback_cookie = xhs_cookie
-                                elif 'youtube.com' in record_url or 'youtu.be' in record_url:
-                                    fallback_cookie = youtube_cookie
-                                elif 'twitch.tv' in record_url:
-                                    fallback_cookie = twitch_cookie
+                    _need_browser_fallback = False
+                    _force_browser = browser_recording_mode.startswith("force_")
+                    if enable_browser_fallback:
+                        if _force_browser:
+                            _need_browser_fallback = True
+                        elif not port_info.get("anchor_name", ''):
+                            _need_browser_fallback = True
+                        elif port_info.get("is_live") is False:
+                            _need_browser_fallback = True
+                        elif not port_info.get("record_url") and not port_info.get("flv_url") and not port_info.get("m3u8_url"):
+                            _need_browser_fallback = True
 
-                                if browser_recording_mode == "screencast":
-                                    port_info = {
-                                        "anchor_name": "browser_screencast",
-                                        "is_live": True,
-                                        "mode": "screencast",
-                                    }
+                    if _need_browser_fallback:
+                        try:
+                            fallback_cookie = None
+                            if 'douyin.com' in record_url:
+                                fallback_cookie = dy_cookie
+                            elif 'tiktok.com' in record_url:
+                                fallback_cookie = tiktok_cookie
+                            elif 'kuaishou.com' in record_url:
+                                fallback_cookie = ks_cookie
+                            elif 'huya.com' in record_url:
+                                fallback_cookie = hy_cookie
+                            elif 'douyu.com' in record_url:
+                                fallback_cookie = douyu_cookie
+                            elif 'bilibili.com' in record_url:
+                                fallback_cookie = bili_cookie
+                            elif 'xiaohongshu.com' in record_url or 'xhslink.com' in record_url:
+                                fallback_cookie = xhs_cookie
+                            elif 'youtube.com' in record_url or 'youtu.be' in record_url:
+                                fallback_cookie = youtube_cookie
+                            elif 'twitch.tv' in record_url:
+                                fallback_cookie = twitch_cookie
+
+                            if browser_recording_mode in ("screencast", "force_screencast"):
+                                if not anchor_name and port_info.get("anchor_name"):
+                                    anchor_name = port_info.get("anchor_name", '')
+                                if not anchor_name:
                                     anchor_name = "browser_screencast"
-                                    logger.info(f"浏览器屏幕录制模式已启动")
-                                else:
-                                    loop = asyncio.new_event_loop()
-                                    try:
-                                        fallback_info = loop.run_until_complete(browser_fallback_extract(
-                                            url=record_url,
-                                            proxy_addr=proxy_address,
-                                            cookies=fallback_cookie,
-                                            timeout=browser_fallback_timeout,
-                                            mode="fallback",
-                                            output_path=None,
-                                            width=browser_resolution_w,
-                                            height=browser_resolution_h,
-                                            fps=browser_fps,
-                                        ))
-                                    finally:
-                                        loop.close()
+                                port_info = {
+                                    "anchor_name": anchor_name,
+                                    "is_live": True,
+                                    "mode": "screencast",
+                                }
+                                logger.info(f"浏览器屏幕录制模式已启动: {anchor_name}")
+                            else:
+                                loop = asyncio.new_event_loop()
+                                try:
+                                    fallback_info = loop.run_until_complete(browser_fallback_extract(
+                                        url=record_url,
+                                        proxy_addr=proxy_address,
+                                        cookies=fallback_cookie,
+                                        timeout=browser_fallback_timeout,
+                                        mode="fallback",
+                                        output_path=None,
+                                        width=browser_resolution_w,
+                                        height=browser_resolution_h,
+                                        fps=browser_fps,
+                                    ))
+                                finally:
+                                    loop.close()
 
-                                    if fallback_info and fallback_info.get("anchor_name"):
-                                        port_info = fallback_info
+                                if fallback_info and fallback_info.get("is_live") and fallback_info.get("record_url"):
+                                    port_info = fallback_info
+                                    if fallback_info.get("anchor_name"):
                                         anchor_name = port_info.get("anchor_name", '')
-                                        logger.info(f"浏览器回退成功: {anchor_name}")
-                            except Exception as e:
-                                logger.debug(f"浏览器回退失败: {e}")
+                                    logger.info(f"浏览器回退成功: {anchor_name}")
+                                else:
+                                    logger.debug(f"浏览器回退未获取到有效流地址")
+                        except Exception as e:
+                            logger.debug(f"浏览器回退失败: {e}")
 
                     if not port_info.get("anchor_name", ''):
                         print(f'序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}')
@@ -1514,8 +1531,12 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         loop.close()
 
                                     stop_callback = screencast_result.get("stop_callback") if screencast_result else None
+                                    is_live_ended_callback = screencast_result.get("is_live_ended_callback") if screencast_result else None
                                     if stop_callback:
                                         while not exit_recording:
+                                            if is_live_ended_callback and is_live_ended_callback():
+                                                logger.info(f"直播已结束，停止屏幕录制: {screencast_output}")
+                                                break
                                             time.sleep(1)
                                         stop_callback()
                                         logger.info(f"浏览器屏幕录制已停止: {screencast_output}")
@@ -2247,7 +2268,7 @@ while True:
     extra_enable_proxy_platform_list = extra_enable_proxy.replace('，', ',').split(',') if extra_enable_proxy else None
     enable_browser_fallback = options.get(read_config_value(config, '录制设置', '是否启用浏览器录制回退(是/否)', "否"), False)
     browser_fallback_timeout = int(read_config_value(config, '录制设置', '浏览器录制回退超时时间(秒)', 30))
-    browser_recording_mode = read_config_value(config, '录制设置', '浏览器录制模式(fallback/screencast)', "fallback")
+    browser_recording_mode = read_config_value(config, '录制设置', '浏览器录制模式(fallback/screencast/force_fallback/force_screencast)', "fallback")
     browser_resolution = read_config_value(config, '录制设置', '浏览器屏幕录制分辨率(宽x高)', "1920x1080")
     browser_fps = int(read_config_value(config, '录制设置', '浏览器屏幕录制帧率', 30))
     try:

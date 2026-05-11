@@ -263,6 +263,18 @@ class LiveRecorderGUI:
         )
         self.screencast_rb.pack(side=tk.LEFT, padx=5)
 
+        self.force_fallback_rb = ttk.Radiobutton(
+            browser_frame, text="🔗⚡ 强制拦截", variable=self.browser_mode_var,
+            value="force_fallback", command=self._on_browser_mode_change
+        )
+        self.force_fallback_rb.pack(side=tk.LEFT, padx=5)
+
+        self.force_screencast_rb = ttk.Radiobutton(
+            browser_frame, text="🖥️⚡ 强制录制", variable=self.browser_mode_var,
+            value="force_screencast", command=self._on_browser_mode_change
+        )
+        self.force_screencast_rb.pack(side=tk.LEFT, padx=5)
+
         self.browser_mode_hint = tk.Label(
             browser_frame, text="", fg="gray", font=("Arial", 8)
         )
@@ -598,7 +610,11 @@ class LiveRecorderGUI:
     def _update_status_bar(self):
         """更新状态栏（动态读取配置）"""
         check_interval, output_format, tray_status = self._get_dynamic_status_info()
-        browser_mode = "网络拦截" if self.browser_mode_var.get() == "fallback" else "屏幕录制"
+        browser_mode_labels = {
+            "fallback": "网络拦截", "screencast": "屏幕录制",
+            "force_fallback": "强制拦截", "force_screencast": "强制录制",
+        }
+        browser_mode = browser_mode_labels.get(self.browser_mode_var.get(), "网络拦截")
 
         if self.process_pid is not None:
             status_text = f"状态：运行中 (PID: {self.process_pid}) | 循环检测: {check_interval} | 格式: {output_format} | 浏览器: {browser_mode} | 托盘: {tray_status}"
@@ -636,7 +652,9 @@ class LiveRecorderGUI:
             config.optionxform = lambda optionstr: optionstr
             config.read(self.main_config_file, encoding='utf-8-sig')
             if '录制设置' in config:
-                mode = config['录制设置'].get('浏览器录制模式(fallback/screencast)', 'fallback')
+                mode = config['录制设置'].get('浏览器录制模式(fallback/screencast/force_fallback/force_screencast)', 'fallback')
+                if mode not in ("fallback", "screencast", "force_fallback", "force_screencast"):
+                    mode = "fallback"
                 self.browser_mode_var.set(mode)
                 self._update_browser_mode_hint(mode)
         except Exception:
@@ -648,26 +666,28 @@ class LiveRecorderGUI:
         mode = self.browser_mode_var.get()
         self._update_browser_mode_hint(mode)
         self._save_browser_mode_to_config(mode)
-        self._log(f"浏览器录制模式已切换为: {'网络拦截' if mode == 'fallback' else '屏幕录制'}")
+        mode_labels = {
+            "fallback": "网络拦截", "screencast": "屏幕录制",
+            "force_fallback": "强制拦截", "force_screencast": "强制录制",
+        }
+        self._log(f"浏览器录制模式已切换为: {mode_labels.get(mode, mode)}")
         self._update_status_bar()
 
     def _update_browser_mode_hint(self, mode: str):
         """更新模式提示文字"""
-        if mode == "screencast":
-            self.browser_mode_hint.config(
-                text="直接录制浏览器画面，支持加密流",
-                fg="#e65100"
-            )
-        else:
-            self.browser_mode_hint.config(
-                text="拦截网络请求获取流地址，画质最佳",
-                fg="gray"
-            )
+        hints = {
+            "fallback": ("拦截网络请求获取流地址，画质最佳", "gray"),
+            "screencast": ("直接录制浏览器画面，支持加密流", "#e65100"),
+            "force_fallback": ("跳过API，强制使用浏览器拦截流地址", "#1565c0"),
+            "force_screencast": ("跳过API，强制使用浏览器录制画面", "#c62828"),
+        }
+        text, fg = hints.get(mode, ("未知模式", "gray"))
+        self.browser_mode_hint.config(text=text, fg=fg)
 
     def _save_browser_mode_to_config(self, mode: str):
         """将浏览器录制模式写入 config.ini（保留原文件格式）"""
         try:
-            key = '浏览器录制模式(fallback/screencast)'
+            key = '浏览器录制模式(fallback/screencast/force_fallback/force_screencast)'
             with open(self.main_config_file, 'r', encoding='utf-8-sig') as f:
                 content = f.read()
 
