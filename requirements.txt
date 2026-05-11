@@ -8,3 +8,4 @@ PyExecJS
 pystray
 Pillow
 weverse
+playwright

@@ -3680,3 +3680,61 @@ async def get_picarto_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
         m3u8_url = f"https://1-edge1-us-newyork.picarto.tv/stream/hls/golive+{anchor_name}/index.m3u8"
         result |= {'is_live': True, 'title': title, 'm3u8_url': m3u8_url, 'record_url': m3u8_url}
     return result
+
+
+BROWSER_FALLBACK_PLATFORMS = {
+    "douyin.com": "douyin",
+    "v.douyin.com": "douyin",
+    "www.douyin.com": "douyin",
+    "www.tiktok.com": "tiktok",
+    "live.kuaishou.com": "kuaishou",
+    "www.huya.com": "huya",
+    "www.douyu.com": "douyu",
+    "live.bilibili.com": "bilibili",
+    "www.xiaohongshu.com": "xiaohongshu",
+    "xhslink.com": "xiaohongshu",
+    "www.youtube.com": "youtube",
+    "youtu.be": "youtube",
+    "www.twitch.tv": "twitch",
+}
+
+
+def _get_browser_fallback_platform(url: str) -> OptionalStr:
+    for domain, platform in BROWSER_FALLBACK_PLATFORMS.items():
+        if domain in url:
+            return platform
+    return None
+
+
+async def browser_fallback_extract(
+    url: str,
+    proxy_addr: OptionalStr = None,
+    cookies: OptionalStr = None,
+    timeout: int = 30,
+) -> dict:
+    platform = _get_browser_fallback_platform(url)
+    if not platform:
+        return {"anchor_name": "", "is_live": False}
+
+    try:
+        from .browser_extractor import browser_extract_stream
+        logger.info(f"Trying browser fallback for {platform}: {url}")
+        result = await browser_extract_stream(
+            url=url,
+            platform=platform,
+            proxy_addr=proxy_addr,
+            cookies=cookies,
+            timeout=timeout,
+        )
+        if result.get("is_live"):
+            logger.info(f"Browser fallback succeeded for {platform}: {url}")
+        return result
+    except ImportError:
+        logger.warning(
+            "playwright is not installed, browser fallback disabled. "
+            "Run: pip install playwright && playwright install chromium"
+        )
+        return {"anchor_name": "", "is_live": False}
+    except Exception as e:
+        logger.error(f"Browser fallback failed: {e}")
+        return {"anchor_name": "", "is_live": False}

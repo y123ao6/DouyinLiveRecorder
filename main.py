@@ -31,6 +31,7 @@ from src import spider, stream
 from src.proxy import ProxyDetector
 from src.utils import logger
 from src import utils
+from src.spider import browser_fallback_extract
 from msg_push import (
     dingtalk, xizhi, tg_bot, send_email, bark, ntfy, pushplus
 )
@@ -154,6 +155,11 @@ def safe_exit(signum, frame):
     global exit_recording
     exit_recording = True
     color_obj.print_colored("\n正在安全退出...", color_obj.YELLOW)
+    try:
+        from src.browser_extractor import close_browser
+        asyncio.run(close_browser())
+    except Exception:
+        pass
     cleanup_all_ffmpeg_processes()
     sys.exit(0)
 
@@ -1323,6 +1329,42 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                         anchor_name = port_info.get("anchor_name", '')
 
                     if not port_info.get("anchor_name", ''):
+                        if enable_browser_fallback:
+                            try:
+                                fallback_cookie = None
+                                if 'douyin.com' in record_url:
+                                    fallback_cookie = dy_cookie
+                                elif 'tiktok.com' in record_url:
+                                    fallback_cookie = tiktok_cookie
+                                elif 'kuaishou.com' in record_url:
+                                    fallback_cookie = ks_cookie
+                                elif 'huya.com' in record_url:
+                                    fallback_cookie = hy_cookie
+                                elif 'douyu.com' in record_url:
+                                    fallback_cookie = douyu_cookie
+                                elif 'bilibili.com' in record_url:
+                                    fallback_cookie = bili_cookie
+                                elif 'xiaohongshu.com' in record_url or 'xhslink.com' in record_url:
+                                    fallback_cookie = xhs_cookie
+                                elif 'youtube.com' in record_url or 'youtu.be' in record_url:
+                                    fallback_cookie = youtube_cookie
+                                elif 'twitch.tv' in record_url:
+                                    fallback_cookie = twitch_cookie
+
+                                fallback_info = asyncio.run(browser_fallback_extract(
+                                    url=record_url,
+                                    proxy_addr=proxy_address,
+                                    cookies=fallback_cookie,
+                                    timeout=browser_fallback_timeout,
+                                ))
+                                if fallback_info and fallback_info.get("anchor_name"):
+                                    port_info = fallback_info
+                                    anchor_name = port_info.get("anchor_name", '')
+                                    logger.info(f"浏览器回退成功: {anchor_name}")
+                            except Exception as e:
+                                logger.debug(f"浏览器回退失败: {e}")
+
+                    if not port_info.get("anchor_name", ''):
                         print(f'序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}')
                         with max_request_lock:
                             error_count += 1
@@ -2107,6 +2149,8 @@ while True:
     enable_proxy_platform_list = enable_proxy_platform.replace('，', ',').split(',') if enable_proxy_platform else None
     extra_enable_proxy = read_config_value(config, '录制设置', '额外使用代理录制的平台(逗号分隔)', '')
     extra_enable_proxy_platform_list = extra_enable_proxy.replace('，', ',').split(',') if extra_enable_proxy else None
+    enable_browser_fallback = options.get(read_config_value(config, '录制设置', '是否启用浏览器录制回退(是/否)', "否"), False)
+    browser_fallback_timeout = int(read_config_value(config, '录制设置', '浏览器录制回退超时时间(秒)', 30))
     live_status_push = read_config_value(config, '推送配置', '直播状态推送渠道', "")
     dingtalk_api_url = read_config_value(config, '推送配置', '钉钉推送接口链接', "")
     xizhi_api_url = read_config_value(config, '推送配置', '微信推送接口链接', "")

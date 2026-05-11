@@ -16,7 +16,8 @@ dependencies = [
     "PyExecJS",
     "pystray",
     "Pillow",
-    "weverse"
+    "weverse",
+    "playwright"
 ]
 
 [project.urls]
