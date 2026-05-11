@@ -155,6 +155,7 @@ def safe_exit(signum, frame):
     global exit_recording
     exit_recording = True
     color_obj.print_colored("\n正在安全退出...", color_obj.YELLOW)
+    time.sleep(3)
     try:
         from src.browser_extractor import close_browser
         loop = asyncio.new_event_loop()
@@ -1516,8 +1517,6 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     if stop_callback:
                                         while not exit_recording:
                                             time.sleep(1)
-                                            if not os.path.exists(full_path):
-                                                break
                                         stop_callback()
                                         logger.info(f"浏览器屏幕录制已停止: {screencast_output}")
                                 except Exception as e:

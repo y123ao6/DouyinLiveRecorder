@@ -9,6 +9,7 @@ Function: Browser-based live stream recorder with two modes:
 
 import asyncio
 import os
+import threading
 from typing import Optional, Dict, List, Callable
 from .logger import logger
 from .utils import trace_error_decorator
@@ -325,7 +326,9 @@ class BrowserRecorder:
     ) -> Callable:
         """Screencast mode: directly record browser-rendered video to file
         
-        Returns a stop function to call when recording should end
+        Returns a stop function to call when recording should end.
+        Uses a background thread with a persistent event loop so the
+        recording continues after the caller's event loop is closed.
         """
         browser = await self._get_browser(proxy_addr, headless=True)
         if browser is None:
@@ -349,8 +352,6 @@ class BrowserRecorder:
 
         page = await context.new_page()
 
-        self._stop_event.clear()
-
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(5000)
@@ -359,43 +360,59 @@ class BrowserRecorder:
             await context.close()
             raise
 
-        async def _record_loop():
-            try:
-                while not self._stop_event.is_set():
-                    await asyncio.sleep(0.5)
-                logger.info("Screencast recording stopped")
-            except asyncio.CancelledError:
-                logger.info("Screencast recording cancelled")
-            finally:
-                video_path = await page.video.path() if page.video else None
-                await context.close()
-                if video_path and os.path.exists(video_path):
-                    if os.path.exists(output_path):
-                        try:
-                            os.remove(output_path)
-                        except Exception:
-                            pass
-                    try:
-                        os.rename(video_path, output_path)
-                        logger.info(f"Screencast saved to: {output_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to move screencast file: {e}")
+        stop_flag = threading.Event()
+        finished_event = threading.Event()
 
-        self._screencast_task = asyncio.create_task(_record_loop())
+        def _bg_record():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            async def _record():
+                try:
+                    while not stop_flag.is_set():
+                        await asyncio.sleep(0.5)
+                    logger.info("Screencast recording stopped")
+                except asyncio.CancelledError:
+                    logger.info("Screencast recording cancelled")
+                finally:
+                    try:
+                        video_path = await page.video.path() if page.video else None
+                    except Exception:
+                        video_path = None
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+                    if video_path and os.path.exists(video_path):
+                        if os.path.exists(output_path):
+                            try:
+                                os.remove(output_path)
+                            except Exception:
+                                pass
+                        try:
+                            os.rename(video_path, output_path)
+                            logger.info(f"Screencast saved to: {output_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to move screencast file: {e}")
+                    finished_event.set()
+
+            try:
+                loop.run_until_complete(_record())
+            except Exception as e:
+                logger.error(f"Screencast background error: {e}")
+                finished_event.set()
+            finally:
+                loop.close()
+
+        bg_thread = threading.Thread(target=_bg_record, daemon=True)
+        bg_thread.start()
 
         def stop():
-            asyncio.create_task(self._stop_screencast())
+            stop_flag.set()
+            finished_event.wait(timeout=30)
+            logger.info("Browser screencast stopped and resources released")
 
         return stop
-
-    async def _stop_screencast(self):
-        self._stop_event.set()
-        if self._screencast_task:
-            try:
-                await self._screencast_task
-            except Exception as e:
-                logger.error(f"Error stopping screencast: {e}")
-            self._screencast_task = None
 
     async def _extract_anchor_name(self, page, config: dict) -> str:
         selectors = config.get("anchor_selectors", [])
