@@ -239,6 +239,29 @@ class LiveRecorderGUI:
         ttk.Button(right_btn_frame, text="⚙️ 高级设置", command=self.open_advanced_settings,
                    style='Action.TButton', width=15).grid(row=0, column=1, padx=3, pady=3)
 
+        browser_frame = ttk.LabelFrame(top_frame, text="浏览器录制模式", padding=5)
+        browser_frame.pack(side=tk.RIGHT, padx=10)
+
+        self.browser_mode_var = tk.StringVar(value="fallback")
+        self.fallback_rb = ttk.Radiobutton(
+            browser_frame, text="🔗 网络拦截", variable=self.browser_mode_var,
+            value="fallback", command=self._on_browser_mode_change
+        )
+        self.fallback_rb.grid(row=0, column=0, padx=5, pady=2)
+
+        self.screencast_rb = ttk.Radiobutton(
+            browser_frame, text="🖥️ 屏幕录制", variable=self.browser_mode_var,
+            value="screencast", command=self._on_browser_mode_change
+        )
+        self.screencast_rb.grid(row=0, column=1, padx=5, pady=2)
+
+        self.browser_mode_hint = tk.Label(
+            browser_frame, text="", fg="gray", font=("Arial", 8)
+        )
+        self.browser_mode_hint.grid(row=1, column=0, columnspan=2, padx=2, pady=(0, 2))
+
+        self._load_browser_mode_from_config()
+
         status_frame = ttk.Frame(self.root)
         status_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
 
@@ -575,11 +598,12 @@ class LiveRecorderGUI:
     def _update_status_bar(self):
         """更新状态栏（动态读取配置）"""
         check_interval, output_format, tray_status = self._get_dynamic_status_info()
+        browser_mode = "网络拦截" if self.browser_mode_var.get() == "fallback" else "屏幕录制"
 
         if self.process_pid is not None:
-            status_text = f"状态：运行中 (PID: {self.process_pid}) | 循环检测: {check_interval} | 格式: {output_format} | 托盘: {tray_status}"
+            status_text = f"状态：运行中 (PID: {self.process_pid}) | 循环检测: {check_interval} | 格式: {output_format} | 浏览器: {browser_mode} | 托盘: {tray_status}"
         else:
-            status_text = f"状态：未运行 | 循环检测: {check_interval} | 格式: {output_format} | 托盘: {tray_status}"
+            status_text = f"状态：未运行 | 循环检测: {check_interval} | 格式: {output_format} | 浏览器: {browser_mode} | 托盘: {tray_status}"
 
         self.status_var.set(status_text)
 
@@ -604,6 +628,57 @@ class LiveRecorderGUI:
     def _manual_reload_config(self):
         """手动从磁盘重新读取 URL_config.ini 到编辑器"""
         self._load_config()
+
+    def _load_browser_mode_from_config(self):
+        """从 config.ini 读取浏览器录制模式"""
+        try:
+            config = configparser.ConfigParser()
+            config.optionxform = lambda optionstr: optionstr
+            config.read(self.main_config_file, encoding='utf-8-sig')
+            if '录制设置' in config:
+                mode = config['录制设置'].get('浏览器录制模式(fallback/screencast)', 'fallback')
+                self.browser_mode_var.set(mode)
+                self._update_browser_mode_hint(mode)
+        except Exception:
+            self.browser_mode_var.set('fallback')
+            self._update_browser_mode_hint('fallback')
+
+    def _on_browser_mode_change(self):
+        """浏览器录制模式切换回调"""
+        mode = self.browser_mode_var.get()
+        self._update_browser_mode_hint(mode)
+        self._save_browser_mode_to_config(mode)
+        self._log(f"浏览器录制模式已切换为: {'网络拦截' if mode == 'fallback' else '屏幕录制'}")
+        self._update_status_bar()
+
+    def _update_browser_mode_hint(self, mode: str):
+        """更新模式提示文字"""
+        if mode == "screencast":
+            self.browser_mode_hint.config(
+                text="直接录制浏览器画面，支持加密流",
+                fg="#e65100"
+            )
+        else:
+            self.browser_mode_hint.config(
+                text="拦截网络请求获取流地址，画质最佳",
+                fg="gray"
+            )
+
+    def _save_browser_mode_to_config(self, mode: str):
+        """将浏览器录制模式写入 config.ini"""
+        try:
+            config = configparser.ConfigParser()
+            config.optionxform = lambda optionstr: optionstr
+            config.read(self.main_config_file, encoding='utf-8-sig')
+
+            if '录制设置' not in config:
+                config.add_section('录制设置')
+            config['录制设置']['浏览器录制模式(fallback/screencast)'] = mode
+
+            with open(self.main_config_file, 'w', encoding='utf-8-sig') as f:
+                config.write(f)
+        except Exception as e:
+            self._log(f"保存浏览器录制模式失败: {e}", "error")
 
     def minimize_to_tray(self):
         """最小化到托盘"""
