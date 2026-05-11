@@ -2,16 +2,23 @@
 
 """
 Author: DouyinLiveRecorder Contributors
-Function: Browser-based live stream URL extractor using Playwright.
+Function: Browser-based live stream recorder with two modes:
+  - FALLBACK: Capture stream URL via network interception (default)
+  - SCREENCAST: Directly record browser-rendered video via screen capture
 """
 
 import asyncio
-from typing import Optional, Dict, List
+import os
+import signal
+from typing import Optional, Dict, List, Callable
 from .logger import logger
 from .utils import trace_error_decorator
 
 OptionalStr = str | None
 OptionalDict = Dict | None
+
+BROWSER_MODE_FALLBACK = "fallback"
+BROWSER_MODE_SCREENCAST = "screencast"
 
 PLATFORM_STREAM_PATTERNS = {
     "douyin": {
@@ -103,8 +110,6 @@ LAUNCH_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--mute-audio",
     "--autoplay-policy=no-user-gesture-required",
     "--disable-extensions",
     "--disable-background-timer-throttling",
@@ -112,6 +117,12 @@ LAUNCH_ARGS = [
     "--disable-renderer-backgrounding",
     "--no-first-run",
     "--no-default-browser-check",
+    "--use-fake-ui-for-media-stream",
+    "--use-fake-device-for-media-stream",
+]
+
+SCREENCAST_LAUNCH_ARGS = LAUNCH_ARGS + [
+    "--disable-gpu",
 ]
 
 
@@ -153,13 +164,14 @@ def _parse_cookie_str(cookie_str: str, url: str) -> List[dict]:
     return cookies
 
 
-class BrowserStreamExtractor:
+class BrowserRecorder:
     _playwright = None
     _browser = None
     _lock = None
 
     def __init__(self):
-        pass
+        self._screencast_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
 
     @classmethod
     def _get_lock(cls):
@@ -168,7 +180,7 @@ class BrowserStreamExtractor:
         return cls._lock
 
     @classmethod
-    async def _get_browser(cls, proxy_addr: OptionalStr = None):
+    async def _get_browser(cls, proxy_addr: OptionalStr = None, headless: bool = True):
         async with cls._get_lock():
             if cls._browser is not None and cls._browser.is_connected():
                 return cls._browser
@@ -182,10 +194,11 @@ class BrowserStreamExtractor:
                 return None
             cls._playwright = await async_playwright().start()
             proxy_config = {"server": proxy_addr} if proxy_addr else None
+            args = LAUNCH_ARGS if not headless else SCREENCAST_LAUNCH_ARGS
             try:
                 cls._browser = await cls._playwright.chromium.launch(
-                    headless=True,
-                    args=LAUNCH_ARGS,
+                    headless=headless,
+                    args=args,
                     proxy=proxy_config,
                 )
             except Exception as e:
@@ -210,7 +223,7 @@ class BrowserStreamExtractor:
                 cls._playwright = None
 
     @trace_error_decorator
-    async def extract(
+    async def extract_stream(
         self,
         url: str,
         platform: str = "",
@@ -218,6 +231,7 @@ class BrowserStreamExtractor:
         cookies: OptionalStr = None,
         timeout: int = 30,
     ) -> dict:
+        """Fallback mode: capture stream URL via network interception"""
         platform_key = _get_platform_key(url) if not platform else platform
         config = PLATFORM_STREAM_PATTERNS.get(platform_key, PLATFORM_STREAM_PATTERNS["default"])
 
@@ -306,6 +320,91 @@ class BrowserStreamExtractor:
 
         return result
 
+    @trace_error_decorator
+    async def start_screencast(
+        self,
+        url: str,
+        output_path: str,
+        proxy_addr: OptionalStr = None,
+        cookies: OptionalStr = None,
+        width: int = 1920,
+        height: int = 1080,
+        fps: int = 30,
+    ) -> Callable:
+        """Screencast mode: directly record browser-rendered video to file
+        
+        Returns a stop function to call when recording should end
+        """
+        browser = await self._get_browser(proxy_addr, headless=True)
+        if browser is None:
+            raise RuntimeError("Failed to launch browser")
+
+        context = await browser.new_context(
+            user_agent=DEFAULT_USER_AGENT,
+            viewport={"width": width, "height": height},
+            ignore_https_errors=True,
+            record_video_dir=os.path.dirname(output_path) or ".",
+            record_video_size={"width": width, "height": height},
+        )
+
+        if cookies:
+            cookie_list = _parse_cookie_str(cookies, url)
+            if cookie_list:
+                try:
+                    await context.add_cookies(cookie_list)
+                except Exception as e:
+                    logger.debug(f"Failed to add cookies: {e}")
+
+        page = await context.new_page()
+
+        self._stop_event.clear()
+
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(5000)
+        except Exception as e:
+            logger.error(f"Failed to load page: {e}")
+            await context.close()
+            raise
+
+        async def _record_loop():
+            try:
+                while not self._stop_event.is_set():
+                    await asyncio.sleep(0.5)
+                logger.info("Screencast recording stopped")
+            except asyncio.CancelledError:
+                logger.info("Screencast recording cancelled")
+            finally:
+                video_path = await page.video.path() if page.video else None
+                await context.close()
+                if video_path and os.path.exists(video_path):
+                    if os.path.exists(output_path):
+                        try:
+                            os.remove(output_path)
+                        except Exception:
+                            pass
+                    try:
+                        os.rename(video_path, output_path)
+                        logger.info(f"Screencast saved to: {output_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to move screencast file: {e}")
+
+        self._screencast_task = asyncio.create_task(_record_loop())
+
+        def stop():
+            asyncio.create_task(self._stop_screencast())
+
+        return stop
+
+    async def _stop_screencast(self):
+        self._stop_event.set()
+        if self._screencast_task:
+            try:
+                await self._screencast_task
+            except Exception as e:
+                logger.error(f"Error stopping screencast: {e}")
+            self._screencast_task = None
+
     async def _extract_anchor_name(self, page, config: dict) -> str:
         selectors = config.get("anchor_selectors", [])
         for selector in selectors:
@@ -330,14 +429,14 @@ class BrowserStreamExtractor:
         return ""
 
 
-_browser_extractor: Optional[BrowserStreamExtractor] = None
+_browser_recorder: Optional[BrowserRecorder] = None
 
 
-async def get_browser_extractor() -> BrowserStreamExtractor:
-    global _browser_extractor
-    if _browser_extractor is None:
-        _browser_extractor = BrowserStreamExtractor()
-    return _browser_extractor
+async def get_browser_recorder() -> BrowserRecorder:
+    global _browser_recorder
+    if _browser_recorder is None:
+        _browser_recorder = BrowserRecorder()
+    return _browser_recorder
 
 
 async def browser_extract_stream(
@@ -347,12 +446,12 @@ async def browser_extract_stream(
     cookies: OptionalStr = None,
     timeout: int = 30,
 ) -> dict:
-    extractor = await get_browser_extractor()
-    return await extractor.extract(url, platform, proxy_addr, cookies, timeout)
+    recorder = await get_browser_recorder()
+    return await recorder.extract_stream(url, platform, proxy_addr, cookies, timeout)
 
 
 async def close_browser():
-    global _browser_extractor
-    if _browser_extractor:
-        await _browser_extractor.close()
-        _browser_extractor = None
+    global _browser_recorder
+    if _browser_recorder:
+        await _browser_recorder.close()
+        _browser_recorder = None

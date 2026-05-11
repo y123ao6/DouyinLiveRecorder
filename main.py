@@ -2159,6 +2159,9 @@ while True:
     extra_enable_proxy_platform_list = extra_enable_proxy.replace('，', ',').split(',') if extra_enable_proxy else None
     enable_browser_fallback = options.get(read_config_value(config, '录制设置', '是否启用浏览器录制回退(是/否)', "否"), False)
     browser_fallback_timeout = int(read_config_value(config, '录制设置', '浏览器录制回退超时时间(秒)', 30))
+    browser_recording_mode = read_config_value(config, '录制设置', '浏览器录制模式(fallback/screencast)', "fallback")
+    browser_resolution = read_config_value(config, '录制设置', '浏览器屏幕录制分辨率(宽x高)', "1920x1080")
+    browser_fps = int(read_config_value(config, '录制设置', '浏览器屏幕录制帧率', 30))
     live_status_push = read_config_value(config, '推送配置', '直播状态推送渠道', "")
     dingtalk_api_url = read_config_value(config, '推送配置', '钉钉推送接口链接', "")
     xizhi_api_url = read_config_value(config, '推送配置', '微信推送接口链接', "")
