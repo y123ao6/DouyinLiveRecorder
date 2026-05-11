@@ -596,33 +596,32 @@ def clear_record_info(record_name: str, record_url: str) -> None:
 def direct_download_stream(source_url: str, save_path: str, record_name: str, live_url: str, platform: str) -> bool:
     try:
         with open(save_path, 'wb') as f:
-            client = httpx.Client(timeout=None)
-
             headers = {}
             header_params = get_record_headers(platform, live_url)
             if header_params:
                 key, value = header_params.split(":", 1)
                 headers[key] = value
 
-            with client.stream('GET', source_url, headers=headers, follow_redirects=True) as response:
-                if response.status_code != 200:
-                    logger.error(f"请求直播流失败，状态码: {response.status_code}")
-                    return False
-
-                downloaded = 0
-                chunk_size = 1024 * 16
-
-                for chunk in response.iter_bytes(chunk_size):
-                    if live_url in url_comments or exit_recording:
-                        color_obj.print_colored(f"[{record_name}]录制时已被注释或请求停止,下载中断", color_obj.YELLOW)
-                        clear_record_info(record_name, live_url)
+            with httpx.Client(timeout=None) as client:
+                with client.stream('GET', source_url, headers=headers, follow_redirects=True) as response:
+                    if response.status_code != 200:
+                        logger.error(f"请求直播流失败，状态码: {response.status_code}")
                         return False
 
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                print()
-                return True
+                    downloaded = 0
+                    chunk_size = 1024 * 16
+
+                    for chunk in response.iter_bytes(chunk_size):
+                        if live_url in url_comments or exit_recording:
+                            color_obj.print_colored(f"[{record_name}]录制时已被注释或请求停止,下载中断", color_obj.YELLOW)
+                            clear_record_info(record_name, live_url)
+                            return False
+
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                    print()
+                    return True
     except Exception as e:
         logger.error(f"FLV下载错误: {e} 发生错误的行数: {_get_error_line(e)}")
         return False

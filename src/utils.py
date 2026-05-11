@@ -46,7 +46,7 @@ def trace_error_decorator(func: Callable) -> Callable:
             error_line = traceback.extract_tb(e.__traceback__)[-1].lineno
             error_info = f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
             logger.error(error_info)
-            return []
+            return {}
 
     return wrapper
 
