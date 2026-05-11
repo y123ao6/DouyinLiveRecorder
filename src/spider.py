@@ -12,6 +12,7 @@ Function: Get live stream data.
 import hashlib
 import random
 import subprocess
+import threading
 import time
 import uuid
 from operator import itemgetter
@@ -39,12 +40,15 @@ OptionalStr = str | None
 OptionalDict = dict | None
 
 _js_context_cache: dict[str, Any] = {}
+_js_cache_lock = threading.Lock()
 
 
 def _get_js_context(js_file: str) -> Any:
     if js_file not in _js_context_cache:
-        with open(js_file, 'r', encoding='utf-8') as f:
-            _js_context_cache[js_file] = execjs.compile(f.read())
+        with _js_cache_lock:
+            if js_file not in _js_context_cache:
+                with open(js_file, 'r', encoding='utf-8') as f:
+                    _js_context_cache[js_file] = execjs.compile(f.read())
     return _js_context_cache[js_file]
 
 

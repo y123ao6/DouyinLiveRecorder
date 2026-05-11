@@ -8,6 +8,7 @@ Update: 2025-02-04 04:57:00
 Copyright (c) 2023 by Hmily, All Rights Reserved.
 """
 import re
+import threading
 import urllib.parse
 import execjs
 import httpx
@@ -26,13 +27,16 @@ HEADERS = {
 }
 
 _xbogus_js_context = None
+_xbogus_lock = threading.Lock()
 
 
 def _get_xbogus_context():
     global _xbogus_js_context
     if _xbogus_js_context is None:
-        with open(f'{JS_SCRIPT_PATH}/x-bogus.js', 'r', encoding='utf-8') as f:
-            _xbogus_js_context = execjs.compile(f.read())
+        with _xbogus_lock:
+            if _xbogus_js_context is None:
+                with open(f'{JS_SCRIPT_PATH}/x-bogus.js', 'r', encoding='utf-8') as f:
+                    _xbogus_js_context = execjs.compile(f.read())
     return _xbogus_js_context
 
 

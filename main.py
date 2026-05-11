@@ -31,6 +31,7 @@ import httpx
 from src import spider, stream
 from src.proxy import ProxyDetector
 from src.utils import logger
+from src.http_clients.async_http import close_all_clients
 from src import utils
 from msg_push import (
     dingtalk, xizhi, tg_bot, send_email, bark, ntfy, pushplus
@@ -49,8 +50,8 @@ recording = set()
 error_count = 0
 pre_max_request = 10
 max_request_lock = threading.Lock()
-error_window = deque(maxlen=error_window_size)
 error_window_size = 10
+error_window = deque(maxlen=error_window_size)
 error_threshold = 5
 monitoring = 0
 running_list = []
@@ -158,6 +159,14 @@ def safe_exit(signum, frame):
     exit_recording = True
     color_obj.print_colored("\n正在安全退出...", color_obj.YELLOW)
     cleanup_all_ffmpeg_processes()
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(close_all_clients())
+        else:
+            loop.run_until_complete(close_all_clients())
+    except Exception:
+        pass
     sys.exit(0)
 
 # 注册信号处理器
@@ -541,8 +550,8 @@ def adjust_max_request() -> None:
                 pre_max_request = max_request
                 logger.debug(f"同一时间访问网络的线程数动态改为 {max_request}")
 
-        error_window.append(error_count)
-        error_count = 0
+            error_window.append(error_count)
+            error_count = 0
 
 
 def push_message(record_name: str, live_url: str, content: str) -> None:

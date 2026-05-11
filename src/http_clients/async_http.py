@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import httpx
 from typing import Dict, Any
 from .. import utils
@@ -10,6 +11,7 @@ OptionalDict = Dict[str, Any] | None
 _httpx_limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
 
 _client_cache: dict[str, httpx.AsyncClient] = {}
+_cache_lock = asyncio.Lock()
 
 
 def _get_client_key(proxy_addr: OptionalStr, timeout: int, verify: bool, http2: bool) -> str:
@@ -20,14 +22,17 @@ async def _get_client(proxy_addr: OptionalStr, timeout: int, verify: bool, http2
     key = _get_client_key(proxy_addr, timeout, verify, http2)
     client = _client_cache.get(key)
     if client is None or client.is_closed:
-        client = httpx.AsyncClient(
-            proxy=proxy_addr,
-            timeout=timeout,
-            verify=verify,
-            http2=http2,
-            limits=_httpx_limits
-        )
-        _client_cache[key] = client
+        async with _cache_lock:
+            client = _client_cache.get(key)
+            if client is None or client.is_closed:
+                client = httpx.AsyncClient(
+                    proxy=proxy_addr,
+                    timeout=timeout,
+                    verify=verify,
+                    http2=http2,
+                    limits=_httpx_limits
+                )
+                _client_cache[key] = client
     return client
 
 
@@ -90,7 +95,8 @@ async def get_response_status(url: str, proxy_addr: OptionalStr = None, headers:
 
 
 async def close_all_clients():
-    for key, client in list(_client_cache.items()):
-        if not client.is_closed:
-            await client.aclose()
-    _client_cache.clear()
+    async with _cache_lock:
+        for key, client in list(_client_cache.items()):
+            if not client.is_closed:
+                await client.aclose()
+        _client_cache.clear()
