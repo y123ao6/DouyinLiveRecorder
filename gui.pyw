@@ -15,7 +15,7 @@ import queue
 import re
 import configparser
 import tkinter as tk
-from tkinter import scrolledtext, messagebox, ttk
+from tkinter import messagebox, ttk
 from datetime import datetime
 from typing import Any
 
@@ -60,14 +60,26 @@ class Theme:
         return colors
 
 
+def _resolve_font(candidates: tuple[str, ...], size: int, weight: str = "normal") -> tuple:
+    """跨平台字体解析：按优先级尝试可用字体，均不可用时返回兜底"""
+    from tkinter import font as tkfont
+    for name in candidates:
+        try:
+            tkfont.nametofont(name)
+            return (name, size, weight)
+        except Exception:
+            continue
+    return (candidates[-1], size, weight)
+
+
 class ModernStyles:
     """现代化样式配置"""
-    
-    FONT_TITLE = ("Segoe UI", 16, "bold")
-    FONT_SUBTITLE = ("Segoe UI", 12, "bold")
-    FONT_BODY = ("Segoe UI", 10)
-    FONT_MONO = ("Cascadia Code", "Consolas", 9)
-    FONT_SMALL = ("Segoe UI", 8)
+
+    FONT_TITLE = _resolve_font(("Segoe UI", "Noto Sans", "DejaVu Sans", "TkDefaultFont"), 16, "bold")
+    FONT_SUBTITLE = _resolve_font(("Segoe UI", "Noto Sans", "DejaVu Sans", "TkDefaultFont"), 12, "bold")
+    FONT_BODY = _resolve_font(("Segoe UI", "Noto Sans", "DejaVu Sans", "TkDefaultFont"), 10)
+    FONT_MONO = _resolve_font(("Cascadia Code", "Consolas", "DejaVu Sans Mono", "TkFixedFont"), 9)
+    FONT_SMALL = _resolve_font(("Segoe UI", "Noto Sans", "DejaVu Sans", "TkDefaultFont"), 8)
     
     PAD_X = 15
     PAD_Y = 10
@@ -95,9 +107,23 @@ class ModernStyles:
         style.configure('Body.TLabel', background=Theme.BG_PRIMARY, foreground=Theme.TEXT_PRIMARY, font=cls.FONT_BODY)
         style.configure('Muted.TLabel', background=Theme.BG_PRIMARY, foreground=Theme.TEXT_MUTED, font=cls.FONT_SMALL)
         
+        # 卡片样式
+        style.configure('Card.TFrame', background=Theme.BG_CARD)
+        style.configure('CardTitle.TLabel', background=Theme.BG_CARD, foreground=Theme.TEXT_SECONDARY,
+                       font=('', cls.FONT_SMALL[1], 'bold'))
+
+        # 横幅样式
+        style.configure('Banner.TFrame', background=Theme.BG_SECONDARY)
+
+        # 状态指示器样式
+        style.configure('Indicator.TFrame', background=Theme.BG_PRIMARY)
+
+        # 文本框架样式
+        style.configure('TextFrame.TFrame', background=Theme.BG_PRIMARY)
+
         # 输入框样式
         style.configure('Modern.TEntry', fieldbackground=Theme.BG_INPUT, foreground=Theme.TEXT_PRIMARY, borderwidth=0)
-        
+
         # 滚动条样式
         cls._style_scrollbar(style)
         
@@ -198,13 +224,10 @@ def _create_rounded_rect(canvas: tk.Canvas, x1: float, y1: float, x2: float, y2:
 
 class CardFrame(ttk.Frame):
     """现代化卡片容器"""
-    
+
     def __init__(self, parent: tk.Misc, title: str = "", **kwargs):
-        bg = kwargs.pop('background', Theme.BG_CARD)
-        super().__init__(parent, **kwargs)
-        
-        self.configure(style='Card.TFrame', padding=ModernStyles.PAD_CARD)
-        
+        super().__init__(parent, style='Card.TFrame', padding=ModernStyles.PAD_CARD)
+
         if title:
             self.title_label = ttk.Label(self, text=title.upper(), style='CardTitle.TLabel')
             self.title_label.pack(anchor='w', pady=(0, 8))
@@ -269,24 +292,27 @@ class StatusIndicator(ttk.Frame):
 
 
 class ModernTextWidget(ttk.Frame):
-    """现代化文本控件（带圆角边框）"""
-    
+    """现代化文本控件（带圆角边框 + 自适应尺寸）"""
+
     def __init__(self, parent: tk.Misc, readonly: bool = False, **kwargs):
         height = kwargs.pop('height', 10)
         mono = kwargs.pop('mono', True)
         bg_color = kwargs.pop('bg', Theme.BG_PRIMARY)
         fg_color = kwargs.pop('fg', Theme.TEXT_PRIMARY)
-        
-        super().__init__(parent, **kwargs)
-        self.configure(style='TextFrame.TFrame')
-        
+
+        super().__init__(parent, style='TextFrame.TFrame', **kwargs)
+
+        self._bg = bg_color
+        self._canvas_height = height * 15
+        self._readonly = readonly
+
         self.canvas = tk.Canvas(self, bg=bg_color, highlightthickness=0,
-                               height=height * 15)
+                               height=self._canvas_height)
         self.canvas.pack(fill='both', expand=True)
-        
-        self._border = _create_rounded_rect(self.canvas, 0, 0, 400, height * 15,
+
+        self._border = _create_rounded_rect(self.canvas, 1, 1, 398, self._canvas_height - 1,
                                            radius=6, fill=bg_color, outline=Theme.BORDER, width=1)
-        
+
         self.text_widget = tk.Text(self.canvas, bg=bg_color, fg=fg_color,
                                   font=ModernStyles.FONT_MONO if mono else ModernStyles.FONT_BODY,
                                   wrap='word', relief='flat', borderwidth=0,
@@ -295,15 +321,23 @@ class ModernTextWidget(ttk.Frame):
                                   selectforeground='white',
                                   padx=10, pady=8,
                                   state='disabled' if readonly else 'normal')
-        
-        self._text_window = self.canvas.create_window(5, 5, anchor='nw',
+
+        self._text_window = self.canvas.create_window(6, 6, anchor='nw',
                                                      window=self.text_widget,
-                                                     width=390, height=height * 15 - 10)
-        
+                                                     width=386, height=self._canvas_height - 12)
+
+        self.canvas.bind('<Configure>', self._on_resize)
+
         if readonly:
             self.text_widget.tag_configure('error', foreground='#ff7b72')
             self.text_widget.tag_configure('info', foreground=Theme.TEXT_PRIMARY)
             self.text_widget.tag_configure('success', foreground=Theme.ACCENT_SUCCESS)
+
+    def _on_resize(self, event: tk.Event) -> None:
+        w, h = event.width, event.height
+        if w > 10 and h > 10:
+            self.canvas.coords(self._border, 1, 1, w - 1, h - 1)
+            self.canvas.itemconfig(self._text_window, width=w - 14, height=h - 14)
     
     def insert(self, index: str, text: str, tags: str | None = None) -> None:
         self.text_widget.config(state='normal')
