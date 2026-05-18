@@ -1,13 +1,6 @@
 # -*- encoding: utf-8 -*-
 
-"""
-Author: Hmily
-GitHub: https://github.com/ihmily
-Date: 2023-07-15 23:15:00
-Update: 2025-10-23 18:28:00
-Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
-Function: Get live stream data.
-"""
+# 抖音直播录制工具 - 爬虫模块
 
 import hashlib
 import random
@@ -40,7 +33,7 @@ OptionalDict = dict | None
 
 
 def _get_str_response(resp):
-    """安全地将 async_req 的响应转换为 str"""
+    # 安全地将 async_req 的响应转换为字符串格式
     if isinstance(resp, str):
         return resp
     elif isinstance(resp, tuple) and len(resp) > 0 and isinstance(resp[0], str):
@@ -49,6 +42,7 @@ def _get_str_response(resp):
 
 
 def get_params(url: str, params: str) -> OptionalStr:
+    # 从URL中提取指定参数的值
     parsed_url = urllib.parse.urlparse(url)
     query_params = urllib.parse.parse_qs(parsed_url.query)
 
@@ -58,6 +52,7 @@ def get_params(url: str, params: str) -> OptionalStr:
 
 async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: OptionalDict = None,
                             abroad: bool = False) -> List[str]:
+    # 获取M3U8播放列表中的所有清晰度URL并按带宽排序
     resp = await async_req(url=m3u8, proxy_addr=proxy, headers=header, abroad=abroad)
     if not isinstance(resp, str):
         return []
@@ -77,6 +72,7 @@ async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: Option
 
 
 async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
+    # 通过抖音网页端API获取直播数据
     headers = {
         'cookie': 'ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
                   '%7Cab35197d5cfb21df6cbb2fa7ef1c9262206b062c315b9d04da746d0b37dfbc7d',
@@ -157,6 +153,7 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
 
 @trace_error_decorator
 async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    # 通过抖音APP端接口获取直播数据（备用方案）
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
                       'Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0',
@@ -246,6 +243,7 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
 
 @trace_error_decorator
 async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    # 获取抖音直播数据（主函数）
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
         'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
@@ -311,6 +309,7 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
 
 @trace_error_decorator
 async def get_tiktok_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict | None:
+    # 获取TikTok直播数据
     headers = {
         'referer': 'https://www.tiktok.com/',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -345,6 +344,7 @@ async def get_tiktok_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
 
 @trace_error_decorator
 async def get_kuaishou_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    # 获取快手直播数据
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
         'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
@@ -445,6 +445,7 @@ async def get_kuaishou_stream_data2(url: str, proxy_addr: OptionalStr = None, co
 
 @trace_error_decorator
 async def get_huya_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    # 获取虎牙直播数据
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -466,6 +467,7 @@ async def get_huya_stream_data(url: str, proxy_addr: OptionalStr = None, cookies
 
 @trace_error_decorator
 async def get_huya_app_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    # 通过虎牙微信小程序API获取直播流地址
     headers = {
         'User-Agent': 'ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))',
         'xweb_xhr': '1',
@@ -563,10 +565,12 @@ async def get_huya_app_stream_url(url: str, proxy_addr: OptionalStr = None, cook
 
 
 def md5(data) -> str:
+    # 计算字符串的MD5哈希值
     return hashlib.md5(data.encode('utf-8')).hexdigest()
 
 
 async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> dict:
+    # 获取斗鱼API请求签名参数
     try:
         key_url = f'https://www.douyu.com/wgapi/livenc/liveweb/websec/getEncryption?did={did}'
         headers = {
@@ -602,6 +606,7 @@ async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> di
 
 @trace_error_decorator
 async def get_douyu_info_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    # 获取斗鱼直播间基本信息
     headers = {
         'User-Agent': 'ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))',
         'Referer': 'https://m.douyu.com/3125893?rid=3125893&dyshid=0-96003918aa5365bc6dcb4933000316p1&dyshci=181',
@@ -1701,7 +1706,8 @@ def get_looklive_secret_data(text) -> tuple:
             _text = _text.encode('utf-8')
         if isinstance(_sec_key, str):
             _sec_key = _sec_key.encode('utf-8')
-        _sec_key = _sec_key[:16]  # 16 (AES-128), 24 (AES-192), or 32 (AES-256) bytes
+        _sec_key = _sec_key[:
+        16]  # 16 (AES-128), 24 (AES-192), or 32 (AES-256) bytes
         iv = bytes('0102030405060708', 'utf-8')
         encryptor = AES.new(_sec_key, AES.MODE_CBC, iv)
         padded_text = pad(_text, AES.block_size)
@@ -1724,11 +1730,7 @@ def get_looklive_secret_data(text) -> tuple:
 
 
 async def get_looklive_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
-    """
-    通过PC网页端的接口获取完整直播源，只有params和encSecKey这两个加密请求参数。
-    params: 由两次AES加密完成
-    ncSecKey: 由一次自写的加密函数完成，值可固定
-    """
+    # 通过PC网页端的接口获取完整直播源，只有params和encSecKey这两个加密请求参数。
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',

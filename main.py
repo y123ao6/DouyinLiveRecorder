@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
 # -*- encoding: utf-8 -*-
 
-"""
-DouyinLiveRecorder 主程序入口 - 命令行版
-
-这是直播录制工具的核心模块，负责：
-- 配置文件的读取和解析
-- 多平台直播流的获取和解析
-- FFmpeg 录制进程的管理
-- 多线程并发录制控制
-- 错误处理和自动重试
-- 直播状态通知推送
-
-支持平台：60+ 国内外直播平台（详见下文）
-
-架构流程：
-    URL配置 → 平台识别 → 获取直播数据 → 解析流地址 → FFmpeg录制 → 状态监控
-
-Author: Hmily
-GitHub: https://github.com/ihmily
-Date: 2023-07-17 23:52:05
-Update: 2025-10-23 19:48:05
-Version: v4.0.7
-Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
-"""
+# DouyinLiveRecorder 主程序入口 - 命令行版
+#
+# 这是直播录制工具的核心模块，负责：
+# - 配置文件的读取和解析
+# - 多平台直播流的获取和解析
+# - FFmpeg 录制进程的管理
+# - 多线程并发录制控制
+# - 错误处理和自动重试
+# - 直播状态通知推送
+#
+# 支持平台：60+ 国内外直播平台（详见下文）
+#
+# 架构流程：
+#     URL配置 → 平台识别 → 获取直播数据 → 解析流地址 → FFmpeg录制 → 状态监控
+#
+# Author: Hmily
+# GitHub: https://github.com/ihmily
+# Date: 2023-07-17 23:52:05
+# Update: 2025-10-23 19:48:05
+# Version: v4.0.7
+# Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
 import asyncio
 import os
 import sys
@@ -111,18 +109,18 @@ _ffmpeg_processes = []
 _processes_lock = threading.Lock()
 
 def register_ffmpeg_process(process):
-    """注册新启动的 ffmpeg 进程"""
+    # 注册新启动的 ffmpeg 进程
     with _processes_lock:
         _ffmpeg_processes.append(process)
 
 def unregister_ffmpeg_process(process):
-    """取消注册已结束的 ffmpeg 进程"""
+    # 取消注册已结束的 ffmpeg 进程
     with _processes_lock:
         if process in _ffmpeg_processes:
             _ffmpeg_processes.remove(process)
 
 def _cleanup_single_ffmpeg_process(proc):
-    """清理单个 ffmpeg 进程（在并行线程中调用）"""
+    # 清理单个 ffmpeg 进程（在并行线程中调用）
     try:
         if proc.poll() is None:
             logger.info(f"尝试终止 ffmpeg 进程 (PID: {proc.pid})")
@@ -171,7 +169,7 @@ def _cleanup_single_ffmpeg_process(proc):
 
 
 def cleanup_all_ffmpeg_processes():
-    """清理所有注册的 ffmpeg 进程（并行执行）"""
+    # 清理所有注册的 ffmpeg 进程（并行执行）
     logger.info("正在清理所有 ffmpeg 进程...")
     with _processes_lock:
         processes_to_clean = list(_ffmpeg_processes)
@@ -190,7 +188,7 @@ def cleanup_all_ffmpeg_processes():
     logger.info("所有 ffmpeg 进程清理完成")
 
 def safe_exit(signum, frame):
-    """安全的退出处理函数"""
+    # 安全的退出处理函数
     global exit_recording
     exit_recording = True
     color_obj.print_colored("\n正在安全退出...", color_obj.YELLOW)
@@ -685,7 +683,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         create_var[subs_thread_name].start()
 
     def terminate_ffmpeg_process(proc, timeout=30):
-        """安全地终止 ffmpeg 进程，包含多层级 fallback 机制"""
+        # 安全地终止 ffmpeg 进程，包含多层级 fallback 机制
         if proc.poll() is not None:
             return True
             
