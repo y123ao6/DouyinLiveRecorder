@@ -54,72 +54,73 @@ from ffmpeg_install import (
 )
 
 # 版本信息和支持的平台列表
-version = "v4.0.7"
-platforms = ("\n国内站点：抖音|快手|虎牙|斗鱼|YY|B站|小红书|bigo|blued|网易CC|千度热播|猫耳FM|Look|TwitCasting|百度|微博|"
-             "酷狗|花椒|流星|Acfun|畅聊|映客|音播|知乎|嗨秀|VV星球|17Live|浪Live|漂漂|六间房|乐嗨|花猫|淘宝|京东|咪咕|连接|来秀"
-             "\n海外站点：TikTok|SOOP|PandaTV|WinkTV|FlexTV|PopkonTV|TwitchTV|LiveMe|ShowRoom|CHZZK|Shopee|"
-             "Youtube|Faceit|Picarto")
+version: str = "v4.0.7"
+platforms: str = ("\n国内站点：抖音|快手|虎牙|斗鱼|YY|B站|小红书|bigo|blued|网易CC|千度热播|猫耳FM|Look|TwitCasting|百度|微博|"
+                   "酷狗|花椒|流星|Acfun|畅聊|映客|音播|知乎|嗨秀|VV星球|17Live|浪Live|漂漂|六间房|乐嗨|花猫|淘宝|京东|咪咕|连接|来秀"
+                   "\n海外站点：TikTok|SOOP|PandaTV|WinkTV|FlexTV|PopkonTV|TwitchTV|LiveMe|ShowRoom|CHZZK|Shopee|"
+                   "Youtube|Faceit|Picarto")
 
 # ==================== 全局状态变量 ====================
 
 # 录制状态管理
-recording = set()  # 正在录制的直播间集合
-monitoring = 0  # 正在监控的直播间数量
-running_list = []  # 正在运行的 URL 列表
-recording_time_list = {}  # 记录每个直播间的开始录制时间
-exit_recording = False  # 退出标志
+recording: set = set()  # 正在录制的直播间集合
+monitoring: int = 0  # 正在监控的直播间数量
+running_list: list = []  # 正在运行的 URL 列表
+recording_time_list: dict = {}  # 记录每个直播间的开始录制时间
+exit_recording: bool = False  # 退出标志
 
 # 错误控制和动态调优
-error_count = 0  # 当前错误计数
-pre_max_request = 10  # 之前的最大请求数
-max_request_lock = threading.Lock()  # 最大请求数的线程锁
-error_window = []  # 错误窗口（用于动态调整并发数
-error_window_size = 10  # 错误窗口大小
-error_threshold = 5  # 错误阈值，超过后降低并发
+error_count: int = 0  # 当前错误计数
+pre_max_request: int = 10  # 之前的最大请求数
+max_request_lock: threading.Lock = threading.Lock()  # 最大请求数的线程锁
+error_window: list = []  # 错误窗口（用于动态调整并发数
+error_window_size: int = 10  # 错误窗口大小
+error_threshold: int = 5  # 错误阈值，超过后降低并发
 
 # URL 和配置管理
-url_tuples_list = []  # 解析后的 URL 配置列表（格式：(画质, URL, 主播名)
-url_comments = []  # 被注释掉的 URL 列表
-text_no_repeat_url = []  # 去重后的 URL 文本
-need_update_line_list = []  # 需要更新的配置行
-not_record_list = []  # 不录制的直播间列表
+url_tuples_list: list = []  # 解析后的 URL 配置列表（格式：(画质, URL, 主播名)
+url_comments: list = []  # 被注释掉的 URL 列表
+text_no_repeat_url: list = []  # 去重后的 URL 文本
+need_update_line_list: list = []  # 需要更新的配置行
+not_record_list: list = []  # 不录制的直播间列表
 
 # 标志变量
-first_start = True  # 首次启动标志
-first_run = True  # 首次运行标志
-global_proxy = False  # 全局代理启用标志
-create_var = locals()  # 动态变量创建（用于字幕线程
+first_start: bool = True  # 首次启动标志
+first_run: bool = True  # 首次运行标志
+global_proxy: bool = False  # 全局代理启用标志
+create_var: dict[str, Any] = locals()  # 动态变量创建（用于字幕线程
+start_display_time: "datetime.datetime" = datetime.datetime.now()  # 显示信息开始时间
 
 # ==================== 路径和配置 ====================
 
-script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]  # 脚本所在目录
-config_file = f'{script_path}/config/config.ini'  # 主配置文件路径
-url_config_file = f'{script_path}/config/URL_config.ini'  # URL 配置文件路径
-backup_dir = f'{script_path}/backup_config'  # 配置备份目录
-text_encoding = 'utf-8-sig'  # 文本文件编码（支持 BOM
-rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"  # 文件名字符过滤正则
-default_path = f'{script_path}/downloads'  # 默认下载目录
+script_path: str = os.path.split(os.path.realpath(sys.argv[0]))[0]  # 脚本所在目录
+config_file: str = f'{script_path}/config/config.ini'  # 主配置文件路径
+url_config_file: str = f'{script_path}/config/URL_config.ini'  # URL 配置文件路径
+backup_dir: str = f'{script_path}/backup_config'  # 配置备份目录
+text_encoding: str = 'utf-8-sig'  # 文本文件编码（支持 BOM
+rstr: str = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"  # 文件名字符过滤正则
+default_path: str = f'{script_path}/downloads'  # 默认下载目录
 os.makedirs(default_path, exist_ok=True)  # 确保下载目录存在
-file_update_lock = threading.Lock()  # 文件更新锁（防止多线程写入冲突
+file_update_lock: threading.Lock = threading.Lock()  # 文件更新锁（防止多线程写入冲突
 
 # ==================== FFmpeg 进程管理 ====================
 
 # 全局跟踪所有 ffmpeg 进程（用于安全退出时清理
-_ffmpeg_processes = []
-_processes_lock = threading.Lock()
+_ffmpeg_processes: list = []
+_processes_lock: threading.Lock = threading.Lock()
 
-def register_ffmpeg_process(process):
+def register_ffmpeg_process(process: subprocess.Popen) -> None:
     # 注册新启动的 ffmpeg 进程
     with _processes_lock:
         _ffmpeg_processes.append(process)
 
-def unregister_ffmpeg_process(process):
+def unregister_ffmpeg_process(process: subprocess.Popen) -> None:
     # 取消注册已结束的 ffmpeg 进程
     with _processes_lock:
         if process in _ffmpeg_processes:
             _ffmpeg_processes.remove(process)
 
-def _cleanup_single_ffmpeg_process(proc):
+def _cleanup_single_ffmpeg_process(proc: subprocess.Popen) -> None:
     # 清理单个 ffmpeg 进程（在并行线程中调用）
     try:
         if proc.poll() is None:
@@ -168,7 +169,7 @@ def _cleanup_single_ffmpeg_process(proc):
         logger.error(f"清理 ffmpeg 进程时出错: {e}")
 
 
-def cleanup_all_ffmpeg_processes():
+def cleanup_all_ffmpeg_processes() -> None:
     # 清理所有注册的 ffmpeg 进程（并行执行）
     logger.info("正在清理所有 ffmpeg 进程...")
     with _processes_lock:
@@ -187,7 +188,7 @@ def cleanup_all_ffmpeg_processes():
         _ffmpeg_processes.clear()
     logger.info("所有 ffmpeg 进程清理完成")
 
-def safe_exit(signum, frame):
+def safe_exit(signum: int, frame: Any) -> None:
     # 安全的退出处理函数
     global exit_recording
     exit_recording = True
@@ -207,8 +208,8 @@ def _get_error_line(e: BaseException) -> str:
     return str(tb.tb_lineno) if tb else "unknown"
 
 
-os_type = os.name
-color_obj = utils.Color()
+os_type: str = os.name
+color_obj: "utils.Color" = utils.Color()
 os.environ['PATH'] = ffmpeg_path + os.pathsep + (current_env_path or '')
 
 PLATFORM_HOST = [
@@ -423,7 +424,7 @@ def delete_line(file_path: str, del_line: str, delete_all: bool = False) -> None
                 f.write(txt_line)
 
 
-def get_startup_info(system_type: str):
+def get_startup_info(system_type: str) -> Any:
     if system_type == 'nt':
         startup_info = subprocess.STARTUPINFO()
         startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -2057,8 +2058,8 @@ def read_config_value(config_parser: configparser.RawConfigParser, section: str,
         return default_value
 
 
-options = {"是": True, "否": False}
-config = configparser.RawConfigParser()
+options: dict[str, bool] = {"是": True, "否": False}
+config: configparser.RawConfigParser = configparser.RawConfigParser()
 config.read(config_file, encoding=text_encoding)
 language = read_config_value(config, '录制设置', 'language(zh_cn/en)', "zh_cn")
 skip_proxy_check = options.get(read_config_value(config, '录制设置', '是否跳过代理检测(是/否)', "否"), False)
@@ -2247,8 +2248,10 @@ while True:
 
 
     try:
-        url_comments, line_list, url_line_list = [[] for _ in range(3)]
-        seen_urls = set()
+        url_comments = []
+        line_list: list[str] = []
+        url_line_list: list[str] = []
+        seen_urls: set[str] = set()
         with (open(url_config_file, "r", encoding=text_encoding, errors='ignore') as file):
             for origin_line in file:
                 if origin_line in line_list:
@@ -2323,6 +2326,7 @@ while True:
             a = need_update_line_list.pop()
             replace_words = a.split('|')
             if replace_words[0] != replace_words[1]:
+                start_with: str | None
                 if replace_words[1].startswith("#"):
                     start_with = '#'
                     new_word = replace_words[1][1:]

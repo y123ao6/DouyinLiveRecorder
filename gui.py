@@ -539,27 +539,36 @@ class LiveRecorderGUI:
 
         # ── 顶部标题栏 ─────────────────────────────────
         header_bg = Colors.PRIMARY
-        header = tk.Frame(self.root, bg=header_bg, height=52)
+        header = tk.Frame(self.root, bg=header_bg, height=72)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
 
-        # 左侧标题
-        tk.Label(header, text="🎬  直播录制控制台", fg=Colors.WHITE, bg=header_bg,
-                 font=DpiFont.title(bold=True)).pack(side=tk.LEFT, padx=20, pady=12)
+        # 上排：标题 + 运行状态指示灯
+        header_top = tk.Frame(header, bg=header_bg)
+        header_top.pack(fill=tk.X)
 
-        # 右侧运行状态指示器
-        status_wrapper = tk.Frame(header, bg=header_bg)
-        status_wrapper.pack(side=tk.RIGHT, padx=20, pady=12)
+        tk.Label(header_top, text="🎬  直播录制控制台", fg=Colors.WHITE, bg=header_bg,
+                 font=DpiFont.title(bold=True)).pack(side=tk.LEFT, padx=20, pady=(8, 2))
 
-        self.status_canvas = tk.Canvas(status_wrapper, width=12, height=12,
+        self.status_canvas = tk.Canvas(header_top, width=12, height=12,
                                         bg=header_bg, highlightthickness=0)
-        self.status_canvas.pack(side=tk.LEFT, padx=(0, 8))
+        self.status_canvas.pack(side=tk.RIGHT, padx=20, pady=(8, 2))
         self._status_dot = self.status_canvas.create_oval(1, 1, 11, 11,
                                                            fill=Colors.DANGER, outline="")
 
-        self.status_label = tk.Label(status_wrapper, text="未运行", fg=Colors.WHITE,
-                                     bg=header_bg, font=DpiFont.body())
-        self.status_label.pack(side=tk.LEFT)
+        # 下排：状态栏信息（可换行）
+        self.status_var = tk.StringVar()
+        self._update_status_bar()
+
+        wraplength = self.root.winfo_reqwidth() - 40 if self.root.winfo_reqwidth() > 40 else 920
+        self.status_text_label = tk.Label(header, textvariable=self.status_var,
+                                           fg=Colors.GRAY_300, bg=header_bg,
+                                           font=DpiFont.small(),
+                                           anchor=tk.W, justify=tk.LEFT,
+                                           wraplength=wraplength)
+        self.status_text_label.pack(fill=tk.X, padx=20, pady=(0, 4))
+
+        header.bind("<Configure>", self._on_header_resize)
 
         # ── 工具栏 ─────────────────────────────────────
         toolbar = tk.Frame(self.root, bg=Colors.WHITE)
@@ -681,20 +690,6 @@ class LiveRecorderGUI:
         self.log_text.tag_config("error", foreground=Colors.TERMINAL_ERROR)
         self.log_text.tag_config("warn", foreground=Colors.TERMINAL_WARN)
 
-        # ── 底部状态栏 ───────────────────────────────
-        status_bar_bg = Colors.DARK
-        status_frame = tk.Frame(self.root, bg=status_bar_bg, height=32)
-        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        status_frame.pack_propagate(False)
-
-        self.status_var = tk.StringVar()
-        self._update_status_bar()
-
-        tk.Label(status_frame, textvariable=self.status_var,
-                 fg=Colors.GRAY_300, bg=status_bar_bg,
-                 font=DpiFont.small(),
-                 anchor=tk.W).pack(fill=tk.X, padx=16, pady=6)
-
     # ─── 状态指示器动画 ─────────────────────────────────────
 
     def _start_status_animation(self) -> None:
@@ -720,16 +715,15 @@ class LiveRecorderGUI:
         self._status_anim_index += 1
         self._status_anim_timer = self.root.after(120, self._animate_status_dot)
 
-    def _set_status(self, text: str, color: str, running: bool) -> None:
-        self.status_label.config(text=text, fg=Colors.WHITE)
+    def _set_status(self, color: str, running: bool) -> None:
         if running:
             self.status_canvas.itemconfig(self._status_dot, fill=Colors.SUCCESS)
             self._start_status_animation()
         else:
             self._stop_status_animation()
-            # 重置圆点
             self.status_canvas.coords(self._status_dot, 1, 1, 11, 11)
             self.status_canvas.itemconfig(self._status_dot, fill=color)
+        self._update_status_bar()
 
     # ─── 配置读写 ──────────────────────────────────────────
 
@@ -875,7 +869,7 @@ class LiveRecorderGUI:
             self.start_btn.state(['disabled'])
             self.stop_btn.state(['!disabled'])
 
-            self._set_status("运行中", Colors.SUCCESS, True)
+            self._set_status(Colors.SUCCESS, True)
             self._update_status_bar()
 
             self.output_thread = threading.Thread(target=self._read_output, daemon=True)
@@ -943,7 +937,7 @@ class LiveRecorderGUI:
         # 进程终止后的 UI 更新回调（在 UI 线程中执行）
         self.start_btn.state(['!disabled'])
         self.stop_btn.state(['disabled'])
-        self._set_status("未运行", Colors.DANGER, False)
+        self._set_status(Colors.DANGER, False)
         self._update_status_bar()
         self._log(f"[{self._get_timestamp()}] 录制进程已停止")
         self._log("━" * 40)
@@ -1064,7 +1058,7 @@ class LiveRecorderGUI:
         self.start_btn.state(['!disabled'])
         self.stop_btn.state(['disabled'])
 
-        self._set_status("未运行", Colors.DANGER, False)
+        self._set_status(Colors.DANGER, False)
         self._update_status_bar()
 
         self._log("━" * 40)
@@ -1089,6 +1083,10 @@ class LiveRecorderGUI:
 
     # ─── 时间与状态栏 ──────────────────────────────────────
 
+    def _on_header_resize(self, event: tk.Event) -> None:
+        new_wraplength = max(event.width - 40, 200)
+        self.status_text_label.configure(wraplength=new_wraplength)
+
     @staticmethod
     def _get_timestamp() -> str:
         # 获取当前时间戳
@@ -1096,15 +1094,19 @@ class LiveRecorderGUI:
 
     def _update_status_bar(self) -> None:
         # 更新状态栏（动态读取配置）
-        check_interval, output_format, tray_status = self._get_dynamic_status_info()
+        try:
+            check_interval, output_format, tray_status = self._get_dynamic_status_info()
+            timestamp = self._get_timestamp()
 
-        pid = self.process_pid
-        if pid is not None:
-            status_text = (f"状态：运行中 (PID: {pid})  │  循环检测: {check_interval}  "
-                          f"│  格式: {output_format}  │  托盘: {tray_status}")
-        else:
-            status_text = (f"状态：未运行  │  循环检测: {check_interval}  "
-                          f"│  格式: {output_format}  │  托盘: {tray_status}")
+            pid = self.process_pid
+            if pid is not None:
+                status_text = (f"状态：运行中 (PID: {pid}) │ 循环检测: {check_interval} "
+                              f"│ 格式: {output_format} │ 托盘: {tray_status} │ {timestamp}")
+            else:
+                status_text = (f"状态：未运行 │ 循环检测: {check_interval} "
+                              f"│ 格式: {output_format} │ 托盘: {tray_status} │ {timestamp}")
+        except Exception:
+            status_text = "状态栏更新失败，将在下次刷新重试"
 
         self.status_var.set(status_text)
 

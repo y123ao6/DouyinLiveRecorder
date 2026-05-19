@@ -15,8 +15,8 @@ import src.logger  # trigger loguru config side effects
 from loguru import logger
 
 # 配置 HTTP 客户端（不使用代理，防止本地推送被代理干扰）
-no_proxy_handler = urllib.request.ProxyHandler({})
-opener = urllib.request.build_opener(no_proxy_handler)
+no_proxy_handler: urllib.request.ProxyHandler = urllib.request.ProxyHandler({})
+opener: urllib.request.OpenerDirector = urllib.request.build_opener(no_proxy_handler)
 headers: dict[str, str] = {'Content-Type': 'application/json'}
 
 

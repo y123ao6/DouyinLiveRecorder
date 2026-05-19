@@ -4,16 +4,13 @@
 # =============================================================================
 
 services:
-  # 直播录制服务
   recorder:
     build:
       context: .
       dockerfile: Dockerfile
     image: ihmily/douyin-live-recorder:latest
-
     container_name: douyin-live-recorder
 
-    # 环境变量配置
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
@@ -21,37 +18,31 @@ services:
       - TZ=Asia/Shanghai
       - TERM=xterm-256color
 
-    # 交互式终端支持
     tty: true
     stdin_open: true
 
-    # 卷挂载配置
     volumes:
       # 配置文件（必需）
       - ./config:/app/config:rw
-      # 下载目录（必需）
+      # 下载目录（录制文件输出）
       - ./downloads:/app/downloads:rw
       # 日志目录
       - ./logs:/app/logs:rw
-      # 配置备份目录
+      # 备份目录
       - ./backup_config:/app/backup_config:rw
 
-    # 端口映射（用于 Web UI 或调试）
     ports:
       - "8000:8000"
 
-    # 重启策略
     restart: unless-stopped
 
-    # 健康检查
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD-SHELL", "pgrep -f 'python.*main.py' > /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
-    # 资源限制（可选）
     deploy:
       resources:
         limits:
@@ -61,18 +52,16 @@ services:
           cpus: '0.5'
           memory: 512M
 
-    # 日志配置
     logging:
       driver: "json-file"
       options:
         max-size: "50m"
         max-file: "3"
 
-    # 网络模式
-    network_mode: bridge
+    networks:
+      - recorder-network
 
-# 网络配置
 networks:
-  default:
+  recorder-network:
     name: douyin-recorder-network
     driver: bridge
