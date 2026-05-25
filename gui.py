@@ -327,7 +327,8 @@ class LiveRecorderGUI:
     _MAX_LOG_LINES = 1000
     _LOG_TRIM_TO = 800
     _LOG_FLUSH_INTERVAL = 200
-    _STATUS_REFRESH_INTERVAL = 10000
+    _STATUS_REFRESH_INTERVAL = 10000          # 未录制时的刷新间隔（毫秒）
+    _STATUS_REFRESH_INTERVAL_ACTIVE = 3000   # 有录制直播间时的刷新间隔（毫秒）
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -1111,10 +1112,11 @@ class LiveRecorderGUI:
         self.status_var.set(status_text)
 
     def _schedule_status_refresh(self) -> None:
-        # 每10秒自动刷新状态栏和监控 URL 配置文件变化
+        # 动态刷新状态栏：有录制直播间时每3秒刷新，否则每10秒
         self._update_status_bar()
         self._watch_url_config()
-        self._refresh_job_id = self.root.after(self._STATUS_REFRESH_INTERVAL, self._schedule_status_refresh)
+        interval = self._STATUS_REFRESH_INTERVAL_ACTIVE if self.running else self._STATUS_REFRESH_INTERVAL
+        self._refresh_job_id = self.root.after(interval, self._schedule_status_refresh)
 
     def _watch_url_config(self) -> None:
         # 监控 URL_config.ini 文件变化，外部修改时自动重新加载

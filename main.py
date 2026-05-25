@@ -593,7 +593,7 @@ def push_message(record_name: str, live_url: str, content: str) -> None:
     for platform, func in push_functions.items():
         if platform in live_status_push.upper():
             try:
-                result = func()
+                result: dict[str, list] = func()
                 logger.info(f'提示信息：已经将[{record_name}]直播状态消息推送至你的{platform},'
                             f' 成功{len(result["success"])}, 失败{len(result["error"])}')
             except Exception as e:
@@ -1383,7 +1383,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                         push_at = datetime.datetime.today().strftime('%Y-%m-%d %H:%M:%S')
                         if port_info['is_live'] is False:
-                            print(f"\r{record_name} 等待直播... ")
+                            if len(recording) == 0:
+                                print(f"\r{record_name} 等待直播... ")
 
                             if start_pushed:
                                 if over_show_push:
