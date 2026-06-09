@@ -138,7 +138,7 @@ class SystemTray:
 
     def __init__(self, gui_app: 'LiveRecorderGUI'):
         self.gui = gui_app
-        self.icon: "pystray.Icon | None" = None
+        self.icon: "pystray.Icon | None" = None  # type: ignore[type-arg]
         self.running = False
 
     def create_icon_image(self) -> Image.Image:
@@ -172,15 +172,15 @@ class SystemTray:
 
         return image
 
-    def on_show(self, _icon: "pystray.Icon | None" = None) -> None:
+    def on_show(self, _icon: "pystray.Icon | None" = None) -> None:  # type: ignore[type-arg]
         if self.gui.root:
             self.gui.root.deiconify()
             self.gui.root.lift()
 
-    def on_exit(self, _icon: "pystray.Icon | None" = None) -> None:
+    def on_exit(self, _icon: "pystray.Icon | None" = None) -> None:  # type: ignore[type-arg]
         self.gui.quit_application()
 
-    def on_minimize(self, _icon: "pystray.Icon | None" = None) -> None:
+    def on_minimize(self, _icon: "pystray.Icon | None" = None) -> None:  # type: ignore[type-arg]
         if self.gui.root:
             self.gui.root.withdraw()
 
