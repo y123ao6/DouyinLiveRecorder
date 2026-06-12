@@ -797,3 +797,35 @@ msgstr "启用"
 #: gui.pyw
 msgid "未启动"
 msgstr "未启动"
+
+# =============================================================================
+# YouTube 平台消息
+# =============================================================================
+
+#: src/spider.py
+msgid "Error: Please log in to YouTube on your device's webpage and configure cookies in the config.ini"
+msgstr "错误：请先在设备网页上登录YouTube，并在config.ini中配置cookies"
+
+# =============================================================================
+# FlexTV 额外错误消息
+# =============================================================================
+
+#: src/spider.py
+msgid "Failed to retrieve data from FlexTV live room"
+msgstr "从FlexTV直播间获取数据失败"
+
+# =============================================================================
+# PopkonTV 额外错误消息
+# =============================================================================
+
+#: src/spider.py
+msgid "Failed to retrieve live stream source,"
+msgstr "获取直播流源失败，"
+
+# =============================================================================
+# TwitCasting 额外错误消息
+# =============================================================================
+
+#: src/spider.py
+msgid "TwitCasting login error,"
+msgstr "TwitCasting登录错误，"
