@@ -50,6 +50,17 @@ def get_params(url: str, params: str) -> OptionalStr:
         return query_params[params][0]
 
 
+def extract_douyin_hevc_flv_url(html: str) -> OptionalStr:
+    pattern = re.compile(r'(https?://[^\s"\']*stream-\d{10,}(?!_[a-z0-9]+)\.flv(?:[^"\']|\\u0026)+)')
+    for match in pattern.findall(html):
+        clean_url = match.replace('\\u0026', '&').rstrip('\\').strip()
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(clean_url).query)
+        if query.get('only_audio', ['0'])[0] == '1':
+            continue
+        return clean_url
+    return None
+
+
 async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: OptionalDict = None,
                             abroad: bool = False) -> List[str]:
     # 获取M3U8播放列表中的所有清晰度URL并按带宽排序
@@ -107,7 +118,7 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
             json_str = _get_str_response(json_str)
             if not json_str:
                 raise Exception("it triggered risk control")
-            json_data = json.loads(json_str)['data']
+            json_data: dict = json.loads(json_str)['data']
             if not json_data['data']:
                 raise Exception(f"{url} VR live is not supported")
             room_data = json_data['data'][0]
@@ -121,6 +132,8 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     "The live streaming type or gameplay is not supported on the computer side yet, please use the "
                     "app to share the link for recording."
                 )
+            html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
+            hevc_flv_url = extract_douyin_hevc_flv_url(html_str)
             live_core_sdk_data = room_data['stream_url']['live_core_sdk_data']
             pull_datas = room_data['stream_url']['pull_datas']
             if live_core_sdk_data:
@@ -130,7 +143,7 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                 else:
                     json_str = live_core_sdk_data['pull_data']['stream_data'] if 'pull_data' in live_core_sdk_data else ""
                 if json_str:
-                    json_data = json.loads(json_str)
+                    json_data: dict = json.loads(json_str)
                     if 'origin' in json_data.get('data', {}):
                         stream_data = live_core_sdk_data['pull_data']['stream_data']
                         origin_data = json.loads(stream_data)['data']['origin']['main']
@@ -144,6 +157,8 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                         flv_pull_url = room_data['stream_url']['flv_pull_url']
                         room_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
                         room_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
+                    if hevc_flv_url:
+                        room_data['stream_url']['hevc_flv_url'] = hevc_flv_url
     except Exception as e:
         tb_lineno = e.__traceback__.tb_lineno if e.__traceback__ else 0
         print(f"Error message: {e} Error line: {tb_lineno}")
@@ -256,6 +271,7 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
     try:
         origin_url_list = None
         html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
+        hevc_flv_url = extract_douyin_hevc_flv_url(html_str)
         html_str = _get_str_response(html_str)
         match_json_str = re.search(r'(\{\\"state\\":.*?)]\\n"]\)', html_str)
         if not match_json_str:
@@ -300,6 +316,8 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
             flv_pull_url = json_data['stream_url']['flv_pull_url']
             json_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
             json_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
+            if hevc_flv_url:
+                json_data['stream_url']['hevc_flv_url'] = hevc_flv_url
         return json_data
 
     except Exception as e:
