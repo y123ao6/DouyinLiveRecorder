@@ -77,8 +77,9 @@ async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: Option
                 play_url_list.append(i.strip())
     bandwidth_pattern = re.compile(r'BANDWIDTH=(\d+)')
     bandwidth_list = bandwidth_pattern.findall(resp)
-    url_to_bandwidth = {url: int(bandwidth) for bandwidth, url in zip(bandwidth_list, play_url_list)}
-    play_url_list = sorted(play_url_list, key=lambda url: url_to_bandwidth[url], reverse=True)
+    if bandwidth_list and len(bandwidth_list) == len(play_url_list):
+        url_to_bandwidth = {url: int(bandwidth) for bandwidth, url in zip(bandwidth_list, play_url_list)}
+        play_url_list = sorted(play_url_list, key=lambda url: url_to_bandwidth[url], reverse=True)
     return play_url_list
 
 
@@ -133,6 +134,7 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     "app to share the link for recording."
                 )
             html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
+            html_str = _get_str_response(html_str)
             hevc_flv_url = extract_douyin_hevc_flv_url(html_str)
             live_core_sdk_data = room_data['stream_url']['live_core_sdk_data']
             pull_datas = room_data['stream_url']['pull_datas']
@@ -271,8 +273,8 @@ async def get_douyin_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
     try:
         origin_url_list = None
         html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers)
-        hevc_flv_url = extract_douyin_hevc_flv_url(html_str)
         html_str = _get_str_response(html_str)
+        hevc_flv_url = extract_douyin_hevc_flv_url(html_str)
         match_json_str = re.search(r'(\{\\"state\\":.*?)]\\n"]\)', html_str)
         if not match_json_str:
             match_json_str = re.search(r'(\{\\"common\\":.*?)]\\n"]\)</script><div hidden', html_str)
@@ -358,6 +360,11 @@ async def get_tiktok_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
                 raise ConnectionError("Please check if your network can access the TikTok website normally")
             json_data = json.loads(json_str)
             return json_data
+
+    raise ConnectionError(
+        "Failed to retrieve TikTok data after 3 retries, please check if your network can access "
+        "the TikTok website normally"
+    )
 
 
 @trace_error_decorator

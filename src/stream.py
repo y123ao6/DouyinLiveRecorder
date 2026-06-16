@@ -175,38 +175,37 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str | None = N
     result = {"type": 2, "anchor_name": json_data['anchor_name'], "is_live": live_status}
 
     if live_status:
-        if video_quality in QUALITY_MAPPING:
-            quality, quality_index = get_quality_index(video_quality)
-            if 'm3u8_url_list' in json_data:
-                m3u8_url_list = json_data['m3u8_url_list'][::-1]
-                _pad_list(m3u8_url_list)
-                m3u8_url = m3u8_url_list[quality_index]['url']
-                result['m3u8_url'] = m3u8_url
+        quality, quality_index = get_quality_index(video_quality)
+        if 'm3u8_url_list' in json_data:
+            m3u8_url_list = json_data['m3u8_url_list'][::-1]
+            _pad_list(m3u8_url_list)
+            m3u8_url = m3u8_url_list[quality_index]['url']
+            result['m3u8_url'] = m3u8_url
 
-            if 'flv_url_list' in json_data:
-                if 'bitrate' in json_data['flv_url_list'][0]:
-                    flv_url_list = json_data['flv_url_list']
-                    flv_url_list = sorted(flv_url_list, key=lambda x: x['bitrate'], reverse=True)
-                    quality_str = str(video_quality).upper()
-                    if quality_str.isdigit():
-                        video_quality, quality_index_bitrate_value = list(QUALITY_MAPPING_BIT.items())[int(quality_str)]
-                    else:
-                        quality_index_bitrate_value = QUALITY_MAPPING_BIT.get(quality_str, 99999)
-                        video_quality = quality_str
-                    quality_index = next(
-                        (i for i, x in enumerate(flv_url_list) if x['bitrate'] <= quality_index_bitrate_value), None)
-                    if quality_index is None:
-                        quality_index = len(flv_url_list) - 1
-                    flv_url = flv_url_list[quality_index]['url']
-                    result['flv_url'] = flv_url
-                    result['record_url'] = flv_url
+        if 'flv_url_list' in json_data:
+            if 'bitrate' in json_data['flv_url_list'][0]:
+                flv_url_list = json_data['flv_url_list']
+                flv_url_list = sorted(flv_url_list, key=lambda x: x['bitrate'], reverse=True)
+                quality_str = str(video_quality).upper() if video_quality else 'OD'
+                if quality_str.isdigit():
+                    video_quality, quality_index_bitrate_value = list(QUALITY_MAPPING_BIT.items())[int(quality_str)]
                 else:
-                    flv_url_list = json_data['flv_url_list'][::-1]
-                    _pad_list(flv_url_list)
-                    flv_url = flv_url_list[quality_index]['url']
-                    result |= {'flv_url': flv_url, 'record_url': flv_url}
-            result['is_live'] = True
-            result['quality'] = video_quality
+                    quality_index_bitrate_value = QUALITY_MAPPING_BIT.get(quality_str, 99999)
+                    video_quality = quality_str
+                quality_index = next(
+                    (i for i, x in enumerate(flv_url_list) if x['bitrate'] <= quality_index_bitrate_value), None)
+                if quality_index is None:
+                    quality_index = len(flv_url_list) - 1
+                flv_url = flv_url_list[quality_index]['url']
+                result['flv_url'] = flv_url
+                result['record_url'] = flv_url
+            else:
+                flv_url_list = json_data['flv_url_list'][::-1]
+                _pad_list(flv_url_list)
+                flv_url = flv_url_list[quality_index]['url']
+                result |= {'flv_url': flv_url, 'record_url': flv_url}
+        result['is_live'] = True
+        result['quality'] = quality
     return result
 
 
@@ -336,6 +335,8 @@ async def get_bilibili_stream_url(json_data: dict, video_quality: str | None = N
     select_quality = video_quality_options.get(video_quality or '', '0')
     play_url = await get_bilibili_stream_data(
         room_url, qn=select_quality, platform='web', proxy_addr=proxy_addr, cookies=cookies)
+    if not play_url:
+        return {"anchor_name": anchor_name, "is_live": False}
     return {'anchor_name': json_data['anchor_name'], 'is_live': True, 'title': json_data['title'], 'quality': video_quality, 'record_url': play_url}
 
 
