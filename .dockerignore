@@ -4,7 +4,7 @@
 .gitattributes
 .github/
 
-# 文档（如果需要在容器中查看文档可以删除）
+# 文档（容器内不需要）
 README.md
 LICENSE
 CODE_WIKI.md
@@ -54,7 +54,7 @@ dist/
 *.tmp
 *.temp
 *.bak
-*.log
+*.orig
 
 # 系统文件
 .DS_Store
@@ -97,17 +97,14 @@ i18n/**/compile_po.py
 *.spec
 *.manifest
 
-# Windows 可执行文件（不需要在容器中）
-*.exe
-*.dll
-*.cmd
-*.bat
-*.vbs
+# Docker 无头环境不需要的文件
+gui.py
+gui.pyw
+demo.py
+ffmpeg_install.py
+StopRecording.vbs
+index.html
 
-# 临时目录和文件
-*.tmp
-*.temp
-*.bak
-*.swp
-*.swo
-*~
+# uv / 版本管理
+.python-version
+uv.lock

@@ -91,9 +91,9 @@ RUN mkdir -p logs downloads backup_config \
 # 切换到非 root 用户
 USER recorder
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
+# 健康检查：检测 main.py 主进程是否存活
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD pgrep -f 'python main.py' || exit 1
 
 # 暴露端口（用于可能的 Web UI）
 EXPOSE 8000

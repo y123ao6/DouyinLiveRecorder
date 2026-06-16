@@ -69,7 +69,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                        基础设施层                                │
 ├──────────────────────┬─────────────────────┬────────────────────┤
-│  异步 HTTP (async_http) │  日志 (logger.py)  │  工具 (utils.py)  │
+│  日志 (logger.py)  │  工具 (utils.py)  │  代理 (proxy.py) │
 ├──────────────────────┴─────────────────────┴────────────────────┤
 │                    配置管理 + 消息推送 (msg_push.py)             │
 └─────────────────────────────────────────────────────────────────┘
@@ -123,9 +123,7 @@ DouyinLiveRecorder/
 │   ├── ab_sign.py                      # 抖音签名算法 (A-Bogus)
 │   ├── initializer.py                  # Node.js 自动初始化
 │   ├── weverse_auth.py                 # Weverse 平台认证
-│   ├── http_clients/                   # HTTP 客户端
-│   │   ├── __init__.py
-│   │   └── async_http.py               # 异步 HTTP 客户端 (httpx)
+│   ├── debug_douyin_streams.py         # 抖音流数据调试工具
 │   └── javascript/                     # JavaScript 签名脚本
 │       ├── crypto-js.min.js            # 加密库
 │       ├── x-bogus.js                  # 抖音 X-Bogus 签名
@@ -333,16 +331,15 @@ QUALITY_MAPPING = {
 
 ---
 
-### 9. 异步 HTTP 客户端 (`src/http_clients/async_http.py`)
+### 9. 调试工具 (`src/debug_douyin_streams.py`)
 
-**职责**: 封装 httpx，提供统一的异步 HTTP 接口
+**职责**: 抖音直播流数据调试与测试工具
 
 **功能**:
-- 代理支持
-- 超时设置
-- 自动重试
-- 状态码检查
-- HTTP/2 支持
+- 多 User-Agent 配置测试（QQBrowser、Chrome、Edge 等）
+- 编解码器检测（H265/HEVC/VP9/DASH）
+- 直播流地址验证
+- 命令行参数支持
 
 ---
 
@@ -408,7 +405,6 @@ main.py
 ├── src/spider.py
 │   ├── src/room.py
 │   ├── src/ab_sign.py
-│   ├── src/http_clients/async_http.py
 │   └── src/utils.py
 ├── src/stream.py
 │   └── src/spider.py
