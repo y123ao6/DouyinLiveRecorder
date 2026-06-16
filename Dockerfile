@@ -58,11 +58,14 @@ ENV PYTHONUNBUFFERED=1 \
     TERM=xterm-256color \
     PATH="/opt/venv/bin:$PATH"
 
-# 安装运行时依赖
+# 安装运行时依赖（含 Node.js — PyExecJS 运行签名脚本必需）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     tzdata \
     curl \
+    procps \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime \
     && dpkg-reconfigure -f noninteractive tzdata \
     && apt-get clean \

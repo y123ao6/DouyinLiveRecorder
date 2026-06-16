@@ -60,13 +60,13 @@ services:
     # 重启策略：除非手动停止，否则自动重启
     restart: unless-stopped
 
-    # 健康检查
+    # 健康检查：检测 main.py 主进程是否存活
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD-SHELL", "pgrep -f 'python main.py' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
     # 资源限制
     deploy:

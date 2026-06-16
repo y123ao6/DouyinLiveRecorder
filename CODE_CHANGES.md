@@ -8,8 +8,8 @@
 |------|------|------|
 | `requirements.txt` | 重构 | 添加版本约束和分类注释，补充每个依赖的用途说明 |
 | `pyproject.toml` | 修正 | 移除无效的 `[project.entry-points]` 空字典；`tool.black` 排除规则新增 `node/`、`ffmpeg/`、`downloads/`、`logs/` 目录；`classifiers` 添加 `MacOS X`/`Win32`/`X11`/`Python 3.13`；`[optional-dependencies]` 合并 `all` 到 `gui` |
-| `Dockerfile` | 🔴 关键修复 | **修复运行时阶段缺失 Node.js 的严重 Bug**（原多阶段构建仅在 builder 安装 Node.js，运行阶段缺少 PyExecJS 运行时导致所有平台签名脚本无法执行） |
-| `docker-compose.yaml` | 修正 | 修复 `network_mode: bridge` 与 `networks:` 配置块的冲突（移除内联 `network_mode`，统一使用 `networks:` 声明）；healthcheck 改用 `pgrep` 检测主进程；`start_period` 延长至 15s |
+| `Dockerfile` | 🔴 关键修复 | **修复运行时阶段缺失 Node.js 的严重 Bug**（原多阶段构建仅在 builder 安装 Node.js，运行阶段缺少 `node` 命令导致 PyExecJS 无法执行签名脚本）；基础镜像升级至 Python 3.13；依赖安装从 `--user` 改为 venv 虚拟环境；新增 `procps` 包供健康检查使用；添加 `TZ` 构建参数支持时区自定义；运行时创建 `backup_config` 目录 |
+| `docker-compose.yaml` | 修正 | 修复无效健康检查（原 `python -c "import sys; sys.exit(0)"` 永远返回 0），改用 `pgrep -f 'python main.py'` 检测主进程存活；`start_period` 延长至 15s；新增 GUI 模式服务（YAML 锚点复用 recorder 配置，通过 `--profile gui` 启动）；新增 `.env` 文件加载支持；移除显式 `network_mode` 与 `networks` 冲突配置 |
 | `.gitignore` | 重构 | 消除两个重复的"项目专用"区块；移除 `*.exe`/`*.dll`/`*.cmd`/`*.bat`/`*.vbs` 破坏性通配符（改用 `ffmpeg/*.exe` 等精确路径）；新增 `uv.lock`、`*.orig`、`*.desktop`、`*.lnk`、`index.html`；按 13 个功能区块重组织 |
 | `.dockerignore` | 完善 | 新增排除 `gui.py`/`demo.py`/`ffmpeg_install.py`/`StopRecording.vbs`/`index.html`（Docker 无头环境不需要这些文件）；新增 `ffmpeg/`/`.python-version`/`uv.lock` 排除规则 |
 
@@ -25,7 +25,29 @@
 
 | 文件 | 改动 | 说明 |
 |------|------|------|
-| `gui.py` | 美化 | 设计现代化深色主题 GUI：新增 `Colors`/`CardFrame`/`GradientBanner`/`StatusIndicator`/`ModernTextWidget`/`SystemTray` 组件；补充 5 个缺失的 ttk 样式配置；修复 CardFrame 背景色未生效；添加跨平台字体回退（`_resolve_font`）；ModernTextWidget 添加 `<Configure>` 自适应尺寸；清理 `scrolledtext` 死代码 |
+| `gui.py` | 新增 | 全新现代化 GUI 界面（1275 行），替代原 `gui.pyw`：新增 `Colors`/`CardFrame`/`GradientBanner`/`StatusIndicator`/`ModernTextWidget`/`SystemTray` 组件；实现 WCAG AA 标准高对比度色彩系统；DPI 感知字体自适应缩放；补充 5 个缺失的 ttk 样式配置；跨平台字体回退（`_resolve_font`）；ModernTextWidget `<Configure>` 自适应尺寸 |
+| `gui.pyw` | 删除 | 原 904 行 GUI 代码，被 `gui.py` 完全替代 |
+
+### 核心模块文件
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `main.py` | 优化 | 为所有全局变量添加类型标注；模块 docstring 转为注释风格；新增 `start_display_time` 变量；优化"等待直播"输出逻辑（仅无录制任务时显示） |
+| `src/spider.py` | 优化 | 模块及所有函数 docstring 转为行内注释（3681→3708 行，功能不变） |
+| `src/stream.py` | 优化 | 模块及函数 docstring 转为行内注释（468→396 行，功能不变） |
+| `src/utils.py` | 优化 | 移除模块和函数 docstring，转为行内注释 |
+| `src/initializer.py` | 优化 | 移除 docstring 转为行内注释；`get_package_manager` 添加返回类型标注 |
+| `src/logger.py` | 优化 | 移除模块 docstring 转为行内注释 |
+| `src/proxy.py` | 优化 | 移除所有类和方法 docstring，转为行内注释 |
+| `src/weverse_auth.py` | 优化 | 移除模块和函数 docstring，转为行内注释 |
+| `src/__init__.py` | 优化 | 简化模块 docstring |
+| `msg_push.py` | 优化 | 移除所有 docstring 转为行内注释；为模块级变量添加类型标注 |
+| `ffmpeg_install.py` | 优化 | 移除 docstring 转为行内注释；修复 `block_size` 参数为 `chunk_size` |
+| `i18n.py` | 优化 | 移除 docstring 转为行内注释 |
+| `i18n/zh_CN/LC_MESSAGES/zh_CN.po` | 完善 | 新增 32 条翻译条目（YouTube/FlexTV/PopkonTV/TwitCasting 错误消息） |
+| `src/debug_douyin_streams.py` | 新增 | 抖音流数据调试工具（406 行），支持多 UA 配置测试和编解码器检测（H265/HEVC/VP9/DASH） |
+| `src/http_clients/async_http.py` | 删除 | 异步 HTTP 客户端模块（81 行） |
+| `src/http_clients/sync_http.py` | 删除 | 同步 HTTP 客户端模块（93 行） |
 
 ---
 

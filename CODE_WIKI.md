@@ -525,11 +525,13 @@ python gui.py
 ```dockerfile
 # 阶段 1: builder
 # - 安装 Node.js
-# - 安装 Python 依赖到 --user 目录
+# - 创建 Python 虚拟环境（venv）
+# - 安装 Python 依赖到 venv
 
 # 阶段 2: runtime
 # - 精简基础镜像
-# - 从 builder 复制 Node.js 和 Python 依赖
+# - 安装 Node.js + ffmpeg + procps 等运行时依赖
+# - 从 builder 复制 Python 虚拟环境
 # - 使用非 root 用户运行
 ```
 
@@ -537,8 +539,6 @@ python gui.py
 
 **创建 `docker-compose.yml`**:
 ```yaml
-version: '3.8'
-
 services:
   douyin-live-recorder:
     build: .
@@ -551,6 +551,10 @@ services:
       - ./backup_config:/app/backup_config
     environment:
       - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python main.py' || exit 1"]
+      interval: 30s
+      start_period: 15s
 ```
 
 **运行**:
