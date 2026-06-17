@@ -164,7 +164,6 @@ node/
 node-v*.zip
 
 # 录制的视频文件
-downloads/
 recordings/
 
 # 备份目录
@@ -172,7 +171,6 @@ backup_config/
 
 # 日志文件
 logs/
-*.log
 *.log.*
 
 # 编译的翻译文件（可选：如果在 git 中分发可删除此条目）
