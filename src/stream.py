@@ -73,21 +73,26 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str | None = Non
         video_quality, quality_index = get_quality_index(video_quality)
         m3u8_url = m3u8_url_list[quality_index]
         flv_url = flv_url_list[quality_index]
+        hevc_flv_url = stream_url.get('hevc_flv_url')
+        # 原画优先 HEVC：若 ORIGIN m3u8 已是 HEVC 则直接用；否则用 HTML 提取的 HEVC FLV
+        m3u8_codec = urllib.parse.parse_qs(urllib.parse.urlparse(m3u8_url).query).get('codec', [''])[0]
+        m3u8_is_hevc = 'h265' in m3u8_codec.lower() or 'hevc' in m3u8_codec.lower()
+        use_hevc_flv = quality_index == 0 and bool(hevc_flv_url) and not m3u8_is_hevc
+        if use_hevc_flv:
+            flv_url = hevc_flv_url
         ok = await get_response_status(url=m3u8_url, proxy_addr=proxy_addr)
         if not ok:
             index = quality_index + 1 if quality_index < 4 else quality_index - 1
             m3u8_url = m3u8_url_list[index]
-            flv_url = flv_url_list[index]
-            hevc_flv_url = stream_url.get('hevc_flv_url')
-            if hevc_flv_url and quality_index == 0:
-                flv_url = hevc_flv_url
+            if not use_hevc_flv:
+                flv_url = flv_url_list[index]
         result |= {
             'is_live': True,
             'title': json_data['title'],
             'quality': video_quality,
             'm3u8_url': m3u8_url,
             'flv_url': flv_url,
-            'record_url': m3u8_url or flv_url,
+            'record_url': flv_url if use_hevc_flv else (m3u8_url or flv_url),
         }
     return result
 

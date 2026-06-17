@@ -139,20 +139,42 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
             live_core_sdk_data = room_data['stream_url']['live_core_sdk_data']
             pull_datas = room_data['stream_url']['pull_datas']
             if live_core_sdk_data:
+                json_str = ""
                 if pull_datas:
-                    key = list(pull_datas.keys())[0] if pull_datas else None
-                    json_str = pull_datas[key]['stream_data'] if key else ""
-                else:
-                    json_str = live_core_sdk_data['pull_data']['stream_data'] if 'pull_data' in live_core_sdk_data else ""
+                    # 遍历 pull_datas 选取包含 origin 的条目，优先 HEVC
+                    hevc_candidate = ""
+                    first_candidate = ""
+                    for value in pull_datas.values():
+                        candidate = value.get('stream_data') or ""
+                        if not candidate:
+                            continue
+                        try:
+                            cand_data = json.loads(candidate).get('data', {})
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if 'origin' not in cand_data:
+                            continue
+                        if not first_candidate:
+                            first_candidate = candidate
+                        try:
+                            codec = json.loads(
+                                cand_data['origin']['main'].get('sdk_params', '{}')
+                            ).get('VCodec', '')
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            codec = ''
+                        if 'h265' in codec.lower() or 'hevc' in codec.lower():
+                            hevc_candidate = candidate
+                            break
+                    json_str = hevc_candidate or first_candidate
+                elif 'pull_data' in live_core_sdk_data:
+                    json_str = live_core_sdk_data['pull_data'].get('stream_data', '')
                 if json_str:
                     json_data: dict = json.loads(json_str)
                     if 'origin' in json_data.get('data', {}):
-                        stream_data = live_core_sdk_data['pull_data']['stream_data']
-                        origin_data = json.loads(stream_data)['data']['origin']['main']
-                        sdk_params = json.loads(origin_data['sdk_params'])
+                        origin_url_list = json_data['data']['origin']['main']
+                        sdk_params = json.loads(origin_url_list['sdk_params'])
                         origin_hls_codec = sdk_params.get('VCodec') or ''
 
-                        origin_url_list = json_data['data']['origin']['main']
                         origin_m3u8 = {'ORIGIN': origin_url_list["hls"] + '&codec=' + origin_hls_codec}
                         origin_flv = {'ORIGIN': origin_url_list["flv"] + '&codec=' + origin_hls_codec}
                         hls_pull_url_map = room_data['stream_url']['hls_pull_url_map']
