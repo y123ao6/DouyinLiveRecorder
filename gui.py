@@ -445,8 +445,6 @@ class LiveRecorderGUI:
         body_font = DpiFont.body()
         body_bold = DpiFont.body(bold=True)
         heading_font = DpiFont.heading(bold=True)
-        small_font = DpiFont.small()
-        mono_font = DpiFont.mono()
 
         # 通用样式
         self.style.configure('.', font=body_font, background=Colors.GRAY_50)
@@ -889,7 +887,6 @@ class LiveRecorderGUI:
     def stop_recording(self) -> None:
         # 停止录制
         proc = self.process
-        pid = self.process_pid
 
         if proc is None:
             messagebox.showwarning("警告", "没有正在运行的录制进程！")
@@ -1173,7 +1170,7 @@ class LiveRecorderGUI:
             if sys.platform == 'win32':
                 try:
                     subprocess.run(
-                        ['taskkill', '/F', '/FI', f'IMAGENAME eq ffmpeg.exe', '/FI', f'PARENTPID eq {current_pid}'],
+                        ['taskkill', '/F', '/FI', 'IMAGENAME eq ffmpeg.exe', '/FI', f'PARENTPID eq {current_pid}'],
                         capture_output=True,
                         text=True,
                         timeout=3

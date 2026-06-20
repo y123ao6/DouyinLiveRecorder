@@ -2,7 +2,6 @@
 # -*- encoding: utf-8 -*-
 # Weverse 平台认证模块 - 负责 Token 刷新功能
 
-import json
 import requests
 import uuid
 
