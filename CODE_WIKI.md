@@ -17,7 +17,7 @@
 
 ### 项目基本信息
 - **项目名称**: DouyinLiveRecorder (抖音直播录制器)
-- **版本**: 4.0.7
+- **版本**: 4.0.8-dev
 - **作者**: Hmily
 - **开源协议**: MIT
 - **项目地址**: [GitHub](https://github.com/ihmily/DouyinLiveRecorder)
@@ -40,8 +40,9 @@
 | FFmpeg | 视频录制与转码 |
 | Node.js + PyExecJS | 运行 JavaScript 签名算法 |
 | Loguru | 结构化日志 |
-| tkinter + pystray | GUI 图形界面与系统托盘 |
+| tkinter + pystray + Pillow | GUI 图形界面与系统托盘 |
 | Docker | 容器化部署 |
+| pyflakes | 静态代码检查 |
 
 ---
 
@@ -655,6 +656,20 @@ brew install node
 
 ## 更新日志
 
+### v4.0.8-dev (2026-06-20)
+- 修复 spider.py 5 个运行时 Bug（KeyError、响应类型转换、循环静默返回）
+- 修复 stream.py 2 个运行时 Bug（B站 None 检查、快手 quality 条件）
+- 修复 gui.py 死代码（未使用变量、f-string 无占位符）
+- 清理 src/weverse_auth.py 未使用导入
+- 通过 pyflakes 静态检查验证
+
+### v4.0.8-dev (2025-05-17)
+- 全新现代化 GUI 界面（WCAG AA 高对比度、DPI 感知字体）
+- Docker 多阶段构建关键修复（运行时 Node.js、HEALTHCHECK）
+- 配置文件重构（pyproject.toml、requirements.txt、.gitignore、.dockerignore）
+- 新增抖音流数据调试工具 `debug_douyin_streams.py`
+- 完善国际化翻译（YouTube/FlexTV/PopkonTV/TwitCasting）
+
 ### v4.0.7 (2025-10-24)
 - 修复抖音风控问题
 - 新增 SOOP 平台支持
@@ -667,4 +682,4 @@ brew install node
 
 ---
 
-*本文档最后更新: 2025-10-24*
+*本文档最后更新: 2026-06-20*

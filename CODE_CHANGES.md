@@ -1,5 +1,28 @@
 # DouyinLiveRecorder 代码改动记录
 
+## v4.0.8-dev (2026-06-20) — Bug 修复与静态检查
+
+### Bug 修复
+
+| 文件 | 问题 | 修复 |
+|------|------|------|
+| `src/spider.py` | `get_play_url_list` 中 `bandwidth_list` 与 `play_url_list` 长度不匹配时 `url_to_bandwidth[url]` 抛出 KeyError | 添加长度检查 `if bandwidth_list and len(bandwidth_list) == len(play_url_list)` |
+| `src/spider.py` | `extract_douyin_hevc_flv_url(html_str)` 调用时 `html_str` 可能是 tuple 而非 str | 调整调用顺序，先执行 `_get_str_response()` |
+| `src/spider.py` | `get_tiktok_stream_data` 重试 3 次全部 EOF 时静默返回 None | 循环结束后增加 `raise ConnectionError` |
+| `src/stream.py` | `get_bilibili_stream_url` 返回 None 时仍设置 `is_live: True` | 添加 None 检查，返回 `is_live: False` |
+| `src/stream.py` | 快手 `video_quality=None` 时跳过 URL 提取 | 移除 `if video_quality in QUALITY_MAPPING` 条件判断 |
+| `gui.py` | f-string 无占位符 `f'IMAGENAME eq ffmpeg.exe'` | 改为普通字符串 |
+| `gui.py` | `stop_recording` 中 `pid = self.process_pid` 赋值后从未使用 | 删除该行 |
+| `gui.py` | `small_font`、`mono_font` 赋值后从未使用（死代码） | 删除两行 |
+| `src/weverse_auth.py` | `import json` 未使用（`json=` 是 requests 参数，`response.json()` 是方法调用） | 删除该导入 |
+
+### 静态检查验证
+
+- `python -m py_compile` 全部 16 个 Python 文件编译通过
+- `python -m pyflakes` 仅余可接受的警告（`_output` 前缀约定、`global error_window` 冗余声明、`import src.logger` 副作用导入）
+
+---
+
 ## v4.0.8-dev (2026-05-17) — 项目基础设施完善
 
 ### 配置与构建文件
@@ -108,4 +131,4 @@
 
 ---
 
-*最后更新: 2026-05-17*
+*最后更新: 2026-06-20*
