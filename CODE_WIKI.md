@@ -42,6 +42,7 @@
 | Loguru | 结构化日志 |
 | tkinter + pystray + Pillow | GUI 图形界面与系统托盘 |
 | Docker | 容器化部署 |
+| gettext (msgfmt) | 国际化翻译编译 |
 | pyflakes | 静态代码检查 |
 
 ---
@@ -315,7 +316,32 @@ QUALITY_MAPPING = {
 
 ---
 
-### 8. GUI 模块 (`gui.py`)
+### 8. 国际化模块 (`i18n.py`)
+
+**职责**: 基于 gettext 的多语言支持系统，自动翻译 `src/` 目录下的 print 输出。
+
+**实现机制**:
+- `translated_print` 包装 `builtins.print`，自动翻译调用者来自 `src/` 包的输出
+- 支持源码运行和 PyInstaller 打包两种路径检测（`_internal/i18n` vs `i18n/`）
+- 默认语言：简体中文（zh_CN）
+
+**翻译文件**:
+| 文件 | 说明 | 条目数 |
+|------|------|--------|
+| `i18n/zh_CN/LC_MESSAGES/zh_CN.po` | 中文翻译源文件（可编辑） | 200 |
+| `i18n/zh_CN/LC_MESSAGES/zh_CN.mo` | 编译后的二进制翻译文件 | 200 |
+| `i18n/en/LC_MESSAGES/` | 英文翻译目录（预留） | — |
+
+**翻译覆盖范围**:
+- `src/spider.py` — 各平台直播数据获取消息（37 条）
+- `src/room.py` — 直播间信息解析异常消息（2 条）
+- `src/utils.py` — 配置文件读写、磁盘空间消息（7 条）
+- `main.py` — 主程序通用消息（83 条，预留）
+- `gui.py` — GUI 界面消息（70 条，预留）
+
+---
+
+### 9. GUI 模块 (`gui.py`)
 
 **职责**: 提供现代化图形用户界面
 
@@ -336,7 +362,7 @@ QUALITY_MAPPING = {
 
 ---
 
-### 9. 异步 HTTP 客户端 (`src/http_clients/async_http.py`)
+### 10. 异步 HTTP 客户端 (`src/http_clients/async_http.py`)
 
 **职责**: 封装 httpx，提供统一的异步 HTTP 接口
 
@@ -661,6 +687,7 @@ brew install node
 - 修复 stream.py 2 个运行时 Bug（B站 None 检查、快手 quality 条件）
 - 修复 gui.py 死代码（未使用变量、f-string 无占位符）
 - 清理 src/weverse_auth.py 未使用导入
+- i18n 翻译文件更新：新增 20 条翻译条目（异常错误消息、配置文件、磁盘空间等），总条目 200 条
 - 通过 pyflakes 静态检查验证
 
 ### v4.0.8-dev (2025-05-17)
@@ -682,4 +709,4 @@ brew install node
 
 ---
 
-*本文档最后更新: 2026-06-20*
+*本文档最后更新: 2026-06-25*

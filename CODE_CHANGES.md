@@ -16,9 +16,16 @@
 | `gui.py` | `small_font`、`mono_font` 赋值后从未使用（死代码） | 删除两行 |
 | `src/weverse_auth.py` | `import json` 未使用（`json=` 是 requests 参数，`response.json()` 是方法调用） | 删除该导入 |
 
+### i18n 翻译文件更新
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `i18n/zh_CN/LC_MESSAGES/zh_CN.po` | 更新 | 版本号 4.0.7 → 4.0.8-dev，日期更新为 2026-06-20；新增 20 条翻译条目（spider.py 异常错误消息 11 条、room.py HTTP 异常消息 2 条、utils.py 配置文件与磁盘空间消息 7 条） |
+| `i18n/zh_CN/LC_MESSAGES/zh_CN.mo` | 重编译 | 使用 msgfmt 重新编译生成，总翻译条目 200 条 |
+
 ### 静态检查验证
 
-- `python -m py_compile` 全部 16 个 Python 文件编译通过
+- `python -m py_compile` 全部 20 个 Python 文件编译通过
 - `python -m pyflakes` 仅余可接受的警告（`_output` 前缀约定、`global error_window` 冗余声明、`import src.logger` 副作用导入）
 
 ---
@@ -131,4 +138,4 @@
 
 ---
 
-*最后更新: 2026-06-20*
+*最后更新: 2026-06-25*
