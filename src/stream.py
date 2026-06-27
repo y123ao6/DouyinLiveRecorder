@@ -371,6 +371,8 @@ async def get_netease_stream_url(json_data: dict, video_quality: str | None = No
         stream_list = json_data['stream_list']['resolution']
         order = ['blueray', 'ultra', 'high', 'standard']
         sorted_keys = [key for key in order if key in stream_list]
+        if not sorted_keys:
+            return json_data
         _pad_list(sorted_keys)
         video_quality, quality_index = get_quality_index(video_quality)
         selected_quality = sorted_keys[quality_index]
@@ -390,7 +392,9 @@ async def get_stream_url(json_data: dict, video_quality: str | None = None, url_
     if not json_data['is_live']:
         return json_data
 
-    play_url_list = json_data['play_url_list']
+    play_url_list = json_data.get('play_url_list', [])
+    if not play_url_list:
+        return json_data
     _pad_list(play_url_list)
 
     video_quality, selected_quality = get_quality_index(video_quality)

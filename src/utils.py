@@ -8,6 +8,7 @@ import random
 import re
 import shutil
 import string
+import asyncio
 from pathlib import Path
 import functools
 import hashlib
@@ -41,19 +42,34 @@ class Color:
 
 
 def trace_error_decorator(func: Callable) -> Callable:
-    # 错误追踪装饰器
+    # 错误追踪装饰器（支持同步和异步函数）
+    if asyncio.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args: list, **kwargs: dict) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except execjs.ProgramError:
+                logger.warning('Failed to execute JS code. Please check if the Node.js environment')
+                return {}
+            except Exception as e:
+                error_line = traceback.extract_tb(e.__traceback__)[-1].lineno
+                error_info = f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
+                logger.error(error_info)
+                return {}
+        return async_wrapper
+
     @functools.wraps(func)
     def wrapper(*args: list, **kwargs: dict) -> Any:
         try:
             return func(*args, **kwargs)
         except execjs.ProgramError:
             logger.warning('Failed to execute JS code. Please check if the Node.js environment')
+            return {}
         except Exception as e:
             error_line = traceback.extract_tb(e.__traceback__)[-1].lineno
             error_info = f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
             logger.error(error_info)
-            return []
-
+            return {}
     return wrapper
 
 
