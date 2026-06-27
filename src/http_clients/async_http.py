@@ -43,8 +43,8 @@ async def async_req(
         ) as client:
             if data or json_data:
                 if isinstance(data, (bytes, bytearray, memoryview)):
-                    # 将 memoryview 转换为 bytes
-                    content_data = bytes(data)
+                    # 将 bytearray/memoryview 转换为 bytes（已是 bytes 时直接使用，避免无谓拷贝）
+                    content_data = data if isinstance(data, bytes) else bytes(data)
                     response = await client.post(url, content=content_data, json=json_data, headers=headers)
                 elif isinstance(data, str):
                     response = await client.post(url, content=data, json=json_data, headers=headers)

@@ -1,6 +1,7 @@
 # -*- encoding: utf-8 -*-
 import math
 import time
+from typing import Any
 
 
 def rc4_encrypt(plaintext: str, key: str) -> str:
@@ -313,7 +314,7 @@ def generate_rc4_bb_str(url_search_params: str, user_agent: str, window_env_str:
     end_time = start_time + 100
 
     # 构建配置对象
-    b = {
+    b: dict[int, Any] = {
         8: 3,
         10: end_time,
         15: {

@@ -450,7 +450,7 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
                 "-movflags", "+frag_keyframe+empty_moov",
                 segment_save_file_path,
             ]
-            _output = subprocess.check_output(
+            subprocess.check_output(
                 ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
             )
             if is_original_delete:
@@ -485,7 +485,7 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> No
                     "-c:a", "copy",
                     "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
                 ]
-            _output = subprocess.check_output(
+            subprocess.check_output(
                 ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
             )
             if is_original_delete:
@@ -501,7 +501,7 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> No
 def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> None:
     try:
         if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
-            _output = subprocess.check_output([
+            subprocess.check_output([
                 "ffmpeg", "-i", converts_file_path,
                 "-n", "-vn",
                 "-c:a", "aac", "-bsf:a", "aac_adtstoasc", "-ab", "320k",
@@ -530,7 +530,7 @@ def generate_subtitles(record_name: str, ass_filename: str, sub_format: str = 's
     while True:
         index_time += 1
         txt = str(index_time) + "\n" + transform_int_to_time(index_time) + ',000 --> ' + transform_int_to_time(
-            index_time + 1) + ',000' + "\n" + str(re_datatime) + "\n\n"
+            index_time + 1) + ',000' + "\n" + re_datatime + "\n\n"
 
         with open(f"{ass_filename}.{sub_format.lower()}", 'a', encoding=text_encoding) as f:
             f.write(txt)
@@ -543,7 +543,7 @@ def generate_subtitles(record_name: str, ass_filename: str, sub_format: str = 's
 
 
 def adjust_max_request() -> None:
-    global max_request, error_count, pre_max_request, error_window
+    global max_request, error_count, pre_max_request
     preset = max_request
 
     while True:
@@ -1372,7 +1372,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                             clear_record_info(record_name, record_url)
                             return
 
-                        if not url_data[-1] and run_once is False:
+                        if not url_data[-1] and not run_once:
                             if new_record_url:
                                 need_update_line_list.append(
                                     f'{record_url}|{new_record_url},主播: {anchor_name.strip()}')
@@ -1632,13 +1632,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                     try:
                                         flv_url = port_info.get('flv_url')
-                                        if flv_url:
+                                        if isinstance(flv_url, str) and flv_url:
                                             recording.add(record_name)
                                             start_record_time = datetime.datetime.now()
                                             recording_time_list[record_name] = [start_record_time, record_quality_zh]
 
                                             download_success = direct_download_stream(
-                                                flv_url,  # pyright: ignore[reportArgumentType]
+                                                flv_url,
                                                 save_file_path, record_name, record_url, platform
                                             )
 

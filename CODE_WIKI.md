@@ -37,6 +37,7 @@
 |------|------|
 | Python 3.10+ | 核心编程语言 |
 | asyncio + httpx | 异步网络请求 |
+| asyncio | 异步装饰器支持 |
 | FFmpeg | 视频录制与转码 |
 | Node.js + PyExecJS | 运行 JavaScript 签名算法 |
 | Loguru | 结构化日志 |
@@ -401,9 +402,15 @@ def update_config(file_path: Path, section: str, key: str, new_value: str) -> No
 ```python
 @trace_error_decorator
 async def some_function():
-    # 自动捕获并记录异常
+    # 自动捕获并记录异常（支持同步和异步函数）
     pass
 ```
+
+**实现特点**:
+- 使用 `asyncio.iscoroutinefunction()` 检测函数类型
+- 异步函数使用 `async wrapper` 正确 `await` 并捕获异常
+- 统一返回 `{}` 空字典，与调用方 `.get()` 用法兼容
+- `execjs.ProgramError` 单独处理（Node.js 环境问题）
 
 ### 动态并发调整
 
@@ -682,6 +689,14 @@ brew install node
 
 ## 更新日志
 
+### v4.0.8-dev (2026-06-27)
+- 修复 `trace_error_decorator` 严重 Bug：原同步装饰器应用于 71 个异步函数导致错误捕获完全失效，现使用 `asyncio.iscoroutinefunction()` 支持同步/异步双模式
+- 修复返回值类型不一致 Bug：`execjs.ProgramError` 分支返回 `None` → `{}`
+- 修复 B站画质默认值 `'0'` 不在字典键中导致 KeyError
+- 修复虎牙 `flv_anti_code` 为 None 导致 `parse_qs(None)` 崩溃
+- 修复 TikTok/快手/网易CC 流地址列表为空时 IndexError
+- 修复 `get_stream_url` 空列表索引崩溃（该函数未被装饰器保护）
+
 ### v4.0.8-dev (2026-06-20)
 - 修复 spider.py 5 个运行时 Bug（KeyError、响应类型转换、循环静默返回）
 - 修复 stream.py 2 个运行时 Bug（B站 None 检查、快手 quality 条件）
@@ -709,4 +724,4 @@ brew install node
 
 ---
 
-*本文档最后更新: 2026-06-25*
+*本文档最后更新: 2026-06-27*

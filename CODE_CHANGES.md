@@ -1,5 +1,33 @@
 # DouyinLiveRecorder 代码改动记录
 
+## v4.0.8-dev (2026-06-27) — Bug 修复与装饰器升级
+
+### 严重 Bug 修复
+
+| 文件 | 问题 | 修复 |
+|------|------|------|
+| `src/utils.py` | 🔴 **严重**：`trace_error_decorator` 是同步装饰器但应用于 71 个异步函数（`async def`），`try/except` 无法捕获 `await` 执行期间的异常，导致所有爬虫/流解析函数的错误日志和返回值兜底完全失效 | 使用 `asyncio.iscoroutinefunction()` 检测函数类型，为异步函数创建 `async wrapper` 正确 `await` 并捕获异常 |
+| `src/utils.py` | `execjs.ProgramError` 异常分支隐式返回 `None`，其他异常返回 `[]`，调用方期望 dict 导致 `AttributeError` | 统一返回 `{}`（空字典），与 `.get()` 用法兼容 |
+
+### KeyError / IndexError 修复
+
+| 文件 | 问题 | 修复 |
+|------|------|------|
+| `src/stream.py` | B站画质默认值 `'0'` 不在 `video_quality_options` 字典键中（键为 `'10000'`/`'400'`/`'250'`/`'150'`/`'80'`），导致后续 KeyError | 默认值改为 `'10000'`（原画） |
+| `src/spider.py` | B站 `video_quality_options[qn]` 直接键访问，qn 值不在字典中时崩溃 | 改为 `.get(qn, 0)` 防御性访问 |
+| `src/stream.py` | 虎牙 `flv_anti_code = select_cdn.get('sFlvAntiCode')` 可能为 `None`，传入 `parse_qs(None)` 崩溃 | 添加 `or ''` 空值保护，空值时提前返回 |
+| `src/stream.py` | TikTok 流地址列表可能为空，`_pad_list` 对空列表不填充，后续 `flv_url_list[quality_index]` 崩溃；降级索引也缺少边界保护 | 添加空列表提前返回，索引添加 `min(idx, len-1)` 边界保护 |
+| `src/stream.py` | 快手画质 `list(...)[int(quality_str)]` 直接用用户输入数字做索引，超出范围崩溃 | 添加 `min(int(quality_str[0]), len-1)` 边界检查，取首位数字防止多位数 |
+| `src/stream.py` | `get_stream_url` 中 `play_url_list` 可能为空，`_pad_list` 不填充空列表，后续索引崩溃（该函数未装饰器保护） | 添加 `if not play_url_list: return json_data` 提前返回 |
+| `src/stream.py` | `get_netease_stream_url` 中 `sorted_keys` 可能为空，后续 `sorted_keys[quality_index]` 崩溃 | 添加 `if not sorted_keys: return json_data` 提前返回 |
+
+### 静态检查验证
+
+- `python -m py_compile` 全部 20 个 Python 文件编译通过
+- `python -m pyflakes` 仅余可接受的警告（`_output` 前缀约定、`global error_window` 冗余声明、`import src.logger` 副作用导入）
+
+---
+
 ## v4.0.8-dev (2026-06-20) — Bug 修复与静态检查
 
 ### Bug 修复
@@ -138,4 +166,4 @@
 
 ---
 
-*最后更新: 2026-06-25*
+*最后更新: 2026-06-27*
