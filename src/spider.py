@@ -887,7 +887,7 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         # qn: 30000=杜比 20000=4K 10000=原画 400=蓝光 250=超清 150=高清 80=流畅
         video_quality_options = {'10000': 0, '400': 1, '250': 2, '150': 3, '80': 4}
         qn_count = len(sorted_stream_list)
-        select_stream_index = min(video_quality_options[qn], qn_count - 1)
+        select_stream_index = min(video_quality_options.get(qn, 0), qn_count - 1)
         stream_data: dict = sorted_stream_list[select_stream_index]
         base_url = stream_data['base_url']
         host = stream_data['url_info'][0]['host']

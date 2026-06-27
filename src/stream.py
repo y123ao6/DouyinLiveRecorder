@@ -140,11 +140,16 @@ async def get_tiktok_stream_url(json_data: dict | None, video_quality: str | Non
         flv_url_list = get_video_quality_url(stream_data, 'flv')
         m3u8_url_list = get_video_quality_url(stream_data, 'hls')
 
+        if not flv_url_list and not m3u8_url_list:
+            return result
+
         _pad_list(flv_url_list)
         _pad_list(m3u8_url_list)
         video_quality, quality_index = get_quality_index(video_quality)
-        flv_dict: dict = flv_url_list[quality_index]
-        m3u8_dict: dict = m3u8_url_list[quality_index]
+        quality_index = min(quality_index, len(flv_url_list) - 1) if flv_url_list else 0
+        m3u8_quality_index = min(quality_index, len(m3u8_url_list) - 1) if m3u8_url_list else 0
+        flv_dict: dict = flv_url_list[quality_index] if flv_url_list else {'url': ''}
+        m3u8_dict: dict = m3u8_url_list[m3u8_quality_index] if m3u8_url_list else {'url': ''}
 
         check_url = m3u8_dict.get('url') or flv_dict.get('url')
         if not check_url:
@@ -153,12 +158,16 @@ async def get_tiktok_stream_url(json_data: dict | None, video_quality: str | Non
             ok = await get_response_status(url=check_url, proxy_addr=proxy_addr, http2=False)
 
         if not ok:
-            index = quality_index + 1 if quality_index < 4 else quality_index - 1
-            flv_dict: dict = flv_url_list[index]
-            m3u8_dict: dict = m3u8_url_list[index]
+            fallback_index = quality_index + 1 if quality_index < 4 else max(quality_index - 1, 0)
+            if flv_url_list:
+                fallback_index = min(fallback_index, len(flv_url_list) - 1)
+                flv_dict = flv_url_list[fallback_index]
+            if m3u8_url_list:
+                m3u8_fallback = min(fallback_index, len(m3u8_url_list) - 1)
+                m3u8_dict = m3u8_url_list[m3u8_fallback]
 
-        flv_url = flv_dict['url']
-        m3u8_url = m3u8_dict['url']
+        flv_url = flv_dict.get('url', '')
+        m3u8_url = m3u8_dict.get('url', '')
         result |= {
             'is_live': True,
             'title': live_room['liveRoom']['title'],
@@ -193,7 +202,9 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str | None = N
                 flv_url_list = sorted(flv_url_list, key=lambda x: x['bitrate'], reverse=True)
                 quality_str = str(video_quality).upper() if video_quality else 'OD'
                 if quality_str.isdigit():
-                    video_quality, quality_index_bitrate_value = list(QUALITY_MAPPING_BIT.items())[int(quality_str)]
+                    bit_items = list(QUALITY_MAPPING_BIT.items())
+                    q_idx = min(int(quality_str[0]), len(bit_items) - 1)
+                    video_quality, quality_index_bitrate_value = bit_items[q_idx]
                 else:
                     quality_index_bitrate_value = QUALITY_MAPPING_BIT.get(quality_str, 99999)
                     video_quality = quality_str
@@ -231,7 +242,10 @@ async def get_huya_stream_url(json_data: dict, video_quality: str | None = None)
         flv_url_suffix = select_cdn.get('sFlvUrlSuffix')
         hls_url = select_cdn.get('sHlsUrl')
         hls_url_suffix = select_cdn.get('sHlsUrlSuffix')
-        flv_anti_code = select_cdn.get('sFlvAntiCode')
+        flv_anti_code = select_cdn.get('sFlvAntiCode') or ''
+
+        if not flv_anti_code:
+            return result
 
         def get_anti_code(old_anti_code: str) -> str:
             params_t = 100
@@ -337,7 +351,7 @@ async def get_bilibili_stream_url(json_data: dict, video_quality: str | None = N
     room_url = json_data['room_url']
     video_quality_options = {"OD": '10000', "BD": '400', "UHD": '250', "HD": '150', "SD": '80', "LD": '80'}
 
-    select_quality = video_quality_options.get(video_quality or '', '0')
+    select_quality = video_quality_options.get((video_quality or 'OD').upper(), '10000')
     play_url = await get_bilibili_stream_data(
         room_url, qn=select_quality, platform='web', proxy_addr=proxy_addr, cookies=cookies)
     if not play_url:
