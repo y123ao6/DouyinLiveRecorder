@@ -16,7 +16,6 @@ import time
 import random
 import re
 import urllib.parse
-import urllib.request
 from .utils import trace_error_decorator
 from .spider import (
     get_douyu_stream_data, get_bilibili_stream_data
@@ -200,7 +199,7 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str | None = N
             if 'bitrate' in json_data['flv_url_list'][0]:
                 flv_url_list = json_data['flv_url_list']
                 flv_url_list = sorted(flv_url_list, key=lambda x: x['bitrate'], reverse=True)
-                quality_str = str(video_quality).upper() if video_quality else 'OD'
+                quality_str = video_quality.upper() if video_quality else 'OD'
                 if quality_str.isdigit():
                     bit_items = list(QUALITY_MAPPING_BIT.items())
                     q_idx = min(int(quality_str[0]), len(bit_items) - 1)
@@ -252,7 +251,7 @@ async def get_huya_stream_url(json_data: dict, video_quality: str | None = None)
             sdk_version = 2403051612
             t13 = int(time.time()) * 1000
             sdk_sid = t13
-            init_uuid = (int(t13 % 10 ** 10 * 1000) + int(1000 * random.random())) % 4294967295
+            init_uuid = (t13 % 10 ** 10 * 1000 + int(1000 * random.random())) % 4294967295
             uid = random.randint(1400000000000, 1400009999999)
             seq_id = uid + sdk_sid
             target_unix_time = (t13 + 110624) // 1000

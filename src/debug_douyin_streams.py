@@ -131,7 +131,7 @@ async def fetch_douyin_web_stream_data_with_profile(
     api += "&a_bogus=" + ab_sign(urllib.parse.urlparse(api).query, headers["user-agent"])
 
     json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
-    if not json_str:
+    if not isinstance(json_str, str) or not json_str:
         raise RuntimeError("empty response")
     json_data: dict = json.loads(json_str)["data"]
     if not json_data["data"]:

@@ -9,14 +9,12 @@ import time
 import uuid
 from operator import itemgetter
 import urllib.parse
-import urllib.error
 from typing import List
 import httpx
 import ssl
 import re
 import json
 import execjs
-import urllib.request
 from . import JS_SCRIPT_PATH, utils
 from .utils import trace_error_decorator, generate_random_string
 from .logger import script_path
@@ -83,7 +81,7 @@ async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: Option
     return play_url_list
 
 
-async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
+async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
     # 通过抖音网页端API获取直播数据
     headers = {
         'cookie': 'ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
@@ -360,7 +358,7 @@ async def get_tiktok_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
                              '5177d5d53bbd822e1bf66128887d942c9c3e2f'
     }
 
-    for i in range(3):
+    for _ in range(3):
         html_str = await async_req(url=url, proxy_addr=proxy_addr, headers=headers, abroad=True, http2=False)
         html_str = _get_str_response(html_str)
         time.sleep(1)
@@ -888,7 +886,7 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         video_quality_options = {'10000': 0, '400': 1, '250': 2, '150': 3, '80': 4}
         qn_count = len(sorted_stream_list)
         select_stream_index = min(video_quality_options.get(qn, 0), qn_count - 1)
-        stream_data: dict = sorted_stream_list[select_stream_index]
+        stream_data = sorted_stream_list[select_stream_index]
         base_url = stream_data['base_url']
         host = stream_data['url_info'][0]['host']
         extra = stream_data['url_info'][0]['extra']
@@ -913,7 +911,7 @@ async def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: 
     host_id = get_params(url, "host_id")
     user_id = re.search("/user/profile/(.*?)(?=/|\\?|$)", url)
     user_id = user_id.group(1) if user_id else host_id
-    result = {"anchor_name": '', "is_live": False}
+    result: dict = {"anchor_name": '', "is_live": False}
     html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
     html_str = _get_str_response(html_str)
     match_data = re.search("<script>window.__INITIAL_STATE__=(.*?)</script>", html_str)
@@ -1221,7 +1219,7 @@ async def _fetch_web_stream_data_global(url: str, proxy_addr: OptionalStr = None
             play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth[purl], reverse=True)
             return play_url_list
 
-        m3u8_url = 'https://global-media.sooplive.com/live/' + str(bj_id) + '/master.m3u8'
+        m3u8_url = 'https://global-media.sooplive.com/live/' + bj_id + '/master.m3u8'
         result |= {
             'is_live': True,
             'title': title,
@@ -1663,7 +1661,7 @@ async def get_flextv_stream_data(
     if cookies:
         headers['Cookie'] = cookies
     user_id = url.split('/live')[0].rsplit('/', maxsplit=1)[-1]
-    result = {"anchor_name": '', "is_live": False}
+    result: dict = {"anchor_name": '', "is_live": False}
     new_cookies = None
     try:
         url2 = f'https://www.ttinglive.com/channels/{user_id}/live'
@@ -2122,7 +2120,7 @@ async def get_twitcasting_stream_url(
             raise ValueError("Failed to parse page data")
         return f'{anchor.group(1).strip()}-{anchor.group(2)}-{movie_id.group(1)}', status.group(1), title.group(1)
 
-    result = {"anchor_name": '', "is_live": False}
+    result: dict = {"anchor_name": '', "is_live": False}
     new_cookie = None
     try:
         to_login = get_params(url, "login")
@@ -2159,7 +2157,7 @@ async def get_twitcasting_stream_url(
         stream_dict = json_data['tc-hls']["streams"]
         quality_order = {"high": 0, "medium": 1, "low": 2}
         sorted_streams = sorted(stream_dict.items(), key=lambda item: quality_order[item[0]])
-        play_url_list = [url for quality, url in sorted_streams]
+        play_url_list = [url for _, url in sorted_streams]
         result |= {'title': live_title, 'is_live': True, "play_url_list": play_url_list}
     result['new_cookies'] = new_cookie
     return result
@@ -2254,7 +2252,7 @@ async def get_weibo_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
                 room_id = i['page_info']['object_id']
                 break
 
-    result = {"anchor_name": '', "is_live": False}
+    result: dict = {"anchor_name": '', "is_live": False}
     if room_id:
         app_api = f'https://weibo.com/l/pc/anchor/live?live_id={room_id}'
         # app_api = f'https://weibo.com/l/!/2/wblive/room/show_pc_live.json?live_id={room_id}'
@@ -3368,7 +3366,7 @@ async def get_taobao_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
         'data': '{"liveId":"' + live_id + '","creatorId":null}',
     }
 
-    for i in range(2):
+    for _ in range(2):
         t13 = int(time.time() * 1000)
         params['t'] = str(t13)
 
@@ -3444,7 +3442,7 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
         redirect_url = url
         
     author_id = get_params(redirect_url, 'authorId')
-    result = {"anchor_name": '', "is_live": False}
+    result: dict = {"anchor_name": '', "is_live": False}
     if not author_id:
         live_id = re.search('#/(.*?)\\?origin', redirect_url)
         if not live_id:

@@ -8,7 +8,7 @@ import random
 import re
 import shutil
 import string
-import asyncio
+import inspect
 from pathlib import Path
 import functools
 import hashlib
@@ -43,7 +43,7 @@ class Color:
 
 def trace_error_decorator(func: Callable) -> Callable:
     # 错误追踪装饰器（支持同步和异步函数）
-    if asyncio.iscoroutinefunction(func):
+    if inspect.iscoroutinefunction(func):
         @functools.wraps(func)
         async def async_wrapper(*args: list, **kwargs: dict) -> Any:
             try:

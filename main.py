@@ -28,6 +28,7 @@ import sys
 import builtins
 import subprocess
 import signal
+import atexit
 import threading
 import time
 import datetime
@@ -201,6 +202,9 @@ signal.signal(signal.SIGINT, safe_exit)
 signal.signal(signal.SIGTERM, safe_exit)
 if hasattr(signal, 'SIGBREAK'):
     signal.signal(signal.SIGBREAK, safe_exit)
+
+# 进程异常退出时兜底清理 ffmpeg（覆盖硬杀 / 未捕获异常等非优雅退出路径）
+atexit.register(cleanup_all_ffmpeg_processes)
 
 
 def _get_error_line(e: BaseException) -> str:

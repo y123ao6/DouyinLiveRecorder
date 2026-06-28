@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import signal
 import subprocess
 import threading
 import queue
@@ -895,28 +896,50 @@ class LiveRecorderGUI:
         self._log("━" * 40)
         self._log(f"[{self._get_timestamp()}] 正在停止录制...")
 
+        # 优雅退出：让 main.py 的信号处理器自行清理其下的 ffmpeg（孙子进程）。
+        # 注意：proc.terminate() 在 Windows 上是 TerminateProcess，会硬杀 main.py
+        # 并把 ffmpeg 孤儿化（它们仍会继续录制）。这里改用 CTRL_BREAK_EVENT 触发
+        # main.py 的 safe_exit → cleanup_all_ffmpeg_processes，由其负责清理 ffmpeg。
         if sys.platform == 'win32':
-            self._log("正在发送终止信号...")
-            proc.terminate()
+            self._log("正在发送 CTRL_BREAK 信号（触发子进程优雅清理 ffmpeg）...")
+            try:
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            except Exception as e:
+                self._log(f"发送 CTRL_BREAK 失败，回退 terminate: {e}")
+                proc.terminate()
         else:
             self._log("正在发送 SIGINT 信号...")
-            import signal
-            os.kill(proc.pid, signal.SIGINT)
+            try:
+                os.kill(proc.pid, signal.SIGINT)
+            except Exception as e:
+                self._log(f"发送 SIGINT 失败，回退 terminate: {e}")
+                proc.terminate()
 
         def _wait_and_update_ui() -> None:
+            # 先等待子进程自行清理其下所有 ffmpeg，超时再整树强杀
             terminated = False
             try:
-                proc.wait(timeout=3)
+                proc.wait(timeout=15)
                 terminated = True
-                self._log("进程已优雅退出")
+                self._log("进程已优雅退出（ffmpeg 已由子进程清理）")
             except subprocess.TimeoutExpired:
-                self._log("进程未能及时退出，尝试强制终止...")
+                self._log("进程未能及时退出，整树强制终止...")
 
             if not terminated and proc.poll() is None:
                 try:
-                    self._log("正在强制终止进程...")
-                    proc.kill()
-                    proc.wait(timeout=2)
+                    if sys.platform == 'win32':
+                        # /T 递归杀掉 main.py 及其所有 ffmpeg 子进程，避免孤儿
+                        subprocess.run(
+                            ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                            capture_output=True, text=True, timeout=5
+                        )
+                    else:
+                        proc.kill()
+                        subprocess.run(
+                            ['pkill', '-P', str(proc.pid), '-x', 'ffmpeg'],
+                            capture_output=True, text=True, timeout=5
+                        )
+                    proc.wait(timeout=5)
                     self._log("进程已强制终止")
                 except subprocess.TimeoutExpired:
                     self._log("警告：进程可能仍在运行！")
@@ -1137,14 +1160,61 @@ class LiveRecorderGUI:
     def quit_application(self) -> None:
         # 退出程序
         if self.process is not None:
-            if messagebox.askokcancel("退出确认", "录制正在后台进行，确定要退出吗？"):
-                self.stop_recording()
-            else:
+            if not messagebox.askokcancel("退出确认", "录制正在后台进行，确定要退出吗？"):
                 return
 
-        self._log("正在后台清理可能残留的 ffmpeg 进程...")
-        threading.Thread(target=self._cleanup_zombie_ffmpeg, daemon=True).start()
+        self._log("正在停止录制并清理 ffmpeg 进程，请稍候...")
+        # 在后台线程完成「停止录制 + 清理残留 ffmpeg」，完成后再回主线程销毁窗口，
+        # 避免窗口先被 destroy 导致清理线程被强杀、ffmpeg 残留。
+        threading.Thread(target=self._shutdown_and_quit, daemon=True).start()
 
+    def _shutdown_and_quit(self) -> None:
+        # 后台执行：优雅停止录制子进程（由其清理 ffmpeg）→ 超时整树强杀 → 兜底清理
+        proc = self.process
+        if proc is not None:
+            if sys.platform == 'win32':
+                try:
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                except Exception:
+                    proc.terminate()
+            else:
+                try:
+                    os.kill(proc.pid, signal.SIGINT)
+                except Exception:
+                    proc.terminate()
+
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                # main.py 未能自行退出，整树强杀（含其下所有 ffmpeg，避免孤儿）
+                try:
+                    if sys.platform == 'win32':
+                        subprocess.run(
+                            ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                            capture_output=True, text=True, timeout=5
+                        )
+                    else:
+                        proc.kill()
+                        subprocess.run(
+                            ['pkill', '-P', str(proc.pid), '-x', 'ffmpeg'],
+                            capture_output=True, text=True, timeout=5
+                        )
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+
+            self.running = False
+            self.process = None
+            self.process_pid = None
+
+        # 兜底清理本进程树中可能残留的 ffmpeg
+        self._cleanup_zombie_ffmpeg()
+
+        # 回到 UI 线程收尾销毁
+        self.root.after(0, self._finalize_quit)
+
+    def _finalize_quit(self) -> None:
+        # 退出收尾（必须在 UI 线程执行）
         if self._log_flush_job_id:
             self.root.after_cancel(self._log_flush_job_id)
             self._log_flush_job_id = None
@@ -1162,35 +1232,51 @@ class LiveRecorderGUI:
         self.root.destroy()
 
     def _cleanup_zombie_ffmpeg(self) -> None:
-        # 清理当前 Python 进程的子 ffmpeg 进程
-        current_pid = os.getpid()
+        # 清理录制子进程（main.py）及其下的 ffmpeg 进程。
+        # 注意：ffmpeg 的父进程是 main.py（self.process_pid），不是 GUI 自身，
+        # 因此必须用 main.py 的 PID 整树强杀；按 GUI 自身 PID 过滤会匹配不到任何 ffmpeg。
+        target_pid = self.process_pid
         found = False
 
         try:
             if sys.platform == 'win32':
+                if target_pid is not None:
+                    try:
+                        subprocess.run(
+                            ['taskkill', '/F', '/T', '/PID', str(target_pid)],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        found = True
+                        self._log(f"已通过 taskkill 清理 PID {target_pid} 的进程树（含 ffmpeg）")
+                    except Exception as e:
+                        self._log(f"taskkill 执行失败: {e}")
+                # 兜底：按镜像名清理 GUI 直接派生的 ffmpeg（极少出现）
                 try:
                     subprocess.run(
-                        ['taskkill', '/F', '/FI', 'IMAGENAME eq ffmpeg.exe', '/FI', f'PARENTPID eq {current_pid}'],
-                        capture_output=True,
-                        text=True,
-                        timeout=3
+                        ['taskkill', '/F', '/FI', 'IMAGENAME eq ffmpeg.exe',
+                         '/FI', f'PARENTPID eq {os.getpid()}'],
+                        capture_output=True, text=True, timeout=3
                     )
-                    found = True
-                    self._log("已通过 taskkill 清理本进程树的 ffmpeg 进程")
-                except Exception as e:
-                    self._log(f"taskkill 执行失败: {e}")
+                except Exception:
+                    pass
             else:
+                if target_pid is not None:
+                    try:
+                        subprocess.run(
+                            ['pkill', '-P', str(target_pid), '-x', 'ffmpeg'],
+                            capture_output=True, text=True, timeout=3
+                        )
+                        found = True
+                        self._log(f"已通过 pkill 清理 PID {target_pid} 下的 ffmpeg 进程")
+                    except Exception as e:
+                        self._log(f"pkill 执行失败: {e}")
                 try:
                     subprocess.run(
-                        ['pkill', '-P', str(current_pid), '-x', 'ffmpeg'],
-                        capture_output=True,
-                        text=True,
-                        timeout=3
+                        ['pkill', '-P', str(os.getpid()), '-x', 'ffmpeg'],
+                        capture_output=True, text=True, timeout=3
                     )
-                    found = True
-                    self._log("已通过 pkill 清理本进程树的 ffmpeg 进程")
-                except Exception as e:
-                    self._log(f"pkill 执行失败: {e}")
+                except Exception:
+                    pass
 
             if not found:
                 self._log("未发现需要清理的 ffmpeg 进程")
