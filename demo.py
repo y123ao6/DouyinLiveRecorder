@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 直播流获取演示模块 - 展示各平台直播流数据获取方法的示例代码
 import asyncio
 from src.logger import logger
 from src import spider

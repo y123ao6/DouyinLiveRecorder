@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 抖音直播流调试工具 - 用于调试和分析抖音直播流数据结构、编解码器信息
 import asyncio
 import argparse
 import configparser

@@ -1,4 +1,6 @@
 # -*- encoding: utf-8 -*-
+# A-Bogus 签名算法模块 - 实现抖音 A-Bogus 参数的生成算法，包含 RC4 加密、SM3 哈希、魔改 Base64 编码
+
 import math
 import time
 from typing import Any
@@ -186,9 +188,7 @@ class SM3:
             self.reg[7] ^= h
 
     def sum(self, data=None, output_format=None):
-        """
-        计算哈希值
-        """
+        # 计算哈希值，支持字节数组和十六进制两种输出格式
         # 如果提供了输入，则重置并写入
         if data is not None:
             self.reset()
@@ -282,12 +282,7 @@ def gener_random(random_num: int, option: list[int]) -> list[int]:
 
 
 def generate_random_str() -> str:
-    """
-    生成随机字符串
-
-    Returns:
-        随机字符串
-    """
+    # 生成随机字符串（返回固定的随机字节序列）
     # 使用与JS版本相同的固定随机值
     random_values = [0.123456789, 0.987654321, 0.555555555]
 

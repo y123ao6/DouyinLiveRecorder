@@ -1,12 +1,11 @@
 # -*- encoding: utf-8 -*-
+# 直播间信息获取模块 - 负责抖音直播间ID解析、用户信息获取、X-Bogus签名生成
+# Author: Hmily
+# GitHub: https://github.com/ihmily
+# Date: 2023-07-17 23:52:05
+# Update: 2025-02-04 04:57:00
+# Copyright (c) 2023 by Hmily, All Rights Reserved.
 
-"""
-Author: Hmily
-GitHub:https://github.com/ihmily
-Date: 2023-07-17 23:52:05
-Update: 2025-02-04 04:57:00
-Copyright (c) 2023 by Hmily, All Rights Reserved.
-"""
 import re
 import urllib.parse
 import execjs
