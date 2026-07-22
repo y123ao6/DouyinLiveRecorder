@@ -4,6 +4,7 @@
 import asyncio
 import httpx
 from typing import Dict, Any, Tuple
+from . import config
 from .. import utils
 from ..logger import logger
 
@@ -84,12 +85,15 @@ async def async_req(
         include_cookies: bool = False,
         abroad: bool = False,
         content_encoding: str = 'utf-8',
-        verify: bool = False,
+        verify: bool | None = None,
         http2: bool = True
 ) -> str | dict | tuple:
     # 异步 HTTP 请求函数，支持 GET/POST、代理、Cookie 等功能
     if headers is None:
         headers = {}
+    # 未显式指定时使用全局 SSL 验证开关
+    if verify is None:
+        verify = config.ssl_verify
     try:
         # 处理代理地址
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
@@ -136,8 +140,11 @@ async def async_req(
 
 
 async def get_response_status(url: str, proxy_addr: OptionalStr = None, headers: OptionalDict = None,
-                              timeout: int = 10, abroad: bool = False, verify: bool = False, http2=False) -> bool:
+                              timeout: int = 10, abroad: bool = False, verify: bool | None = None, http2=False) -> bool:
     # 检查 URL 响应状态，确认是否可访问
+    # 未显式指定时使用全局 SSL 验证开关
+    if verify is None:
+        verify = config.ssl_verify
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
         client = await _get_client(proxy_addr, timeout, verify, http2)

@@ -2108,6 +2108,10 @@ config: configparser.RawConfigParser = configparser.RawConfigParser()
 config.read(config_file, encoding=text_encoding)
 language = read_config_value(config, '录制设置', 'language(zh_cn/en)', "zh_cn")
 skip_proxy_check = options.get(read_config_value(config, '录制设置', '是否跳过代理检测(是/否)', "否"), False)
+# SSL 证书验证全局开关：默认禁用以兼容历史行为，统一控制所有 HTTP 客户端
+disable_ssl_verify = options.get(read_config_value(config, '录制设置', '是否禁用SSL证书验证(是/否)', "是"), True)
+from src.http_clients import config as _http_config
+_http_config.set_ssl_verify(not disable_ssl_verify)
 if language and 'en' not in language.lower():
     from i18n import translated_print
 
