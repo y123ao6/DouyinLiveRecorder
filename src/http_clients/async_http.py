@@ -67,7 +67,17 @@ async def async_req(
                 # 返回响应文本
                 resp_str = response.text
     except Exception as e:
-        resp_str = str(e)
+        # 异常时按调用方期望的返回契约回退，避免类型冲突：
+        #   redirect_url -> 空字符串（调用方据此判定未取到 URL）
+        #   return_cookies -> 空 dict / ("", {})（调用方据此判定登录/取 cookie 失败）
+        #   默认文本 -> 空字符串（调用方解析失败进入各自异常分支）
+        logger.debug(e)
+        if redirect_url:
+            resp_str = ""
+        elif return_cookies:
+            resp_str = ("", {}) if include_cookies else {}
+        else:
+            resp_str = ""
 
     return resp_str
 
