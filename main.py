@@ -199,6 +199,8 @@ def safe_exit(signum: int, frame: Any) -> None:
     exit_recording = True
     color_obj.print_colored("\n正在安全退出...", color_obj.YELLOW)
     cleanup_all_ffmpeg_processes()
+    from src.http_clients.async_http import close_all_clients_sync
+    close_all_clients_sync()
     sys.exit(0)
 
 # 注册信号处理器
@@ -207,8 +209,9 @@ signal.signal(signal.SIGTERM, safe_exit)
 if hasattr(signal, 'SIGBREAK'):
     signal.signal(signal.SIGBREAK, safe_exit)
 
-# 进程异常退出时兜底清理 ffmpeg（覆盖硬杀 / 未捕获异常等非优雅退出路径）
+# 进程异常退出时兜底清理 ffmpeg 与 HTTP 连接池（覆盖硬杀 / 未捕获异常等非优雅退出路径）
 atexit.register(cleanup_all_ffmpeg_processes)
+atexit.register(lambda: __import__('src.http_clients.async_http', fromlist=['close_all_clients_sync']).close_all_clients_sync())
 
 
 def _get_error_line(e: BaseException) -> str:
