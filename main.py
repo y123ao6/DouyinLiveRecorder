@@ -39,8 +39,6 @@ import uuid
 import shlex
 from collections import deque
 from pathlib import Path
-import urllib.request
-from urllib.error import URLError, HTTPError
 from typing import Any
 import configparser
 import httpx
@@ -2116,20 +2114,12 @@ try:
     if skip_proxy_check:
         global_proxy = True
     else:
-        print('系统代理检测中，请耐心等待...')
-        with urllib.request.urlopen("https://www.google.com/", timeout=3) as response_g:
-            pass
-        global_proxy = True
-        print('\r全局/规则网络代理已开启√')
+        # 通过本地系统代理配置检测（读取注册表/环境变量），避免联网探测导致的卡顿
         pd = ProxyDetector()
-        if pd.is_proxy_enabled():
+        global_proxy = pd.is_proxy_enabled()
+        if global_proxy:
             proxy_info = pd.get_proxy_info()
             print("System Proxy: http://{}:{}".format(proxy_info.ip, proxy_info.port))
-except HTTPError as err:
-    print(f"HTTP error occurred: {err.code} - {err.reason}")
-except URLError:
-    color_obj.print_colored("INFO：未检测到全局/规则网络代理，请检查代理配置（若无需录制海外直播请忽略此条提示）",
-                            color_obj.YELLOW)
 except Exception as err:
     print("An unexpected error occurred:", err)
 
