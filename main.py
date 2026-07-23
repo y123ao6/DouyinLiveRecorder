@@ -393,7 +393,9 @@ def display_info() -> None:
                 print(f"正在录制{len(no_repeat_recording)}个直播: ")
                 for recording_live in no_repeat_recording:
                     with record_state_lock:
-                        rt, qa = recording_time_list.get(recording_live, [now_time, ''])
+                        _rt_info = recording_time_list.get(recording_live, [now_time, ''])
+                        rt = _rt_info[0] if _rt_info else now_time
+                        qa = _rt_info[1] if len(_rt_info) > 1 else ''
                     have_record_time = now_time - rt
                     print(f"{recording_live}[{qa}] 正在录制中 {str(have_record_time).split('.')[0]}")
 
