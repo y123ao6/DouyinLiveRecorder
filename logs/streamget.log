@@ -1,0 +1,2 @@
+2026-07-23 17:32:41.727 | DEBUG    | src.spider:_ensure_ttwid:59 - 自动获取抖音 ttwid 成功
+2026-07-23 17:32:46.186 | DEBUG    | main:adjust_max_request:608 - 同一时间访问网络的线程数动态改为 3
