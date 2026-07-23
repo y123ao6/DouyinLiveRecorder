@@ -979,8 +979,8 @@ async def get_bilibili_room_info(url: str, proxy_addr: OptionalStr = None, cooki
 
 @trace_error_decorator
 async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 'web', proxy_addr: OptionalStr = None,
-                             cookies: OptionalStr = None) -> OptionalStr:
-    # 获取 B站直播流数据（多清晰度）
+                             cookies: OptionalStr = None) -> dict | None:
+    # 获取 B站直播流数据（多清晰度），返回 {url, current_qn, accept_qn}
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0',
         'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
@@ -991,11 +991,7 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         headers['Cookie'] = cookies
 
     room_id = _safe_extract_id(url)
-    params = {
-        'cid': room_id,
-        'qn': qn,
-        'platform': platform,
-    }
+    params = {'cid': room_id, 'qn': qn, 'platform': platform}
     play_api = f'https://api.live.bilibili.com/room/v1/Room/playUrl?{urllib.parse.urlencode(params)}'
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
@@ -1004,32 +1000,27 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         durl_list = json_data['data'].get('durl', [])
         if not durl_list:
             return None
+        # playUrl 接口无 qn 元信息，current_qn 取请求值，accept_qn 未知
+        target_url = None
         for i in durl_list:
             if 'd1--cn-gotcha' in i.get('url', ''):
-                return i['url']
-        return durl_list[-1].get('url')
+                target_url = i['url']
+                break
+        if not target_url:
+            target_url = durl_list[-1].get('url')
+        return {"url": target_url, "current_qn": qn, "accept_qn": [qn]}
     else:
         params = {
-            "room_id": room_id,
-            "protocol": "0,1",
-            "format": "0,1,2",
-            "codec": "0,1,2",
-            "qn": qn,
-            "platform": "web",
-            "ptype": "8",
-            "dolby": "5",
-            "panorama": "1",
-            "hdr_type": "0,1"
+            "room_id": room_id, "protocol": "0,1", "format": "0,1,2", "codec": "0,1,2",
+            "qn": qn, "platform": "web", "ptype": "8", "dolby": "5", "panorama": "1", "hdr_type": "0,1"
         }
-
-        # 此接口因网页上有限制, 需要配置登录后的cookie才能获取最高画质
         api = f'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?{urllib.parse.urlencode(params)}'
         json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
         json_data = json.loads(json_str)
         if json_data['data']['live_status'] == 0:
             print("The anchor did not start broadcasting.")
-            return
+            return None
         playurl_info = json_data['data']['playurl_info']
         stream_list = playurl_info['playurl'].get('stream', [])
         if not stream_list:
@@ -1041,7 +1032,6 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         if not stream_data_list:
             return None
         sorted_stream_list = sorted(stream_data_list, key=itemgetter("current_qn"), reverse=True)
-        # qn: 30000=杜比 20000=4K 10000=原画 400=蓝光 250=超清 150=高清 80=流畅
         video_quality_options = {'10000': 0, '400': 1, '250': 2, '150': 3, '80': 4}
         qn_count = len(sorted_stream_list)
         select_stream_index = min(video_quality_options.get(qn, 0), qn_count - 1)
@@ -1053,7 +1043,10 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         host = url_info[0].get('host', '')
         extra = url_info[0].get('extra', '')
         m3u8_url = host + base_url + extra
-        return m3u8_url
+        current_qn = str(stream_data.get('current_qn', qn))
+        accept_qn = [str(s.get('current_qn')) for s in sorted_stream_list]
+        return {"url": m3u8_url, "current_qn": current_qn, "accept_qn": accept_qn}
+    return None
 
 @trace_error_decorator
 async def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:

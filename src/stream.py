@@ -443,7 +443,14 @@ async def get_bilibili_stream_url(json_data: dict, video_quality: str | None = N
         room_url, qn=select_quality, platform='web', proxy_addr=proxy_addr, cookies=cookies)
     if not play_url:
         return {"anchor_name": anchor_name, "is_live": False}
-    return {'anchor_name': json_data['anchor_name'], 'is_live': True, 'title': json_data['title'], 'quality': video_quality, 'record_url': play_url}
+    # qn → 画质代码 反向映射
+    qn_to_code = {v: k for k, v in video_quality_options.items()}
+    actual_quality = qn_to_code.get(str(play_url.get('current_qn', '')), video_quality)
+    accept_qn = play_url.get('accept_qn') or []
+    available_qualities = [qn_to_code.get(str(q), q) for q in accept_qn] or None
+    return {'anchor_name': json_data['anchor_name'], 'is_live': True, 'title': json_data['title'],
+            'quality': video_quality, 'actual_quality': actual_quality,
+            'available_qualities': available_qualities, 'record_url': play_url['url']}
 
 
 @trace_error_decorator

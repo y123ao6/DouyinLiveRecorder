@@ -278,3 +278,44 @@ def test_tiktok_actual_quality_from_vbitrate():
     finally:
         stream_mod.get_response_status = orig
     assert result.get("actual_quality") == "UHD"
+
+
+from src.stream import get_bilibili_stream_url
+
+
+def _bili_json():
+    return {"anchor_name": "B站主播", "live_status": 1, "room_url": "https://live.bilibili.com/123", "title": "B站直播"}
+
+
+def test_bili_actual_quality_from_qn():
+    """spider 返回 current_qn=250(UHD) → actual_quality == UHD。"""
+    import src.stream as stream_mod
+    async def _fake_bili_data(url, **kw):
+        return {"url": "http://m3u8/uhd", "current_qn": "250", "accept_qn": ["10000", "400", "250"]}
+    orig = stream_mod.get_bilibili_stream_data
+    stream_mod.get_bilibili_stream_data = _fake_bili_data
+    try:
+        result = asyncio.run(get_bilibili_stream_url(_bili_json(), "UHD"))
+    finally:
+        stream_mod.get_bilibili_stream_data = orig
+    assert result["actual_quality"] == "UHD"
+    assert "UHD" in result["available_qualities"]
+
+
+def test_bili_actual_quality_downgrade():
+    """请求 UHD(250) 但 spider 返回 current_qn=80(LD) → 真正降级。
+
+    注：LD(4) 画质低于 UHD(1)，按 QUALITY_LEVEL 契约 actual 等级值 > 请求等级值，
+    is_downgrade 为 True（真正降级）。
+    """
+    import src.stream as stream_mod
+    async def _fake_bili_data(url, **kw):
+        return {"url": "http://m3u8/ld", "current_qn": "80", "accept_qn": ["10000", "80"]}
+    orig = stream_mod.get_bilibili_stream_data
+    stream_mod.get_bilibili_stream_data = _fake_bili_data
+    try:
+        result = asyncio.run(get_bilibili_stream_url(_bili_json(), "UHD"))
+    finally:
+        stream_mod.get_bilibili_stream_data = orig
+    assert result["actual_quality"] == "LD"
+    assert is_downgrade("UHD", result["actual_quality"]) is True  # actual 更低，真正降级
