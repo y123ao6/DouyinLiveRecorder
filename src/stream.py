@@ -381,16 +381,21 @@ async def get_douyu_stream_url(json_data: dict, video_quality: str | None = None
         return {"anchor_name": json_data.get("anchor_name"), "is_live": False}
 
     video_quality_options = {"OD": '0', "BD": '0', "UHD": '3', "HD": '2', "SD": '1', "LD": '1'}
+    # 反向映射：rate 值 → 画质代码（多对一取最高档）
+    rate_to_code = {'0': 'OD', '3': 'UHD', '2': 'HD', '1': 'SD'}
 
     rid = str(json_data["room_id"])
     rate = video_quality_options.get(video_quality or '', '0')
     flv_data = await get_douyu_stream_data(rid, rate, cookies=cookies, proxy_addr=proxy_addr)
-    # get_douyu_stream_data 被 trace_error_decorator 包装，失败时返回 {}，需防护 KeyError
     flv_data_inner = flv_data.get('data') or {}
     rtmp_url = flv_data_inner.get('rtmp_url')
     rtmp_live = flv_data_inner.get('rtmp_live')
+    # 平台实际下发的 rate
+    actual_rate = str(flv_data_inner.get('rate', ''))
+    actual_quality = rate_to_code.get(actual_rate, video_quality)
 
-    result = {"anchor_name": json_data.get('anchor_name'), "is_live": True, "quality": video_quality}
+    result = {"anchor_name": json_data.get('anchor_name'), "is_live": True, "quality": video_quality,
+              "actual_quality": actual_quality}
     if rtmp_live:
         flv_url = f'{rtmp_url}/{rtmp_live}'
         result |= {'flv_url': flv_url, 'record_url': flv_url}

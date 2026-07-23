@@ -184,3 +184,44 @@ def test_huya_actual_quality_downgrade():
     assert result["actual_quality"] == "HD"
     assert result["actual_quality"] != "LD"  # 请求 LD 未被满足
     assert is_downgrade("LD", result["actual_quality"]) is False  # HD 画质更高，按契约非降级
+
+
+from src.stream import get_douyu_stream_url
+
+
+def _douyu_json():
+    return {"is_live": True, "anchor_name": "斗鱼主播", "room_id": 12345}
+
+
+def test_douyu_actual_quality_from_rate():
+    """平台下发 rate=3（UHD）→ actual_quality == UHD。"""
+    import src.stream as stream_mod
+    async def _fake_douyu_data(rid, rate, **kw):
+        return {"data": {"rtmp_url": "http://flv", "rtmp_live": "live.flv?rate=3", "rate": 3}}
+    orig = stream_mod.get_douyu_stream_data
+    stream_mod.get_douyu_stream_data = _fake_douyu_data
+    try:
+        result = asyncio.run(get_douyu_stream_url(_douyu_json(), "UHD", cookies=""))
+    finally:
+        stream_mod.get_douyu_stream_data = orig
+    assert result["actual_quality"] == "UHD"
+
+
+def test_douyu_actual_quality_downgrade():
+    """请求 UHD(rate=3) 但平台下发 rate=0(OD) → 请求未满足。
+
+    注：OD(0) 画质高于 UHD(1)，按 QUALITY_LEVEL 契约 actual 更高不告警，
+    is_downgrade 为 False；此处 actual_quality != 请求值即表明请求未满足。
+    """
+    import src.stream as stream_mod
+    async def _fake_douyu_data(rid, rate, **kw):
+        return {"data": {"rtmp_url": "http://flv", "rtmp_live": "live.flv", "rate": 0}}
+    orig = stream_mod.get_douyu_stream_data
+    stream_mod.get_douyu_stream_data = _fake_douyu_data
+    try:
+        result = asyncio.run(get_douyu_stream_url(_douyu_json(), "UHD", cookies=""))
+    finally:
+        stream_mod.get_douyu_stream_data = orig
+    assert result["actual_quality"] == "OD"
+    assert result["actual_quality"] != "UHD"  # 请求 UHD 未被满足
+    assert is_downgrade("UHD", result["actual_quality"]) is False  # OD 画质更高，按契约非降级
