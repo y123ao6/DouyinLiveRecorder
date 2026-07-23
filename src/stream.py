@@ -222,10 +222,15 @@ async def get_tiktok_stream_url(json_data: dict | None, video_quality: str | Non
 
         flv_url = flv_dict.get('url', '')
         m3u8_url = m3u8_dict.get('url', '')
+        # 实际选中项的 vbitrate → 画质代码
+        actual_quality = bitrate_to_quality(flv_dict.get('vbitrate', 0)) if flv_dict else video_quality
+        available_qualities = [bitrate_to_quality(x.get('vbitrate', 0)) for x in flv_url_list if x] if flv_url_list else None
         result |= {
             'is_live': True,
             'title': live_room['liveRoom']['title'],
             'quality': video_quality,
+            'actual_quality': actual_quality,
+            'available_qualities': available_qualities,
             'm3u8_url': m3u8_url,
             'flv_url': flv_url,
             'record_url': m3u8_url or flv_url,
@@ -244,10 +249,12 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str | None = N
 
     if live_status:
         quality, quality_index = get_quality_index(video_quality)
+        actual_quality = None
+        available_qualities = None
         if 'm3u8_url_list' in json_data:
             m3u8_url_list = json_data['m3u8_url_list'][::-1]
-            _pad_list(m3u8_url_list)
-            m3u8_url = m3u8_url_list[quality_index]['url']
+            idx = min(quality_index, len(m3u8_url_list) - 1)
+            m3u8_url = m3u8_url_list[idx]['url']
             result['m3u8_url'] = m3u8_url
 
         if 'flv_url_list' in json_data:
@@ -266,16 +273,19 @@ async def get_kuaishou_stream_url(json_data: dict, video_quality: str | None = N
                     (i for i, x in enumerate(flv_url_list) if x['bitrate'] <= quality_index_bitrate_value), None)
                 if quality_index is None:
                     quality_index = len(flv_url_list) - 1
-                flv_url = flv_url_list[quality_index]['url']
-                result['flv_url'] = flv_url
-                result['record_url'] = flv_url
+                selected = flv_url_list[quality_index]
+                actual_quality = bitrate_to_quality(selected['bitrate'])
+                available_qualities = [bitrate_to_quality(x['bitrate']) for x in flv_url_list]
+                result['flv_url'] = selected['url']
+                result['record_url'] = selected['url']
             else:
                 flv_url_list = json_data['flv_url_list'][::-1]
-                _pad_list(flv_url_list)
-                flv_url = flv_url_list[quality_index]['url']
-                result |= {'flv_url': flv_url, 'record_url': flv_url}
-        result['is_live'] = True
-        result['quality'] = quality
+                idx = min(quality_index, len(flv_url_list) - 1)
+                result['flv_url'] = flv_url_list[idx]['url']
+                result['record_url'] = result['flv_url']
+        result['quality'] = video_quality
+        result['actual_quality'] = actual_quality
+        result['available_qualities'] = available_qualities
     return result
 
 

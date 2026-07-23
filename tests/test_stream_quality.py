@@ -225,3 +225,56 @@ def test_douyu_actual_quality_downgrade():
     assert result["actual_quality"] == "OD"
     assert result["actual_quality"] != "UHD"  # 请求 UHD 未被满足
     assert is_downgrade("UHD", result["actual_quality"]) is False  # OD 画质更高，按契约非降级
+
+
+from src.stream import get_kuaishou_stream_url, get_tiktok_stream_url
+
+
+def _kuaishou_json_flv_bitrate():
+    return {
+        "type": 2, "is_live": True, "anchor_name": "快手主播",
+        "flv_url_list": [{"url": "http://flv/2000", "bitrate": 2000}, {"url": "http://flv/1000", "bitrate": 1000}]
+    }
+
+
+def test_kuaishou_actual_quality_from_bitrate():
+    """请求 UHD，flv_list 含 bitrate 2000(UHD) → actual_quality == UHD。"""
+    result = asyncio.run(get_kuaishou_stream_url(_kuaishou_json_flv_bitrate(), "UHD"))
+    assert result.get("actual_quality") == "UHD"
+
+
+def test_kuaishou_actual_quality_downgrade():
+    """请求 LD 但最高码率仅 1000(HD) → actual_quality == HD（请求未满足）。
+
+    注：HD(2) 画质高于 LD(4)，按 QUALITY_LEVEL 契约 actual 更高不告警，
+    is_downgrade 为 False；此处 actual_quality != 请求值即表明请求未满足。
+    """
+    result = asyncio.run(get_kuaishou_stream_url({
+        "type": 2, "is_live": True, "anchor_name": "快手主播",
+        "flv_url_list": [{"url": "http://flv/1000", "bitrate": 1000}]
+    }, "LD"))
+    assert result.get("actual_quality") == "HD"
+    assert result.get("actual_quality") != "LD"  # 请求 LD 未被满足
+    assert is_downgrade("LD", result["actual_quality"]) is False  # actual 更高，非降级
+
+
+def _tiktok_json_full():
+    return {
+        "LiveRoom": {"liveRoomUserInfo": {"user": {"nickname": "TT", "uniqueId": "1", "status": 2},
+                     "liveRoom": {"title": "t", "streamData": {"pull_data": {"stream_data": json.dumps({
+                         "data": {"flv": {"main": {"flv": "http://flv/uhd", "sdk_params": json.dumps({"vbitrate": 2000, "resolution": "1920x1080", "VCodec": "h264"})}},
+                         "hls": {"main": {"hls": "http://hls/uhd", "sdk_params": json.dumps({"vbitrate": 2000, "resolution": "1920x1080", "VCodec": "h264"})}}
+                     }})}}}}}}
+
+
+def test_tiktok_actual_quality_from_vbitrate():
+    """TikTok play_list 项含 vbitrate 2000 → actual_quality == UHD。"""
+    import src.stream as stream_mod
+    async def _ok(**kw): return True
+    orig = stream_mod.get_response_status
+    stream_mod.get_response_status = _ok
+    try:
+        result = asyncio.run(get_tiktok_stream_url(_tiktok_json_full(), "UHD"))
+    finally:
+        stream_mod.get_response_status = orig
+    assert result.get("actual_quality") == "UHD"
