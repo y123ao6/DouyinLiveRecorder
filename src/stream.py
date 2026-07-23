@@ -440,16 +440,24 @@ async def get_netease_stream_url(json_data: dict, video_quality: str | None = No
         sorted_keys = [key for key in order if key in stream_list]
         if not sorted_keys:
             return json_data
-        _pad_list(sorted_keys)
         video_quality, quality_index = get_quality_index(video_quality)
-        selected_quality = sorted_keys[quality_index]
+        # 显式截断，记录实际选中的画质名
+        idx = min(quality_index, len(sorted_keys) - 1)
+        selected_quality = sorted_keys[idx]
+        actual_quality = NETEASE_QUALITY_MAP.get(selected_quality, video_quality)
+        available_qualities = [NETEASE_QUALITY_MAP.get(k, k.upper()) for k in sorted_keys]
         flv_url_list = stream_list[selected_quality]['cdn']
         selected_cdn = list(flv_url_list.keys())[0]
         flv_url = flv_url_list[selected_cdn]
+    else:
+        actual_quality = None
+        available_qualities = None
 
     return {
         "is_live": True, "anchor_name": json_data['anchor_name'], "title": json_data['title'],
-        'quality': video_quality, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": flv_url or m3u8_url
+        'quality': video_quality, 'actual_quality': actual_quality,
+        'available_qualities': available_qualities,
+        "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": flv_url or m3u8_url
     }
 
 

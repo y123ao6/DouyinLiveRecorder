@@ -98,3 +98,44 @@ def test_douyin_actual_quality_downgrade():
     assert result["actual_quality"] == "OD"
     assert result["actual_quality"] != "UHD"  # 请求 UHD 未被满足
     assert is_downgrade("UHD", result["actual_quality"]) is False  # OD 画质更高，按契约非降级
+
+
+from src.stream import get_netease_stream_url
+
+
+def _netease_json_full():
+    return {
+        "is_live": True, "anchor_name": "网易主播", "title": "测试",
+        "m3u8_url": "http://m3u8/default",
+        "stream_list": {"resolution": {
+            "blueray": {"cdn": {"cdn1": "http://flv/blueray"}},
+            "ultra": {"cdn": {"cdn1": "http://flv/ultra"}},
+            "high": {"cdn": {"cdn1": "http://flv/high"}},
+        }}
+    }
+
+
+def _netease_json_single():
+    return {
+        "is_live": True, "anchor_name": "网易主播", "title": "测试",
+        "m3u8_url": "http://m3u8/default",
+        "stream_list": {"resolution": {"blueray": {"cdn": {"cdn1": "http://flv/blueray"}}}}
+    }
+
+
+def test_netease_actual_quality_match():
+    result = asyncio.run(get_netease_stream_url(_netease_json_full(), "UHD"))
+    assert result["actual_quality"] == "UHD"  # ultra → UHD
+    assert result["quality"] == "UHD"
+
+
+def test_netease_actual_quality_downgrade():
+    """请求 UHD 但仅 blueray(OD) → actual_quality == OD（请求未满足）。
+
+    注：blueray 映射为 OD（原画/蓝光，画质最高），按 QUALITY_LEVEL 契约
+    OD(0) 高于 UHD(1)，is_downgrade 为 False（actual 更高不告警）。
+    """
+    result = asyncio.run(get_netease_stream_url(_netease_json_single(), "UHD"))
+    assert result["actual_quality"] == "OD"
+    assert result["actual_quality"] != "UHD"  # 请求 UHD 未被满足
+    assert is_downgrade("UHD", result["actual_quality"]) is False  # OD 画质更高，按契约非降级
