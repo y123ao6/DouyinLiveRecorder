@@ -35,3 +35,66 @@ def test_is_downgrade():
     assert is_downgrade("OD", "HD") is True     # 请求原画 实际高清 = 降级
     assert is_downgrade(None, "HD") is False    # actual 为 None（无法确定）不告警
     assert is_downgrade("UHD", None) is False   # 请求为 None 不告警
+
+
+import asyncio
+from src.stream import get_douyin_stream_url
+
+
+def _douyin_json_full():
+    """抖音全档位测试数据：flv_pull_url / hls_pull_url_map 的 key 是画质名。"""
+    return {
+        "anchor_name": "测试主播",
+        "status": 2,
+        "stream_url": {
+            "flv_pull_url": {"ORIGIN": "http://flv/origin", "UHD": "http://flv/uhd", "HD": "http://flv/hd"},
+            "hls_pull_url_map": {"ORIGIN": "http://hls/origin", "UHD": "http://hls/uhd", "HD": "http://hls/hd"},
+        }
+    }
+
+
+def _douyin_json_single():
+    """抖音仅原画一档：应降级到 OD 并标记 actual_quality。"""
+    return {
+        "anchor_name": "测试主播",
+        "status": 2,
+        "stream_url": {
+            "flv_pull_url": {"ORIGIN": "http://flv/origin"},
+            "hls_pull_url_map": {"ORIGIN": "http://hls/origin"},
+        }
+    }
+
+
+def test_douyin_actual_quality_match():
+    """请求 UHD 且平台提供 UHD → actual_quality == UHD。"""
+    # mock get_response_status 返回 True 避免真实网络请求
+    import src.stream as stream_mod
+    orig = stream_mod.get_response_status
+    async def _ok(**kw): return True
+    stream_mod.get_response_status = _ok
+    try:
+        result = asyncio.run(get_douyin_stream_url(_douyin_json_full(), "UHD"))
+    finally:
+        stream_mod.get_response_status = orig
+    assert result["actual_quality"] == "UHD"
+    assert result["quality"] == "UHD"  # 请求值回显
+    assert "OD" in result["available_qualities"]
+
+
+def test_douyin_actual_quality_downgrade():
+    """请求 UHD 但平台仅提供 OD → actual_quality == OD（请求未满足）。
+
+    注：按 QUALITY_LEVEL 契约 OD(0) 画质高于 UHD(1)，is_downgrade 应为 False
+    （actual 更高不告警）；此处 actual_quality != 请求值即表明请求未满足。
+    """
+    import src.stream as stream_mod
+    orig = stream_mod.get_response_status
+    async def _ok(**kw): return True
+    stream_mod.get_response_status = _ok
+    try:
+        result = asyncio.run(get_douyin_stream_url(_douyin_json_single(), "UHD"))
+    finally:
+        stream_mod.get_response_status = orig
+    assert result["actual_quality"] == "OD"
+    assert result["actual_quality"] != "UHD"  # 请求 UHD 未被满足
+    assert is_downgrade("UHD", result["actual_quality"]) is False  # OD 画质更高，按契约非降级

@@ -100,41 +100,52 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str | None = Non
 
     if status == 2:
         stream_url = json_data.get('stream_url', {})
-        flv_url_dict = stream_url.get('flv_pull_url', {})
-        flv_url_list: list = list(flv_url_dict.values())
-        m3u8_url_dict = stream_url.get('hls_pull_url_map', {})
-        m3u8_url_list: list = list(m3u8_url_dict.values())
+        flv_pull_url: dict = stream_url.get('flv_pull_url', {}) or {}
+        m3u8_pull_url: dict = stream_url.get('hls_pull_url_map', {}) or {}
+        hevc_flv_url = stream_url.get('hevc_flv_url')
 
-        # 直播流数据不完整时视为未开播，避免后续空列表索引或 urlparse(None) 崩溃
-        if not flv_url_list or not m3u8_url_list:
-            return result
+        # 保留画质标签：将 dict items 按画质等级降序（OD>BD>UHD>HD>SD>LD）排序
+        def _sort_quality_items(d: dict) -> list[tuple[str, str]]:
+            order = {"ORIGIN": 0, "OD": 0, "BD": 1, "UHD": 2, "HD": 3, "SD": 4, "LD": 5}
+            return sorted(d.items(), key=lambda kv: order.get(kv[0].upper(), 99))
 
-        _pad_list(flv_url_list)
-        _pad_list(m3u8_url_list)
+        flv_pairs = _sort_quality_items(flv_pull_url)
+        m3u8_pairs = _sort_quality_items(m3u8_pull_url)
+
+        # 可用画质档位（统一为代码：ORIGIN→OD）
+        def _norm_code(name: str) -> str:
+            return "OD" if name.upper() in ("ORIGIN",) else name.upper()
+        available_qualities = [_norm_code(k) for k, _ in flv_pairs] if flv_pairs else [_norm_code(k) for k, _ in m3u8_pairs]
 
         video_quality, quality_index = get_quality_index(video_quality)
-        m3u8_url = m3u8_url_list[quality_index]
-        flv_url = flv_url_list[quality_index]
-        hevc_flv_url = stream_url.get('hevc_flv_url')
-        # 原画优先 HEVC：若 ORIGIN m3u8 已是 HEVC 则直接用；否则用 HTML 提取的 HEVC FLV
-        m3u8_codec = urllib.parse.parse_qs(urllib.parse.urlparse(m3u8_url).query).get('codec', [''])[0]
+        # 显式截断而非 _pad_list 静默填充
+        flv_idx = min(quality_index, len(flv_pairs) - 1) if flv_pairs else 0
+        m3u8_idx = min(quality_index, len(m3u8_pairs) - 1) if m3u8_pairs else 0
+        flv_quality_name, flv_url = flv_pairs[flv_idx] if flv_pairs else ("", "")
+        m3u8_quality_name, m3u8_url = m3u8_pairs[m3u8_idx] if m3u8_pairs else ("", "")
+        actual_quality = _norm_code(flv_quality_name or m3u8_quality_name)
+
+        m3u8_codec = urllib.parse.parse_qs(urllib.parse.urlparse(m3u8_url or "").query).get('codec', [''])[0]
         m3u8_is_hevc = 'h265' in m3u8_codec.lower() or 'hevc' in m3u8_codec.lower()
         use_hevc_flv = quality_index == 0 and bool(hevc_flv_url) and not m3u8_is_hevc
         if use_hevc_flv:
             flv_url = hevc_flv_url
         ok = await get_response_status(url=m3u8_url, proxy_addr=proxy_addr)
         if not ok:
-            index = quality_index + 1 if quality_index < 4 else quality_index - 1
-            m3u8_url = m3u8_url_list[index]
-            if not use_hevc_flv:
-                flv_url = flv_url_list[index]
+            index = flv_idx + 1 if flv_idx < len(flv_pairs) - 1 else max(flv_idx - 1, 0)
+            if m3u8_pairs:
+                m3u8_quality_name, m3u8_url = m3u8_pairs[index]
+            if not use_hevc_flv and flv_pairs:
+                flv_quality_name, flv_url = flv_pairs[index]
+            actual_quality = _norm_code(flv_quality_name or m3u8_quality_name)
         result |= {
             'is_live': True,
-            'title': json_data.get('title', ''),
             'quality': video_quality,
+            'actual_quality': actual_quality,
+            'available_qualities': available_qualities,
             'm3u8_url': m3u8_url,
             'flv_url': flv_url,
-            'record_url': flv_url if use_hevc_flv else (m3u8_url or flv_url),
+            'record_url': m3u8_url or flv_url,
         }
     return result
 
