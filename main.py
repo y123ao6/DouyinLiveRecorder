@@ -926,6 +926,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             count_time = time.time()
             record_quality_zh, record_url, anchor_name = url_data
             record_quality = get_quality_code(record_quality_zh)
+            # 真实下发的画质代码（由 stream 模块回采，可能为 None）
+            from src.stream import code_to_zh, is_downgrade as _is_downgrade
             proxy_address = proxy_addr
             platform = '未知平台'
 
@@ -1574,7 +1576,14 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 with record_state_lock:
                                     recording.add(record_name)
                                     start_record_time = datetime.datetime.now()
-                                    recording_time_list[record_name] = [start_record_time, record_quality_zh]
+                                    actual_quality_code = port_info.get('actual_quality')
+                                    actual_quality_zh = code_to_zh(actual_quality_code) if actual_quality_code else ''
+                                    # 降级告警：实际画质低于设置时记录日志
+                                    if actual_quality_code and _is_downgrade(record_quality, actual_quality_code):
+                                        logger.warning(
+                                            f"{record_name} 画质降级：设置 {record_quality_zh}({record_quality}) "
+                                            f"实际 {actual_quality_zh}({actual_quality_code})")
+                                    recording_time_list[record_name] = [start_record_time, record_quality_zh, actual_quality_zh]
                                 rec_info = f"\r{anchor_name} 准备开始录制视频: {full_path}"
                                 if show_url:
                                     re_plat = ('WinkTV', 'PandaTV', 'ShowRoom', 'CHZZK', 'Youtube')
@@ -1692,7 +1701,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         if isinstance(flv_url, str) and flv_url:
                                             recording.add(record_name)
                                             start_record_time = datetime.datetime.now()
-                                            recording_time_list[record_name] = [start_record_time, record_quality_zh]
+                                            actual_quality_code = port_info.get('actual_quality')
+                                            actual_quality_zh = code_to_zh(actual_quality_code) if actual_quality_code else ''
+                                            if actual_quality_code and _is_downgrade(record_quality, actual_quality_code):
+                                                logger.warning(
+                                                    f"{record_name} 画质降级：设置 {record_quality_zh}({record_quality}) "
+                                                    f"实际 {actual_quality_zh}({actual_quality_code})")
+                                            recording_time_list[record_name] = [start_record_time, record_quality_zh, actual_quality_zh]
 
                                             download_success = direct_download_stream(
                                                 flv_url,
@@ -2147,13 +2162,16 @@ def get_status() -> dict:
                 recording_times = {}
                 for _name, _info in recording_time_list.items():
                     if _info:
+                        # 兼容旧格式 [start, quality] 和新格式 [start, quality, actual_quality]
+                        actual_q = _info[2] if len(_info) > 2 else ''
                         recording_times[_name] = {
                             "start_time": _info[0].strftime("%Y-%m-%d %H:%M:%S"),
                             "quality": _info[1],
+                            "actual_quality": actual_q,
                             "duration": str(now - _info[0]).split(".")[0],
                         }
                     else:
-                        recording_times[_name] = {"start_time": "", "quality": "", "duration": "0:00:00"}
+                        recording_times[_name] = {"start_time": "", "quality": "", "actual_quality": "", "duration": "0:00:00"}
                 monitoring_val = monitoring
                 running_val = list(running_list)
                 error_val = error_count
@@ -2179,6 +2197,7 @@ def get_status() -> dict:
                 "name": _n,
                 "start_time": recording_times.get(_n, {}).get("start_time", ""),
                 "quality": recording_times.get(_n, {}).get("quality", ""),
+                "actual_quality": recording_times.get(_n, {}).get("actual_quality", ""),
                 "duration": recording_times.get(_n, {}).get("duration", "0:00:00"),
             }
             for _n in recording_snapshot

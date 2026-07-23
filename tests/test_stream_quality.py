@@ -319,3 +319,29 @@ def test_bili_actual_quality_downgrade():
         stream_mod.get_bilibili_stream_data = orig
     assert result["actual_quality"] == "LD"
     assert is_downgrade("UHD", result["actual_quality"]) is True  # actual 更低，真正降级
+
+
+def test_get_status_returns_actual_quality():
+    """get_status 返回的 recording 项含 actual_quality 字段。"""
+    # main.py 在模块导入时即读取由 sys.argv[0] 推导出的 config/URL_config.ini。
+    # 在 `python -m pytest` 下 sys.argv[0] 指向 pytest 的 __main__.py，导致路径解析失败。
+    # 将其指向项目根的 main.py，使配置路径解析到 /workspace/config/。
+    import pathlib
+    sys.argv[0] = str(pathlib.Path(__file__).resolve().parent.parent / "main.py")
+    import main
+    # 临时设置 recording_time_list
+    import datetime
+    old = dict(main.recording_time_list)
+    main.recording_time_list.clear()
+    main.recording.add("序号1 测试主播")
+    main.recording_time_list["序号1 测试主播"] = [datetime.datetime.now(), "超清", "高清"]
+    try:
+        s = main.get_status()
+        assert len(s["recording"]) == 1
+        rec = s["recording"][0]
+        assert rec["quality"] == "超清"
+        assert rec["actual_quality"] == "高清"
+    finally:
+        main.recording.discard("序号1 测试主播")
+        main.recording_time_list.clear()
+        main.recording_time_list.update(old)
