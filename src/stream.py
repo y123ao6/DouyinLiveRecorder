@@ -25,6 +25,44 @@ from .http_clients.async_http import get_response_status
 QUALITY_MAPPING = {"OD": 0, "BD": 0, "UHD": 1, "HD": 2, "SD": 3, "LD": 4}
 QUALITY_MAPPING_BIT = {'OD': 99999, 'BD': 4000, 'UHD': 2000, 'HD': 1000, 'SD': 800, 'LD': 600}
 
+# 画质等级值（数值越大画质越低），用于降级判定
+QUALITY_LEVEL = {"OD": 0, "BD": 0, "UHD": 1, "HD": 2, "SD": 3, "LD": 4}
+
+# 画质代码 → 中文名（对齐 main.py get_quality_code 的反向）
+QUALITY_CODE_TO_ZH = {"OD": "原画", "BD": "蓝光", "UHD": "超清", "HD": "高清", "SD": "标清", "LD": "流畅"}
+
+# 网易CC 画质名 → 统一代码
+NETEASE_QUALITY_MAP = {"blueray": "OD", "ultra": "UHD", "high": "HD", "standard": "SD"}
+
+
+def bitrate_to_quality(bitrate: int) -> str:
+    """根据码率反查画质代码。返回码率上限 >= 给定值的最高档；0/未知回退 OD。"""
+    if not bitrate or bitrate <= 0:
+        return "OD"
+    # 从低到高找第一个能容纳该码率的档位（LD<SD<HD<UHD<BD<OD）
+    for code in ("LD", "SD", "HD", "UHD", "BD", "OD"):
+        if bitrate <= QUALITY_MAPPING_BIT[code]:
+            return code
+    return "OD"
+
+
+def code_to_zh(code: str | None) -> str:
+    """画质代码转中文；未知代码原样返回。"""
+    if not code:
+        return code or ""
+    return QUALITY_CODE_TO_ZH.get(code, code)
+
+
+def is_downgrade(requested: str | None, actual: str | None) -> bool:
+    """判定是否降级：actual 画质等级值 > requested 等级值。None 不告警。"""
+    if not requested or not actual:
+        return False
+    req_level = QUALITY_LEVEL.get(requested)
+    act_level = QUALITY_LEVEL.get(actual)
+    if req_level is None or act_level is None:
+        return False
+    return act_level > req_level
+
 
 def _pad_list(url_list: list, min_length: int = 5) -> list:
     # 将列表填充到指定最小长度
