@@ -336,31 +336,36 @@ async def get_huya_stream_url(json_data: dict, video_quality: str | None = None)
         m3u8_url = f'{hls_url}/{stream_name}.{hls_url_suffix}?{new_anti_code}&ratio='
 
         quality_list = flv_anti_code.split('&exsphd=')
+        actual_quality = video_quality  # OD/BD 默认即请求值
+        available_qualities = None
         if len(quality_list) > 1 and video_quality not in ["OD", "BD"]:
             pattern = r"(?<=264_)\d+"
             quality_list = list(re.findall(pattern, quality_list[1]))[::-1]
-            # 无可用画质时跳过，避免索引越界
             if quality_list:
-                _pad_list(quality_list)
-
-                video_quality_options = {
-                    "UHD": quality_list[0],
-                    "HD": quality_list[1],
-                    "SD": quality_list[2],
-                    "LD": quality_list[3]
-                }
-
-                if video_quality not in video_quality_options:
-                    raise ValueError(
-                        f"Invalid video quality. Available options are: {', '.join(video_quality_options.keys())}")
-
-                flv_url = flv_url + str(video_quality_options[video_quality])
-                m3u8_url = m3u8_url + str(video_quality_options[video_quality])
-
+                # 不再 _pad_list；按实际可用档位构造 options
+                labels = ["UHD", "HD", "SD", "LD"]
+                video_quality_options = dict(zip(labels, quality_list))
+                available_qualities = ["OD", "BD"] + list(video_quality_options.keys())
+                if video_quality in video_quality_options:
+                    ratio_val = video_quality_options[video_quality]
+                    actual_quality = video_quality
+                else:
+                    # 请求档位不在可用列表：降级到最近的更低档，若无更低档则取最低可用档
+                    req_level = QUALITY_LEVEL.get(video_quality, 4)
+                    lower = [(l, r) for l, r in video_quality_options.items() if QUALITY_LEVEL.get(l, 0) >= req_level]
+                    if lower:
+                        actual_quality, ratio_val = lower[0]
+                    else:
+                        # 取最低可用档（列表最后一个）
+                        actual_quality, ratio_val = list(video_quality_options.items())[-1]
+                flv_url = flv_url + str(ratio_val)
+                m3u8_url = m3u8_url + str(ratio_val)
         result |= {
             'is_live': True,
             'title': live_title,
             'quality': video_quality,
+            'actual_quality': actual_quality,
+            'available_qualities': available_qualities,
             'm3u8_url': m3u8_url,
             'flv_url': flv_url,
             'record_url': flv_url or m3u8_url

@@ -139,3 +139,48 @@ def test_netease_actual_quality_downgrade():
     assert result["actual_quality"] == "OD"
     assert result["actual_quality"] != "UHD"  # 请求 UHD 未被满足
     assert is_downgrade("UHD", result["actual_quality"]) is False  # OD 画质更高，按契约非降级
+
+
+from src.stream import get_huya_stream_url
+
+
+def _huya_json_full():
+    """虎牙全档位：exsphd 含4个 ratio。"""
+    return {
+        "data": [{"gameLiveInfo": {"nick": "虎牙主播", "introduction": "标题"},
+                  "gameStreamInfoList": [{
+                      "sFlvUrl": "http://flv", "sStreamName": "stream", "sFlvUrlSuffix": "flv",
+                      "sHlsUrl": "http://hls", "sHlsUrlSuffix": "m3u8",
+                      "sFlvAntiCode": "wsSecret=xxx&ctype=huya_web&exsphd=264_4000,264_2000,264_1000,264_800"
+                  }]}]
+    }
+
+
+def _huya_json_partial():
+    """虎牙仅2档：请求 LD 应降级到最低可用档。"""
+    return {
+        "data": [{"gameLiveInfo": {"nick": "虎牙主播", "introduction": "标题"},
+                  "gameStreamInfoList": [{
+                      "sFlvUrl": "http://flv", "sStreamName": "stream", "sFlvUrlSuffix": "flv",
+                      "sHlsUrl": "http://hls", "sHlsUrlSuffix": "m3u8",
+                      "sFlvAntiCode": "wsSecret=xxx&ctype=huya_web&exsphd=264_4000,264_2000"
+                  }]}]
+    }
+
+
+def test_huya_actual_quality_match():
+    result = asyncio.run(get_huya_stream_url(_huya_json_full(), "HD"))
+    assert result["actual_quality"] == "HD"
+    assert result["is_live"] is True
+
+
+def test_huya_actual_quality_downgrade():
+    """请求 LD 但仅 UHD/HD 两档 → 降级到 HD（最低可用）。
+
+    注：HD(2) 画质高于 LD(4)，按 QUALITY_LEVEL 契约 actual 更高不告警，
+    is_downgrade 为 False；此处 actual_quality != 请求值即表明请求未满足。
+    """
+    result = asyncio.run(get_huya_stream_url(_huya_json_partial(), "LD"))
+    assert result["actual_quality"] == "HD"
+    assert result["actual_quality"] != "LD"  # 请求 LD 未被满足
+    assert is_downgrade("LD", result["actual_quality"]) is False  # HD 画质更高，按契约非降级
