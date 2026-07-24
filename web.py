@@ -19,11 +19,9 @@ if _script_dir not in sys.path:
 
 
 def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
-    """进入后台运行模式：隐藏控制台窗口，将输出重定向到日志文件。
-
-    Windows 下隐藏控制台窗口（SW_HIDE）；其他平台仅重定向输出。
-    日志写入 logs/web_console.log，可通过 Web 面板或任务管理器管理程序。
-    """
+    # 进入后台运行模式：隐藏控制台窗口，将输出重定向到日志文件。
+    # Windows 下隐藏控制台窗口（SW_HIDE）；其他平台仅重定向输出。
+    # 日志写入 logs/web_console.log，可通过 Web 面板或任务管理器管理程序。
     log_path = os.path.join(logs_dir, "web_console.log")
 
     # 重定向前先向控制台输出提示（窗口即将隐藏）
@@ -57,7 +55,7 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
 
 
 def main() -> None:
-    """启动 Web 管理面板：录制引擎（守护线程）+ uvicorn HTTP 服务。"""
+    # 启动 Web 管理面板：录制引擎（守护线程）+ uvicorn HTTP 服务。
     # 导入 main 模块：触发模块级初始化（FFmpeg 检查、配置读取、备份线程等），
     # 但不进入主循环（因 main() 已被包装为函数）。
     import main

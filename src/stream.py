@@ -36,7 +36,7 @@ NETEASE_QUALITY_MAP = {"blueray": "OD", "ultra": "UHD", "high": "HD", "standard"
 
 
 def bitrate_to_quality(bitrate: int) -> str:
-    """根据码率反查画质代码。返回码率上限 >= 给定值的最高档；0/未知回退 OD。"""
+    # 根据码率反查画质代码。返回码率上限 >= 给定值的最高档；0/未知回退 OD。
     if not bitrate or bitrate <= 0:
         return "OD"
     # 从低到高找第一个能容纳该码率的档位（LD<SD<HD<UHD<BD<OD）
@@ -47,14 +47,14 @@ def bitrate_to_quality(bitrate: int) -> str:
 
 
 def code_to_zh(code: str | None) -> str:
-    """画质代码转中文；未知代码原样返回。"""
+    # 画质代码转中文；未知代码原样返回。
     if not code:
         return code or ""
     return QUALITY_CODE_TO_ZH.get(code, code)
 
 
 def is_downgrade(requested: str | None, actual: str | None) -> bool:
-    """判定是否降级：actual 画质等级值 > requested 等级值。None 不告警。"""
+    # 判定是否降级：actual 画质等级值 > requested 等级值。None 不告警。
     if not requested or not actual:
         return False
     req_level = QUALITY_LEVEL.get(requested)
