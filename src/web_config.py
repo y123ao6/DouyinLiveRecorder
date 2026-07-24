@@ -39,6 +39,7 @@ WEB_DEFAULTS: dict[str, Any] = {
     "web_auth_enable": False,
     "web_password": "",
     "web_token_expiry": 86400,
+    "web_show_console": True,
 }
 
 
