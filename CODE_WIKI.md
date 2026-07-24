@@ -421,6 +421,22 @@ NETEASE_QUALITY_MAP = {"blueray": "OD", "ultra": "UHD", "high": "HD", "standard"
 - `StatusIndicator` - 状态指示器
 - `ModernTextWidget` - 现代文本控件
 
+**导航页面**:
+- 📊 控制台 - 录制状态总览、启停控制
+- 🎯 画质监控 - 实时检测各直播间实际画质是否与设置一致
+- 📝 URL 配置 - 直播间地址管理
+- 📋 运行日志 - 子进程日志查看
+
+**画质监控页面** (`_build_quality_page`):
+- 通过解析 main.py 子进程 stdout 日志获取画质信息
+- 解析 loguru 日志前缀（` | ` + ` - ` 分隔），提取 message 内容
+- 降级告警匹配：`{name} 画质降级：设置 {zh}({code}) 实际 {zh}({code})`
+- 录制状态匹配：`{name}[{quality}] 正在录制中 {duration}`
+- 统计卡片：录制中 / 画质正常 / 画质降级 计数
+- 降级行以红色背景高亮，正常行显示"✓ 同等"
+- 线程安全：`_quality_lock` 保护共享数据，UI 更新仅在主线程执行
+- 超时清理：30 秒未更新的录制标记自动清除
+
 ---
 
 ### 10. 异步 HTTP 客户端 (`src/http_clients/async_http.py`)
@@ -475,10 +491,17 @@ NETEASE_QUALITY_MAP = {"blueray": "OD", "ultra": "UHD", "high": "HD", "standard"
 **职责**: 提供 Web 界面远程管理录制器，包括仪表盘、直播间管理、配置编辑、日志查看
 
 **架构**:
-- `web.py` - 入口：守护线程运行 `main.main()`，主线程运行 uvicorn
+- `web.py` - 入口：守护线程运行 `main.main()`，主线程运行 uvicorn；支持后台隐藏运行模式
 - `src/web_api.py` - FastAPI 应用：认证（Token）、REST API 路由、SSE 推送、静态资源挂载
 - `src/web_config.py` - 配置读写（不依赖 FastAPI，便于单测）
 - `web/` - 前端静态资源（单页应用）
+
+**后台运行模式** (`web_show_console = false`):
+- `_enter_background_mode()` 在启动录制引擎前调用
+- Windows 下通过 `ctypes` 调用 `GetConsoleWindow()` + `ShowWindow(hwnd, SW_HIDE)` 隐藏控制台窗口
+- stdout/stderr 重定向到 `logs/web_console.log`（行缓冲，实时写入）
+- 程序完全后台运行，通过 Web 面板管理
+- 恢复控制台：设置 `web_show_console = true` 后重启
 
 **API 路由**:
 
@@ -500,6 +523,12 @@ NETEASE_QUALITY_MAP = {"blueray": "OD", "ultra": "UHD", "high": "HD", "standard"
 **录制表格展示**:
 - 名称 / 设置画质 / 实际画质 / 开始时间 / 已录时长
 - 实际画质与设置画质不一致时标红显示（`.quality-down` 样式）
+
+**安全机制**:
+- 密码变更后自动吊销所有现有 Token，强制重新登录
+- 监听 `0.0.0.0` 且未启用认证时输出安全告警
+- 文件下载路径校验（`_is_within` 防目录穿越）
+- 敏感配置项（Cookie / 账号密码 / web_password）API 返回时脱敏为 `***`
 
 ---
 
@@ -647,6 +676,19 @@ web.py
 #### [账号密码] 节
 
 部分平台的账号密码配置
+
+#### [Web] 节
+
+Web 管理面板配置（`web.py` 模式专用）
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| web_host | 监听地址 | 0.0.0.0 |
+| web_port | 监听端口 | 8000 |
+| web_auth_enable | 是否启用密码认证 | false |
+| web_password | 登录密码（认证开启时必填） | (空) |
+| web_token_expiry | Token 有效期（秒） | 86400 |
+| web_show_console | 是否显示控制台窗口（false 时后台隐藏运行） | true |
 
 ### 直播间配置文件 (`config/URL_config.ini`)
 
@@ -834,6 +876,12 @@ brew install node
 ## 更新日志
 
 ### v4.0.8-dev (2026-07-24)
+- 新增 GUI 画质监控页面（`gui.py` `_build_quality_page`），通过解析子进程日志实时检测各直播间实际画质是否与设置一致
+- 新增 Web 控制台开关配置 `web_show_console`（默认 true），设为 false 时程序后台隐藏运行
+- 新增 `_enter_background_mode()`：Windows 下隐藏控制台窗口（SW_HIDE），日志重定向到 `logs/web_console.log`
+- 新增 `[Web]` 配置节文档，含 web_host / web_port / web_auth_enable / web_password / web_token_expiry / web_show_console 六项
+- 新增 Web 安全机制说明：密码变更吊销 Token、监听告警、路径穿越防护、敏感配置脱敏
+- 统一代码注释风格：将 `web.py`、`src/web_config.py`、`src/web_api.py`、`src/stream.py` 中所有函数 docstring 转换为 `#` 行注释
 - 新增实际画质回采与降级告警功能，覆盖抖音、TikTok、快手、虎牙、斗鱼、B站、网易CC 七个平台
 - 新增 `bitrate_to_quality()`、`code_to_zh()`、`is_downgrade()` 画质工具函数（`src/stream.py`）
 - 新增 `actual_quality` / `available_qualities` 返回字段，各平台 stream 函数统一返回实际下发画质
@@ -889,4 +937,4 @@ brew install node
 
 ---
 
-*本文档最后更新: 2026-07-24*
+*本文档最后更新: 2026-07-24（含 GUI 画质监控、Web 后台模式、注释风格统一）*
