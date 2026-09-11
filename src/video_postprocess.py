@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-# 视频后处理（独立模块）：FFmpeg 分段 / 转封装 / 转码 / 时间字幕生成
-#
-# 说明：
-# - 大部分函数仅依赖文件级参数与 ffmpeg 命令，不触碰 main 全局状态；
-# - 仅 converts_mp4 / generate_subtitles 需要读取 main 的少量配置全局变量
-#   （converts_to_h264 / color_obj / text_encoding / recording / record_state_lock），
-#   通过 `import main` 在运行时惰性读取，避免循环导入与 __main__ 二次执行问题。
-
 import datetime
 import os
 import subprocess
@@ -15,8 +7,17 @@ import time
 
 from loguru import logger
 
+import i18n
 import main
 from src import utils
+
+# 视频后处理（独立模块）：FFmpeg 分段 / 转封装 / 转码 / 时间字幕生成
+#
+# 说明：
+# - 大部分函数仅依赖文件级参数与 ffmpeg 命令，不触碰 main 全局状态；
+# - 仅 converts_mp4 / generate_subtitles 需要读取 main 的少量配置全局变量
+#   （converts_to_h264 / color_obj / text_encoding / recording / record_state_lock），
+#   通过 `import main` 在运行时惰性读取，避免循环导入与 __main__ 二次执行问题。
 
 
 # Windows 下 subprocess.STARTUPINFO 仅存在于 Windows typeshed，Linux/macOS 上 mypy 无法解析该名字。
@@ -93,10 +94,14 @@ def segment_video(
                 time.sleep(1)
                 if os.path.exists(converts_file_path):
                     os.remove(converts_file_path)
+    except subprocess.TimeoutExpired as e:
+        # 与「转码失败」「未知失败」区分：超时表明 ffmpeg 卡死，须告警用户主动排查；
+        # 此前被 except Exception 兜底为「unknown error」丢失语义。
+        logger.error(i18n.tr("ffmpeg 转封装/转码超时（{type_name}）: {e}", type_name=type(e).__name__, e=e))
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error occurred during conversion: {e}")
+        logger.error(i18n.tr("Error occurred during conversion: {e}", e=e))
     except Exception as e:
-        logger.error(f"An unknown error occurred: {e}")
+        logger.error(i18n.tr("An unknown error occurred: {e}", e=e))
 
 
 # 把 converts_file_path 转封装为同名 .mp4（全局 converts_to_h264 开启时重编码为 h264）；
@@ -144,10 +149,14 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> No
                 time.sleep(1)
                 if os.path.exists(converts_file_path):
                     os.remove(converts_file_path)
+    except subprocess.TimeoutExpired as e:
+        # 与下两类错误区分：ffmpeg 卡死须告警（与「格式不对」语义不同），
+        # 否则被 except Exception 兜底为 unknown error 丢失语义。
+        logger.error(i18n.tr("ffmpeg 转 MP4 超时（{type_name}）: {e}", type_name=type(e).__name__, e=e))
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error occurred during conversion: {e}")
+        logger.error(i18n.tr("Error occurred during conversion: {e}", e=e))
     except Exception as e:
-        logger.error(f"An unknown error occurred: {e}")
+        logger.error(i18n.tr("An unknown error occurred: {e}", e=e))
 
 
 # 把 converts_file_path 抽取音轨转为同名 320k .m4a；is_original_delete=True 时删除源文件，无返回值
@@ -174,10 +183,12 @@ def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> No
                 time.sleep(1)
                 if os.path.exists(converts_file_path):
                     os.remove(converts_file_path)
+    except subprocess.TimeoutExpired as e:
+        logger.error(i18n.tr("ffmpeg 抽音频超时（{type_name}）: {e}", type_name=type(e).__name__, e=e))
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error occurred during conversion: {e}")
+        logger.error(i18n.tr("Error occurred during conversion: {e}", e=e))
     except Exception as e:
-        logger.error(f"An unknown error occurred: {e}")
+        logger.error(i18n.tr("An unknown error occurred: {e}", e=e))
 
 
 # 后台逐秒追加写"时间字幕"：record_name 用于判断该房间是否仍在录制（不在则结束），

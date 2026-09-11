@@ -86,7 +86,13 @@ def _setup_common(monkeypatch: pytest.MonkeyPatch, main: Any, poll_results: list
     # 注册/注销 ffmpeg 进程为无操作（真实实现会写入全局守护列表，测试无需）。
     monkeypatch.setattr(main, "register_ffmpeg_process", lambda proc: None)
     monkeypatch.setattr(main, "unregister_ffmpeg_process", lambda proc: None)
-    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)  # 轮询不等真实 1 秒
+    # 只替换 main 命名空间内的 time 引用，避免污染 stdlib time 模块本体：
+    # main.time 就是 stdlib time 模块，直接 patch 它的 sleep 会把**全进程**的 sleep
+    # 换成 no-op（含其它用例与后台线程），在 -p xdist 下会互相污染。
+    # 与下方 subprocess shim 同一思路：浅拷贝真实模块属性，只覆盖 sleep。
+    _time_shim = types.SimpleNamespace(**{k: getattr(main.time, k) for k in dir(main.time) if not k.startswith("_")})
+    _time_shim.sleep = lambda seconds: None  # 轮询不等真实 1 秒
+    monkeypatch.setattr(main, "time", _time_shim)
     monkeypatch.setattr(main, "subprocess", _make_subprocess_shim(poll_results))
 
     factory = MagicMock(name="get_danmaku_collector")

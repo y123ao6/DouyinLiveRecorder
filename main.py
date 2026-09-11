@@ -646,7 +646,13 @@ def direct_download_stream(
             ) as client:
                 with client.stream("GET", source_url, headers=headers, follow_redirects=True) as response:
                     if response.status_code != 200:
-                        logger.error(f"请求直播流失败: {source_url} - 状态码: {response.status_code}")
+                        logger.error(
+                            i18n.tr(
+                                "请求直播流失败: {source_url} - 状态码: {status_code}",
+                                source_url=source_url,
+                                status_code=response.status_code,
+                            )
+                        )
                         return False
 
                     downloaded = 0
@@ -666,7 +672,15 @@ def direct_download_stream(
                     print()
                     return True
     except Exception as e:
-        logger.error(f"FLV下载错误: {source_url} - {type(e).__name__}: {e} 发生错误的行数: {_get_error_line(e)}")
+        logger.error(
+            i18n.tr(
+                "FLV下载错误: {source_url} - {type_name}: {e} 发生错误的行数: {get_error_line}",
+                source_url=source_url,
+                type_name=type(e).__name__,
+                e=e,
+                get_error_line=_get_error_line(e),
+            )
+        )
         return False
 
 
@@ -683,6 +697,9 @@ SEGMENT_FORMAT_BY_SUFFIX: dict[str, str] = {
     ".mkv": "matroska",
     ".mp4": "mp4",
     ".m4a": "ipod",
+    # .mp3 → mp3 容器：此前表内无 .mp3，查表落空后被兜底成 ipod，会让 MP3 音频装进
+    # MP4 容器（与历史「TS 装进 ipod」同类错配）。补齐后两路音频均可显式查表取值。
+    ".mp3": "mp3",
 }
 
 
@@ -695,8 +712,11 @@ _FFMPEG_FAST_FAIL_SECONDS = 20.0
 # ffmpeg 退出码的 errno 语义提示：Windows 上 subprocess 拿到的是无符号 32 位值
 # （如 -22 呈现为 4294967274），直接打印原值无法定位问题方向。仅收录本仓实测出现过
 # 或语义明确可指路的取值，未知值返回空串，避免给日志堆噪音。
+# 2026-09-11 补充：-22 除容器/编码错配外，还有「输入选项解析失败」一类（-reconnect*
+# 缺值导致 reconnect_streamed 把下一个选项名当作值），EINVAL 提示需同时覆盖两类成因，
+# 否则会把排查方向误导到容器问题上。
 _FFMPEG_ERRNO_HINTS: dict[int, str] = {
-    -22: " (EINVAL：封装参数/容器与编码不匹配，如 HEVC 写进 ipod 容器)",
+    -22: " (EINVAL：无效参数，常见于容器/编码不匹配（如 HEVC 写进 ipod 容器）或输入选项解析失败)",
     -11: " (EAGAIN：输出写入被阻塞，多为磁盘 IO 或管道背压)",
     -2: " (ENOENT：输入地址或输出路径不存在)",
     -109: " (EBADF：连接被对端重置，多为 CDN 断流)",
@@ -726,64 +746,77 @@ def check_subprocess(
     platform: str | None = None,
     danmaku_args: Any = None,
 ) -> bool:
-    # 检查 FFmpeg 子进程状态并处理异常
-    save_file_path = ffmpeg_command[-1]
-    _proc_started_at = time.time()  # 进程启动时刻：失败时区分「快速失败(输入打开被拒)」与「拉流中断」
-    process = subprocess.Popen(
-        ffmpeg_command, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
-    )
-
-    # 注册 ffmpeg 进程
-    register_ffmpeg_process(process)
-
-    subs_file_path = save_file_path.rsplit(".", maxsplit=1)[0]
-
-    # 分段录制时 save_file_path 是 ffmpeg 输出模板(含 %03d 占位符),实际落盘为 _000/_001…
-    # SRT 前缀须与真实文件名对齐,去掉占位符,由 SrtWriter 自行追加 _000 分片号;
-    # 占位符有 _%03d(视频分段)与 _%02d(音频分段)两种,统一剥离(replace 未命中为空操作)
-    for _seg_placeholder in ("_%02d", "_%03d"):
-        subs_file_path = subs_file_path.replace(_seg_placeholder, "")
-
-    # 弹幕采集：与 ffmpeg 同起同停，SRT 前缀与录像同前缀同目录。
-    # 录制弹幕与弹幕监控共用同一采集器/连接：任一开启即连接；
-    # 仅监控（录制弹幕关）时不落 SRT（write_srt=False）；失败不影响录像。
-    danmaku_collector = None
-    _danmaku_active = enable_danmaku or enable_danmaku_monitor
-    if _danmaku_active and platform is not None and platform in danmaku_platforms and "音频" not in save_type:
-        if not danmaku_args:
-            logger.debug(f"[{record_name}]弹幕跳过: 平台={platform} 未获取到弹幕参数(danmaku_args 为空),请查看上游日志")
-        else:
-            try:
-                danmaku_collector = get_danmaku_collector(
-                    platform=platform,
-                    danmaku_args=danmaku_args,
-                    base_filename=subs_file_path,
-                    segment_seconds=danmaku_split_time if split_video_by_time else None,
-                    room_name=record_name,
-                    write_srt=enable_danmaku,
-                )
-                if danmaku_collector is not None:
-                    danmaku_collector.start()
-            except Exception as e:
-                logger.warning(f"[{record_name}]弹幕采集启动失败,不影响录制: {e}")
-                danmaku_collector = None
-
-    subs_thread_name = f"subs_{Path(subs_file_path).name}"
-    if create_time_file and not split_video_by_time and "音频" not in save_type:
-        create_var[subs_thread_name] = threading.Thread(target=generate_subtitles, args=(record_name, subs_file_path))
-        create_var[subs_thread_name].daemon = True
-        create_var[subs_thread_name].start()
-
-    # 内部包装：直接转调模块级 _terminate_ffmpeg_process 终止 proc，timeout 为总等待秒数，返回是否已退出
-    def terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = 30) -> bool:
-        # 复用模块级公共终止逻辑（避免重复实现导致的逻辑漂移）
-        return _terminate_ffmpeg_process(proc, timeout)
-
     # 录制并发软上限（资源治理）：限制同时进行的 ffmpeg 录制数，防 80+ 任务同时录制拖垮
     # CPU/磁盘/带宽。recording_limit=0 时 recording_semaphore 容量极高，acquire 不阻塞（等同不限制）。
+    # 必须在 Popen 之前占槽：若先起进程再 acquire，并发上限根本约束不到 ffmpeg 进程数——
+    # N 个房间仍会同时拉起 N 个 ffmpeg 拉流写盘（正是要防的资源耗尽），被阻塞的只是房间线程，
+    # 且阻塞期间不检查注释/停止标志，无法及时退出。
     _rec_sem = recording_semaphore
     _rec_sem.acquire()
     try:
+        # 检查 FFmpeg 子进程状态并处理异常
+        save_file_path = ffmpeg_command[-1]
+        _proc_started_at = time.time()  # 进程启动时刻：失败时区分「快速失败(输入打开被拒)」与「拉流中断」
+        process = subprocess.Popen(
+            ffmpeg_command, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
+        )
+
+        # 注册 ffmpeg 进程
+        register_ffmpeg_process(process)
+
+        subs_file_path = save_file_path.rsplit(".", maxsplit=1)[0]
+
+        # 分段录制时 save_file_path 是 ffmpeg 输出模板(含 %03d 占位符),实际落盘为 _000/_001…
+        # SRT 前缀须与真实文件名对齐,去掉占位符,由 SrtWriter 自行追加 _000 分片号;
+        # 占位符有 _%03d(视频分段)与 _%02d(音频分段)两种,统一剥离(replace 未命中为空操作)
+        for _seg_placeholder in ("_%02d", "_%03d"):
+            subs_file_path = subs_file_path.replace(_seg_placeholder, "")
+
+        # 弹幕采集：与 ffmpeg 同起同停，SRT 前缀与录像同前缀同目录。
+        # 录制弹幕与弹幕监控共用同一采集器/连接：任一开启即连接；
+        # 仅监控（录制弹幕关）时不落 SRT（write_srt=False）；失败不影响录像。
+        danmaku_collector = None
+        _danmaku_active = enable_danmaku or enable_danmaku_monitor
+        if _danmaku_active and platform is not None and platform in danmaku_platforms and "音频" not in save_type:
+            if not danmaku_args:
+                logger.debug(
+                    i18n.tr(
+                        "[{record_name}]弹幕跳过: 平台={platform} 未获取到弹幕参数(danmaku_args 为空),请查看上游日志",
+                        record_name=record_name,
+                        platform=platform,
+                    )
+                )
+            else:
+                try:
+                    danmaku_collector = get_danmaku_collector(
+                        platform=platform,
+                        danmaku_args=danmaku_args,
+                        base_filename=subs_file_path,
+                        segment_seconds=danmaku_split_time if split_video_by_time else None,
+                        room_name=record_name,
+                        write_srt=enable_danmaku,
+                    )
+                    if danmaku_collector is not None:
+                        danmaku_collector.start()
+                except Exception as e:
+                    logger.warning(
+                        i18n.tr("[{record_name}]弹幕采集启动失败,不影响录制: {e}", record_name=record_name, e=e)
+                    )
+                    danmaku_collector = None
+
+        subs_thread_name = f"subs_{Path(subs_file_path).name}"
+        if create_time_file and not split_video_by_time and "音频" not in save_type:
+            create_var[subs_thread_name] = threading.Thread(
+                target=generate_subtitles, args=(record_name, subs_file_path)
+            )
+            create_var[subs_thread_name].daemon = True
+            create_var[subs_thread_name].start()
+
+        # 内部包装：直接转调模块级 _terminate_ffmpeg_process 终止 proc，timeout 为总等待秒数，返回是否已退出
+        def terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = 30) -> bool:
+            # 复用模块级公共终止逻辑（避免重复实现导致的逻辑漂移）
+            return _terminate_ffmpeg_process(proc, timeout)
+
         while process.poll() is None:
             if record_url in url_comments or exit_recording or not recording_enabled:
                 color_obj.print_colored(f"[{record_name}]录制时已被注释或停止录制,本条线程将会退出", color_obj.YELLOW)
@@ -796,14 +829,18 @@ def check_subprocess(
                 # 使用更可靠的进程终止机制
                 success = terminate_ffmpeg_process(process)
                 if not success:
-                    logger.warning(f"[{record_name}] ffmpeg 进程可能没有完全终止，请检查系统进程")
+                    logger.warning(
+                        i18n.tr("[{record_name}] ffmpeg 进程可能没有完全终止，请检查系统进程", record_name=record_name)
+                    )
 
                 # 确保异常路径也注销 ffmpeg 进程
                 unregister_ffmpeg_process(process)
                 return True
             time.sleep(1)
     finally:
-        # 无论正常结束还是提前中断/异常，均释放录制并发槽，避免槽位泄漏导致后续录制饿死
+        # 无论正常结束还是提前中断/异常，均释放录制并发槽，避免槽位泄漏导致后续录制饿死。
+        # 覆盖范围含 Popen 之前的注册/弹幕启动段：该段一旦抛错，槽位同样必须归还，
+        # 否则泄漏累积到上限后所有后续录制永久饿死。
         _rec_sem.release()
 
     # ffmpeg 正常退出:弹幕尾收兜底停止(循环外,整个录制周期仅执行一次)
@@ -813,9 +850,29 @@ def check_subprocess(
     # 确保子进程资源被回收，避免僵尸进程/句柄滞留（尤其在 Web 常驻模式下）
     try:
         _ = process.wait(timeout=30)
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        # 超时说明 ffmpeg 未被回收：显式补杀并告警。原实现用 except Exception: pass
+        # 静默吞掉，随后直接用可能为 None 的 returncode 判成败（并据此写探针退避），
+        # 会把「回收失败」当成「录制失败」。
+        logger.warning(i18n.tr("[{record_name}] ffmpeg 进程 30 秒内未退出，强制终止", record_name=record_name))
+        try:
+            process.kill()
+            _ = process.wait(timeout=10)
+        except Exception as e:
+            logger.warning(
+                i18n.tr(
+                    "[{record_name}] 强制终止 ffmpeg 失败: {type_name}: {e}",
+                    record_name=record_name,
+                    type_name=type(e).__name__,
+                    e=e,
+                )
+            )
     return_code = process.returncode
+    if return_code is None:
+        # 兜底：kill 后仍拿不到退出码时用 -1 作「未知失败」哨兵，
+        # 避免下游 _describe_return_code(None) 抛 TypeError。
+        logger.warning(i18n.tr("[{record_name}] 无法获取 ffmpeg 退出码，按失败处理", record_name=record_name))
+        return_code = -1
     stop_time = time.strftime("%Y-%m-%d %H:%M:%S")
     if return_code == 0:
         if converts_to_mp4 and save_type == "TS":
@@ -827,7 +884,7 @@ def check_subprocess(
                         threading.Thread(target=converts_mp4, args=(path, delete_origin_file), daemon=True).start()
             else:
                 threading.Thread(target=converts_mp4, args=(save_file_path, delete_origin_file), daemon=True).start()
-        print(f"\n{record_name} {stop_time} 直播录制完成\n")
+        print(i18n.tr("\n{record_name} {stop_time} 直播录制完成\n", record_name=record_name, stop_time=stop_time))
 
         if script_command:
             logger.debug("开始执行脚本命令!")
@@ -857,7 +914,9 @@ def check_subprocess(
         try:
             clear_ffmpeg_reject(ffmpeg_command[ffmpeg_command.index("-i") + 1], platform)
         except ValueError:
-            logger.debug(f"[{record_name}] ffmpeg 命令缺少 -i 输入参数，跳过探针退避清除")
+            logger.debug(
+                i18n.tr("[{record_name}] ffmpeg 命令缺少 -i 输入参数，跳过探针退避清除", record_name=record_name)
+            )
 
     else:
         # —— 退出码归一化（2026-09-04 定稿）：ffmpeg 在 Windows 上以无符号 32 位呈现退出码
@@ -880,7 +939,9 @@ def check_subprocess(
                 _stream_url = ffmpeg_command[ffmpeg_command.index("-i") + 1]
                 mark_ffmpeg_reject(_stream_url, platform)
             except ValueError:
-                logger.debug(f"[{record_name}] ffmpeg 命令缺少 -i 输入参数，跳过探针退避标记")
+                logger.debug(
+                    i18n.tr("[{record_name}] ffmpeg 命令缺少 -i 输入参数，跳过探针退避标记", record_name=record_name)
+                )
 
     with record_state_lock:
         recording.discard(record_name)
@@ -916,7 +977,14 @@ def rename_anchor_directory(old_name: str, new_name: str, platform: str) -> bool
         _rename_prefixed_entries(platform_dir, old_name, new_name)
         return True
     except OSError as e:
-        logger.warning(f"重命名主播目录失败（下轮重试）: {old_name} -> {new_name}: {e}")
+        logger.warning(
+            i18n.tr(
+                "重命名主播目录失败（下轮重试）: {old_name} -> {new_name}: {e}",
+                old_name=old_name,
+                new_name=new_name,
+                e=e,
+            )
+        )
         return False
 
 
@@ -926,18 +994,20 @@ def _merge_anchor_directory(old_dir: str, new_dir: str) -> None:
     for entry in list(os.scandir(old_dir)):
         dst = os.path.join(new_dir, entry.name)
         if os.path.exists(dst):
-            logger.warning(f"合并主播目录时发现同名文件（双方保留，请手动整理）: {dst}")
+            logger.warning(i18n.tr("合并主播目录时发现同名文件（双方保留，请手动整理）: {dst}", dst=dst))
             continue
         try:
             os.rename(entry.path, dst)
         except OSError as e:
             # 单条目移动失败（文件被转码/播放器占用）：告警后继续其余条目，下轮整体重试
-            logger.warning(f"合并主播目录条目失败（下轮重试）: {entry.path} -> {dst}: {e}")
+            logger.warning(
+                i18n.tr("合并主播目录条目失败（下轮重试）: {path} -> {dst}: {e}", path=entry.path, dst=dst, e=e)
+            )
     try:
         if not os.listdir(old_dir):
             os.rmdir(old_dir)
     except OSError as e:
-        logger.warning(f"删除旧主播目录失败（已忽略）: {old_dir}: {e}")
+        logger.warning(i18n.tr("删除旧主播目录失败（已忽略）: {old_dir}: {e}", old_dir=old_dir, e=e))
 
 
 # 递归把 base_dir 下以 "{old_name}_" 开头的文件改名为 "{new_name}_" 前缀，
@@ -959,7 +1029,7 @@ def _rename_prefixed_entries(base_dir: str, old_name: str, new_name: str) -> Non
             elif entry.name.startswith(f"{old_name}_"):
                 os.rename(entry.path, os.path.join(base_dir, f"{new_name}_{entry.name[len(old_name) + 1 :]}"))
         except OSError as e:
-            logger.warning(f"主播名变更重命名失败（已跳过，不影响其余文件）: {entry.path}: {e}")
+            logger.warning(i18n.tr("主播名变更重命名失败（已跳过，不影响其余文件）: {path}: {e}", path=entry.path, e=e))
 
 
 # 平台分派解析：把直播间地址按域名路由到对应平台的爬虫与流地址解析模块，得到本轮 port_info。
@@ -1051,7 +1121,7 @@ def _resolve_platform_stream(
                             "subSid": int(_subSid),
                         }
                 except Exception as e:
-                    logger.warning(f"[虎牙直播]弹幕参数提取失败: {e}")
+                    logger.warning(i18n.tr("[虎牙直播]弹幕参数提取失败: {e}", e=e))
             else:
                 # OD/BD/UHD 走 app 路径(profileRoom):yyid/lChannelId/lSubChannelId 由 spider 返回
                 port_info = asyncio.run(
@@ -1070,11 +1140,15 @@ def _resolve_platform_stream(
                     else:
                         # 消除静默跳过: 记录缺失字段便于定位 spider 返回结构变化
                         logger.debug(
-                            f"[虎牙直播]OD/BD/UHD app路径弹幕参数缺失，跳过弹幕: "
-                            f"yyid={_ayyuid}, lChannelId={_topSid}, lSubChannelId={_subSid}"
+                            i18n.tr(
+                                "[虎牙直播]OD/BD/UHD app路径弹幕参数缺失，跳过弹幕: yyid={_ayyuid}, lChannelId={_topSid}, lSubChannelId={_subSid}",
+                                _ayyuid=_ayyuid,
+                                _topSid=_topSid,
+                                _subSid=_subSid,
+                            )
                         )
                 except Exception as e:
-                    logger.warning(f"[虎牙直播]OD/BD/UHD app路径弹幕参数提取失败: {e}")
+                    logger.warning(i18n.tr("[虎牙直播]OD/BD/UHD app路径弹幕参数提取失败: {e}", e=e))
 
     elif record_url.find("https://www.douyu.com/") > -1:
         platform = "斗鱼直播"
@@ -1126,7 +1200,7 @@ def _resolve_platform_stream(
                         spider.get_bilibili_danmaku_info(url=record_url, proxy_addr=proxy_address, cookies=bili_cookie)
                     )
                 except Exception as e:
-                    logger.warning(f"[B站直播]弹幕信息获取失败: {e}")
+                    logger.warning(i18n.tr("[B站直播]弹幕信息获取失败: {e}", e=e))
                     record_danmaku_args = None
     elif record_url.find("http://xhslink.com/") > -1 or record_url.find("https://www.xiaohongshu.com/") > -1:
         platform = "小红书直播"
@@ -1335,7 +1409,7 @@ def _resolve_platform_stream(
                             _danmaku_extra["proxy"] = proxy_address
                         record_danmaku_args = {"channel": _twitch_channel, **_danmaku_extra}
                 except Exception as e:
-                    logger.warning(f"[TwitchTV]弹幕 channel 提取失败: {e}")
+                    logger.warning(i18n.tr("[TwitchTV]弹幕 channel 提取失败: {e}", e=e))
             else:
                 logger.error("错误信息: 网络异常，请检查本网络是否能正常访问TwitchTV直播平台")
 
@@ -1566,7 +1640,7 @@ def _resolve_platform_stream(
 
     else:
         # 不可达分支（main() 已按平台白名单过滤）；返回 None 由调用方 break 进入延迟后重试
-        logger.error(f"无法识别的直播地址，本轮跳过: {record_url}")
+        logger.error(i18n.tr("无法识别的直播地址，本轮跳过: {record_url}", record_url=record_url))
         return None
     return platform, port_info, record_danmaku_args, new_record_url
 
@@ -1624,18 +1698,18 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                 # 防御未来把解析短路/复用旧值的改动重新引入陈旧 danmaku_args 到 check_subprocess
                 record_danmaku_args = None
                 if exit_recording:
-                    logger.debug(f"检测到退出标志，录制线程退出: {record_url}")
+                    logger.debug(i18n.tr("检测到退出标志，录制线程退出: {record_url}", record_url=record_url))
                     return
                 # 停止录制（Web 面板开关关闭）：本房间线程退出，运行列表清理由
                 # _room_thread_target 的 finally 兜底（保证重新开始后能再次拉起）
                 if not recording_enabled:
-                    logger.debug(f"录制已停止，房间线程退出: {record_url}")
+                    logger.debug(i18n.tr("录制已停止，房间线程退出: {record_url}", record_url=record_url))
                     return
                 # 配置实时性：URL 被注释/移除后立即退出，不等本轮解析结果——
                 # 原检查点位于解析成功之后，解析持续失败（平台接口异常）时永远走不到，
                 # 线程滞留并占用监控位，URL_config.ini 的变更迟迟不生效
                 if record_url in url_comments:
-                    print(f"[{record_url}]已被注释,本条线程将会退出")
+                    print(i18n.tr("[{record_url}]已被注释,本条线程将会退出", record_url=record_url))
                     clear_record_info(record_name, record_url)
                     return
                 # —— 并发熔断预检：该平台(host)连续失败达阈值时跳过本轮网络探测并退避，
@@ -1643,7 +1717,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                 if scheduler is not None and not scheduler.allow(record_host):
                     _backoff = scheduler.backoff_seconds(record_host)
                     _backoff = min(_backoff, max(30.0, float(delay_default)))
-                    logger.debug(f"[{record_host}] 并发熔断中，跳过本轮探测，退避 {_backoff:.0f}s")
+                    logger.debug(
+                        i18n.tr(
+                            "[{record_host}] 并发熔断中，跳过本轮探测，退避 {_backoff}s",
+                            record_host=record_host,
+                            _backoff=f"{_backoff:.0f}",
+                        )
+                    )
                     time.sleep(_backoff)
                     continue
                 try:
@@ -1666,7 +1746,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                         anchor_name = cast(str, port_info.get("anchor_name", ""))
 
                     if not port_info.get("anchor_name", ""):
-                        print(f"序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}")
+                        print(
+                            i18n.tr(
+                                "序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}",
+                                count_variable=count_variable,
+                                url_data=url_data,
+                            )
+                        )
                         record_error(record_host)
                     else:
                         # —— 解析成功即上报成功样本：half-open 探针依赖本轮结果闭环——
@@ -1700,7 +1786,11 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                 anchor_name, latest_anchor_name, platform
                             ) and update_anchor_name(record_url, latest_anchor_name):
                                 logger.info(
-                                    f"主播名已变更，配置与录制文件同步更新: {anchor_name} -> {latest_anchor_name}"
+                                    i18n.tr(
+                                        "主播名已变更，配置与录制文件同步更新: {anchor_name} -> {latest_anchor_name}",
+                                        anchor_name=anchor_name,
+                                        latest_anchor_name=latest_anchor_name,
+                                    )
                                 )
                                 # 清理旧名残留的录制状态（正常路径录制结束即清理，此处兜底
                                 # 异常残留，防止状态列表长期挂旧名条目）
@@ -1712,7 +1802,7 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                         record_name = f"序号{count_variable} {anchor_name}"
 
                         if record_url in url_comments:
-                            print(f"[{anchor_name}]已被注释,本条线程将会退出")
+                            print(i18n.tr("[{anchor_name}]已被注释,本条线程将会退出", anchor_name=anchor_name))
                             clear_record_info(record_name, record_url)
                             return
 
@@ -1729,7 +1819,7 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                         push_at = datetime.datetime.today().strftime("%Y-%m-%d %H:%M:%S")
                         if not port_info.get("is_live", False):
                             if len(recording) == 0:
-                                print(f"\r{record_name} 等待直播... ")
+                                print(i18n.tr("\r{record_name} 等待直播... ", record_name=record_name))
 
                             if start_pushed:
                                 if over_show_push:
@@ -1804,7 +1894,9 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                 # 录制链（ffmpeg_command/title_in_name 等）假定 real_url 非空，强制进入会触发
                                 # 未绑定变量异常（title_in_name）或复用上一轮残留的 ffmpeg 命令；
                                 # 按常规监测间隔等待，下一轮重新解析校验。
-                                logger.warning(f"{anchor_name} 本轮未获取到可用流地址，跳过录制")
+                                logger.warning(
+                                    i18n.tr("{anchor_name} 本轮未获取到可用流地址，跳过录制", anchor_name=anchor_name)
+                                )
                                 time.sleep(max(random.randint(-5, 5) + delay_default, 0))
                                 continue
                             full_path = f"{default_path}/{platform}"
@@ -1838,7 +1930,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         full_path = f"{full_path}/{now[:10]}_{live_title}"
                                 os.makedirs(full_path, exist_ok=True)
                             except Exception as e:
-                                logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                logger.error(
+                                    i18n.tr(
+                                        "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                        e=e,
+                                        get_error_line=_get_error_line(e),
+                                    )
+                                )
 
                             if platform not in ("自定义录制直播", "虎牙直播"):
                                 if enable_https_recording and real_url.startswith("http://"):
@@ -1905,6 +2003,22 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                 probesize,
                                 "-fflags",
                                 "+discardcorrupt",
+                                # -reconnect* 属 input 级(HTTP 协议)选项，必须位于 -i 之前。
+                                # 曾置于 -i 之后：ffmpeg 会把它当作输出选项静默接受——实测无任何
+                                # 警告、退出码仍为 0，输入侧从未应用，重连完全失效且无可见症状；
+                                # 而失败判定（「慢速失败=重连耗尽」）全建立在其生效之上。
+                                "-reconnect_delay_max",
+                                "60",
+                                # 2026-09-11 事故：上一次把这三个选项移到 -i 之前时，丢失了
+                                # -reconnect_streamed / -reconnect_at_eof 的布尔值 "1"，ffmpeg
+                                # 把下一个选项名当作值 → 「Unable to parse ... as boolean」 →
+                                # Invalid argument，输入未打开即退出（-22）。每个 -reconnect*
+                                # 必须紧跟其取值，tests/test_ffmpeg_reconnect_args.py 有 AST
+                                # 断言同时锁定「带值」与「位于 -i 之前」两个不变量。
+                                "-reconnect_streamed",
+                                "1",
+                                "-reconnect_at_eof",
+                                "1",
                                 "-re",
                                 "-i",
                                 real_url,
@@ -1912,10 +2026,6 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                 bufsize,
                                 "-sn",
                                 "-dn",
-                                "-reconnect_delay_max",
-                                "60",
-                                "-reconnect_streamed",
-                                "-reconnect_at_eof",
                                 "-max_muxing_queue_size",
                                 max_muxing_queue_size,
                                 "-correct_ts_overflow",
@@ -1923,6 +2033,22 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                 "-avoid_negative_ts",
                                 "1",
                             ]
+
+                            # HLS(m3u8) 输入禁用 -reconnect_at_eof（2026-09-11 事故沉淀）：
+                            # hls demuxer 依赖播放列表读到 EOF 才完成解析、开始拉取媒体段；开启该
+                            # 选项后 http 层在播放列表 EOF 处无限重连（-report 实测特征：连续
+                            # 「Will reconnect at <size> in N second(s), error=End of file」，
+                            # 1/3/7/15/31/60s 指数退避、永不放弃）——媒体段一个都拉不到、视频
+                            # 数据零字节产出、进程永不退出（-loglevel error 下零输出零报错，
+                            # check_subprocess 守护循环只见进程存活）。对照实验：同命令带
+                            # -t 10 限时，60 秒仍不退出且无产物；仅去掉该选项后 10 秒录制
+                            # 9MB 正常退出。FLV 输入保留该选项：CDN 掐断长连接时在 EOF 处
+                            # 重连续写同一文件（斗鱼游客态 FLV ~70s 被掐的既有缓解手段）。
+                            # 判定惯用法与 scripts/douyin_live_recorder_standalone.py 的
+                            # 「".m3u8" in url」一致；删除经 del 而非置 "0"，保证命令行干净。
+                            if ".m3u8" in real_url:
+                                _eof_idx = ffmpeg_command.index("-reconnect_at_eof")
+                                del ffmpeg_command[_eof_idx : _eof_idx + 2]
 
                             headers = get_record_headers(platform, record_url, cookies=platform_cookie)
                             if headers:
@@ -1973,14 +2099,28 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                             if show_url:
                                 re_plat = ("WinkTV", "PandaTV", "ShowRoom", "CHZZK", "YouTube")
                                 if platform in re_plat:
-                                    logger.info(f"{platform} | {anchor_name} | 直播源地址: {port_info.get('m3u8_url')}")
+                                    logger.info(
+                                        i18n.tr(
+                                            "{platform} | {anchor_name} | 直播源地址: {m3u8_url}",
+                                            platform=platform,
+                                            anchor_name=anchor_name,
+                                            m3u8_url=port_info.get("m3u8_url"),
+                                        )
+                                    )
                                 else:
-                                    logger.info(f"{platform} | {anchor_name} | 直播源地址: {real_url}")
+                                    logger.info(
+                                        i18n.tr(
+                                            "{platform} | {anchor_name} | 直播源地址: {real_url}",
+                                            platform=platform,
+                                            anchor_name=anchor_name,
+                                            real_url=real_url,
+                                        )
+                                    )
 
                             only_flv_record = False
                             only_flv_platform_list = ["shopee", "花椒直播"]
                             if platform in only_flv_platform_list:
-                                logger.debug(f"提示: {platform} 将强制使用FLV格式录制")
+                                logger.debug(i18n.tr("提示: {platform} 将强制使用FLV格式录制", platform=platform))
                                 only_flv_record = True
 
                             only_audio_record = False
@@ -1999,14 +2139,27 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                             if only_audio_record or any(i in record_save_type for i in ["MP3", "M4A"]):
                                 try:
                                     now = time.strftime("%y%m%d_%H%M%S", time.localtime())
-                                    extension = "mp3" if "m4a" not in record_save_type.lower() else "m4a"
+                                    # 扩展名必须与下方实际选用的编码器 / 容器一致，否则出现
+                                    # 「.mp3 文件里装 AAC/MP4」这类三方错配（播放器按扩展名解复用必失败）：
+                                    #   - 保存类型含 MP3 → libmp3lame，扩展名 .mp3、容器 mp3；
+                                    #   - 其余（含 M4A，以及 only_audio 平台但保存类型为 TS/MKV 等视频格式）
+                                    #     → 编码走 aac + ipod 容器，扩展名一律 .m4a。
+                                    # 旧逻辑按「保存类型不含 m4a 就给 .mp3」，导致纯音频平台
+                                    # （猫耳FM / Look）在默认保存类型下产出 .mp3 却装 AAC/MP4。
+                                    extension = "mp3" if "MP3" in record_save_type else "m4a"
                                     name_format = "_%02d" if split_video_by_time else "_00"
                                     save_file_path = (
                                         f"{full_path}/{anchor_name}_{title_in_name}{now}" f"{name_format}.{extension}"
                                     )
 
                                     if split_video_by_time:
-                                        print(f"\r{anchor_name} 准备开始录制音频: {save_file_path}")
+                                        print(
+                                            i18n.tr(
+                                                "\r{anchor_name} 准备开始录制音频: {save_file_path}",
+                                                anchor_name=anchor_name,
+                                                save_file_path=save_file_path,
+                                            )
+                                        )
 
                                         if "MP3" in record_save_type:
                                             command = [
@@ -2020,6 +2173,12 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                                 "segment",
                                                 "-segment_time",
                                                 split_time,
+                                                # 显式指定 mp3 容器，与 .mp3 扩展名 / libmp3lame 编码三方对齐
+                                                # （不指定则依赖 ffmpeg 按扩展名猜测，属同类错配隐患）。
+                                                # 本分支 extension 恒为 "mp3"（与上方 extension 推导同源条件），
+                                                # 故静态取表，便于 tests/test_record_container.py 静态断言。
+                                                "-segment_format",
+                                                SEGMENT_FORMAT_BY_SUFFIX[".mp3"],
                                                 "-reset_timestamps",
                                                 "1",
                                                 save_file_path,
@@ -2041,10 +2200,11 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                                 # 音频分段用 ipod 容器（即 .m4a），而非 mpegts：
                                                 # 输出扩展名是 .m4a，强制 mpegts 会让容器与扩展名不符
                                                 # （播放器按扩展名走 MP4 解复用，读到 TS 同步字节即报无法播放）。
-                                                # 兜底 ipod 覆盖「only_audio_record 平台但保存类型不含 m4a」的组合：
-                                                # 此时 extension 为 mp3 而编码仍走 aac，沿用既有行为，不因查表落空中断录制。
+                                                # 本分支走 aac 编码，extension 恒为 "m4a"（与 MP3 分支条件互补），
+                                                # 故静态取表：不再用带兜底的 .get——那会把「查表落空」
+                                                # 掩盖成错误容器（历史上正是 .mp3 装进 MP4 的成因）。
                                                 "-segment_format",
-                                                SEGMENT_FORMAT_BY_SUFFIX.get("." + extension, "ipod"),
+                                                SEGMENT_FORMAT_BY_SUFFIX[".m4a"],
                                                 "-reset_timestamps",
                                                 "1",
                                                 save_file_path,
@@ -2091,11 +2251,22 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         return
 
                                 except subprocess.CalledProcessError as e:
-                                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                    logger.error(
+                                        i18n.tr(
+                                            "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                            e=e,
+                                            get_error_line=_get_error_line(e),
+                                        )
+                                    )
                                     record_error(record_host)
 
                             elif only_flv_record:
-                                logger.info(f"Use Direct Downloader to Download FLV Stream: {record_url}")
+                                logger.info(
+                                    i18n.tr(
+                                        "Use Direct Downloader to Download FLV Stream: {record_url}",
+                                        record_url=record_url,
+                                    )
+                                )
                                 filename = anchor_name + f"_{title_in_name}" + now + "_00" + ".flv"
                                 save_file_path = f"{full_path}/{filename}"
                                 print(f"{rec_info}/{filename}")
@@ -2148,7 +2319,11 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         if download_success:
                                             record_finished = True
                                             print(
-                                                f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制完成\n"
+                                                i18n.tr(
+                                                    "\n{anchor_name} {strftime} 直播录制完成\n",
+                                                    anchor_name=anchor_name,
+                                                    strftime=time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                )
                                             )
                                             # 直下路径无 check_subprocess 退出码反馈：成功按 host 补样本，
                                             # 与 ffmpeg 路径语义对齐
@@ -2173,7 +2348,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制出错,请检查网络\n",
                                         color_obj.RED,
                                     )
-                                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                    logger.error(
+                                        i18n.tr(
+                                            "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                            e=e,
+                                            get_error_line=_get_error_line(e),
+                                        )
+                                    )
                                     record_error(record_host)
 
                             elif record_save_type == "FLV":
@@ -2234,7 +2415,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         return
 
                                 except subprocess.CalledProcessError as e:
-                                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                    logger.error(
+                                        i18n.tr(
+                                            "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                            e=e,
+                                            get_error_line=_get_error_line(e),
+                                        )
+                                    )
                                     record_error(record_host)
 
                                 try:
@@ -2246,7 +2433,12 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         seg_pattern = f"{anchor_name}_{title_in_name}{now}_*.flv"
                                         seg_files = sorted(Path(full_path).glob(seg_pattern))
                                         if not seg_files:
-                                            logger.warning(f"未找到分段 FLV 文件，跳过转换: {seg_pattern}")
+                                            logger.warning(
+                                                i18n.tr(
+                                                    "未找到分段 FLV 文件，跳过转换: {seg_pattern}",
+                                                    seg_pattern=seg_pattern,
+                                                )
+                                            )
                                         for seg_file in seg_files:
                                             converts_mp4(str(seg_file), delete_origin_file)
                                     elif converts_to_mp4:
@@ -2254,7 +2446,7 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                             target=converts_mp4, args=(save_file_path, delete_origin_file)
                                         ).start()
                                 except Exception as e:
-                                    logger.error(f"转码失败: {e} ")
+                                    logger.error(i18n.tr("转码失败: {e} ", e=e))
 
                             elif record_save_type == "MKV":
                                 filename = anchor_name + f"_{title_in_name}" + now + ".mkv"
@@ -2314,7 +2506,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         return
 
                                 except subprocess.CalledProcessError as e:
-                                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                    logger.error(
+                                        i18n.tr(
+                                            "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                            e=e,
+                                            get_error_line=_get_error_line(e),
+                                        )
+                                    )
                                     record_error(record_host)
 
                             elif record_save_type == "MP4":
@@ -2373,7 +2571,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                         return
 
                                 except subprocess.CalledProcessError as e:
-                                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                    logger.error(
+                                        i18n.tr(
+                                            "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                            e=e,
+                                            get_error_line=_get_error_line(e),
+                                        )
+                                    )
                                     record_error(record_host)
 
                             else:
@@ -2429,11 +2633,17 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                                                 target=converts_mp4, args=(path, delete_origin_file)
                                                             ).start()
                                                         except subprocess.CalledProcessError as e:
-                                                            logger.error(f"转码失败: {e} ")
+                                                            logger.error(i18n.tr("转码失败: {e} ", e=e))
                                             return
 
                                     except subprocess.CalledProcessError as e:
-                                        logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                        logger.error(
+                                            i18n.tr(
+                                                "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                                e=e,
+                                                get_error_line=_get_error_line(e),
+                                            )
+                                        )
                                         record_error(record_host)
 
                                 else:
@@ -2471,7 +2681,13 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                                             return
 
                                     except subprocess.CalledProcessError as e:
-                                        logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                                        logger.error(
+                                            i18n.tr(
+                                                "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                                e=e,
+                                                get_error_line=_get_error_line(e),
+                                            )
+                                        )
                                         record_error(record_host)
 
                             count_time = time.time()
@@ -2481,7 +2697,11 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                             # 同 host 时失败率永远到不了熔断阈值，坏线路被无限重撞。
 
                 except Exception as e:
-                    logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+                    logger.error(
+                        i18n.tr(
+                            "错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e)
+                        )
+                    )
                     record_error(record_host)
 
                 num = random.randint(-5, 5) + delay_default
@@ -2512,12 +2732,14 @@ def start_record(url_data: tuple[str, str, str], count_variable: int = -1) -> No
                         break
                     x = x - 1
                     if loop_time:
-                        print(f"\r{anchor_name}循环等待{x}秒 ", end="")
+                        print(i18n.tr("\r{anchor_name}循环等待{x}秒 ", anchor_name=anchor_name, x=x), end="")
                     time.sleep(1)
                 if loop_time:
                     print("\r检测直播间中...", end="")
         except Exception as e:
-            logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+            logger.error(
+                i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e))
+            )
             record_error(record_host)
             time.sleep(2)
         finally:
@@ -2556,13 +2778,18 @@ def check_ffmpeg_existence() -> bool:
 
 
 # --------------------------初始化程序-------------------------------------
+# import i18n 必须早于下方 banner 的 i18n.tr（模块级顺序执行，晚于此处的 import
+# 对已执行的 print 无效）；此处 i18n._tr 仍为默认 zh_CN 目录，banner 保持中文原文，
+# 与迁移前「banner 先于语言解析打印」的行为一致。
+import i18n
+
 print("-----------------------------------------------------")
 print("|                DouyinLiveRecorder                 |")
 print("-----------------------------------------------------")
 
-print(f"版本号: {version}")
+print(i18n.tr("版本号: {version}", version=version))
 print("GitHub: https://github.com/ihmily/DouyinLiveRecorder")
-print(f"支持平台: {platforms}")
+print(i18n.tr("支持平台: {platforms}", platforms=platforms))
 print(".....................................................")
 # 不再在模块级执行 check_ffmpeg_existence()：import main（web.py/gui.py/测试/工具）不应触发
 # 111MB 的 FFmpeg 下载副作用。安装检查统一由各真实入口的 main() 完成（CLI/Web 录制线程）。
@@ -2586,6 +2813,7 @@ def _read_language_config(config_parser: configparser.RawConfigParser) -> str:
 
 
 language = _read_language_config(config)
+
 # i18n 多语言初始化：resolve_language 统一解析——空 → 系统语言；键值不可识别或
 # 语言目录文件缺失 → en_US 回退；随后加载对应翻译目录（gettext .mo / JSON / YAML，
 # 见 i18n.py），后续输出即时按该语言翻译
@@ -2616,15 +2844,18 @@ def _read_https_recording_config(config_parser: configparser.RawConfigParser) ->
 
 # SSL/HTTPS 整合开关：「是否启用https录制」合并原「是否强制启用https录制」（协议强转）
 # 与「是否禁用SSL证书验证(是/否)」（证书校验）两个配置项，统一为单一二元语义：
-# 开启 = 流地址升级 https 拉流，并禁用 SSL 证书验证（保证 https 录制不被 CDN 证书
-#        主机名不匹配等问题阻断，即原「是否禁用SSL证书验证=是」的功能）；
-# 关闭 = 流地址降级 http 拉流（无 TLS 不涉及证书验证），API 等请求恢复默认严格校验。
+# 开启 = 流地址升级 https 拉流，并禁用**拉流侧** SSL 证书验证（保证 https 录制不被
+#        CDN 证书主机名不匹配等问题阻断，即原「是否禁用SSL证书验证=是」的功能）；
+# 关闭 = 流地址降级 http 拉流（无 TLS 不涉及证书验证），拉流侧恢复默认严格校验。
+# 证书豁免仅作用于拉流侧（http_config.stream_ssl_verify）：控制面（登录 / 取 Cookie /
+# 推送 token / 平台 API，http_config.ssl_verify）恒为严格校验，不再被本开关关闭——
+# 旧实现会让一个拉流选项顺带关掉全站 TLS 校验，属安全缺陷。
 # 该开关由 main() 主循环每轮读取配置后同步（热更新）。
 from src import http_config as _http_config
 
 enable_https_recording = _read_https_recording_config(config)
+# 仅联动拉流侧（set_https_recording 内部置 stream_ssl_verify）；控制面不参与
 _http_config.set_https_recording(enable_https_recording)
-_http_config.set_ssl_verify(not enable_https_recording)
 # 旧全局开关仅作迁移提示（只读，不写回）：检测到旧键=是 时告知功能已并入新开关
 if config.has_option("录制设置", "是否禁用SSL证书验证(是/否)"):
     if options.get(config.get("录制设置", "是否禁用SSL证书验证(是/否)").strip(), False):
@@ -2655,10 +2886,14 @@ def _sync_ssl_disable_platforms(config_parser: configparser.RawConfigParser) -> 
         from src.web_config import update_config_line
 
         if not update_config_line(config_file, "录制设置", "禁用SSL证书验证的平台(逗号分隔)", new_value):
-            logger.warning(f"自动追加需禁用SSL验证的平台 {appended} 写回配置失败（已忽略，内存态仍生效）")
+            logger.warning(
+                i18n.tr(
+                    "自动追加需禁用SSL验证的平台 {appended} 写回配置失败（已忽略，内存态仍生效）", appended=appended
+                )
+            )
         # 同步内存解析器，避免本轮后续读取拿到旧值
         config_parser.set("录制设置", "禁用SSL证书验证的平台(逗号分隔)", new_value)
-        print(f"提示: 已自动追加需禁用SSL证书验证的平台: {','.join(appended)}")
+        print(i18n.tr("提示: 已自动追加需禁用SSL证书验证的平台: {appended}", appended=",".join(appended)))
     return set(kept + appended)
 
 
@@ -2762,7 +2997,7 @@ def main(non_interactive: bool = False) -> None:
                 with open(url_config_file, "w", encoding=text_encoding) as file:
                     _ = file.write(input_url)
         except (OSError, configparser.Error) as err:
-            logger.error(f"发生 I/O 或配置解析错误: {err}")
+            logger.error(i18n.tr("发生 I/O 或配置解析错误: {err}", err=err))
             time.sleep(3)
 
         video_save_path = read_config_value(config, "录制设置", "直播保存路径(不填则默认)", "")
@@ -2798,7 +3033,7 @@ def main(non_interactive: bool = False) -> None:
             max_request = new_max_request
             if scheduler is not None:
                 scheduler.set_configured_limit(new_max_request)
-            logger.debug(f"并发线程数配置更新为 {max_request}")
+            logger.debug(i18n.tr("并发线程数配置更新为 {max_request}", max_request=max_request))
         # 录制并发软上限（资源治理）：0=不限制；>0 时限制同时 ffmpeg 录制数，防资源耗尽。
         # 键名不得含 = / : 等 configparser 分隔符：读取会在首个分隔符处截断（永远查不到键），
         # 写回会抛 InvalidWriteError（Python 3.13+ 禁止键名含分隔符）——曾致启动即崩溃
@@ -2822,14 +3057,13 @@ def main(non_interactive: bool = False) -> None:
         if _new_language != language:
             language = _new_language
             _i18n_set_language(_new_language)
-            print(f"语言已切换: {_new_language}")
+            print(i18n.tr("语言已切换: {_new_language}", _new_language=_new_language))
         split_video_by_time = options.get(read_config_value(config, "录制设置", "分段录制是否开启", "否"), False)
         enable_https_recording = _read_https_recording_config(config)
-        # 整合联动（与模块级初始化同语义）：开启 = https 拉流 + 禁用 SSL 证书验证；
-        # 关闭 = http 拉流 + 恢复默认证书校验。每轮同步以支持运行期间热更新
-        # （Web 面板改配置后下轮循环即生效）。
+        # 整合联动（与模块级初始化同语义）：开启 = https 拉流 + 拉流侧禁用 SSL 证书验证；
+        # 关闭 = http 拉流 + 拉流侧恢复默认证书校验。控制面恒严格校验、不参与联动。
+        # 每轮同步以支持运行期间热更新（Web 面板改配置后下轮循环即生效）。
         _http_config.set_https_recording(enable_https_recording)
-        _http_config.set_ssl_verify(not enable_https_recording)
         disk_space_limit = _safe_float(read_config_value(config, "录制设置", "录制空间剩余阈值(gb)", 1.0), 1.0)
         split_time = str(read_config_value(config, "录制设置", "视频分段时间(秒)", 1800))
         converts_to_mp4 = options.get(read_config_value(config, "录制设置", "录制完成后自动转为mp4格式", "否"), False)
@@ -2961,7 +3195,9 @@ def main(non_interactive: bool = False) -> None:
             os.makedirs(check_path, exist_ok=True)
             disk_free_gb = utils.check_disk_capacity(check_path, show=first_run)
         except Exception as e:
-            logger.warning(f"磁盘空间检测失败（跳过限制检查）: {type(e).__name__}: {e}")
+            logger.warning(
+                i18n.tr("磁盘空间检测失败（跳过限制检查）: {type_name}: {e}", type_name=type(e).__name__, e=e)
+            )
             disk_free_gb = float("inf")
         if disk_free_gb < disk_space_limit:
             exit_recording = True
@@ -3103,7 +3339,13 @@ def main(non_interactive: bool = False) -> None:
                     # 已退出的房间线程由 remove_room_from_running 清理运行列表，
                     # 重新开启后本循环会按配置再次拉起
                     if url_tuple[1] not in running_list and not exit_recording and recording_enabled:
-                        print(f"\r{'新增' if not first_start else '传入'}地址: {url_tuple[1]}")
+                        print(
+                            i18n.tr(
+                                "\r{first_start}地址: {url_tuple}",
+                                first_start="新增" if not first_start else "传入",
+                                url_tuple=url_tuple[1],
+                            )
+                        )
                         with record_state_lock:
                             monitoring += 1
                             running_list.append(url_tuple[1])
@@ -3140,7 +3382,11 @@ def main(non_interactive: bool = False) -> None:
             first_start = False
 
         except Exception as err:
-            logger.error(f"错误信息: {err} 发生错误的行数: {_get_error_line(err)}")
+            logger.error(
+                i18n.tr(
+                    "错误信息: {err} 发生错误的行数: {get_error_line}", err=err, get_error_line=_get_error_line(err)
+                )
+            )
 
         if first_run:
             t = threading.Thread(target=display_info, args=(), daemon=True)

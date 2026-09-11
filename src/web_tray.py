@@ -19,6 +19,8 @@ import sys
 import threading
 from typing import TYPE_CHECKING, cast
 
+import i18n
+
 if TYPE_CHECKING:
     import ctypes
 
@@ -134,7 +136,7 @@ class WebConsoleTray:
         try:
             import pystray as _pystray  # 延迟导入：避免非 Windows / headless 环境顶层导入失败
         except Exception as e:  # pragma: no cover - 依赖缺失时优雅降级
-            print(f"[web] 托盘不可用（缺少 pystray/Pillow）：{e}", flush=True)
+            print(i18n.tr("[web] 托盘不可用（缺少 pystray/Pillow）：{e}", e=e), flush=True)
             return
 
         # 改写控制台窗口样式：去任务栏按钮 + 禁用关闭按钮

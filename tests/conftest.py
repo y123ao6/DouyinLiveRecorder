@@ -34,6 +34,19 @@ def _hermetic_danmaku_hub(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dm, "_hub", dm.DanmakuMonitorHub(log_path=None))
 
 
+@pytest.fixture(autouse=True)
+def _pin_identity_translation(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 冻结翻译为「恒等映射」，使断言与语言配置/宿主 locale 解耦。
+    # 背景：i18n.tr() 迁移后，logger/print 的形参日志会按当前语言翻译，而翻译结果
+    # 依赖 config.ini 的 language 与宿主系统语言（本机 language 为空 → 探测出 en_US），
+    # 于是同一份断言在不同机器上得到不同文本。测试断言的是「源语言模板文本」，
+    # 故此处把 _tr 固定为恒等：tr(模板, **kw) == 模板.format(**kw) == 迁移前 f-string 的输出。
+    # 翻译机制本身由 tests/test_i18n_tr.py 与 test_web_api.py 的语言用例单独覆盖。
+    import i18n
+
+    monkeypatch.setattr(i18n, "_tr", lambda text: text)
+
+
 def pytest_unconfigure(config: Any) -> None:
     # 会话结束（含 pytest 收集失败/中断退出）后清理测试输出目录，确保不残留临时文件；
     # ignore_errors=True：目录不存在或 Windows 下偶发句柄占用（杀毒/索引扫描）时静默跳过，

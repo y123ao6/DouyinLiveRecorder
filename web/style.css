@@ -384,3 +384,29 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
 }
 .quality-add-row button { padding: 6px 12px; }
 .quality-hint { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.6; }
+
+/* ===== 直播间列表防错位（table-layout:fixed + 地址列省略号 + 窄屏面板内横向滚动）
+   窄视口下 6 列 auto 布局的最小内容宽（画质下拉 110px + 40px 开关 + 删除按钮 + 各列内边距）
+   会超出 .panel 容器：width:100% 失效，表格按 min-content 溢出渲染——表头「启用/录制中」被
+   压成一字宽竖排字、「删除」按钮溢出卡片右缘、长 URL（discover?modal_id= 等）与长名称行
+   折成多行导致行高参差。fixed 布局按表头宽度定列，地址列吃剩余宽并单行省略，全 URL 悬浮
+   可见（loadRooms 渲染的地址 td 自带 title）。作用域限 #rooms-view，仪表盘/弹幕/文件
+   表格不受影响。 */
+#rooms-view .data-table { table-layout: fixed; }
+#rooms-view .data-table th:nth-child(2) { width: 128px; }  /* 画质：容纳 max-width:110px 下拉 + 左右内边距 */
+#rooms-view .data-table th:nth-child(3) { width: 150px; }  /* 名称 */
+#rooms-view .data-table th:nth-child(4) { width: 72px; }   /* 启用：容纳 40px 开关 */
+#rooms-view .data-table th:nth-child(5) { width: 72px; }   /* 录制中 */
+#rooms-view .data-table th:nth-child(6) { width: 76px; }   /* 操作：容纳删除按钮 */
+#rooms-view .data-table td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;  /* 显式声明，避免各浏览器 UA 默认差异导致控件垂直错位 */
+}
+#rooms-view .data-table td:first-child,
+#rooms-view .data-table td:nth-child(3) { white-space: nowrap; }  /* 长 URL/长名单行省略，不折行 */
+/* 窄屏兜底：列定宽总和之下不再挤压右侧控件列，改为面板内横向滚动 */
+@media (max-width: 768px) {
+    #rooms-view .data-table { min-width: 640px; }
+    #rooms-view .panel { overflow-x: auto; }
+}

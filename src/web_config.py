@@ -397,6 +397,26 @@ def read_web_config(config_file: str | Path) -> dict[str, str | int | bool]:
 SENSITIVE_SECTIONS = {"Cookie", "账号密码", "Authorization"}
 SENSITIVE_MASK = "***"
 
+# 敏感键名模式（跨节生效）：仅靠节名白名单会漏掉「推送配置」节的 tgapi令牌 /
+# 发件人密码(授权码) / pushplus推送token，以及各平台节内的 popkontv_token 等独立凭据
+# ——它们会被 read_config_safe 原样明文返回给面板（前端再按节名用 text 输入框渲染）。
+_SENSITIVE_KEY_PATTERN = re.compile(r"令牌|密码|授权码|token|secret|passwd|password|api[_-]?key", re.IGNORECASE)
+# 例外：含 expiry/timeout/有效期 的键是数值型运维参数（如 web_token_expiry 的秒数），
+# 脱敏会挡住面板编辑且无保密意义，故显式排除。
+_KEY_NOT_SECRET_PATTERN = re.compile(r"expiry|timeout|有效期|过期", re.IGNORECASE)
+
+
+def is_sensitive_key(key: str) -> bool:
+    # 判断配置键名是否属敏感字段（不依赖所属节，供脱敏与前端渲染类型复用）
+    if _KEY_NOT_SECRET_PATTERN.search(key):
+        return False
+    return bool(_SENSITIVE_KEY_PATTERN.search(key))
+
+
+def is_sensitive_item(section: str, key: str) -> bool:
+    # 敏感判定：节白名单命中，或键名模式命中（后者覆盖「推送配置」等非白名单节内的凭据）
+    return section in SENSITIVE_SECTIONS or is_sensitive_key(key)
+
 
 def read_config_safe(config_file: str | Path) -> dict[str, dict[str, str]]:
     # 读取 config.ini 全部节键值，敏感节非空值脱敏为 '***'。
@@ -408,9 +428,7 @@ def read_config_safe(config_file: str | Path) -> dict[str, dict[str, str]]:
     for section in parser.sections():
         items: dict[str, str] = {}
         for key, value in parser.items(section):
-            if section in SENSITIVE_SECTIONS and value.strip():
-                items[key] = SENSITIVE_MASK
-            elif section == "Web" and key == "web_password" and value.strip():
+            if is_sensitive_item(section, key) and value.strip():
                 items[key] = SENSITIVE_MASK
             else:
                 items[key] = value

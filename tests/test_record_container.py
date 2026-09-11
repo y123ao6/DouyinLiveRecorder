@@ -19,6 +19,9 @@ import pytest
 from src.spider import extract_douyin_hevc_flv_url
 
 _MAIN_PATH = Path(__file__).resolve().parent.parent / "main.py"
+# 同类回归的第二处定义点：转码/合流命令同用 -segment_format。
+# 只扫 main.py 时「换个文件重犯」会完全绕过防线（2026-09-10 审查发现）。
+_POSTPROCESS_PATH = Path(__file__).resolve().parent.parent / "src" / "video_postprocess.py"
 
 
 @pytest.fixture(scope="module")
@@ -36,9 +39,10 @@ def main_mod() -> Any:
 
 
 # 从 main.py 的 AST 中取出所有 "-segment_format" 后紧跟的取值节点：
-# ffmpeg 命令是函数内的 list 字面量，取值节点的类型即「是否走了映射表」的唯一判据
-def _segment_format_nodes() -> list[ast.expr]:
-    tree = ast.parse(_MAIN_PATH.read_text(encoding="utf-8"))
+# ffmpeg 命令是函数内的 list 字面量，取值节点的类型即「是否走了映射表」的唯一判据。
+# path 缺省为 main.py；传入 _POSTPROCESS_PATH 可扫描另一处定义点。
+def _segment_format_nodes(path: Path = _MAIN_PATH) -> list[ast.expr]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     nodes: list[ast.expr] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.List):
@@ -59,6 +63,7 @@ class TestSegmentFormatMapping:
             ".mkv": "matroska",
             ".mp4": "mp4",
             ".m4a": "ipod",
+            ".mp3": "mp3",
         }
 
     def test_ts_uses_mpegts_not_ipod(self, main_mod: Any) -> None:
@@ -73,16 +78,34 @@ class TestSegmentFormatMapping:
         assert main_mod.SEGMENT_FORMAT_BY_SUFFIX[".m4a"] != "mpegts"
 
 
+class TestSegmentFormatSecondDefinitionPoint:
+    # src/video_postprocess.py 是同类回归的第二处定义点。该处取值来自函数参数（Name），
+    # 而非裸字面量；容器值由调用方经 SEGMENT_FORMAT_BY_SUFFIX 传入。
+    # 裸字面量互换正是 2026-09-04 事故的根因，故此处至少必须禁止字面量。
+
+    def test_definition_point_still_exists(self) -> None:
+        nodes = _segment_format_nodes(_POSTPROCESS_PATH)
+        assert len(nodes) == 1, f"video_postprocess.py 的 -segment_format 定义点数量变化: {len(nodes)}"
+
+    def test_value_is_not_bare_literal(self) -> None:
+        for node in _segment_format_nodes(_POSTPROCESS_PATH):
+            assert not isinstance(
+                node, ast.Constant
+            ), f"video_postprocess.py 的 -segment_format 不得使用裸字面量: {ast.unparse(node)}"
+
+
 class TestNoBareSegmentFormatLiteral:
     # 取值来源：必须查表，禁止裸字面量（本次事故的根因就是两处裸字面量被互换）
 
     def test_scan_finds_all_branches(self) -> None:
-        # 扫描本身必须命中 5 处（FLV/MKV/MP4/TS 视频 + 音频 M4A），
-        # 否则下面的断言会退化成空跑的假绿
-        assert len(_segment_format_nodes()) == 5
+        # 扫描本身必须命中 6 处（FLV/MKV/MP4/TS 视频 + 音频 M4A + 音频 MP3），
+        # 否则下面的断言会退化成空跑的假绿。
+        # MP3 分支于 2026-09-10 补齐：此前 MP3 分段没有显式 -segment_format，
+        # 容器靠 ffmpeg 按扩展名猜测，属「扩展名 ↔ 容器」错配的同类隐患。
+        assert len(_segment_format_nodes(_MAIN_PATH)) == 6
 
     def test_every_value_comes_from_mapping(self) -> None:
-        for node in _segment_format_nodes():
+        for node in _segment_format_nodes(_MAIN_PATH):
             if isinstance(node, ast.Subscript):
                 continue
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
@@ -91,7 +114,7 @@ class TestNoBareSegmentFormatLiteral:
 
     def test_subscript_keys_are_registered(self, main_mod: Any) -> None:
         # 查表键必须是已注册的扩展名，否则运行期 KeyError 会直接中断录制
-        for node in _segment_format_nodes():
+        for node in _segment_format_nodes(_MAIN_PATH):
             if not isinstance(node, ast.Subscript):
                 continue
             key = node.slice
@@ -100,13 +123,20 @@ class TestNoBareSegmentFormatLiteral:
             # 直接 f-string 插值会触发 mypy str-bytes-safe
             assert key.value in main_mod.SEGMENT_FORMAT_BY_SUFFIX, f"扩展名未注册: {ast.unparse(key)}"
 
-    def test_get_fallback_is_ipod(self) -> None:
-        # 音频分支的 extension 可能是 mp3（only_audio_record 平台且保存类型不含 m4a），
-        # 此时仍走 aac 编码，必须沿用 ipod 兜底而非抛 KeyError
-        calls = [n for n in _segment_format_nodes() if isinstance(n, ast.Call)]
-        assert len(calls) == 1
-        assert isinstance(calls[0].args[-1], ast.Constant)
-        assert calls[0].args[-1].value == "ipod"
+    def test_no_get_fallback_masks_missing_key(self) -> None:
+        # 回归防线（2026-09-10）：音频分支曾用 SEGMENT_FORMAT_BY_SUFFIX.get("." + extension, "ipod")。
+        # 该兜底会把「查表落空」静默掩盖成一个错误容器——纯音频平台（猫耳FM / Look）
+        # 在默认保存类型下产出 .mp3 却装 AAC/MP4，正是本次修复的错配。
+        # 现在 extension 与编码器由同一条件推导、键值确定，一律直接下标取值：
+        # 缺键以 KeyError 暴露，而不是静默产出错误容器。
+        calls = [n for n in _segment_format_nodes(_MAIN_PATH) if isinstance(n, ast.Call)]
+        assert not calls, f"-segment_format 不得再使用 .get 兜底: {[ast.unparse(c) for c in calls]}"
+
+    def test_audio_branches_match_their_extension(self, main_mod: Any) -> None:
+        # 两路音频的容器必须各自等于其扩展名对应的容器（.mp3→mp3、.m4a→ipod），
+        # 且扩展名由与编码器同源的条件推导，杜绝「扩展名 ↔ 编码 ↔ 容器」三方错配
+        assert main_mod.SEGMENT_FORMAT_BY_SUFFIX[".mp3"] == "mp3"
+        assert main_mod.SEGMENT_FORMAT_BY_SUFFIX[".m4a"] == "ipod"
 
 
 class TestHevcFlvUrlCarriesCodecMarker:

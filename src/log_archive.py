@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import os
+import sys
+import threading
+from datetime import datetime
+from typing import TextIO
+
+import i18n
+from src.danmaku_monitor import close_monitor_file
+from src.logger import (
+    GUI_PARENT_ENV,
+    add_file_sinks,
+    logger,
+    rebind_console_sink,
+    remove_file_sinks,
+    script_path,
+)
+
 # 运行日志归档模块：停止录制流程（手动停止 / 异常或中断退出）统一调用的收尾步骤，
 # 将四个运行时日志按「原文件名_YYYYMMDD_HHMMSS.扩展名」改名归档（目标已存在时追加 _N 序号）：
 # - logs/streamget.log          loguru DEBUG 文件 sink（录制进程）
@@ -13,21 +30,6 @@
 # 归档全程不抛异常：单文件失败（如句柄被第三方进程占用）仅告警跳过，绝不中断停止录制流程；
 # 归档后日志链路立即恢复（loguru 重新 add 即创建全新同名文件），不影响现有日志写入逻辑。
 
-import os
-import sys
-import threading
-from datetime import datetime
-from typing import TextIO
-
-from src.danmaku_monitor import close_monitor_file
-from src.logger import (
-    GUI_PARENT_ENV,
-    add_file_sinks,
-    logger,
-    rebind_console_sink,
-    remove_file_sinks,
-    script_path,
-)
 
 # 参与归档的运行日志文件名（logs 目录下固定 ASCII 名，不含空格与非法字符）
 ARCHIVE_LOG_NAMES: tuple[str, str, str, str] = (
@@ -75,7 +77,7 @@ def _rebind_web_console(path: str) -> None:
     try:
         stream = open(path, "a", encoding="utf-8", buffering=1)
     except OSError as e:
-        logger.warning(f"重建 web_console.log 句柄失败: {type(e).__name__}: {e}")
+        logger.warning(i18n.tr("重建 web_console.log 句柄失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
         return
     sys.stdout = stream
     sys.stderr = stream
@@ -95,14 +97,16 @@ def _archive_web_console(logs_dir: str, ts: str, archived: list[str]) -> None:
             stream.flush()
             stream.close()
         except Exception as e:
-            logger.debug(f"关闭 web_console 句柄异常(忽略): {type(e).__name__}: {e}")
+            logger.debug(i18n.tr("关闭 web_console 句柄异常(忽略): {type_name}: {e}", type_name=type(e).__name__, e=e))
     try:
         target = _archive_target(path, ts)
         os.rename(path, target)
         archived.append(target)
     except OSError as e:
         # 改名失败（句柄被第三方进程占用等）：跳过归档，并重建原路径句柄保证输出链路不断
-        logger.warning(f"日志归档失败(跳过): web_console.log - {type(e).__name__}: {e}")
+        logger.warning(
+            i18n.tr("日志归档失败(跳过): web_console.log - {type_name}: {e}", type_name=type(e).__name__, e=e)
+        )
         if bound:
             _rebind_web_console(path)
         return
@@ -120,9 +124,11 @@ def _rename_one(path: str, ts: str, archived: list[str]) -> None:
         target = _archive_target(path, ts)
         os.rename(path, target)
         archived.append(target)
-        logger.debug(f"日志已归档: {name} -> {os.path.basename(target)}")
+        logger.debug(i18n.tr("日志已归档: {name} -> {target}", name=name, target=os.path.basename(target)))
     except OSError as e:
-        logger.warning(f"日志归档失败(跳过): {name} - {type(e).__name__}: {e}")
+        logger.warning(
+            i18n.tr("日志归档失败(跳过): {name} - {type_name}: {e}", name=name, type_name=type(e).__name__, e=e)
+        )
 
 
 # 停止录制流程的日志归档入口：flush/关闭四个运行日志的句柄后，按停止操作发生时刻的
@@ -161,12 +167,14 @@ def archive_runtime_logs(*, reopen_streams: bool = True) -> list[str]:
                 add_file_sinks()
 
             if archived:
-                logger.info(f"运行日志已归档: {'、'.join(os.path.basename(p) for p in archived)}")
+                logger.info(
+                    i18n.tr("运行日志已归档: {archived}", archived="、".join(os.path.basename(p) for p in archived))
+                )
             return archived
     except Exception as e:
         # 归档失败绝不允许影响停止录制本身：任何意外仅告警并返回空列表
         try:
-            logger.warning(f"运行日志归档失败(忽略): {type(e).__name__}: {e}")
+            logger.warning(i18n.tr("运行日志归档失败(忽略): {type_name}: {e}", type_name=type(e).__name__, e=e))
         except Exception:
             pass
         return []

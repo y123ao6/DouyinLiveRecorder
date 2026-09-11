@@ -1,5 +1,4 @@
 # -*- encoding: utf-8 -*-
-
 # Author: Hmily
 # GitHub:https://github.com/ihmily
 # Date: 2023-07-17 23:52:05
@@ -9,6 +8,8 @@ import re
 import threading
 import time
 import urllib.parse
+
+import i18n
 
 # 优先使用 exejs（PyExecJS 的活跃维护继任者），未安装时回退到 PyExecJS
 try:
@@ -265,10 +266,10 @@ async def get_live_room_id(
             owner = cast(dict[str, object], room.get("owner", {}))
             return cast(str, owner.get("web_rid"))
     except httpx.HTTPStatusError as e:
-        print(f"HTTP status error occurred: {e.response.status_code}")
+        print(i18n.tr("HTTP status error occurred: {status_code}", status_code=e.response.status_code))
         raise
     except Exception as e:
-        print(f"An exception occurred during get_live_room_id: {e}")
+        print(i18n.tr("An exception occurred during get_live_room_id: {e}", e=e))
         raise
 
 

@@ -1,4 +1,19 @@
 # -*- coding: utf-8 -*-
+import configparser
+import datetime
+import io
+import os
+import re
+import shutil
+import time
+
+from loguru import logger
+
+import i18n
+import main
+from src import utils
+from src.ffmpeg_proc import _get_error_line
+
 # 配置文件与文件工具（独立模块）
 #
 # 负责：
@@ -12,20 +27,6 @@
 # 需要读取/写入 main 的少量配置与文件锁全局变量
 # （config_file / url_config_file / backup_dir / text_encoding / file_update_lock / ini_URL_content），
 # 通过 `import main` 在运行时惰性读写，避免循环导入与 __main__ 二次执行。
-
-import configparser
-import datetime
-import io
-import os
-import re
-import shutil
-import time
-
-from loguru import logger
-
-import main
-from src import utils
-from src.ffmpeg_proc import _get_error_line
 
 
 # 把 file_path 中所有 old_str 替换为 new_str（start_str 非空时给命中行加该前缀，如 "#" 注释掉），
@@ -46,7 +47,9 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str | Non
                     if text_line not in file_data:
                         file_data.append(text_line)
         except (RuntimeError, UnicodeDecodeError) as e:
-            logger.error(f"错误信息: {e} 发生错误的行数: {_get_error_line(e)}")
+            logger.error(
+                i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e))
+            )
             # 读取失败时尝试用初始内容恢复，避免文件被清空
             if main.ini_URL_content:
                 with open(file_path, "w", encoding=main.text_encoding) as f2:
@@ -77,7 +80,7 @@ def update_anchor_name(url: str, new_name: str) -> bool:
             with open(main.url_config_file, "r", encoding=main.text_encoding, newline="") as f:
                 lines = f.readlines()
         except (RuntimeError, UnicodeDecodeError, OSError) as e:
-            logger.error(f"读取 URL 配置失败，跳过主播名更新: {e}")
+            logger.error(i18n.tr("读取 URL 配置失败，跳过主播名更新: {e}", e=e))
             return False
         changed = False
         out_lines: list[str] = []
@@ -97,7 +100,7 @@ def update_anchor_name(url: str, new_name: str) -> bool:
             # 更新快照为当前已落盘内容（与 update_file 保持一致的异常恢复基线）
             main.ini_URL_content = joined
         except OSError as e:
-            logger.warning(f"主播名写回 URL 配置失败（已忽略，下轮重试）: {e}")
+            logger.warning(i18n.tr("主播名写回 URL 配置失败（已忽略，下轮重试）: {e}", e=e))
             return False
         return True
 
@@ -188,7 +191,15 @@ def read_config_value(
                 with open(main.config_file, "w", encoding=main.text_encoding) as f:
                     _ = f.write(buffer.getvalue())
             except (OSError, configparser.Error) as e:
-                logger.warning(f"配置项 {section}/{option} 缺省值写回失败（已忽略）: {type(e).__name__}: {e}")
+                logger.warning(
+                    i18n.tr(
+                        "配置项 {section}/{option} 缺省值写回失败（已忽略）: {type_name}: {e}",
+                        section=section,
+                        option=option,
+                        type_name=type(e).__name__,
+                        e=e,
+                    )
+                )
                 _ = config_parser.remove_option(section, option)
         return str(default_value)
 
@@ -199,7 +210,7 @@ def _safe_int(value: str | None, default: int) -> int:
     try:
         return int(str(value).strip())
     except TypeError, ValueError:
-        logger.warning(f"配置项数值非法: {value!r}，使用默认值 {default}")
+        logger.warning(i18n.tr("配置项数值非法: {value}，使用默认值 {default}", value=repr(value), default=default))
         return default
 
 
@@ -209,7 +220,7 @@ def _safe_float(value: str | None, default: float) -> float:
     try:
         return float(str(value).strip())
     except TypeError, ValueError:
-        logger.warning(f"配置项数值非法: {value!r}，使用默认值 {default}")
+        logger.warning(i18n.tr("配置项数值非法: {value}，使用默认值 {default}", value=repr(value), default=default))
         return default
 
 
@@ -235,12 +246,12 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
                 os.remove(os.path.join(backup_dir_path, oldest_file))
             except OSError as e:
                 # 旋转删除为尽力而为：删除失败（沙箱回收站不可用 / 文件被占用）不应使备份整体失败
-                logger.warning(f"清理过期备份 {oldest_file} 失败（已保留）：{e}")
+                logger.warning(i18n.tr("清理过期备份 {oldest_file} 失败（已保留）：{e}", oldest_file=oldest_file, e=e))
                 break
             _files = _files[1:]
 
     except Exception as e:
-        logger.error(f"\r备份配置文件 {file_path} 失败：{e}")
+        logger.error(i18n.tr("\r备份配置文件 {file_path} 失败：{e}", file_path=file_path, e=e))
 
 
 # 守护线程主体：每 10 分钟比对 config.ini / URL_config.ini 的 MD5，仅在内容变化时备份；无入参，死循环不返回
@@ -263,7 +274,7 @@ def backup_file_start() -> None:
                     backup_file(main.url_config_file, main.backup_dir)
                     url_config_md5 = new_url_config_md5
         except Exception as e:
-            logger.error(f"备份配置文件失败, 错误信息: {e}")
+            logger.error(i18n.tr("备份配置文件失败, 错误信息: {e}", e=e))
         # sleep 必须在 try 外：否则 check_md5/backup 持续失败时异常分支不等待，
         # 守护线程退化成紧循环空转，疯狂刷日志并空耗 CPU
         time.sleep(600)

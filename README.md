@@ -847,6 +847,30 @@ brew install node
 
 ## ⏳ 更新日志
 
+### v4.1.0 (2026-09-10 ~ 2026-09-11) — P0 修复 ffmpeg `-reconnect*` 缺值与 HLS 无限重连（直播只出字幕无视频）/ 代码审查 28 项修复 / 遗留 8+4 项推进 / i18n 形参日志 242 处全量迁移 / Web 面板窄视口修复 / 四语本地化补全
+
+> 本版本（v4.1.0，2026-09-10 ~ 09-11）修复两处 P0 录制链路缺陷：① ffmpeg `-reconnect*` 选项移入 `-i` 之前时丢失布尔值 `1`，真实录制输入未打开即退出（返回码 -22）；② `-reconnect_at_eof 1` 对 HLS(m3u8) 输入在**播放列表层无限重连**，hls demuxer 永远拉不到媒体段——直播表现为「只产出了弹幕 SRT、无视频文件」。同期推进代码审查 28 项修复、遗留 8+4 项（hls.js 钉版 / TLS 拆流 / 音频容器对齐 / `gui_legacy.py` 删除 / 弹幕落盘移出事件循环 / i18n `tr()` 接口等）、242 处形参日志 f-string → `i18n.tr` 全量迁移、Web 面板窄视口错位修复，并完成八文件元数据同源同步与四语本地化补全（521 → 539 → 544 键）。**无破坏性变更**（录制/弹幕/网络/推送运行时语义全部保持）。详细根因与验证见 [CODE_WIKI.md](CODE_WIKI.md)。
+
+**🐛 修复的问题**
+- **P0 ffmpeg `-reconnect*` 缺值 → 录制启动即 -22（EINVAL）**：09-10 审查重构把 `-reconnect_delay_max 60 / -reconnect_streamed / -reconnect_at_eof` 从 `-i` 之后移至之前时，后两个选项的布尔值 `1` 丢失，ffmpeg 把下一个选项名当作取值（`Unable to parse ... as boolean`）、输入未打开即退出；`-reconnect_delay_max 60` 因带值幸免。已在 `main.py` 补回取值，并同步修正 `_FFMPEG_ERRNO_HINTS[-22]` 文案（容器错配之外新增「输入选项解析失败」成因）。
+- **P0 HLS(m3u8) 输入禁用 `-reconnect_at_eof` → 直播只出字幕无视频**：m3u8 播放列表文件本身的 HTTP 响应结束即 EOF，该选项令 http 层在列表下载完处无限重连（实测特征：连续 `Will reconnect at <size> in N second(s), error=End of file`，1/3/7/15/31s 指数退避、无次数上限），hls demuxer 永远停在「待列表」阶段、一个媒体段都拉不到——ffmpeg 常驻不退出、视频零字节（`-loglevel error` 下无任何报错）。**受影响的正是抖音/斗鱼等 HLS 优先选源的房间**（虎牙走 FLV-first 不受影响）。修复：m3u8 输入在命令构造处移除该参数对（`main.py` 与 `scripts/douyin_live_recorder_standalone.py` 三处定义点同步），FLV 输入保留（CDN 掐断长连接时在 EOF 处重连续写同一文件）。对照实验：同命令加 `-t 10` 限时 60s 仍不退出且零字节产物；去掉该选项后 10s 录制 9MB 正常退出。
+- **代码审查 28 项修复（2026-09-10）**：ffmpeg 命令 `-reconnect*` 确立「位于 `-i` 之前且每个选项紧跟取值」；录制信号量先于 `Popen` 获取、启动段纳入 `try/finally` 防槽位泄漏；`process.wait(timeout=30)` 超时补 `kill()` 兜底；弹幕 SRT 文本注入转义（`_sanitize_srt_text`：`\n`→空格、`-->`→`->`，杜绝伪造时间轴）；弹幕采集器 `stop()/_run()` 握手顺序与 `_shutdown` 限时（防线程与 SRT 句柄双泄漏）；敏感配置掩码（`web_config.py` 键名正则 + `web/app.js` 密码框 + `utils.mask_credentials`）；探针末位候选放行语义对齐；`data={}` 空字典视为有效请求体；`src/ttwid.py` 非阻塞失败改串行重取；覆盖率门禁「模块查不到」改判失败等。
+- **Web 面板直播间列表窄视口错位**：`table-layout: fixed` + 地址/名称列单行省略（悬停可见全 URL）+ ≤768px 横向滚动兜底，消除窄窗/高 DPI 下表头竖排、按钮溢出卡片、长 URL 折行三种错位。
+
+**✨ 新增功能**
+- **i18n `tr()` 形参接口 + 242 处全量迁移**：`i18n.tr(template, **kw)` 先查表再插值——修复 f-string 在查表**之前**完成插值、目录里含占位符键永远匹配不上、翻译静默退化为原文的根因；27 个文件 242 处形参日志改写为 `tr()`，四语目录占位符同步统一（键集 539 → 544）。
+- **Web API 鉴权加固**：中间件统一注入 `X-Content-Type-Options: nosniff` / `X-Frame-Options: DENY`；新增公开端点 `GET /api/auth/status` 暴露认证开关与警告文案。
+- **hls.js 钉版 1.7.2**：`index.html` 的 `hls.js@latest` 钉到具体版本（jsdelivr CDN 供应链风险收敛，与 flv.js 钉版惯例对齐）。
+
+**🛠️ 仓库维护与质量门禁**
+- **遗留 8+4 项推进**：8 项决策类全部实施——hls.js 钉版、`http_config` TLS 校验拆「拉流专用 / 控制面通用」两路径、纯音频平台扩展名/容器/编码三方对齐（`.m4a`+aac+ipod / `.ts`+aac+mpegts）、notify 脚本 300s 超时 `kill` 兜底、Web 鉴权模型文档化、删除 `gui_legacy.py`、弹幕 SRT 落盘移出事件循环（`queue.SimpleQueue` + 独立写盘线程）、i18n `tr()` 接口；4 项真机验证类保守实施并补桩测试（`spider._safe_loads`JSON 安全解析 + URL scheme 白名单、`ws_client` 心跳超时兜底、`proxy` IPv6 字面量、`video_postprocess` 超时分类型告警）。
+- **元数据同源同步**：`uv.lock` 项目版本对齐 4.1.0（73 包依赖图未动）、`DouyinLiveRecorder.egg-info` 重新生成、`AGENTS.md` / `docker-compose.yaml` 等八文件版本与依赖核对无漂移、`scripts/check_version.py` PASS。
+- **四语本地化补全**：经 `extract_i18n_strings.py` 补入修复期新增串，四目录键集合完全一致（各 544 条），`zh_CN.mo` 重编译（545 条含头部空 msgid，`--check` 字节级同步通过）。
+
+**🧪 测试与验证**
+- 全量 `pytest` **907 passed / 2 skipped / 0 warnings**（870 → 899 → 902 → 907 递增）；`tests/test_ffmpeg_reconnect_args.py` 新增第三个不变量类（AST 断言 m3u8 守卫存在于 main.py + standalone 全部定义点）。
+- `scripts/extract_i18n_strings.py` 缺失 0 条、四语目录零差异；`scripts/compile_po.py --check` 与 `.po` 同步（545 条）；`mypy` / `basedpyright` 0 error；`black --check` / `isort --check-only` / `scripts/check_annotations.py` / `scripts/check_version.py` 全绿。
+
 ### v4.0.9.4 (2026-09-03 ~ 2026-09-06) — HLS 采集排除平台列表 / 画质选项增删与行内切换 / P0 分段容器错配修复 / 打包缺陷修复 / 全仓注释补齐与元数据同源同步
 
 > 本期（v4.0.9.4，2026-09-03 ~ 09-06）为多项一致性与质量收尾批次。新增 HLS 采集排除平台列表配置、画质选项用户可增删 + GUI/WEB 行内切换画质；修复两处高危问题——抖音原画 HEVC 因分段容器错配无法录制（P0）、`async_http` 跨循环协程告警导致 pytest 波动告警；修复 `pyproject.toml` 打包缺陷（子包未声明致 `pip install .` 发行包残缺）。同时完成全仓中文注释补齐（41 文件 / +1370 行）、八文件元数据同源同步、四语本地化目录补齐（516→521）。**无破坏性变更**（运行时语义全部保持；PEP 758 无括号 except 写法仅影响 <3.14，本仓下限即 3.14，属既定约定非回退）。详细根因与验证见 [CODE_WIKI.md](CODE_WIKI.md)。

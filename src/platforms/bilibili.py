@@ -16,6 +16,7 @@ from typing import Any, Union
 import brotli
 from loguru import logger
 
+import i18n
 from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType
 from src.ws_client import WsClient
 
@@ -122,7 +123,12 @@ class BilibiliDanmaku(DanmakuBase):
             return
         if self._ws is not ws:
             return  # 会话已切换 host，旧看门狗作废
-        logger.warning(f"[B站弹幕]进房认证 {self._AUTH_TIMEOUT:.0f} 秒无回应，按被拒处理主动断开")
+        logger.warning(
+            i18n.tr(
+                "[B站弹幕]进房认证 {AUTH_TIMEOUT} 秒无回应，按被拒处理主动断开",
+                AUTH_TIMEOUT=f"{self._AUTH_TIMEOUT:.0f}",
+            )
+        )
         self._reject_auth()
 
     # 认证被拒统一处理：置停止标志、关闭连接，并使 spider 侧 buvid 缓存失效——
@@ -210,7 +216,11 @@ class BilibiliDanmaku(DanmakuBase):
                 self._auth_ok = True  # 解除认证看门狗
                 logger.debug("[B站弹幕]进房认证成功（AUTH_REPLY code=0）")
             else:
-                logger.warning(f"[B站弹幕]进房认证失败（AUTH_REPLY code={code}），主动断开: {reply}")
+                logger.warning(
+                    i18n.tr(
+                        "[B站弹幕]进房认证失败（AUTH_REPLY code={code}），主动断开: {reply}", code=code, reply=reply
+                    )
+                )
                 self._reject_auth()
             return
         if operation != 5:

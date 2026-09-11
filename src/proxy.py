@@ -33,6 +33,15 @@ class ProxyInfo:
 
             import re
 
+            # IPv6 字面量（如 ::1 / [::1] / 2001:db8::1）：形如 [xxxx]:port 时
+            # Windows 注册表 ProxyServer 常存为 "[::1]:8080"，必须单独识别，
+            # 否则被 IPv4/域名正则双重拒。
+            if self.ip.startswith("[") and self.ip.endswith("]"):
+                return
+            # 不带方括号的裸 IPv6 形如 "::1" "2001:db8::1"（按 registry 实际格式少见，兜底）
+            if ":" in self.ip:
+                return
+
             ip_pattern = r"^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
             if not re.match(ip_pattern, self.ip):
                 domain_pattern = r"^([a-zA-Z0-9][a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]\.)+[a-zA-Z]{2,}$"

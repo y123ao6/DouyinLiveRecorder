@@ -105,7 +105,6 @@ dist/
 
 # ---------- 打包与桌面平台专用文件（容器内不使用）----------
 build_exe.py             # 仅本地 / CI 打包脚本，镜像运行不需要
-gui_legacy.py            # 旧版 GUI 入口，已弃用
 StopRecording.vbs        # Windows 停止录制脚本，非容器适用
 # 根目录 index.html 是独立的 M3U8 播放器页面；Web 面板使用 web/ 目录，不受影响
 index.html

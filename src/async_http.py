@@ -8,6 +8,8 @@ from typing import cast
 
 import httpx
 
+import i18n
+
 from . import http_config as config
 from . import utils
 from .logger import logger
@@ -56,7 +58,7 @@ async def _get_client(
                 try:
                     await client.aclose()
                 except Exception as e:
-                    logger.debug(f"关闭失效 AsyncClient 失败: {e}")
+                    logger.debug(i18n.tr("关闭失效 AsyncClient 失败: {e}", e=e))
             # 跨事件循环：在其创建循环上安排 aclose，避免在其创建循环外操作 transport
             # 跨循环旧循环（运行中/已停止/已关闭）一律不创建 aclose 协程（2026-09-04 修复）：
             # 旧实现用 run_coroutine_threadsafe 只调度不等待，旧循环已停/已关时回调永不执行，
@@ -93,7 +95,7 @@ async def _close_all_clients() -> None:
                 await client.aclose()
         except Exception as e:
             # Windows 下 socket.timeout 等异常 str() 可能为空串，必须带类型名否则日志空白无线索
-            logger.debug(f"进程退出释放 AsyncClient 失败: {type(e).__name__}: {e}")
+            logger.debug(i18n.tr("进程退出释放 AsyncClient 失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
 
 def close_all_clients_sync() -> None:
@@ -121,7 +123,7 @@ def close_all_clients_sync() -> None:
             return
         loop.run_until_complete(_close_all_clients())
     except Exception as e:
-        logger.debug(f"close_all_clients_sync 回退到引用清理: {e}")
+        logger.debug(i18n.tr("close_all_clients_sync 回退到引用清理: {e}", e=e))
         with _client_cache_lock:
             _client_cache.clear()
 
@@ -153,7 +155,9 @@ async def async_req(
         # 处理代理地址
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
         client: httpx.AsyncClient = await _get_client(proxy_addr, timeout, verify, http2)
-        if data or json_data:
+        # 用 is not None 判定而非真值判定：json_data={} / data="" / b"" 表示「显式传了空体」，
+        # 真值判断会让它们静默退化成 GET——服务端收到空 GET，调用方只看到空响应。
+        if data is not None or json_data is not None:
             if isinstance(data, (bytes, bytearray, memoryview)):
                 # 将 bytearray/memoryview 转换为 bytes（已是 bytes 时直接使用，避免无谓拷贝）
                 content_data = data if isinstance(data, bytes) else bytes(data)
@@ -185,7 +189,15 @@ async def async_req(
         #   redirect_url -> 空字符串（调用方据此判定未取到 URL）
         #   return_cookies -> 空 dict / ("", {})（调用方据此判定登录/取 cookie 失败）
         #   默认文本 -> 空字符串（调用方解析失败进入各自异常分支）
-        logger.debug(f"async_req 请求失败: {url} - {type(e).__name__}: {e}")
+        # URL 先脱敏：直链常带 signature/token，日志轮转保留多份＝凭据长期落盘
+        logger.debug(
+            i18n.tr(
+                "async_req 请求失败: {masked_url} - {type_name}: {e}",
+                masked_url=utils.mask_credentials(url),
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
         if redirect_url:
             return ""
         elif return_cookies:
@@ -227,17 +239,33 @@ async def get_response_status(
             if probe.status_code in (200, 206):
                 return True
             logger.debug(
-                f"get_response_status 校验未通过: {url} - HEAD={response.status_code}, "
-                f"Range-GET={probe.status_code}, content-type={probe.headers.get('content-type', '')}"
+                i18n.tr(
+                    "get_response_status 校验未通过: {url} - HEAD={status_code}, Range-GET={status_code_2}, content-type={content_type}",
+                    url=url,
+                    status_code=response.status_code,
+                    status_code_2=probe.status_code,
+                    content_type=probe.headers.get("content-type", ""),
+                )
             )
             return False
         logger.debug(
-            f"get_response_status 校验未通过: {url} - status_code={response.status_code}, "
-            f"content-type={response.headers.get('content-type', '')}"
+            i18n.tr(
+                "get_response_status 校验未通过: {url} - status_code={status_code}, content-type={content_type}",
+                url=url,
+                status_code=response.status_code,
+                content_type=response.headers.get("content-type", ""),
+            )
         )
         return False
     except Exception as e:
         # 注意：Windows 下 socket.timeout 的 str() 为空，仅打印 {e} 会得到空白日志，
         # 必须带上 URL 与异常类型，否则无法定位是超时、连接被拒还是证书问题。
-        logger.debug(f"get_response_status 校验失败（判定为不可达）: {url} - {type(e).__name__}: {e}")
+        logger.debug(
+            i18n.tr(
+                "get_response_status 校验失败（判定为不可达）: {url} - {type_name}: {e}",
+                url=url,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
     return False

@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-# 同步 HTTP 客户端模块 - 提供同步 HTTP 请求功能
-
 import atexit
 import gzip
 import http.client
@@ -15,6 +13,11 @@ from collections.abc import Mapping, Sequence
 from typing import TypeAlias, cast
 
 import requests
+
+import i18n
+
+# 同步 HTTP 客户端模块 - 提供同步 HTTP 请求功能
+
 
 # JSON 可序列化类型别名：对齐 requests._types.JsonType 的结构（该别名在较新版 requests 中
 # 定义于 TYPE_CHECKING 块内、运行时不可导入，故本地显式重定义，同时满足运行时注解求值
@@ -118,7 +121,7 @@ def sync_req(
         if proxy_addr:
             # 使用代理的请求
             proxies = {"http": proxy_addr, "https": proxy_addr}
-            if data or json_data:
+            if data is not None or json_data is not None:
                 # POST 请求（带代理）
                 response = _session().post(
                     url,
@@ -193,16 +196,16 @@ def sync_req(
                     e.close()
             except urllib.error.URLError as e:
                 # URL 错误记录日志
-                logger.warning(f"URL Error: {e}")
+                logger.warning(i18n.tr("URL Error: {e}", e=e))
                 raise
             except Exception as e:
                 # 其他错误记录日志
-                logger.error(f"An error occurred: {e}")
+                logger.error(i18n.tr("An error occurred: {e}", e=e))
                 raise
 
     except Exception as e:
         # 请求失败统一记录并返回空串：错误文本伪装成响应体会被上游误当有效数据解析
-        logger.error(f"sync_req 请求失败: {type(e).__name__}: {e}")
+        logger.error(i18n.tr("sync_req 请求失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
         resp_str = ""
 
     return resp_str

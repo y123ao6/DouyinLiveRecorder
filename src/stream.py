@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
 # -*- encoding: utf-8 -*-
+import json
+import re
+import urllib.parse
+from typing import TypedDict, TypeVar, cast
+
+from loguru import logger
+
+import i18n
+
+from .async_http import get_response_status
+from .spider import get_bilibili_stream_data, get_douyu_stream_data
+from .utils import trace_error_decorator
+
 # 直播流地址获取模块 - 从各平台解析获取直播流地址，支持多种画质选择
 #
 # 职责：把各平台 spider 解析出的 json_data 归一化为统一结构
@@ -23,16 +36,6 @@
 # Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
 # Function: Get live stream data.
 
-import json
-import re
-import urllib.parse
-from typing import TypedDict, TypeVar, cast
-
-from loguru import logger
-
-from .async_http import get_response_status
-from .spider import get_bilibili_stream_data, get_douyu_stream_data
-from .utils import trace_error_decorator
 
 # 通用列表填充辅助的类型变量：_pad_list 把任意元素类型的列表填充到指定最小长度
 _PadT = TypeVar("_PadT")
@@ -685,15 +688,25 @@ async def get_huya_stream_url(json_data: dict[str, object], video_quality: str |
             ratio_val = str(chosen)
             actual_quality = HUYA_RATIO_TO_CODE.get(str(chosen), video_quality)
             logger.warning(
-                f"[虎牙直播] 请求档位 {code_to_zh(video_quality)}(ratio={target_ratio}) 不可用"
-                f"(房间最高码率={max_ratio})，降级为 {code_to_zh(actual_quality)}(ratio={chosen})"
+                i18n.tr(
+                    "[虎牙直播] 请求档位 {video_quality}(ratio={target_ratio}) 不可用(房间最高码率={max_ratio})，降级为 {actual_quality}(ratio={chosen})",
+                    video_quality=code_to_zh(video_quality),
+                    target_ratio=target_ratio,
+                    max_ratio=max_ratio,
+                    actual_quality=code_to_zh(actual_quality),
+                    chosen=chosen,
+                )
             )
         else:
             # 无任何更低档可用：不附加 ratio 按原画拉流
             actual_quality = "OD"
             logger.warning(
-                f"[虎牙直播] 请求档位 {code_to_zh(video_quality)}(ratio={target_ratio}) 不可用"
-                f"(房间最高码率={max_ratio}，无更低档位)，按原画拉流"
+                i18n.tr(
+                    "[虎牙直播] 请求档位 {video_quality}(ratio={target_ratio}) 不可用(房间最高码率={max_ratio}，无更低档位)，按原画拉流",
+                    video_quality=code_to_zh(video_quality),
+                    target_ratio=target_ratio,
+                    max_ratio=max_ratio,
+                )
             )
         # 按统一档位序输出可用档位（信息展示用）
         available_qualities = (
@@ -820,8 +833,13 @@ async def get_douyu_stream_url(
             if idx > 0:
                 actual_code = DOUYU_RATE_TO_CODE.get(attempt, requested_code)
                 logger.warning(
-                    f"[斗鱼直播] 请求档位 {code_to_zh(requested_code)}(rate={rate}) 失败"
-                    f"，降级为 {code_to_zh(actual_code)}(rate={attempt}) 拉流成功"
+                    i18n.tr(
+                        "[斗鱼直播] 请求档位 {requested_code}(rate={rate}) 失败，降级为 {actual_code}(rate={attempt}) 拉流成功",
+                        requested_code=code_to_zh(requested_code),
+                        rate=rate,
+                        actual_code=code_to_zh(actual_code),
+                        attempt=attempt,
+                    )
                 )
             break
         err_msg = flv_data.get("msg", "")
@@ -839,7 +857,9 @@ async def get_douyu_stream_url(
             )
     else:
         # 全部尝试失败：返回 is_live=True 但无流地址（保持既有契约，交由上层告警重试）
-        logger.error(f"[斗鱼直播] 全部档位拉流失败(尝试={attempt_rates})，本轮无可用流地址")
+        logger.error(
+            i18n.tr("[斗鱼直播] 全部档位拉流失败(尝试={attempt_rates})，本轮无可用流地址", attempt_rates=attempt_rates)
+        )
 
     rtmp_url = flv_data_inner.get("rtmp_url", "")
     rtmp_live = flv_data_inner.get("rtmp_live", "")

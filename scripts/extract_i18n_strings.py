@@ -9,6 +9,9 @@
 #   3. 表达式内双引号转单引号——{d.get("k", "v")} → {d.get('k', 'v')}
 #      （po msgid 内双引号需转义，目录统一用单引号形态）
 #   4. 隐式拼接（相邻字符串/f-string 字面量）按语义合并为单条模板
+#   5. i18n.tr(模板, **kw) 的首参常量串即模板（占位符已是标识符形态，
+#      如 {masked_url}/{type_name}）——扫描时同样收录，否则 tr 化后的调用点
+#      会从提取结果中消失，缺失检测退化为假绿（f-string 与 tr 双形态并存期必须都扫）
 
 import ast
 import importlib.util
@@ -73,6 +76,11 @@ def extract_constant_or_template(node: ast.AST, source: str) -> str | None:
     return None
 
 
+# i18n.tr(...) 的调用形态：裸 tr 或 <别名>.tr。别名集合必须覆盖仓内全部写法，
+# 否则该调用点会从提取结果消失，缺失检测对它退化为假绿（gui.py 用的是 i18n_module）。
+TR_CALLER_IDS = {"i18n", "i18n_module"}
+
+
 def scan_file(path: Path) -> set[str]:
     source = path.read_text(encoding="utf-8-sig")
     tree = ast.parse(source, filename=str(path))
@@ -95,6 +103,19 @@ def scan_file(path: Path) -> set[str]:
             text = extract_constant_or_template(node.args[0], source)
             if text is not None:
                 found.add(text)
+        # i18n.tr(模板, **kw) / tr(模板, **kw)：首参常量串即模板（规则 5）
+        if isinstance(node, ast.Call) and node.args:
+            func = node.func
+            is_tr = (isinstance(func, ast.Name) and func.id == "tr") or (
+                isinstance(func, ast.Attribute)
+                and func.attr == "tr"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in TR_CALLER_IDS
+            )
+            if is_tr:
+                text = extract_constant_or_template(node.args[0], source)
+                if text is not None:
+                    found.add(text)
 
     return found
 

@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 import httpx
 from loguru import logger
 
+import i18n
 import main
 from src import http_config as _http_config
 from src import utils
@@ -324,7 +325,13 @@ def _confirm_get_ok(
             with client.stream("GET", url, headers=headers, follow_redirects=True) as probe:
                 if probe.status_code not in (401, 403):
                     if attempt:
-                        logger.debug(f"流地址校验: {url} - GET 复核重试通过({probe.status_code})，先前拒绝为偶发")
+                        logger.debug(
+                            i18n.tr(
+                                "流地址校验: {url} - GET 复核重试通过({status_code})，先前拒绝为偶发",
+                                url=url,
+                                status_code=probe.status_code,
+                            )
+                        )
                     return True
                 reject_status = probe.status_code
                 # 偶发 403 即使重试恢复也是限流证据：记录退避，下一轮让 ffmpeg 直连
@@ -333,7 +340,15 @@ def _confirm_get_ok(
             # 异常（超时等）不推翻 HEAD 结论，但必须留痕（禁止静默吞异常）；
             # attempt 0 的异常可能是偶发超时，按「重试一次再定罪」语义隔开后重试，
             # 两次均异常才放弃复核（HEAD 结论维持通过）
-            logger.debug(f"流地址校验: {url} - GET 复核异常: {type(e).__name__}: {e}（attempt {attempt}）")
+            logger.debug(
+                i18n.tr(
+                    "流地址校验: {url} - GET 复核异常: {type_name}: {e}（attempt {attempt}）",
+                    url=url,
+                    type_name=type(e).__name__,
+                    e=e,
+                    attempt=attempt,
+                )
+            )
             if attempt == 0:
                 time.sleep(_recheck_delay())
                 continue
@@ -342,12 +357,21 @@ def _confirm_get_ok(
             time.sleep(_recheck_delay())
     if last_resort:
         logger.warning(
-            f"流地址校验: {url} - HEAD={head_status} 通过但 GET 复核两次 {reject_status}；"
-            "已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同，探针拒绝不代表 ffmpeg 不可拉流）"
+            i18n.tr(
+                "流地址校验: {url} - HEAD={head_status} 通过但 GET 复核两次 {reject_status}；已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同，探针拒绝不代表 ffmpeg 不可拉流）",
+                url=url,
+                head_status=head_status,
+                reject_status=reject_status,
+            )
         )
         return True
     logger.warning(
-        f"流地址校验失败: {url} - HEAD={head_status} 通过但 GET 复核两次 {reject_status}（CDN 稳定拒绝 GET），判定不可达"
+        i18n.tr(
+            "流地址校验失败: {url} - HEAD={head_status} 通过但 GET 复核两次 {reject_status}（CDN 稳定拒绝 GET），判定不可达",
+            url=url,
+            head_status=head_status,
+            reject_status=reject_status,
+        )
     )
     return False
 
@@ -400,9 +424,9 @@ def _validate_stream_url(
     # ffmpeg 拉流成败的关键（虎牙实测：探针烧光预算后 ffmpeg 立即 403）。
     if _probe_in_backoff(url, platform):
         if last_resort:
-            logger.warning(f"流地址校验: {url} - CDN 探针退避中，跳过探针直接交由 ffmpeg 拉流")
+            logger.warning(i18n.tr("流地址校验: {url} - CDN 探针退避中，跳过探针直接交由 ffmpeg 拉流", url=url))
             return True
-        logger.warning(f"流地址校验: {url} - CDN 探针退避中，跳过本轮探针、回退下一候选")
+        logger.warning(i18n.tr("流地址校验: {url} - CDN 探针退避中，跳过本轮探针、回退下一候选", url=url))
         return False
     # 同 host 探针节流（退避未命中才走到这里）：补足与上次同 host 探针的最小间隔，
     # 消除多房间并发监控下的毫秒级连击探针——降低风控被误触发的概率。
@@ -439,7 +463,13 @@ def _validate_stream_url(
                 probe = probe_client.get(url, headers={**headers, "Range": "bytes=0-0"}, follow_redirects=True)
                 if probe.status_code in (200, 206):
                     if attempt:
-                        logger.debug(f"流地址校验: {url} - Range-GET 重试通过({probe.status_code})，先前拒绝为偶发")
+                        logger.debug(
+                            i18n.tr(
+                                "流地址校验: {url} - Range-GET 重试通过({status_code})，先前拒绝为偶发",
+                                url=url,
+                                status_code=probe.status_code,
+                            )
+                        )
                     return True
                 if probe.status_code not in (401, 403):
                     break  # 非探针误杀类拒绝（如 404），不重试
@@ -449,17 +479,26 @@ def _validate_stream_url(
             # 循环已至少执行一次，probe 理论上必非空；显式判空收窄类型（assert 在 -O
             # 下会被整体剔除，且失败抛 AssertionError 而非可诊断的告警路径）
             if probe is None:
-                logger.warning(f"流地址校验: {url} - Range-GET 未取得响应，按校验失败处理")
+                logger.warning(i18n.tr("流地址校验: {url} - Range-GET 未取得响应，按校验失败处理", url=url))
                 return False
             if last_resort:
                 logger.warning(
-                    f"流地址校验: {url} - HEAD={response.status_code}, Range-GET={probe.status_code}；"
-                    "已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同）"
+                    i18n.tr(
+                        "流地址校验: {url} - HEAD={status_code}, Range-GET={status_code_2}；已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同）",
+                        url=url,
+                        status_code=response.status_code,
+                        status_code_2=probe.status_code,
+                    )
                 )
                 return True
             logger.warning(
-                f"流地址校验失败: {url} - HEAD={response.status_code}, Range-GET={probe.status_code}, "
-                f"content-type={probe.headers.get('content-type', '')}"
+                i18n.tr(
+                    "流地址校验失败: {url} - HEAD={status_code}, Range-GET={status_code_2}, content-type={content_type}",
+                    url=url,
+                    status_code=response.status_code,
+                    status_code_2=probe.status_code,
+                    content_type=probe.headers.get("content-type", ""),
+                )
             )
             return False
         # 非 m3u8 源（flv/record_url）沿用 content-type 启发式；HEAD 判定通过后再做
@@ -474,12 +513,21 @@ def _validate_stream_url(
                 # 末位候选（无备选可回退）稳定拒绝也仅告警放行、交由 ffmpeg 定夺，
                 # 避免 content-type 启发式误杀可用源导致整轮放弃录制。
                 logger.warning(
-                    f"流地址校验: {url} - status_code={response.status_code}, content-type={content_type}；"
-                    "已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同）"
+                    i18n.tr(
+                        "流地址校验: {url} - status_code={status_code}, content-type={content_type}；已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同）",
+                        url=url,
+                        status_code=response.status_code,
+                        content_type=content_type,
+                    )
                 )
                 return True
             logger.warning(
-                f"流地址校验失败（返回非流媒体内容）: {url} - status_code={response.status_code}, content-type={content_type}"
+                i18n.tr(
+                    "流地址校验失败（返回非流媒体内容）: {url} - status_code={status_code}, content-type={content_type}",
+                    url=url,
+                    status_code=response.status_code,
+                    content_type=content_type,
+                )
             )
             return False
         if response.status_code == 200:
@@ -489,15 +537,50 @@ def _validate_stream_url(
         if last_resort:
             # 同上：末位候选的稳定拒绝（非 200 且无法识别 content-type）仅告警放行
             logger.warning(
-                f"流地址校验: {url} - status_code={response.status_code}, content-type={content_type}；"
-                "已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同）"
+                i18n.tr(
+                    "流地址校验: {url} - status_code={status_code}, content-type={content_type}；已无备选源，仍交由 ffmpeg 尝试（探针与 ffmpeg 客户端指纹不同）",
+                    url=url,
+                    status_code=response.status_code,
+                    content_type=content_type,
+                )
             )
             return True
-        logger.warning(f"流地址校验失败: {url} - status_code={response.status_code}, content-type={content_type}")
+        logger.warning(
+            i18n.tr(
+                "流地址校验失败: {url} - status_code={status_code}, content-type={content_type}",
+                url=url,
+                status_code=response.status_code,
+                content_type=content_type,
+            )
+        )
         return False
     except Exception as e:
         # Windows 下 socket.timeout 的 str() 为空，必须带上异常类型与 URL
-        logger.warning(f"流地址校验异常（判定为不可达）: {url} - {type(e).__name__}: {e}")
+        logger.warning(
+            i18n.tr(
+                "流地址校验异常: {url} - {type_name}: {e}",
+                url=url,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
+        # 末位候选（无备选可回退）探针异常同样仅告警放行，与上方 489-495 的
+        # 「稳定拒绝在末位放行」保持一致：原实现在此无条件 return False，
+        # 使末位超时/连接异常误杀可用源、本轮直接放弃录制，语义自相矛盾。
+        if last_resort:
+            logger.warning(
+                i18n.tr(
+                    "已无备选源，仍交由 ffmpeg 尝试: {url}",
+                    url=url,
+                )
+            )
+            return True
+        logger.warning(
+            i18n.tr(
+                "流地址校验异常（判定为不可达）: {url}",
+                url=url,
+            )
+        )
         return False
     finally:
         # 仅关闭本函数自建的客户端；复用的客户端由 select_source_url 统一关闭。
@@ -507,7 +590,7 @@ def _validate_stream_url(
             try:
                 probe_client.close()
             except Exception as e:
-                logger.debug(f"关闭探针客户端失败: {type(e).__name__}: {e}")
+                logger.debug(i18n.tr("关闭探针客户端失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
 
 # 从 stream_info（解析结果，含 m3u8_url/flv_url/record_url 等键）挑选本轮实际录制地址：
@@ -565,7 +648,10 @@ def select_source_url(
     # （该分支不会产生任何探针，先于客户端构造处理，避免无谓的连接池开销）
     if not (hls_available or has_fallback):
         logger.warning(
-            f"解析结果无任何流地址（m3u8/flv/record_url 均为空），本轮放弃: {stream_info.get('anchor_name') or ''}"
+            i18n.tr(
+                "解析结果无任何流地址（m3u8/flv/record_url 均为空），本轮放弃: {anchor_name}",
+                anchor_name=stream_info.get("anchor_name") or "",
+            )
         )
         return None
     if hls_available and not hls_effective_enabled and not has_fallback:
@@ -573,13 +659,18 @@ def select_source_url(
         # 可回退：同为静默路径，必须提示而非无声跳过；两种成因给出各自的恢复指引
         if hls_excluded:
             logger.warning(
-                f"平台 {platform} 在 HLS 采集排除列表中，且无 FLV/record_url 可回退，本轮放弃"
-                f"（可将该平台移出排除列表恢复 HLS 采集）: {stream_info.get('anchor_name') or ''}"
+                i18n.tr(
+                    "平台 {platform} 在 HLS 采集排除列表中，且无 FLV/record_url 可回退，本轮放弃（可将该平台移出排除列表恢复 HLS 采集）: {anchor_name}",
+                    platform=platform,
+                    anchor_name=stream_info.get("anchor_name") or "",
+                )
             )
         else:
             logger.warning(
-                "存在 HLS 源但 HLS 采集未启用，且无 FLV/record_url 可回退，本轮放弃"
-                f"（可开启 HLS 采集恢复录制）: {stream_info.get('anchor_name') or ''}"
+                i18n.tr(
+                    "存在 HLS 源但 HLS 采集未启用，且无 FLV/record_url 可回退，本轮放弃（可开启 HLS 采集恢复录制）: {anchor_name}",
+                    anchor_name=stream_info.get("anchor_name") or "",
+                )
             )
         return None
 
@@ -615,7 +706,7 @@ def select_source_url(
         usable: list[tuple[str, bool]] = []
         for url, is_hls in seq:
             if _is_h265(url):
-                logger.warning(f"h265 编码候选无法 copy 录制，跳过: {url}")
+                logger.warning(i18n.tr("h265 编码候选无法 copy 录制，跳过: {url}", url=url))
                 continue
             usable.append((url, is_hls))
 
@@ -662,7 +753,7 @@ def select_source_url(
         try:
             probe_client.close()
         except Exception as e:
-            logger.debug(f"关闭探针客户端失败: {type(e).__name__}: {e}")
+            logger.debug(i18n.tr("关闭探针客户端失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
 
 # 抖音接口调用限流：必要时 sleep，保证两次抖音请求间隔不小于 douyin_min_interval 秒；无入参无返回值

@@ -10,7 +10,7 @@
 
 - **名称**: DouyinLiveRecorder
 
-- **版本**: 4.0.9.4（唯一事实源：`pyproject.toml` 的 `version` 字段。`main.py` 与 `src/web_api.py` 运行时经 `importlib.metadata` 动态读取；`Dockerfile` 经 `APP_VERSION` 构建参数动态注入；`i18n/zh_CN/LC_MESSAGES/zh_CN.po` 不再携带版本号。`README.md` / `CODE_WIKI.md` 为文档，不再纳入版本同步/校验。）
+- **版本**: 4.1.0（唯一事实源：`pyproject.toml` 的 `version` 字段。`main.py` 与 `src/web_api.py` 运行时经 `importlib.metadata` 动态读取；`Dockerfile` 经 `APP_VERSION` 构建参数动态注入；`i18n/zh_CN/LC_MESSAGES/zh_CN.po` 不再携带版本号。`README.md` / `CODE_WIKI.md` 为文档，不再纳入版本同步/校验。）
 
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具
 
@@ -93,7 +93,7 @@ ignore_missing_imports = true
 - 密度检查只对 Python 生效——前端文件的注释需按各自语言惯例（`//`、`/* */`、`<!-- -->`），
   且用 Python `tokenize` 统计 JS/CSS 密度不准确。
 - 排除项：`douyin_pb2.py`（protoc 生成，自带 docstring且标注 DO NOT EDIT）、
-  `douyin_live_recorder_standalone.py`、`gui_legacy.py`（历史遗留），
+  `douyin_live_recorder_standalone.py`（历史遗留），
   以及 `__pycache__` / `node` / `ffmpeg` / `.venv` / `build` / `dist` 等目录。
 
 **该工具的两个盲点（工具发现不了，须另行检查）**：
@@ -109,7 +109,6 @@ ignore_missing_imports = true
 项目根目录/
 ├── main.py              # CLI 录制入口（douyin-recorder）
 ├── gui.py               # GUI 入口（douyin-recorder-gui）
-├── gui_legacy.py         # 旧版 GUI 入口
 ├── web.py               # Web 管理面板入口（douyin-recorder-web）
 ├── i18n.py              # 国际化模块
 ├── msg_push.py          # 消息推送模块
@@ -356,7 +355,9 @@ docker compose up -d             # 使用 docker-compose.yaml（APP_VERSION 可�
   包装，**禁止在 job 内重新内联** **`for i in 1 2 3`** **重试循环**——重试策略调整只改 action.yml 一处。
 
 - **actions 大版本基线 v7**：`checkout` / `setup-python` / `setup-node` / `upload-artifact` 统一 v7，
-  两个 workflow 保持一致，避免行为漂移（`dorny/paths-filter@v4` / `codecov-action@v5` 维持现状）。
+  两个 workflow 保持一致，避免行为漂移（`dorny/paths-filter@v4` 维持现状；
+  `codecov-action@v7`——2026-09-07 自 v5 升级，v6 唯一破坏性变更是迁移 node24 运行时，
+  ubuntu-latest 原生支持，`files` / `token` / `fail_ci_if_error` / `slug` 输入无变化）。
 
 - **版本常量跨 workflow 同值**：`python_build`（3.14）与 `node_version`（24）在 ci.yml 的 setup job 与
   build-release.yml 的 prepare job 各自声明，**改一处须同步另一处**（保证「CI 验证的打包环境 ==
@@ -529,7 +530,7 @@ mypy src/
 5. **JS 签名脚本**: 位于 `src/javascript/`，通过 `__file__` 定位，打包时收入 `_internal/`
 6. **编码与注释风格**: 源文件统一 UTF-8，注释统一用中文
 
-   - **注释一律用** **`#`** **行注释，禁止** **`"""..."""`** **docstring**：模块/类/函数的说明也写成 `#` 注释置于定义上方。全仓已 100% 满足——`src/` 42 个模块（含 `src/platforms/`、`src/proto/`）、`main.py`/`gui.py`/`gui_legacy.py`/`web.py`/`i18n.py`/`msg_push.py`、`scripts/`、`tests/` 均为 **0 处 docstring**，新增与重构代码须保持
+   - **注释一律用** **`#`** **行注释，禁止** **`"""..."""`** **docstring**：模块/类/函数的说明也写成 `#` 注释置于定义上方。全仓已 100% 满足——`src/` 42 个模块（含 `src/platforms/`、`src/proto/`）、`main.py`/`gui.py`/`web.py`/`i18n.py`/`msg_push.py`、`scripts/`、`tests/` 均为 **0 处 docstring**，新增与重构代码须保持
 
    - **例外**：多行字符串**字面量**不属 docstring，合法保留（如 `build_exe.py` 的 `SPEC_TEMPLATE = """\...` PyInstaller spec 模板）
 7. **排除目录**: `node/`, `ffmpeg/`, `downloads/`, `__pycache__/` 在所有工具中均排除
@@ -608,6 +609,19 @@ mypy src/
 
 - **PEP 758：`except A, B:`** **在 3.14 合法，禁止"还原括号"**：Python 3.14 经 PEP 758 原生支持无括号的多异常捕获，而 black 在 `target-version = ['py314']` 下会**主动去掉** `except (A, B):` 的括号——工作区里 15 个文件、24 处无括号写法是 black 门禁的规范输出，不是回归。用 Python 3.13 或更早做 `compileall` / `py_compile` 会把全树误报为 `SyntaxError: multiple exception types must be parenthesized`（实测：venv 3.14.7 两种写法都通过、3.13.14 只有加括号通过）。两条硬约束：① **语法/编译检查一律使用项目 venv 的 Python 3.14**，不要用其它版本；② 不要把无括号写法"修回"加括号，否则违反 black 门禁（black 会再次去括号，且 `black --check` 判违规）。附带一条：black 的 `line-length` **不会从** **`pyproject.toml`** **继承到命令行**，门禁必须显式传参——`python -m black --check --line-length 120 --target-version py314 <paths>` 与 `python -m isort --check-only --profile black --line-length 120 <paths>`；不传则按默认 88 列检查，会报出大量与本仓库风格无关的"待格式化"。
 
+- **`-reconnect*` 必须在** **`-i`** **之前且每个选项必须紧跟取值（2026-09-10/09-11 实测定稿）**：`-reconnect_delay_max` / `-reconnect_streamed` / `-reconnect_at_eof` 是 **input 级（HTTP 协议）选项**，只作用于「紧随其后的下一个输入文件」。写在 `-i real_url` **之后**会被划入输出组，而 ffmpeg 对**已被全局注册的选项名**不会报错——实测为**静默接受、无任何警告、退出码 0**，输入侧从未应用。后果是重连完全失效且**没有任何可见症状**，而 `_FFMPEG_FAST_FAIL_SECONDS` 的「慢速失败＝重连耗尽」判定、以及围绕它建立的失败归因全部落空。改动 ffmpeg 命令时，这三项必须保持在 `-i` 之前。**另一形态（2026-09-11 事故）**：09-10 把这三个选项移到 `-i` 之前时丢失了 `-reconnect_streamed` / `-reconnect_at_eof` 的布尔值 `1`，ffmpeg 把下一个选项名当作值——`Unable to parse "reconnect_streamed" option value "-reconnect_at_eof" as boolean` → Invalid argument，**输入未打开即退出（-22）**，真实录制 100% 复现；而 `-reconnect_delay_max 60` 因带着值幸免。回归锁已落地：`tests/test_ffmpeg_reconnect_args.py`（AST 断言同时锁定「每个 `-reconnect*` 紧跟字面量值」与「全部位于 `-i` 之前」两个不变量，扫描 main.py + standalone 双定义点）。**第三形态（2026-09-11 主事故 P0，推翻上面"语义边界"段的旧认知）**：`-reconnect_at_eof 1` 对 **HLS 直播流同样致命**——上面的旧认知"真直播 playlist 无 ENDLIST、不会 EOF"是错的：**m3u8 播放列表文件本身的 HTTP 响应结束就是 EOF**，该选项让 http 层在"列表下载完"处无限重连（`ffmpeg -report` 实测特征：连续 `Will reconnect at <size> in N second(s), error=End of file`，1/3/7/15/31s 指数退避、`-reconnect_delay_max 60` 只限单次延迟上限、重连无次数上限、永不放弃），hls demuxer 永远停在"待列表"阶段、**一个媒体段都拉不到**。生产事故形态（2026-09-11 凌晨实测）：抖音/斗鱼房间（HLS 优先选源）仅产出弹幕 SRT、视频零字节、ffmpeg 常驻不退出（`-loglevel error` 下零输出零报错，`check_subprocess` 只看到进程存活）——"只录到字幕没录到视频"即为该故障；虎牙（`_FLV_FIRST_PLATFORMS` + HLS 排除列表）不受影响。对照实验：同命令加 `-t 10` 限时，60s 仍不退出且零字节产物；仅去掉该选项后 10s 录制 9MB 正常退出。**修复（唯一正确做法）**：m3u8 输入在命令构造处移除该参数对（`if ".m3u8" in url: del` 该选项+取值，main.py 与 standalone 共三处定义点同步），FLV 输入保留（CDN 掐断长连接时在 EOF 处重连续写同一文件，斗鱼游客态 FLV ~70s 被掐的既有缓解）。回归锁：`tests/test_ffmpeg_reconnect_args.py` 新增第三个不变量类 `TestReconnectAtEofDroppedForHls`（AST 断言每个命令定义点都有「`.m3u8` in url 判定 + 函数体删除该参数对」守卫，main.py 1 处、standalone 2 处）。
+
+- **录制并发槽必须在** **`Popen`** **之前 acquire（`main.py::check_subprocess`）**：`recording_semaphore` 的语义是「限制同时进行的 ffmpeg 数」，若先起进程再 `acquire`，并发上限**根本不约束 ffmpeg 进程数**——N 个房间照样同时拉起 N 个 ffmpeg 拉流写盘（正是要防的资源耗尽），被阻塞的只是房间线程，且阻塞期间不检查注释/停止标志、无法及时退出。正确结构是「`acquire` → `try:`（`Popen` + 进程注册 + 弹幕启动 + 主循环）→ `finally: release`」：**启动段也必须落在 `try` 内**，该段抛错同样要归还槽位，否则泄漏累积到上限后所有后续录制永久饿死。
+
+- **`collector.stop()`** **与采集线程的握手顺序不可单独调整（`src/collector.py`）**：`stop()` 必须**先** `set(self._stop_event)` **再**读 `self._loop`；`_run()` 必须**先**发布 `self._loop` **再**检查 `self._stop_event`。两个**相反**的顺序保证信号必被一方接收（穷举时序可知不存在双方都错过的交错）。缺任何一半都会丢信号：`stop()` 若在采集线程建好 loop 之前到达，`self._loop is None` → `call_soon_threadsafe` 整段被跳过，信号永久丢失、`join(timeout=8)` 超时后线程与 SRT 句柄双泄漏。另：`_shutdown` 中 `await danmaku.stop()` 必须 `asyncio.wait_for` 限时（`_SHUTDOWN_TIMEOUT_SECONDS`），否则 SDK 因半开连接挂住时 `loop.stop()` 永不执行。
+
+- **弹幕文本写入 SRT 前必须转义（`src/srt_writer.py::_sanitize_srt_text`）**：`user_name`/`message` 均为外部可控输入。含 `\n` 会截断 SRT 块结构；含 `-->` 会被解析器当成**新的时间轴行**，可伪造任意字幕内容。替换（而非删除）为可见字符以保留可读性。回归锁：注入 `normal\n2\n00:00:99,000 --> 00:00:99,999\nFAKE\n` 后产物必须仍只有 1 个块、1 条时间轴。另：片内 `end` 须 `max(start, min(end, _seg_seconds))` 钳制，否则末条会与片边界及下一片首条时间轴重叠。
+
+- **敏感配置判定必须「节白名单 + 键名正则」双重（`src/web_config.py` / `web/app.js`）**：仅按节名（`SENSITIVE_SECTIONS`）判定会漏掉 **`[推送配置]`** 节内的 `tgapi令牌` / `发件人密码(授权码)` / `pushplus推送token`，以及各平台节内的 `popkontv_token` 等独立凭据——它们会被 `read_config_safe` 原样明文返回面板、并渲染成明文 `text` 输入框。新增配置键时须同时确认该键是否落入键名正则；反向例外表（`expiry|timeout|有效期|过期`）用于放行 `web_token_expiry` 这类数值型运维参数。前端 `saveConfig` 跳过 `'***'` 掩码的约定（`app.js:1049`）是写入侧的唯一防线，**不可移除**，否则掩码会被回写覆盖真实凭据。写日志同理：URL/代理地址一律经 `utils.mask_credentials()`（`logs/` 会轮转保留多份，凭据等于长期落盘）。
+
+- **测试不得自实现被测逻辑（假绿）**：`tests/` 中曾存在「在测试文件里重新实现一份锁与凭证缓存、再断言这份自实现」的用例——把 `src/` 的对应实现整个删掉仍全绿，等于没有覆盖。判据必须是「**删掉生产实现就会失败**」：只允许打桩网络层与时间常量，去重/限流/锁逻辑一律走真实代码。`tests/test_concurrency_rate_limit.py` 已按此重写（驱动 `src.ttwid.get_ttwid()` 与 `src.stream_select._throttle_probe()`）。另两条测试环境约束：① 不得 `monkeypatch.setattr(main.time, "sleep", ...)`——`main.time` 是 stdlib `time` **模块本体**，会替换**全进程** sleep，应浅拷贝成 `SimpleNamespace` 再覆盖单属性；② 覆盖率门禁 `scripts/check_coverage.py` 中「模块查不到」按**失败**处理（原实现只告警，会输出 `PASSED: All 0 module(s)` 的假绿）。
+
+
 - **`live.douyin.com`** **的** **`web_rid`** **同时接受数字房间号与抖音号**：`webcast/room/web/enter/` 两者皆可，且 `live.douyin.com/<抖音号>` **不发生重定向**。**不要再写「抖音号需先重定向解析成数字」的逻辑**——那是纯静态分析得出的错误结论，已被实测证伪并删除。另：`main.py` 以 `port_info["anchor_name"]` 为空作为「网址内容获取失败」的判据。
 
 - **弹幕链路接线点与分段命名约定**：`start_record` 各平台分支收集 `record_danmaku_args`（局部变量，**每轮重置为 None**）→ 6 处 `check_subprocess(..., platform=platform, danmaku_args=record_danmaku_args)` 全部接线 → `src/__init__.py` 的 `get_danmaku_collector(platform, args, base_filename, segment_seconds)` 创建采集器（实现在 `src/collector.py`）。三条硬约束：① `danmaku_collector.stop()` 必须在 `while process.poll() is None` **循环之外**（提前中断分支另有一次），`DanmakuCollector.stop()` 有 `_stop_called` 防重入、幂等；② 分段文件名——ffmpeg 视频分段模板统一 `_%03d`（FLV 已从 `_%02d` 对齐；音频仍 `_%02d` 但无弹幕），SRT 分片用 `{seg:03d}` 与之对应（`_000.srt` ↔ `_000.ts`），`check_subprocess` 需同时剥离 `_%02d` / `_%03d` 两种占位符；③ 抖音弹幕空 cookie 时在 `DouyinDanmaku.start()`（`src/platforms/douyin.py`）协程内 `await get_ttwid()` 动态获取（采集线程有独立事件循环，可直接 await；进程级缓存），**不再硬编码 ttwid**。配置项 `弹幕分片时长(秒)` 走 `_safe_float(..., 1800.0)`。
@@ -670,3 +684,36 @@ mypy src/
   不接受任意自定义名。回归锁：`tests/test_web_config.py::TestUpdateRoomQuality` +
   `tests/test_web_api.py::TestRoomQualityApi` + `tests/frontend/test_quality_ui.mjs`。
 
+
+- **形参日志必须走 `i18n.tr(模板, **kw)`，禁止再用 f-string**：`logger.*` / `print` 的
+  f-string 会在查翻译目录**之前**完成插值，于是目录里带占位符的 msgid（如 `[{record_name}] ...`）
+  永远匹配不上，翻译静默退化为原文——2026-09-10 前全仓 242 处形参日志因此「有翻译但用不上」。
+  三条硬约束：① 模板必须是**字面量常量串**（`tr("...{name}...", name=expr)`），模板内占位符只能
+  是**纯标识符**（`str.format` 会 KeyError 拒绝 `{a.b}`/`{f(x)}`）；② 格式说明符/转换符由调用方
+  预先求值后作实参传入（`_backoff=f"{_backoff:.0f}"`、`value=repr(value)`），不进模板——目录侧
+  提取器本就丢弃这些后缀，两者须一致；③ 占位符名由表达式**确定性派生**
+  （`type(e).__name__`→`type_name`、`utils.mask_credentials(url)`→`masked_url`、`self._cls_name`→`cls_name`、
+  `X.get('k')`→`k`、`len(X)`→`X_count`），同一模板内重名加 `_2/_3` 后缀——四语目录的键必须与之
+  逐字对齐，故**改模板名必须同步改 kwarg 名**（曾漏改一处致运行时 `KeyError`）。
+  回归锁：`tests/test_i18n_migration.py`（① 无遗留有价值 logger/print f-string；② 每个 `tr()` 的
+  模板占位符集合 == 关键字实参集合且均为标识符；③ 运行时模板集合 ⊆ `zh_CN.po` 键集合）。
+  `main.py` 的 `import i18n` 必须置于模块级 banner 打印**之前**（模块顺序执行，晚于此的 import 对已执行的 print 无效）。
+- **测试必须冻结翻译为恒等映射**：`i18n.tr()` 迁移后，日志文本随 `config.ini` 的 `language` 和宿主
+  系统语言变化（本机 `language` 为空时探测出 `en_US`，同一断言在不同机器上得到不同文本）；且
+  `zh_CN` 目录**并非恒等映射**（128 条英文源串译成中文），故不存在「选某个语言就能复现源文本」的方案。
+  `tests/conftest.py::_pin_identity_translation` 把 `i18n._tr` 固定为 `lambda t: t`，使
+  `tr(模板, **kw) == 模板.format(**kw) == 迁移前 f-string 输出`，断言与语言解耦；翻译机制本身由
+  `tests/test_i18n_tr.py` 与 `test_web_api.py` 的语言用例单独覆盖。**不可删除该 fixture**。
+
+- **Web 面板「直播间列表」表格必须维持** **`table-layout: fixed`** **布局（`web/style.css` 末尾段）**：
+  `#rooms-view .data-table` 曾用浏览器默认 auto 布局且无列宽/截断约束，窄视口（窗口缩窄 /
+  Windows 高 DPI 缩放，有效宽度 ≈500px）下 6 列 min-content 超出 `.panel` 容器——`width:100%`
+  失效，表格按 min-content 溢出渲染：表头「启用/录制中」被压成一字宽竖排字、「删除」按钮溢出
+  卡片右缘、长 URL（`discover?modal_id=` 等）折 2~3 行致行高参差（2026-09-11 截图实锤）。
+  修复后按表头定列宽（画质 128 / 名称 150 / 启用 72 / 录制中 72 / 操作 76，地址列吃剩余宽），
+  地址/名称 `td` 单行省略（地址 td 由 `loadRooms` 自带 `title` 悬浮全文），≤768px 走
+  `min-width:640px + .panel overflow-x:auto` 面板内横滚兜底。三条约束：**改回 auto 布局或删省略号
+  会让错位回归**（Chrome 在 `/?&=` 处断行、Safari 的单元格 ellipsis 必须配 fixed 布局）；**新增列必须
+  同步补对应 `th:nth-child(n)` 定宽**（fixed 布局下未定宽的新列会平分剩余空间、挤压地址列）；
+  **该段作用域必须保持 `#rooms-view`**，勿"顺手统一"扩大到仪表盘/弹幕/文件三张表（它们列数与
+  内容形态不同，fixed 定宽会破坏其布局）。

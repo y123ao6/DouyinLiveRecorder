@@ -1,192 +1,139 @@
 # -*- encoding: utf-8 -*-
-# 并发模式验证测试：threading.Lock 线程安全 + 速率限制。
+# 并发专项：对**生产代码**的「跨线程去重」与「同 host 探针限流」做真实断言。
 #
-# 验证 concurrency-rate-limit Skill 中描述的两种核心模式：
-# 1. 统一凭证管理（threading.Lock 保护共享缓存，仅获取一次）
-# 2. 全局速率限制（最小请求间隔控制）
+# 历史教训（2026-09-10 全量审查发现）：本文件原先未 import 任何生产代码——锁、凭证缓存、
+# 限流器都在测试内自行实现后再断言自己，把 src/ 的实现整个删掉仍全绿，属典型假绿。
+# 现改为直接驱动真实入口：
+#   - src.ttwid.get_ttwid()               并发去重（多线程各自 asyncio.run，复刻房间线程模型）
+#   - src.stream_select._throttle_probe() 同 host 探针最小间隔节流（真实限流器）
 #
+# 判据必须是「删掉生产实现就会失败」，因此这里只打桩网络层（_fetch_ttwid）与时间常量，
+# 去重与节流逻辑本身一律走真实代码。
+import asyncio
 import threading
 import time
-from collections.abc import Callable
+from typing import Any
 
-# ---------------------------------------------------------------------------
-# 1. threading.Lock 线程安全：模拟统一凭证管理
-# ---------------------------------------------------------------------------
+import pytest
+
+import main  # noqa: F401  先完整初始化 main，打破 stream_select<->main 的循环导入
+import src.stream_select as stream_select
+import src.ttwid as ttwid_module
 
 
-class TestThreadSafeCredentialCache:
-    # 验证 threading.Lock 保护共享缓存的线程安全性。
+# 清空 ttwid 进程级缓存，并屏蔽 config.ini 的预置值：否则开发者本地填过 ttwid 时
+# get_ttwid 会短路走配置分支，本用例的并发去重路径根本不被执行。
+@pytest.fixture()
+def _isolated_ttwid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ttwid_module, "_cached_ttwid", "")
+    monkeypatch.setattr(ttwid_module, "_read_config_ttwid", lambda: "")
 
-    def test_concurrent_access_only_fetches_once(self) -> None:
-        # 多线程并发访问时，底层 fetch 只被调用一次。
-        lock = threading.Lock()
-        # 用 None 作显式「未初始化」哨兵,避免空串/falsy 值被 if cached_value 误判为未缓存。
-        cached_value: str | None = None
-        fetch_count = 0
 
-        def fake_fetch() -> str:
-            nonlocal fetch_count
-            fetch_count += 1
-            time.sleep(0.05)  # 模拟网络延迟
-            return "credential_value"
+# 重置探针节流状态，并把最小间隔压到极小、抖动置 0（模块注释明确允许测试调整这两个常量），
+# 使用例既不牺牲断言强度又把耗时控制在毫秒级。
+@pytest.fixture()
+def _fast_probe_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(stream_select, "_PROBE_MIN_HOST_INTERVAL", 0.05)
+    monkeypatch.setattr(stream_select, "_PROBE_THROTTLE_JITTER", 0.0)
+    monkeypatch.setattr(stream_select, "_probe_last_seen", {})
 
-        def get_credential() -> str:
-            nonlocal cached_value
-            if cached_value is not None:
-                return cached_value
-            with lock:
-                # 双重检查：拿到锁后再看一次
-                if cached_value is None:
-                    cached_value = fake_fetch()
-                # 此处 cached_value 必然已填充(None 哨兵下不可能为空串),断言收窄类型。
-                assert cached_value is not None
-                return cached_value
+
+class TestTtwidConcurrentDedup:
+    # get_ttwid 的跨线程去重：并发调用只允许一次真实拉取，其余复用同一缓存值。
+
+    def test_concurrent_threads_fetch_once(self, monkeypatch: pytest.MonkeyPatch, _isolated_ttwid: None) -> None:
+        fetch_calls: list[int] = []
+
+        async def fake_fetch(proxy_addr: Any = None) -> str:
+            fetch_calls.append(1)
+            # 让出控制权放大并发窗口：若去重失效，等待者会各自进入这里
+            await asyncio.sleep(0.05)
+            ttwid_module._cached_ttwid = "ttwid=shared"
+            return ttwid_module._cached_ttwid
+
+        monkeypatch.setattr(ttwid_module, "_fetch_ttwid", fake_fetch)
 
         results: list[str] = []
-        threads: list[threading.Thread] = []
-        for _ in range(10):
-            t = threading.Thread(target=lambda: results.append(get_credential()))
-            threads.append(t)
-
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-
-        assert len(results) == 10
-        assert all(r == "credential_value" for r in results)
-        assert fetch_count == 1, f"期望 fetch 仅调用 1 次，实际调用 {fetch_count} 次"
-
-    def test_lock_prevents_race_condition(self) -> None:
-        # 无锁计数器会出现竞态，有锁计数器结果正确。
-        counter_no_lock = 0
-        counter_with_lock = 0
-        lock = threading.Lock()
-        iterations = 1000
-
-        def increment_no_lock() -> None:
-            nonlocal counter_no_lock
-            for _ in range(iterations):
-                counter_no_lock += 1
-
-        def increment_with_lock() -> None:
-            nonlocal counter_with_lock
-            for _ in range(iterations):
-                with lock:
-                    counter_with_lock += 1
-
-        threads: list[threading.Thread] = []
-        for _ in range(10):
-            threads.append(threading.Thread(target=increment_no_lock))
-            threads.append(threading.Thread(target=increment_with_lock))
-
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        assert counter_with_lock == 10 * iterations
-        # 无锁计数器在高竞争下 *通常* 会小于期望值，但不保证一定不等，故仅断言有锁正确
-
-    def test_lock_acquire_nonblocking(self) -> None:
-        # 非阻塞 acquire：未抢到锁的线程应等待而非重复获取。
-        lock = threading.Lock()
-        acquired_order: list[int] = []
-
-        def worker(worker_id: int) -> None:
-            if lock.acquire(blocking=False):
-                acquired_order.append(worker_id)
-                time.sleep(0.1)
-                lock.release()
-            else:
-                # 等待 owner 完成
-                with lock:
-                    pass
-
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-
-        # 只有一个线程成功非阻塞获取
-        assert len(acquired_order) == 1
-
-
-# ---------------------------------------------------------------------------
-# 2. 速率限制：全局锁 + 最小请求间隔
-# ---------------------------------------------------------------------------
-
-
-class TestRateLimiter:
-    # 验证速率限制器的最小间隔控制。
-
-    def _make_rate_limiter(self, min_interval: float) -> Callable[[], float]:
-        # 创建一个速率限制器闭包。
-        rate_lock = threading.Lock()
-        last_request_time: float = 0.0
-
-        def rate_limit() -> float:
-            # 执行速率限制，返回实际等待秒数。
-            nonlocal last_request_time
-            start = time.monotonic()
-            with rate_lock:
-                now = time.monotonic()
-                wait = min_interval - (now - last_request_time)
-                if wait > 0:
-                    time.sleep(wait)
-                last_request_time = time.monotonic()
-            return time.monotonic() - start
-
-        return rate_limit
-
-    def test_rate_limit_enforces_minimum_interval(self) -> None:
-        # 连续调用间隔不小于 min_interval。
-        min_interval = 0.1
-        rate_limit = self._make_rate_limiter(min_interval)
-
-        timestamps: list[float] = []
-        for _ in range(5):
-            rate_limit()
-            timestamps.append(time.monotonic())
-
-        for i in range(1, len(timestamps)):
-            gap = timestamps[i] - timestamps[i - 1]
-            assert gap >= min_interval * 0.9, f"第 {i} 次间隔 {gap:.4f}s < 期望 {min_interval}s"
-
-    def test_rate_limit_thread_safety(self) -> None:
-        # 多线程并发调用速率限制器，所有调用均被串行化。
-        min_interval = 0.05
-        rate_limit = self._make_rate_limiter(min_interval)
-
-        timestamps: list[float] = []
-        ts_lock = threading.Lock()
+        errors: list[BaseException] = []
+        collect_lock = threading.Lock()
 
         def worker() -> None:
-            rate_limit()
-            with ts_lock:
-                timestamps.append(time.monotonic())
+            try:
+                value = asyncio.run(ttwid_module.get_ttwid())
+            except BaseException as e:  # 收集后在主线程统一断言，避免线程内断言丢失
+                with collect_lock:
+                    errors.append(e)
+                return
+            with collect_lock:
+                results.append(value)
 
-        threads = [threading.Thread(target=worker) for _ in range(6)]
+        threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=10)
+            t.join(timeout=15)
 
-        assert len(timestamps) == 6
-        timestamps.sort()
-        # 检查排序后的相邻时间戳间隔
-        for i in range(1, len(timestamps)):
-            gap = timestamps[i] - timestamps[i - 1]
-            assert gap >= min_interval * 0.8, f"并发场景第 {i} 次间隔 {gap:.4f}s < 期望 {min_interval}s"
+        assert not errors, f"并发调用抛出异常: {errors}"
+        assert len(fetch_calls) == 1, f"并发去重失效: _fetch_ttwid 被调用 {len(fetch_calls)} 次（期望 1）"
+        assert results == ["ttwid=shared"] * 8
 
-    def test_rate_limit_no_wait_when_enough_time_passed(self) -> None:
-        # 间隔足够长时不应额外等待。
-        min_interval = 0.05
-        rate_limit = self._make_rate_limiter(min_interval)
+    def test_failed_owner_does_not_stampede(self, monkeypatch: pytest.MonkeyPatch, _isolated_ttwid: None) -> None:
+        # owner 拉取失败时，等待者必须**串行**接管重试。原实现在锁外直接 _fetch_ttwid，
+        # 多个等待者会同时发起请求——正是 ttwid 模块要消除的「重复请求触发风控」。
+        fetch_calls: list[int] = []
+        inflight = 0
+        concurrent_peak = 0
+        guard = threading.Lock()
 
-        rate_limit()
-        time.sleep(0.2)  # 等待远超 min_interval
-        wait_time = rate_limit()
+        async def failing_fetch(proxy_addr: Any = None) -> str:
+            nonlocal inflight, concurrent_peak
+            with guard:
+                inflight += 1
+                concurrent_peak = max(concurrent_peak, inflight)
+                fetch_calls.append(1)
+            await asyncio.sleep(0.03)
+            with guard:
+                inflight -= 1
+            return ""
 
-        assert wait_time < min_interval, f"间隔足够长时不应等待，实际等待 {wait_time:.4f}s"
+        monkeypatch.setattr(ttwid_module, "_fetch_ttwid", failing_fetch)
+
+        def worker() -> None:
+            asyncio.run(ttwid_module.get_ttwid())
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert fetch_calls, "owner 失败后等待者未接管重试，用例前提不成立"
+        assert concurrent_peak == 1, f"拉取出现并发（峰值 {concurrent_peak}），等待者应串行接管"
+
+
+class TestProbeThrottle:
+    # _throttle_probe 是探针层真实限流器：同 host 强制最小间隔，不同 host 互不影响。
+
+    def test_same_host_enforces_min_interval(self, _fast_probe_throttle: None) -> None:
+        url = "https://cdn.example.com/live/stream.m3u8"
+        start = time.monotonic()
+        stream_select._throttle_probe(url)
+        stream_select._throttle_probe(url)
+        elapsed = time.monotonic() - start
+        # 首次不等待，第二次须补足最小间隔（jitter 已置 0，故期望 ≈ 0.05s）
+        assert elapsed >= 0.05, f"同 host 探针未节流：两次共耗时 {elapsed:.4f}s"
+
+    def test_different_hosts_do_not_throttle_each_other(self, _fast_probe_throttle: None) -> None:
+        start = time.monotonic()
+        stream_select._throttle_probe("https://a.example.com/x.m3u8")
+        stream_select._throttle_probe("https://b.example.com/y.m3u8")
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.05, f"不同 host 不应互相节流：实测耗时 {elapsed:.4f}s"
+
+    def test_empty_host_returns_immediately(self, _fast_probe_throttle: None) -> None:
+        # 无效 URL 取不到 netloc：须直接返回，不得进入节流等待
+        start = time.monotonic()
+        stream_select._throttle_probe("not-a-url")
+        stream_select._throttle_probe("not-a-url")
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.05, f"空 host 不应节流：实测耗时 {elapsed:.4f}s"

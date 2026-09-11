@@ -26,6 +26,18 @@
     var THEME_KEY = 'dlr_theme';
     var SENSITIVE_SECTIONS = { 'Cookie': true, '账号密码': true, 'Authorization': true };
 
+    // 敏感键名模式（与后端 web_config.is_sensitive_key 保持一致）：仅靠节名会漏掉
+    // 「推送配置」节内的 tgapi令牌/发件人密码(授权码)/pushplus推送token，以及各平台节内的
+    // popkontv_token 等独立凭据——它们在 DOM 里会被渲染成明文 text 输入框。
+    var SENSITIVE_KEY_RE = /令牌|密码|授权码|token|secret|passwd|password|api[_-]?key/i;
+    // 例外：expiry/timeout/有效期 类键是数值型运维参数（如 web_token_expiry 秒数），无保密意义。
+    var NOT_SECRET_KEY_RE = /expiry|timeout|有效期|过期/i;
+
+    function isSensitiveField(section, key) {
+        if (NOT_SECRET_KEY_RE.test(key)) return false;
+        return !!SENSITIVE_SECTIONS[section] || SENSITIVE_KEY_RE.test(key);
+    }
+
     var sseSource = null;
     var sseStopped = true;
     var configBackup = null;
@@ -432,6 +444,10 @@
     // 8. showView
     function showView(name) {
         stopDanmakuPolling();
+        // 切视图先停掉上一视图的轮询：原先只在最后的 else 分支调用 stopSSE，
+        // 导致切到 rooms/config/files/danmaku 后 /api/status 仍每 2s 轮询并渲染隐藏 DOM。
+        // 统一的「先停后按需启」与上方 stopDanmakuPolling 保持同一语义。
+        stopSSE();
         hideAllViews();
         var v = $(name + '-view');
         if (v) v.classList.remove('hidden');
@@ -456,8 +472,6 @@
         } else if (name === 'dashboard') {
             startSSE();
             loadLogs();
-        } else {
-            stopSSE();
         }
     }
 
@@ -1000,7 +1014,7 @@
                 for (var key in items) {
                     if (!items.hasOwnProperty(key)) continue;
                     var val = items[key];
-                    var inputType = SENSITIVE_SECTIONS[section] ? 'password' : 'text';
+                    var inputType = isSensitiveField(section, key) ? 'password' : 'text';
                     var hintHtml = '';
                     var rowClass = 'config-row';
                     var readOnly = '';

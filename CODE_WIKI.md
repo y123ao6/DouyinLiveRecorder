@@ -62,7 +62,7 @@
 ### 项目基本信息
 
 - **项目名称**: DouyinLiveRecorder (抖音直播录制器)
-- **版本**: 4.0.8.3
+- **版本**: 4.1.0
 - **作者**: Hmily
 - **开源协议**: MIT
 - **项目地址**: [GitHub](https://github.com/ihmily/DouyinLiveRecorder)
@@ -254,7 +254,6 @@ DouyinLiveRecorder/
 ├── node/                                # Node.js 二进制目录（Windows，git 忽略）
 ├── main.py                              # 命令行入口
 ├── gui.py                               # GUI 图形界面入口（CustomTkinter）
-├── gui_legacy.py                        # 旧版 GUI（兼容保留）
 ├── web.py                               # Web 管理面板入口
 ├── i18n.py                              # 国际化实现（print 翻译包装）
 ├── msg_push.py                          # 消息推送模块
@@ -1588,6 +1587,224 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 ---
 
 ## 更新日志
+
+### v4.1.0-dev (2026-09-11) — HLS(m3u8) 输入禁用 `-reconnect_at_eof`：修复直播录制只出字幕无视频（P0，推翻上一轮遗留判断）
+
+**变更摘要**：`-reconnect_at_eof 1` 对 HLS(m3u8) 输入导致 ffmpeg 在播放列表层无限重连，子进程常驻但视频零字节产出——真实事故形态为「录制直播只保留弹幕 SRT、无视频文件」。上一轮条目（`修复 ffmpeg -reconnect* 选项缺值…`）尾部「真直播 playlist 无 ENDLIST 不会 EOF、属设计语义」的判断被实测推翻：**m3u8 播放列表文件本身的 HTTP 响应结束就是 EOF**，该选项让 http 层在列表下载完处无限重连（1/3/7/15/31s 指数退避、重连无次数上限），hls demuxer 永远停在「待列表」阶段、一个媒体段都拉不到。修复为 m3u8 输入在命令构造处移除该参数对，FLV 输入保留。
+
+#### 一、事故形态与根因（`main.py` 录制基础命令）
+
+- **事故形态**（2026-09-11 凌晨，用户真机）：斗鱼/抖音房间（HLS 优先选源，遵守「斗鱼绝不加入 FLV-first」既有约定）仅产出弹幕 SRT（SRT 由弹幕采集器在 Popen 之后启动，**有 SRT 恰证明 ffmpeg 进程已拉起**），视频目录零字节、ffmpeg 常驻不退出（`-loglevel error` 下零输出零报错，`check_subprocess` 守护循环只见进程存活）；同批虎牙房间（`_FLV_FIRST_PLATFORMS` + HLS 排除列表）正常录制出 25MB `.ts`。
+- **根因**：`-reconnect_at_eof 1` 使 http 层在「上层 demuxer 要求完整读响应」到达 EOF 后无限重连。对 HLS，hls demuxer 必须完整读一遍播放列表（到达 EOF）才算完成解析、才能进入拉取媒体段阶段——列表被重连「回拉」后永远到不了下一阶段。`ffmpeg -report` 抓到的特征日志：连续 `Will reconnect at 752 in 0/1/3/7/15... second(s), error=End of file`（752 即播放列表字节数）。
+- **对照实验**（本机 ffmpeg 9.0.1，生产同款命令）：同命令带 `-t 10` 限时，60s 仍不退出且零字节产物；仅去掉 `-reconnect_at_eof 1` 后 10s 录制 9MB 正常退出（exit 0）——决定性证据。
+
+#### 二、修复（唯一正确做法）
+
+- `main.py`：`real_url` 含 `.m3u8` 时在命令构造末尾删除 `-reconnect_at_eof` 参数对（`if ".m3u8" in real_url: idx = ffmpeg_command.index("-reconnect_at_eof"); del ffmpeg_command[idx:idx+2]`）；FLV 输入保留（CDN 掐断长连接时在 EOF 处重连续写同一文件，斗鱼游客态 FLV ~70s 被掐的既有缓解手段，删除经 del 而非置 `"0"`，保证命令行干净）。
+- `scripts/douyin_live_recorder_standalone.py`：`build_ffmpeg_cmd` 与 `run_ffmpeg` 内联字面量列表同步修复（维持「参数列表内联在调用点 + shell=False」的门禁语义——del 只按字面量标志对删除，不引入拼接变量注入面）。
+
+#### 三、防线与验证（2026-09-11）
+
+- `tests/test_ffmpeg_reconnect_args.py` 新增第三个不变量类 `TestReconnectAtEofDroppedForHls`：AST 断言每个命令定义点（main.py 1 处、standalone 2 处）都有「`.m3u8` in url 判定 + 函数体删除 `-reconnect_at_eof` 参数对」守卫，缺任一处即对应命令的 HLS 录制无限挂起回归。
+- 定向：`test_ffmpeg_reconnect_args.py` 5 passed + `test_record_container.py` 18 passed；全量回归 **`pytest`：907 passed, 2 skipped**；`black --check` / `isort --check-only` / `py_compile` 全绿。
+- `AGENTS.md`「已知坑」`-reconnect*` 条目追加第三形态（保留原两形态文字、只增量补充，推翻结尾「语义边界」旧认知），供后续防回归。
+
+### v4.1.0-dev (2026-09-11) — Web 面板直播间列表窄视口错位修复（table-layout:fixed + 地址列省略 + 窄屏横向滚动）
+
+**变更摘要**：修复「直播间列表」在窄视口（有效宽度 ≈500px，窗口缩窄 / Windows 高 DPI 缩放均可触发）下的三重错位：表头「启用/录制中」被压成一字宽竖排字、「删除」按钮与启用开关溢出面板卡片右缘、长 URL（`discover?modal_id=` 等）与长名称行折成 2~3 行导致行高参差。仅改 `web/style.css`（末尾新增一段作用域限 `#rooms-view` 的规则），不动 HTML/JS，仪表盘/弹幕/文件三张表不受影响。
+
+#### 根因与修复（`web/style.css` 末尾新增段）
+
+- 根因：`.data-table` 为浏览器默认 `table-layout: auto` 且无任何列宽/截断约束，6 列的最小内容宽（画质下拉 110px + 40px 开关 + 删除按钮 + 各列 24px 内边距 ≈ 360px）在窄视口下叠加 URL 列 min-content 后超出 `.panel` 容器——`width:100%` 失效，表格按 min-content 溢出渲染；`.panel` 无 `overflow-x` 兜底；既有 ≤768px 断点只覆盖 stat-cards/config-row/tabs，表格未适配。
+- 修复：`#rooms-view .data-table` 改 `table-layout: fixed`，按表头定列宽（画质 128 / 名称 150 / 启用 72 / 录制中 72 / 操作 76，地址列吃剩余宽）；地址与名称 `td` 单行省略（`overflow:hidden + text-overflow:ellipsis + white-space:nowrap`），全 URL 悬浮可见（`loadRooms` 渲染的地址 td 自带 title）；`td` 显式 `vertical-align:middle` 消除各浏览器 UA 默认差异。≤768px 兜底：表格 `min-width:640px` + `.panel` `overflow-x:auto`，右侧控件列不再被挤压、改为面板内横向滚动。
+- 浏览器差异说明：Chrome/Edge 在 `/?&=` 处断行、Firefox 列宽分配策略不同、Safari 的单元格 ellipsis 必须配合 `table-layout:fixed`——fixed 布局是跨三者唯一同时解决「溢出 + 省略号」的方案。
+
+#### 验证（2026-09-11，Chrome 153 headless 渲染真实 `web/style.css`）
+
+- 1200 / 768px：表格不超面板、删除按钮在卡片内、表头全部横排、8 行行高一致（47px）；
+- 500 / 375px：所有元素裁剪在面板卡片内（`overflow-x:auto` 生效，横向滚动可达右列），无卡片外溢出；对比修复前截图（表头竖排、删除按钮画到卡片外灰色背景）全部消除；
+- 回归：纯 CSS 且作用域限定 `#rooms-view`，不涉及 pytest / 前端 node:test 用例。
+
+### v4.1.0-dev (2026-09-11) — 修复 ffmpeg `-reconnect*` 选项缺值导致的录制启动 -22（EINVAL）
+
+**变更摘要**：修复 2026-09-10「`-reconnect*` 移到 `-i` 之前」重构中丢失的选项取值——`-reconnect_streamed` / `-reconnect_at_eof` 的布尔值 `1` 被丢掉，ffmpeg 把下一个选项名当作值（`Unable to parse "reconnect_streamed" option value "-reconnect_at_eof" as boolean` → Invalid argument），**输入未打开即退出，返回码 -22**。该缺陷在 09-11 凌晨抖音 h264 HLS 候选真实录制中 100% 复现（h265 FLV 候选按预期降级跳过后走 HLS 命中此处）。
+
+#### 一、根因（`main.py` 录制基础命令）
+
+- 09-10 代码审查修复把 `-reconnect_delay_max 60 / -reconnect_streamed / -reconnect_at_eof` 从 `-i` 之后整体移到 `-i` 之前，**移动时后两个选项的取值 `1` 丢失**（`-reconnect_delay_max 60` 因带值幸免）。旧写法（`-i` 之后）ffmpeg 静默接受、退出码 0、无可见症状，因此该缺陷直到补值前从未暴露。
+- 同步修正 `_FFMPEG_ERRNO_HINTS[-22]` 文案：`-22` 除「容器/编码错配（HEVC 写进 ipod）」外还有「输入选项解析失败」一类成因，旧文案会把排查方向误导到容器问题（本次排查即被误导）。
+
+#### 二、修复与防线
+
+- `main.py`：`-reconnect_streamed 1` / `-reconnect_at_eof 1` 补回取值（`-i` 之前位置不变）。
+- `tests/test_ffmpeg_reconnect_args.py`（新增，3 用例）：AST 扫描 `main.py` + `scripts/douyin_live_recorder_standalone.py` 双定义点，断言 ① 每个 `-reconnect*` 后紧跟非选项名的字面量取值；② 全部位于 `-i` 之前（落地 09-10 审查建议但未实施的防线）。已用「缺值写法」反向验证断言有牙（能抓住回归）。
+- 本机 ffmpeg 实测：事故参数对本地 HLS 流逐字复现用户日志报错；修复参数输入正常打开并成功拉流写盘。
+
+#### 三、验证（2026-09-11）
+
+- `pytest`（test_ffmpeg_reconnect_args / test_record_container / test_main_fixes）：**50 passed**；
+- `black --check` / `isort --check-only` / `mypy`：全绿；
+- 遗留观察项：`-reconnect_at_eof 1` 对带 ENDLIST 的流会无限重连（重连无次数上限）——真直播无 ENDLIST 不触发，停播后依赖 CDN 撤流 403/404 退出，属设计语义；待真机增量验证（用新直播 URL 实测一轮录制）。
+
+### v4.1.0-dev (2026-09-10) — 形参日志 f-string → i18n.tr 全量迁移（242 处 / 27 文件；四语目录占位符改名）
+
+**变更摘要**：把 `logger.*` / `print` 的 **242 处 f-string 调用点**改写为 `i18n.tr(模板, **kw)`，并同步改写四语目录的占位符命名，使「带占位符的 msgid」首次真正可命中——迁移前 f-string 在查目录**之前**就完成插值，目录里 `[{record_name}] ...` 这类键永远匹配不上，翻译静默退化为原文（全仓 200+ 条形参日志长期「有翻译但用不上」）。本轮同时修正 `scripts/extract_i18n_strings.py` 的扫描口径（新增 `tr()` 识别，否则迁移后调用点会从提取结果中消失、缺失检测退化为假绿）。
+
+#### 一、迁移机制（`i18n.py` 上一轮新增，本轮大规模落地）
+
+- `i18n.tr(template, **kwargs)`：先 `_tr(template)` **查表**，再 `str.format(**kwargs)` **插值**。模板必须是字面量常量串，占位符只能是纯标识符（`str.format` 拒绝 `{a.b}` / `{f(x)}`）。
+- 格式说明符 / 转换符由调用方**预先求值**后作实参传入，不进模板：`f"{_backoff:.0f}"` → `_backoff=f"{_backoff:.0f}"`；`f"{value!r}"` → `value=repr(value)`。目录侧提取器本就丢弃 `:spec` / `!conv`，两侧口径一致。
+- 占位符名由表达式**确定性派生**（同一模板内重名加 `_2/_3` 后缀），保证「源码侧」与「目录侧」得到同名：`type(e).__name__`→`type_name`、`utils.mask_credentials(url)`→`masked_url`、`self._cls_name`→`cls_name`、`X.get('k')`→`k`、`X['k']`→`k`、`len(X)`→`X_count`、`X.__name__`→`X_name`、其余取最长非关键字标识符。
+
+#### 二、源码迁移（242 处 / 27 文件）
+
+- 计数：`main.py` 58、`src/spider.py` 25、`src/stream_select.py` 20、`msg_push.py` 15、`src/recorder_status.py` 12、`web.py` 11、`src/danmaku_monitor.py` 11、`src/ffmpeg_install.py` 11、`src/config_io.py` 9、`src/video_postprocess.py` 9、`src/log_archive.py` 7、`src/utils.py` 7、`src/async_http.py` 6、`src/node_install.py` 6、`src/ffmpeg_proc.py` 5、`src/notify.py` 5、`src/scheduler.py` 5、`src/stream.py` 4、`src/collector.py` 3、`src/sync_http.py` 3、`src/platforms/bilibili.py` 2、`src/room.py` 2、`src/ttwid.py` 2、`gui.py` 1、`src/cookie_cache.py` 1、`src/platforms/douyin.py` 1、`src/web_tray.py` 1。
+- 跳过 9 处**无翻译价值**的纯装饰/纯占位符模板（如 `f"{'=' * 60}"`），与提取器 `is_valuable` 同口径。
+- 归一化既有 `tr()` 调用：`src/ffmpeg_proc.py` 的 `count=len(still_running)` → 模板占位符按新规则派生为 `{still_running_count}`，kwarg 名同步改为 `still_running_count`（该处漏改曾在运行时 `.format` 抛 `KeyError`，由新增回归测试捕获）。
+- 27 个文件补 `import i18n`；`main.py` 的 `import i18n` 提到模块级 banner 打印**之前**（模块顺序执行，晚于 banner 的 import 对已执行的 `print` 无效）。`gui.py` 因既有 `import i18n as i18n_module`，该处沿用别名。
+
+#### 三、四语目录改写（键集合 539 → 544）
+
+- `i18n/zh_CN/LC_MESSAGES/zh_CN.po`：250 行占位符改写（逐行、保留 CRLF/分组注释）；追加 5 条本轮新引入的告警串（`JSON 解析失败(已忽略)`、`ffmpeg 转封装/转码超时`、`ffmpeg 转 MP4 超时`、`ffmpeg 抽音频超时`、`执行自定义脚本超时`）。
+- `i18n/en_US.json` / `i18n/en_GB.json`：各 125 条键值改写 + 新增 5 条，`sort_keys=True` 落盘保持原格式（无 BOM / CRLF）。
+- `i18n/zh_TW.yaml`：134 行改写 + 新增 5 条（单引号风格）。注意 YAML 单引号标量把 `'` 转义为 `''`、且部分条目用 `? key` 显式键指示符与跨行标量——改名须先还原 `''`→`'` 再派生，且不能按「是否含 ASCII 冒号」过滤行（否则 `? ` 行与续行漏改，导致与 `.po` 出现 9 条键差异）。
+- 重编译 `zh_CN.mo`：545 条（544 + 头部空 msgid），65232 字节；`--check` 字节级同步通过。
+- `.po` 头部维护说明更新：占位符须为纯标识符；翻译查找三条入口（`print` 常量串 / `tr()` 形参日志 / 其余 `tr()` 调用点）；并标注「zh_CN 目录并非恒等映射（128 条英文源串译成中文）」。
+
+#### 四、工具与门禁改造
+
+- `scripts/extract_i18n_strings.py`：`scan_file` 新增 `tr(...)` / `<别名>.tr(...)` 首参常量串识别（f-string 与 tr 双形态并存期必须都扫）；调用方模块名由常量集合 `TR_CALLER_IDS = {"i18n", "i18n_module"}` 覆盖——漏认别名会让该调用点从提取结果消失、缺失检测对它退化为假绿（`gui.py` 用的正是 `i18n_module`）。模块头补规则 5 说明。
+- `tests/conftest.py`：新增 autouse fixture `_pin_identity_translation`，把 `i18n._tr` 固定为 `lambda t: t`。原因：`tr()` 迁移后日志文本随 `config.ini` 的 `language` 与宿主系统语言变化（本机 `language` 为空 → 探测出 `en_US`，同一断言在不同机器得到不同文本），而 `zh_CN` 目录亦非恒等（128 条英文源串译成中文），**不存在**「选某个语言即可复现源文本」的方案；冻结为恒等后 `tr(模板, **kw) == 迁移前 f-string 输出`，断言与语言解耦。翻译机制本身由 `tests/test_i18n_tr.py` 与 `test_web_api.py` 语言用例单独覆盖。
+- `tests/test_i18n_migration.py`（新增，3 用例）：① 无遗留「有价值」的 `logger/print` f-string；② 每个 `tr()` 的模板占位符集合 == 关键字实参集合，且占位符均为纯标识符；③ 运行时模板集合 ⊆ `zh_CN.po` 键集合（等价于提取器「缺失 0」）。
+- `AGENTS.md`：新增 2 条防回归条目（形参日志必须走 `tr()`；测试必须冻结翻译为恒等映射）。
+
+#### 五、验证（2026-09-10）
+
+- `pytest -q`：**902 passed, 2 skipped**（899 → +3 迁移回归用例；迁移前后均全绿）；
+- `python scripts/extract_i18n_strings.py`：**缺失 0 条，四语目录键集合零差异**（各 544 条；191 条历史/兼容冗余项保留不动）；
+- `python scripts/compile_po.py --check`：与 `.po` 同步（545 条）；
+- `black --check .`：128 files unchanged；`isort --check-only .`：exit 0（Skipped 9）；`mypy src/ main.py web.py gui.py i18n.py msg_push.py`：44 files 0 error；
+- `python scripts/check_annotations.py`：全部通过（新增测试文件注释密度 13.8% ≥ 13.0%）；
+- `python scripts/check_version.py`：PASS。
+
+#### 六、回滚点
+
+- 迁移前的完整快照保留在 `.workbuddy/tmp/i18n_param_migration_backup/`（四语目录 + 提取器 + 27 个源文件，53 文件 / 1.6 MB），工作区非 git 仓库，此为唯一回滚基线。
+
+### v4.1.0-dev (2026-09-10) — 代码审查 28 项修复 + 仓库元数据同源同步 + 四语本地化补全（521 → 539 条）
+
+**变更摘要**：本轮基于 `CODE_REVIEW_2026-09-10.md` 全仓审查意见逐项修复（P1 全部清零、P2/P3 按需），并收尾两项一致性工作。① **代码审查修复**：覆盖 `main.py`、`src/ffmpeg_proc.py`、`src/stream_select.py`、`src/web_config.py`、`web/app.js`、`src/collector.py`、`src/srt_writer.py`、`src/spider.py`、`src/ttwid.py`、`src/async_http.py`、`src/sync_http.py`、`src/danmaku_monitor.py`、`src/cookie_cache.py`、`src/utils.py` 及 `scripts/`、`tests/` 共 28 项，重点修复 ffmpeg `-reconnect*` 选项位置、信号量先于 Popen 获取、采集器 stop/loop 握手、`SRT` 注入、敏感配置掩码、`utils.mask_credentials` 等根因缺陷。② **元数据同步**：以 `pyproject.toml`（4.1.0）为单一事实源，核对八文件版本/依赖/目录清单漂移。③ **本地化补全**：经提取器扫描补入修复期新增的 18 条日志原文，四语目录键集合重新一致（各 539 条），`zh_CN.mo` 重编译。
+
+> **本条目第二节「遗留 8+4 项推进 + uv.lock 4.1.0」追加在文末新条目 `v4.1.0-dev (2026-09-10) — 遗留 8+4 项推进 + uv.lock 对齐 4.1.0`，不打断本节阅读。**
+
+#### 一、代码审查修复（按模块）
+
+- **`main.py`**：
+  - ffmpeg 命令行 `-reconnect_delay_max 60 / -reconnect_streamed / -reconnect_at_eof` 由 `-i` **之后**移至 `-i` **之前**：`-reconnect*` 是输入级选项，置于 `-i` 之后会被静默并入输出组、无告警且 exit 0，断流重连实际永不生效（已用仓库内 `ffmpeg/ffmpeg.exe` 实证）。
+  - `_rec_sem.acquire()` 由 `Popen` **之后**移至**之前**，并将「Popen → 注册 → 弹幕启动 → 循环」整体纳入单一 `try/finally: _rec_sem.release()`，消除启动异常导致信号量永久泄漏、后续录制并发上限被压低的缺陷。
+  - `process.wait(timeout=30)` 的 `except Exception: pass` 改为 `except subprocess.TimeoutExpired:` 后 `kill()` + 重新 `wait()`；`return_code is None` 兜底为 `-1`，避免超时后静默误判成功。
+- **`src/ffmpeg_proc.py`**：`_cleanup_single_ffmpeg_process` / `cleanup_all_ffmpeg_processes` 增加返回值判定——终止失败时告警并仅清理 `poll() is None` 的条目，存活进程保留并告警（不再无差别移除注册表项）。
+- **`src/stream_select.py`**：异常分支改为 `if last_resort: warning; return True`，与上方稳定拒收的 `last_resort` 放行语义对齐。
+- **`src/web_config.py`**：新增 `is_sensitive_key()` / `is_sensitive_item()`（正则 `令牌|密码|授权码|token|secret|passwd|password|api[_-]?key`，大小写不敏感；排除 `expiry|timeout|有效期|过期`），`read_config_safe` 据此对 6 类凭据脱敏、`web_token_expiry` 等有效期字段不脱敏（已用非空临时配置实证 6 键脱敏、非敏感保留）。
+- **`web/app.js`**：新增 `isSensitiveField(section,key)` JS 侧等价实现，`inputType` 据其取 `password`/`text`；`showView` 起始新增 `stopSSE()`（此前仅在 else 分支调用，切换视图会残留旧 SSE 连接）。
+- **`src/collector.py`**：缓存 `self._cls_name`；`_run()` 先发布 `self._loop` 再检查 `self._stop_event`（与 `stop()`「先 set 事件再读 loop」反向配对，保证信号必达）；新增 `_SHUTDOWN_TIMEOUT_SECONDS=5.0`，`_shutdown` 用 `asyncio.wait_for(self._danmaku.stop(), timeout=...)`；`_on_message` 的 SRT 写入包 `try/except` 并告警（单条失败不中断采集）。
+- **`src/srt_writer.py`**：新增 `_sanitize_srt_text()`（`\r\n→空格`、`-->→->`），用户名与消息写入均经其净化，杜绝弹幕文本含 `\n` 撕裂字幕块、`-->` 伪造时间码；`end` 收敛为 `max(start, min(end, float(self._seg_seconds)))`。
+- **`src/spider.py`**：新增 `import os` 与 `_read_haixiu_token_override(is_haixiu)`，依「环境变量 `HAIXIU_ACCESS_TOKEN`/`HAIHAI_ACCESS_TOKEN` → `config.ini [Cookie]` → 内置兜底」三级读取访问令牌，去掉硬编码 token。
+- **`src/ttwid.py`**：非阻塞获取失败时改阻塞式重新获取（串行接管），而非在锁外自行抓取，避免并发重复拉取。
+- **`src/async_http.py` / `src/sync_http.py`**：请求体判定 `if data or json_data:` 改为 `if data is not None or json_data is not None:`（空 dict 应被视为有效请求体，原写法会吞掉 `data={}`）。
+- **`src/danmaku_monitor.py`**：`setdefault` 改显式 `get` + 按需创建（避免每条消息都求值默认参数工厂，去噪）。
+- **`src/cookie_cache.py` / `src/async_http.py`**：日志统一经 `utils.mask_credentials()` 脱敏。
+- **`src/utils.py`**：新增 `mask_credentials(text)`，正则剥离代理凭据（`://user@`）与 Secret 查询参数（`signature|token|access_token|apikey|api_key|secret|key|x-bogus|a-bogus|ms_token|nonce|sid` 等），已实证 `http://***@host`、`?expire=123&signature=***&codec=h265`。
+- **`scripts/check_coverage.py`**：`missing_modules` 由告警改为 `return 1`（门禁不再「假绿」）。
+- **`scripts/smoke_test.py`**：`load_config` 对非法顶层结构抛 `ValueError`；`main()` 捕获 `(OSError, ValueError)` → `sys.exit(2)`。
+- **`scripts/compile_po.py`**：`import os`，写入改临时文件 + `os.replace` 原子替换（避免中途失败留截断 `.mo`）。
+- **`scripts/check_version.py`**：`strip_v` 由 `lstrip("v")` 改 `removeprefix("v")`（避免误删如 `ver` 前缀）。
+- **`tests/`**：
+  - `test_concurrency_rate_limit.py` 整体重写：驱动真实 `src.ttwid.get_ttwid()`（8 线程断言 `_fetch_ttwid` 仅调用一次）+ `src.stream_select._throttle_probe()`，消除「自实现逻辑再断言、删库也过」的假绿。
+  - `test_record_container.py`：`_segment_format_nodes(path=_MAIN_PATH)` 增加 `path` 形参；新增 `TestSegmentFormatSecondDefinitionPoint` 覆盖 `src/video_postprocess.py`。
+  - `test_danmaku_wiring.py`：`monkeypatch.setattr(main.time, "sleep", ...)` 改 `SimpleNamespace` 垫片仅覆盖 `sleep`（避免污染全局 `time` 模块）。
+  - `test_async_http.py`：补 `call_args.kwargs["data"]`/`["content"]` 断言。
+  - 删除 `tests/test_utils.py.isorted`（isort 残留）。
+
+#### 二、仓库元数据同步（8 文件）
+
+- `pyproject.toml` 版本为唯一事实源（4.1.0）；`AGENTS.md` 版本号 `4.0.9.4 → 4.1.0`、`docker-compose.yaml` 注释 `APP_VERSION` 示例 `4.0.9.4 → 4.1.0`，均对齐 `pyproject.toml`。
+- `requirements.txt` 与 `pyproject.toml [project.dependencies]` 20 条依赖经脚本比对无漂移；`.coveragerc-concurrency` 的 `omit` 与 `pyproject.toml [tool.coverage.run].omit` 逐条一致；其余文件无目录清单/路径漂移。
+
+#### 三、本地化补全（4 目录 + 编译产物）
+
+- 补入修复期新增的 18 条日志原文（来源：`main.py` 3、`src/collector.py` 7、`src/async_http.py` 1、`src/ffmpeg_proc.py` 2、`src/cookie_cache.py` 2、`src/stream_select.py` 3），四语目录（zh_CN.po / en_US.json / en_GB.json / zh_TW.yaml）键集合经提取器复检**完全一致**（各 539 条），运行时「有、目录无」缺口清零（保留 191 条历史/兼容冗余项不动）。
+- `python scripts/compile_po.py` 重编译 `zh_CN.mo`（540 条含头部空 msgid，67700 字节），`--check` 字节级同步通过。
+
+#### 四、删除项
+
+- 删除 `tests/test_utils.py.isorted`（isort 过程残留）。
+
+#### 五、遗留未处理（需产品决策 / 真机验证，本期未改）
+
+- **需产品决策**：音频扩展名/容器、notify 脚本超时、`http_config` TLS 拆流、web_api 鉴权模型、`gui_legacy.py` 废弃、hls.js `@latest` 钉版、弹幕落盘离主循环、i18n 形参文本。
+- **需真机验证**：`spider.py` SSRF/JSON 点位、`ws_client.py` 加密套件/心跳、`proxy.py` Windows 格式、`video_postprocess.py` 超时。
+
+#### 六、验证（2026-09-10）
+
+- `pytest -q` 全量：`870 passed, 2 skipped, 0 warnings`（修复前针对性 11 模块 201 passed）；
+- `python scripts/extract_i18n_strings.py`：缺失 0 条，四语目录零差异；
+- `python scripts/compile_po.py` / `--check`：与 .po 同步（540 条）；
+- mypy 106 files 0 error；black 124 unchanged；isort pass；basedpyright 0 error（改动文件）；
+- `python scripts/check_version.py`：PASS（版本动态化状态无回退）。
+
+### v4.1.0-dev (2026-09-10) — 遗留 8+4 项推进 + uv.lock 对齐 4.1.0（v4.1.0 第二批）
+
+**变更摘要**：承接上一节「五、遗留未处理」中 8 项需产品决策 + 4 项需真机验证的清单，按用户「全部实施 + 保守实施」的策略逐一推进，并补齐 `uv.lock` 与 `pyproject.toml` 4.1.0 的版本漂移。① **8 项决策类全部实施**：钉版 `hls.js` CDN 依赖、拆分 `http_config` TLS 校验（拉流 vs 控制面）、修复音频扩展名/容器/编码三方错配、notify 脚本超时控制、web_api 鉴权模型增强（安全响应头 + 公开认证状态端点）、删除 `gui_legacy.py`、弹幕 SRT 落盘移出事件循环、i18n `tr()` 形参接口。② **4 项真机验证保守实施 + 补测试**：`spider.py` JSON/URL 校验、`ws_client.py` 心跳超时、`proxy.py` IPv6、`video_postprocess.py` 超时分类型——按用户指示取宽松默认值并补桩测试，真机验证清单交付用户执行。③ **元数据收尾**：`uv.lock` 项目版本 `4.0.9.4 → 4.1.0` 并 `uv lock --check` 通过；过期 `DouyinLiveRecorder.egg-info/` 重新生成（`pip install -e . --no-deps`）。
+
+#### 一、决策类 8 项推进（按模块）
+
+- **`index.html`**：`hls.js@latest` → 钉版 `hls.js@1.7.2`（jsdelivr CDN 供应链风险；与同文件 `flv.js@1.6.2` 钉版惯例对齐）。
+- **`src/http_config.py` + `main.py`**：TLS 校验拆为拉流专用（`get_effective_ssl_verify`）和控制面通用（`ssl_verify`）两条路径，`main.py` 移除「开启 https 录制 = 全请求关 SSL 校验」的全局传染（之前 `set_ssl_verify(not enable_https_recording)` 会让「https 录制」开关把登录/下 Cookie/推 token 的 TLS 校验一并关闭）。`tests/test_http_config.py` 重写锁定「控制面不被拉流开关关闭」契约。
+- **`main.py`**：音频分支 `SEGMENT_FORMAT_BY_SUFFIX` 与扩展名/编码器三方对齐——纯音频平台（猫耳FM/Look 等）保存类型含 m4a 时输出 `.m4a` + aac + ipod；保存类型为 TS 时输出 `.ts` + aac + mpegts。删除 `.get(...)` 兜底为「ipod」分支，强制查表取真值，让潜在错位被显式 KeyError 暴露而非静默回退（修复前 `tests/test_record_container.py` 3 项断言固化的是错位设计，按修正后的设计更新）。
+- **`src/notify.py`**：`run_script` 改用 `communicate(timeout=_SCRIPT_TIMEOUT_SECONDS=300.0)` + 超时后 `process.kill()` + 二次 `communicate()` 回收管道，避免第三方脚本永久挂起阻塞调用线程。`tests/test_notify.py` 新增 4 项测试：正常完成 / 30s 挂起 1s 超时被 kill / 错误命令走 OSError / shlex 解析失败走 ValueError。
+- **`src/web_api.py`**：鉴权模型强化三项真实改进——① 中间件统一加 `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY`（放行/拒绝两条路径均带，defense in depth）；② 新增公开端点 `GET /api/auth/status` 暴露 `auth_required` + 警告文案，前端在登录前即可提示「当前面板未启用认证」；③ 文件头加完整 9 项鉴权模型文档（认证开关/密码存储/Token/限流/密码变更/危险键/写接口/响应头/状态可见）固化设计契约。`tests/test_web_api.py` 新增 `TestSecurityHeaders`（4 项）锁定响应头契约与认证状态端点。
+- **`gui_legacy.py` 删除 + 元数据同步**：删除根目录 `gui_legacy.py`（与 `gui.py` 功能重复且遗留 `CREATE_NO_WINDOW` 启动子进程导致 `send_signal(CTRL_BREAK_EVENT)` 永远无效的 bug）；`pyproject.toml` 的 `py-modules` 移除 `gui_legacy`；`.dockerignore` 删除 `gui_legacy.py` 排除项；`AGENTS.md` 排除项与项目结构树同步清理；`CODE_WIKI.md` / `CODE_WIKI_EN.md` 项目结构图与依赖表同步清理，`gui_legacy.py 已知遗留问题` 区块改写为「已删除」说明。`pyproject.toml` 与 `AGENTS.md` 的 42 模块计数保持一致（`gui_legacy.py` 不计入）。
+- **`src/collector.py`**：弹幕 SRT 落盘从事件循环线程解耦——`_on_message` 仅做 O(1) 入队 `queue.SimpleQueue`，独立守护线程 `_srt_writer_loop` 消费 `(user, msg, now)` 元组后调 `srt.write`（now 来自事件循环侧、保持时间轴不被写线程调度延迟影响）。`stop()` 顺序：发 sentinel (`None`) → 写线程 `join(timeout=3.0)` → `srt.close()` 兜底；防止「写线程卡住时关闭 SRT 丢尾部数据」与「重复 close 抛 I/O on closed file」。`tests/test_danmaku_offloop.py` 新增 5 项测试：写线程存在/daemon/命名约定、仅监控模式不入队、端到端 N 条字幕块落盘、`srt.close` 仅调一次（`stop` 幂等）、慢速 `srt.write` 不阻塞入队（10 条入队 < 0.5s）。
+- **`i18n.py` + 18 处调用站**：新增 `tr(template, **kwargs)` 助手——先 `_tr(template)` 查表，再 `.format(**kwargs)` 二次插值。修复 f-string 在查表前先替换模板导致「目录里 `[{record_name}]` 永远查不到、翻译静默退化为原文」的根因。修复期新增的 18 条带占位符日志改用 `tr()`：来源 `main.py` 3、`src/collector.py` 7、`src/async_http.py` 1、`src/ffmpeg_proc.py` 2、`src/cookie_cache.py` 2、`src/stream_select.py` 3；其中 `{type(e).__name__}` 形式的 f-string 表达式占位符由调用方预求值为 `type_name=type(e).__name__` 局部变量。`tests/test_i18n_tr.py` 新增 6 项测试：恒等映射、format 正常、表达式占位符、缺字段 KeyError（不静默退化）、查表后插值、反向回归（已插值字符串查模板键 miss）。
+
+> **预存 200+ 形参日志**仍用 f-string 形式（属历史遗留，非本批范围），不替换目录键；待后续「全部 i18n 形参迁移」专项工作推进。
+
+#### 二、真机验证 4 项保守实施（按模块）
+
+- **`src/spider.py`**：新增 `_safe_loads(text) -> Optional[dict]` 异常安全解析（捕获 `JSONDecodeError` 记 warning 后回 None），与 `_is_safe_http_url(url)` URL scheme 白名单（仅放行 http/https/ws/wss，拒绝 file/gopher/ftp 与缺 scheme 相对路径）作为防御性基线。`spider.py` 现有 ~100+ 处 `json.loads(json_str)` 调用待逐处迁移，本批仅提供迁移基础设施。
+- **`src/ws_client.py`**：`_heartbeat_loop` 加 `asyncio.wait_for` 兜底（超时 = `heartbeat_interval + 1.0`），心跳回调 hang 住超过阈值时主动关底层连接、退出循环，让外层 `connect()` 走重连路径——修复「心跳永远挂起、服务端主动 FIN 时被误判为正常关闭」的根因。`typing` 导入补 `cast`（mypy 报错修复）。
+- **`src/proxy.py`**：`ProxyInfo.__post_init__` 接受 IPv6 字面量——`[::1]:8080` 形如 Windows 注册表 `ProxyServer` 的常见 IPv6 配置，单独识别通过；裸 IPv6（`::1` / `2001:db8::1`）也兜底放行。
+- **`src/video_postprocess.py`**：`segment_video` / `converts_mp4` / `converts_m4a` 三个 `_run_ffmpeg_checked` 调用者分别新增 `except subprocess.TimeoutExpired as e:` 独立分支并按「转封装超时 / 转码超时 / 抽音频超时」分类告警，避免被 `except Exception` 兜底为「unknown error」丢失「ffmpeg 卡死」语义。
+- **`tests/test_machine_validation_fixes.py` 新增 7 项**：① `_safe_loads` 合法/非 dict/损坏 JSON 路径；② `_is_safe_http_url` http/https/ws/wss 通过 + file/gopher/ftp 拒绝 + 相对路径拒绝；③ `ws_heartbeat_timeout_closes_connection`（patch `websockets.connect`，用慢速心跳触发超时分支断言 `ws.close()` 被调）；④ IPv6 `[::1]` 通过；⑤ 裸 IPv6 `::1` 通过；⑥ 非法 IP `not a host!@#` 抛 `ValueError`；⑦ 三处 `_run_ffmpeg_checked` 超时分类日志（断言出现 3 次「超时」字样）。
+
+#### 三、仓库元数据收尾
+
+- `uv.lock` 项目自身版本 `4.0.9.4 → 4.1.0`（仅改 1 行：`name = "douyinliverecorder"` 块下的 `version = "4.0.9.4"` → `4.1.0`），未触发依赖图重解析（其它 73 包未动），`uv lock --check` 通过。
+- 重新生成 `DouyinLiveRecorder.egg-info/PKG-INFO`（之前为 4.0.9.2，落后于 pyproject 4.1.0）：`pip install -e . --no-deps`，`importlib.metadata.version('douyinliverecorder')` 现读出 `4.1.0`。
+- `scripts/check_version.py` PASS（动态化状态无回退）。
+
+#### 四、删除项
+
+- `gui_legacy.py`（旧版 GUI，与 `gui.py` 功能重复且 `CREATE_NO_WINDOW` bug 致优雅停止永不生效）。
+
+#### 五、遗留未处理（本期仍未动）
+
+- 预存 200+ 形参日志的 f-string → `tr()` 全量迁移（专项工作，非本批范围）。
+- 真机验证类 4 项的实测验证（**已交付用户**）：`spider.py` SSRF/JSON 真实接口校验、`ws_client.py` 加密套件在 `OpenSSL 3.x` 下的实测握手、`proxy.py` Windows 系统代理 IPv6 实际探测、`video_postprocess.py` ffmpeg 转码卡死的实际超时路径。
+
+#### 六、验证（2026-09-10）
+
+- `pytest -q` 全量：`899 passed, 2 skipped, 0 warnings`（修复前 870 → 增加 29 项新测试：test_notify 4 + test_web_api 4 + test_danmaku_offloop 5 + test_i18n_tr 6 + test_machine_validation_fixes 7 + 原 11 模块针对性 201 passed 不变）；
+- `python scripts/extract_i18n_strings.py`：缺失 0 条，四语目录零差异；
+- `python scripts/compile_po.py` / `--check`：与 .po 同步（540 条）；
+- mypy 44 files 0 error（含 `src/spider.py` 补 `Optional` 导入 + `src/ws_client.py` 补 `cast` 导入）；black 104 files unchanged（isort 调整 5 文件后通过）；isort pass；
+- `python scripts/check_version.py`：PASS（`uv.lock` 4.1.0、egg-info 4.1.0、pyproject 4.1.0 全一致）；
+- `uv lock --check`：通过（73 包未动）。
+
+### v4.0.9.4-dev (2026-09-07) — CI 依赖版本对齐官方最新稳定版（codecov-action v5→v7、isort 8.0.1→9.0.1、mypy 2.3.0→2.3.1）
+
+**变更摘要**：按 2026-09-07 时点逐一核对 `.github/workflows/ci.yml` 引用的全部依赖与运行时版本，升级落后项、其余维持现状。**升级 3 项**：① `codecov/codecov-action@v5 → @v7`（最新 v7.0.0，2026-06-07；v6 唯一破坏性变更是迁移 node24 运行时，ubuntu-latest 原生支持，且 setup-python/setup-node v7 本身即 node24 ESM 动作——经 v7.0.0 的 action.yml 核对 `files` / `token` / `fail_ci_if_error` / `slug` 输入全部未变，现有用法零改动兼容）；② lint 工具钉版 `isort 8.0.1 → 9.0.1`（2026-08-28 发布；9.0.0 仅移除早已废弃的旧选项逻辑，`--profile black` 默认值未动）；③ `mypy 2.3.0 → 2.3.1`（2026-08-15 补丁版）。**核实后维持 6 项**：checkout / setup-python / setup-node / upload-artifact 均 @v7（已是各自最新主版本）、`dorny/paths-filter@v4`（最新 v4.0.3）、black 26.5.1（即 PyPI 最新稳定版）、Python 3.14（3.15 预计 2026-10 才 GA）、Node 24（Active LTS 到 2028-04，Node 26 于 2026-10-28 才进 LTS，官方生产推荐仍为 24）。**验证**：本地 venv（3.14.7）以 CI 完全相同的命令跑三门禁全绿——`isort --check-only --diff --profile black --line-length 120 .` exit 0；`mypy src/` 与 `mypy --platform linux src/` 双平台 0 errors（版本切换首轮出现过一次 mypy 内部错误，为 .mypy_cache 缓存残留，清缓存后复跑不复现）；`black --check --line-length 120 --target-version py314 .` 124 files unchanged；两 workflow YAML 解析通过（ci 8 jobs / release 4 jobs）。`AGENTS.md`「CI / workflow 约定」的 actions 基线条目同步改为 codecov-action@v7。requirements.txt / pyproject.toml 运行时依赖零改动（本次仅动 CI 内联工具钉版与 action 版本，test / concurrency-test / integration-verify / build-verify 各 job 行为不受影响）。`uv.lock` 同步刷新：`uv lock --upgrade-package isort` 把 isort 8.0.1 → 9.0.1（9.0.1 为 mypyc 编译发行、新增 `mypy-extensions` 依赖，该包 lock 中已存在故未新增条目），并顺带把 lock 内项目自身版本 4.0.9.2 → 4.0.9.4（对齐 `pyproject.toml`）；`uv lock --check` 通过（73 包）。lock 内 black 26.5.1 / mypy 2.3.1 本就是目标版本，无需改动。
 
 ### v4.0.9.4-dev (2026-09-06) — 仓库元数据八文件同源同步 + 四语本地化目录补齐（516 → 521 条）+ 本期改动总览（按模块分类）
 
@@ -4187,7 +4404,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - 现检测解释器 basename 以 `pythonw` 开头时，改用同目录 **python.exe**（console 子系统）拉起录制核心；打包版（CLI exe `console=True`）不受影响
 - **实测验证**（pythonw 当父进程 + python.exe 起带 SIGBREAK 处理器子进程）：修复后 `AttachConsole` 成功、`GenerateConsoleCtrlEvent` 返回 True、事件真正送达子进程（无处理器时被默认终止，退出码 `0xC000013A`=STATUS_CONTROL_C_EXIT；注册处理器场景收到 `signum=21`）。过程中发现 CPython 行为：Python 3.13 的 `time.sleep()` **不被 CTRL_BREAK 唤醒**（事件走 pending-call 机制，主线程在 C 层 sleep 中不检查信号），但 main.py 录制主循环无长 sleep，收到事件后 `safe_exit` 会在 GUI 15 秒等待窗口内执行
 
-> **gui_legacy.py 已知遗留问题（未改）**：旧版 GUI 用 `CREATE_NO_WINDOW` 启动子进程，该方式下 `send_signal(CTRL_BREAK_EVENT)` 永远静默无效，其"优雅停止"实际从未生效（每次等 15 秒超时后强杀）。根治需改启动参数 + AttachConsole 方案，改动较大，建议迁往 `gui.py`。
+> 已删除 `gui_legacy.py`（v4.1.0-dev，2026-09-10）：该文件与 `gui.py` 功能重复且遗留 `CREATE_NO_WINDOW` 启动子进程导致 `send_signal(CTRL_BREAK_EVENT)` 永远无效的 bug。建议迁移到 `gui.py`（已迁完，故删除）。
 
 ### v4.0.8.1-dev (2026-08-05) — CI 静态验证工作流、并发测试集成与覆盖率门禁提升
 
@@ -4481,8 +4698,8 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 | tqdm              | 已声明       | src/ffmpeg_install.py, src/node_install.py                                        |
 | PyExecJS          | 已声明       | src/room.py, src/spider.py, src/utils.py                                          |
 | customtkinter     | 已声明       | gui.py                                                                            |
-| pystray           | 已声明       | gui.py, gui_legacy.py (延迟导入)                                                      |
-| Pillow            | 已声明       | gui.py, gui_legacy.py                                                             |
+| pystray           | 已声明       | gui.py (延迟导入)                                                                 |
+| Pillow            | 已声明       | gui.py                                                                            |
 | fastapi           | 已声明       | src/web_api.py                                                                    |
 | uvicorn[standard] | 已声明       | web.py (延迟导入)                                                                     |
 | python-multipart  | 已声明       | FastAPI 表单处理隐式依赖                                                                  |

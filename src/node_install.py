@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-# Node.js 环境自动安装模块 - 跨平台的 Node.js 自动检测和安装功能
-#
-# 职责：检测 `node` 命令是否可用（check_nodejs_installed），不可用则按平台自动安装
-#   （Windows 从 npmmirror 拉 zip 解压；Linux 按发行版走 yum/apt；macOS 走 Homebrew）。
-# 安装落点：execute_dir（冻结后指向 _internal/），解压后把 node 目录前置注入 PATH，
-#   使同进程后续 `node` 调用直接命中。所有路径最后 `node -v` 校验 returncode==0 才认成功。
-# 设计取舍：安装失败只返 False、不抛异常，交由调用方提示用户手动安装，避免中断主程序启动。
-
 import os
 import platform
 import re
@@ -21,11 +13,22 @@ import requests
 from loguru import logger
 from tqdm import tqdm
 
+import i18n
+
 # 应用根目录复用 src.logger 公开导出的 script_path（等价原私有 _app_root() 的返回值）
 from .logger import script_path
 
 # 解压实现与 ffmpeg_install 共用同一份（原先两处逐字重复，见 src/utils.unzip_file）
 from .utils import unzip_file
+
+# Node.js 环境自动安装模块 - 跨平台的 Node.js 自动检测和安装功能
+#
+# 职责：检测 `node` 命令是否可用（check_nodejs_installed），不可用则按平台自动安装
+#   （Windows 从 npmmirror 拉 zip 解压；Linux 按发行版走 yum/apt；macOS 走 Homebrew）。
+# 安装落点：execute_dir（冻结后指向 _internal/），解压后把 node 目录前置注入 PATH，
+#   使同进程后续 `node` 调用直接命中。所有路径最后 `node -v` 校验 returncode==0 才认成功。
+# 设计取舍：安装失败只返 False、不抛异常，交由调用方提示用户手动安装，避免中断主程序启动。
+
 
 current_platform = platform.system()
 execute_dir = script_path  # 冻结后指向 _internal/，与 __file__ 定位的资源收敛到同一处
@@ -99,7 +102,7 @@ def install_nodejs_windows() -> bool:
         return False
 
     except Exception as e:
-        logger.error(f"type: {type(e).__name__}, Node.js installation failed {e}")
+        logger.error(i18n.tr("type: {type_name}, Node.js installation failed {e}", type_name=type(e).__name__, e=e))
         return False
 
 
@@ -122,7 +125,7 @@ def install_nodejs_centos() -> bool:
             return False
 
     except Exception as e:
-        logger.error(f"type: {type(e).__name__}, Node.js installation failed {e}")
+        logger.error(i18n.tr("type: {type_name}, Node.js installation failed {e}", type_name=type(e).__name__, e=e))
         return False
 
 
@@ -141,7 +144,7 @@ def install_nodejs_ubuntu() -> bool:
             logger.error("Node.js installation failed")
             return False
     except Exception as e:
-        logger.error(f"type: {type(e).__name__}, Node.js installation failed, {e}")
+        logger.error(i18n.tr("type: {type_name}, Node.js installation failed, {e}", type_name=type(e).__name__, e=e))
         return False
 
 
@@ -158,11 +161,11 @@ def install_nodejs_mac() -> bool:
             logger.error("Node.js installation failed")
             return False
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to install Node.js using Homebrew. {e}")
+        logger.error(i18n.tr("Failed to install Node.js using Homebrew. {e}", e=e))
         logger.error("Please install Node.js manually or check your Homebrew installation.")
         return False
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+        logger.error(i18n.tr("An unexpected error occurred: {e}", e=e))
         return False
 
 
@@ -192,7 +195,10 @@ def install_nodejs() -> bool:
         return install_nodejs_mac()
     else:
         logger.debug(
-            f"Node.js auto installation is not supported on this platform: {current_platform}. Please install Node.js manually."
+            i18n.tr(
+                "Node.js auto installation is not supported on this platform: {current_platform}. Please install Node.js manually.",
+                current_platform=current_platform,
+            )
         )
         return False
 

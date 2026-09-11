@@ -1,12 +1,16 @@
 # Tests for src/utils.py - utility function tests for coverage improvement.
 
+import builtins
 import os
 import tempfile
+import zipfile
 from pathlib import Path
+from typing import IO, Any
 
 import pytest
 
 from src.utils import (
+    ProgramError,
     check_disk_capacity,
     check_md5,
     dict_to_cookie_str,
@@ -18,6 +22,9 @@ from src.utils import (
     remove_duplicate_lines,
     remove_emojis,
     replace_url,
+    trace_error_decorator,
+    trace_error_decorator_or_none,
+    unzip_file,
     update_config,
 )
 
@@ -278,3 +285,134 @@ class TestGetQueryParams:
     def test_missing_param(self) -> None:
         result = get_query_params("https://example.com?a=1", "missing")
         assert result == []
+
+
+class TestTraceErrorGuard:
+    # Test trace_error_decorator / trace_error_decorator_or_none（同步路径此前完全未覆盖）。
+
+    # 同步正常路径：无异常时原样返回，不得落入任何兜底分支
+    def test_sync_success(self) -> None:
+        @trace_error_decorator
+        def ok() -> dict[str, bool]:
+            return {"is_live": True}
+
+        assert ok() == {"is_live": True}
+
+    # 同步 ProgramError（Node 环境缺失等 JS 执行失败）：吞异常返回 fallback，而非向调用方抛出
+    def test_sync_program_error(self) -> None:
+        @trace_error_decorator_or_none
+        def boom() -> str:
+            raise ProgramError("node missing")
+
+        assert boom() is None
+
+    # 同步任意异常：同样吞掉返回 fallback，把「崩溃」降级为「未开播/空结果」语义
+    def test_sync_generic_error(self) -> None:
+        @trace_error_decorator_or_none
+        def boom() -> str:
+            raise RuntimeError("disk gone")
+
+        assert boom() is None
+
+    # 异步包装器的 ProgramError 分支与同步是独立代码路径，须单独守卫
+    async def test_async_program_error(self) -> None:
+        @trace_error_decorator_or_none
+        async def boom() -> str:
+            raise ProgramError("node missing")
+
+        assert await boom() is None
+
+
+class TestUnzipFile:
+    # Test unzip_file.
+
+    # 正常解压：文件落位，且默认 delete=True 时源 zip 被清理（node/ffmpeg 安装缓存场景）
+    def test_unzip_and_delete(self, tmp_path: Path) -> None:
+        zip_file = tmp_path / "pkg.zip"
+        with zipfile.ZipFile(zip_file, "w") as zf:
+            zf.writestr("inner.txt", "payload")
+        dest = tmp_path / "out"
+        unzip_file(zip_file, dest)
+        assert (dest / "inner.txt").read_text(encoding="utf-8") == "payload"
+        assert not zip_file.exists()
+
+    # delete=False 保留源 zip（共享缓存复用场景）
+    def test_keep_zip_when_delete_false(self, tmp_path: Path) -> None:
+        zip_file = tmp_path / "pkg.zip"
+        with zipfile.ZipFile(zip_file, "w") as zf:
+            zf.writestr("a.txt", "1")
+        dest = tmp_path / "out"
+        unzip_file(zip_file, dest, delete=False)
+        assert (dest / "a.txt").exists()
+        assert zip_file.exists()
+
+    # Zip Slip 目录穿越必须被拒绝：成员经 ../ 逃逸出目标目录时抛 ValueError 且不落盘
+    def test_zip_slip_rejected(self, tmp_path: Path) -> None:
+        zip_file = tmp_path / "evil.zip"
+        with zipfile.ZipFile(zip_file, "w") as zf:
+            zf.writestr("../escape.txt", "pwn")
+        dest = tmp_path / "out"
+        with pytest.raises(ValueError, match="Unsafe path"):
+            unzip_file(zip_file, dest)
+        assert not (dest / "escape.txt").exists()
+
+
+class TestReadConfigValueErrors:
+    # Test read_config_value 异常兜底。
+
+    # ini 内容非法（缺 section 头）时 config.read 抛解析异常 → 必须返回 None 并打印原因，
+    # 而非让解析异常击穿调用方（注意：目录路径等 OSError 会被 configparser.read 吞掉，走不到这里）
+    def test_invalid_ini_returns_none(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bad_file = tmp_path / "bad.ini"
+        bad_file.write_text("no_section_header = oops\n", encoding="utf-8")
+        assert read_config_value(bad_file, "s", "k") is None
+        assert "Error occurred while reading" in capsys.readouterr().out
+
+
+class TestUpdateConfigErrors:
+    # Test update_config 异常兜底。
+
+    # ini 内容非法时读取阶段失败 → 直接返回，目标文件内容保持原样
+    def test_invalid_ini_returns_early(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        cfg = tmp_path / "bad.ini"
+        cfg.write_text("no_section_header = oops\n", encoding="utf-8")
+        update_config(cfg, "s", "k", "v")
+        assert "An error occurred while reading" in capsys.readouterr().out
+        assert cfg.read_text(encoding="utf-8") == "no_section_header = oops\n"
+
+    # 写失败（只读文件）必须被捕获并打印原因，源内容保留——只读目录盘满等场景不应崩掉录制流程
+    def test_readonly_file_write_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        cfg = tmp_path / "cfg.ini"
+        cfg.write_text("[s]\nk = old\n", encoding="utf-8")
+        cfg.chmod(0o444)
+        try:
+            update_config(cfg, "s", "k", "new")
+            assert "Error occurred while writing" in capsys.readouterr().out
+            assert "k = old" in cfg.read_text(encoding="utf-8")
+        finally:
+            cfg.chmod(0o644)  # 恢复可写，避免 pytest 清理 tmp_path 时因只读残留
+
+
+class TestRemoveDuplicateLinesEncodingFallback:
+    # Test remove_duplicate_lines 的编码回退路径。
+
+    # utf-8-sig 读取撞上 UnicodeDecodeError → 须回退系统默认编码重读且去重结果正确。
+    # 用 monkeypatch 模拟解码失败而非写真 GBK 字节：GBK 内容在 Linux CI（默认 UTF-8）
+    # 的回退读取会二次炸掉，无法做出跨平台稳定的用例；纯 ASCII 内容在任何默认编码下一致。
+    def test_fallback_on_unicode_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_open = builtins.open
+
+        # 只拦截 utf-8-sig 读：回退读（encoding=None）与回写（mode 含 w）必须放行走真 open
+        def fake_open(file: Any, mode: str = "r", **kwargs: Any) -> IO[Any]:
+            if "r" in mode and kwargs.get("encoding") == "utf-8-sig":
+                raise UnicodeDecodeError("utf-8-sig", b"\xff", 0, 1, "simulated decode failure")
+            return real_open(file, mode, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+
+        test_file = tmp_path / "dup.txt"
+        test_file.write_text("alpha\nalpha\nbeta\n", encoding="ascii")
+        remove_duplicate_lines(test_file)
+        # 用 bytes 解码绕开被 patch 的 open，utf-8-sig 同时剥掉回写产生的 BOM
+        content = test_file.read_bytes().decode("utf-8-sig")
+        assert content.split() == ["alpha", "beta"]

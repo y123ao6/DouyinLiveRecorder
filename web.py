@@ -15,6 +15,8 @@ import threading
 from datetime import datetime
 from typing import cast
 
+import i18n
+
 # 确保项目根在 sys.path
 _script_dir = os.path.dirname(os.path.realpath(__file__))
 if _script_dir not in sys.path:
@@ -108,8 +110,8 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
 
     # 重定向前先向控制台输出提示（窗口即将隐藏）
     print("[web] 进入后台运行模式，控制台窗口将隐藏")
-    print(f"[web] 日志文件: {log_path}")
-    print(f"[web] 访问地址: http://{host}:{port}")
+    print(i18n.tr("[web] 日志文件: {log_path}", log_path=log_path))
+    print(i18n.tr("[web] 访问地址: http://{host}:{port}", host=host, port=port))
     _flush = getattr(sys.stdout, "flush", None)
     if callable(_flush):
         _ = _flush()
@@ -131,9 +133,9 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'=' * 60}")
-    print(f"[{ts}] Web 管理面板进入后台运行模式")
-    print(f"控制台窗口已隐藏，访问地址: http://{host}:{port}")
-    print(f"日志文件: {log_path}")
+    print(i18n.tr("[{ts}] Web 管理面板进入后台运行模式", ts=ts))
+    print(i18n.tr("控制台窗口已隐藏，访问地址: http://{host}:{port}", host=host, port=port))
+    print(i18n.tr("日志文件: {log_path}", log_path=log_path))
     print("如需恢复控制台显示，请在 config.ini 设置 web_show_console = true 后重启")
     print(f"{'=' * 60}\n")
 
@@ -196,7 +198,7 @@ def main() -> None:
     )
     recorder_thread.start()
     setattr(main, "_recorder_thread", recorder_thread)  # 供 get_status() 检测存活（I6）
-    print(f"[web] 录制引擎已在守护线程启动 (tid={recorder_thread.ident})")
+    print(i18n.tr("[web] 录制引擎已在守护线程启动 (tid={ident})", ident=recorder_thread.ident))
 
     app = create_app(
         config_file=config_file,
@@ -217,14 +219,14 @@ def main() -> None:
         tray = WebConsoleTray(host=host, port=port, server=server)
         tray.start()
 
-    print(f"[web] Web 管理面板启动中: http://{host}:{port}")
-    print(f"[web] 认证: {'开启' if web_cfg['web_auth_enable'] else '关闭'}")
+    print(i18n.tr("[web] Web 管理面板启动中: http://{host}:{port}", host=host, port=port))
+    print(i18n.tr("[web] 认证: {web_auth_enable}", web_auth_enable="开启" if web_cfg["web_auth_enable"] else "关闭"))
     # 不安全绑定防护（C1）：未启用认证时拒绝监听非回环地址，防止局域网内未授权访问
     # （文件下载/配置读写）。需显式设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 才放行。
     if not web_cfg["web_auth_enable"] and not _is_loopback_host(host):
         allow_insecure = os.environ.get("DOUYIN_WEB_ALLOW_INSECURE", "").strip().lower() in ("1", "true", "yes")
         if not allow_insecure:
-            print(f"[web] ❌ 拒绝启动: 未启用 Web 认证时不允许监听非回环地址 ({host})。请二选一:")
+            print(i18n.tr("[web] ❌ 拒绝启动: 未启用 Web 认证时不允许监听非回环地址 ({host})。请二选一:", host=host))
             print("      1. config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password；")
             print("      2. 或设置 web_host = 127.0.0.1 仅限本机访问。")
             print("      如确需在无认证状态暴露到局域网，请设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 后重启（不推荐）。")
@@ -243,13 +245,13 @@ def main() -> None:
         try:
             main.cleanup_all_ffmpeg_processes()
         except Exception as e:
-            print(f"[web] 清理 ffmpeg 进程失败: {e}")
+            print(i18n.tr("[web] 清理 ffmpeg 进程失败: {e}", e=e))
         try:
             from src.async_http import close_all_clients_sync
 
             close_all_clients_sync()
         except Exception as e:
-            print(f"[web] 清理 HTTP 连接池失败: {e}")
+            print(i18n.tr("[web] 清理 HTTP 连接池失败: {e}", e=e))
 
         # serve() 已返回（优雅关闭），收起托盘图标，进程随后正常退出。
         if tray is not None:

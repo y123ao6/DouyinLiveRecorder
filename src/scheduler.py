@@ -1,4 +1,13 @@
 # -*- coding: utf-8 -*-
+import time
+from collections import deque
+from threading import Condition, Lock
+from typing import Any
+
+import i18n
+
+from .logger import logger
+
 # 高并发录制调度与资源管理
 #
 # 取代原先「单全局信号量 + 错误率单向压制」的模型，提供：
@@ -12,12 +21,6 @@
 # 设计目标：80+ 任务跨多平台时不因固定 3 槽而排队；单平台抖动被隔离降级，
 # 不拖垮全局；单任务异常被捕获，避免连锁报错导致系统不可用。
 
-import time
-from collections import deque
-from threading import Condition, Lock
-from typing import Any
-
-from .logger import logger
 
 # 探针租约时长：half-open 探针被授予后超过该时长仍未上报样本（未开播等待轮、
 # 禁录、房间线程退出等不上报样本的路径）时，allow() 重新授予探针——否则
@@ -282,9 +285,19 @@ class ConcurrencyScheduler:
                 dynamic = self._dynamic_mode
                 active = self._active_count
             if dynamic:
-                logger.debug(f"并发模式: 动态调速，网络容量调整为 {new_cap}（活跃任务 {active}）")
+                logger.debug(
+                    i18n.tr(
+                        "并发模式: 动态调速，网络容量调整为 {new_cap}（活跃任务 {active}）",
+                        new_cap=new_cap,
+                        active=active,
+                    )
+                )
             else:
-                logger.debug(f"并发模式: 固定，网络容量调整为 {new_cap}（来源: 同一时间访问网络的线程数）")
+                logger.debug(
+                    i18n.tr(
+                        "并发模式: 固定，网络容量调整为 {new_cap}（来源: 同一时间访问网络的线程数）", new_cap=new_cap
+                    )
+                )
 
     # —— 配置入口 ——
     def set_active_count(self, n: int) -> None:
@@ -325,13 +338,19 @@ class ConcurrencyScheduler:
         self.recompute()
         if enabled:
             logger.debug(
-                f"并发模式: 动态调速（网络容量随活跃任务数自适应，当前 {self._network_semaphore.value}，"
-                f"下限 {self._min_capacity}，上限 {self._max_capacity}）"
+                i18n.tr(
+                    "并发模式: 动态调速（网络容量随活跃任务数自适应，当前 {value}，下限 {min_capacity}，上限 {max_capacity}）",
+                    value=self._network_semaphore.value,
+                    min_capacity=self._min_capacity,
+                    max_capacity=self._max_capacity,
+                )
             )
         else:
             logger.debug(
-                f"并发模式: 固定（忽略动态调速器，网络容量固定为 {self._network_semaphore.value}，"
-                f"来源: 配置「同一时间访问网络的线程数」）"
+                i18n.tr(
+                    "并发模式: 固定（忽略动态调速器，网络容量固定为 {value}，来源: 配置「同一时间访问网络的线程数」）",
+                    value=self._network_semaphore.value,
+                )
             )
 
     # —— 熔断器 ——
@@ -406,7 +425,7 @@ class ConcurrencyScheduler:
             try:
                 self.recompute()
             except Exception as e:  # 守护循环自身不应因异常退出
-                logger.debug(f"并发调度重算异常（已忽略）: {type(e).__name__}: {e}")
+                logger.debug(i18n.tr("并发调度重算异常（已忽略）: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
 
 def host_of(url: str) -> str:

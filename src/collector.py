@@ -12,14 +12,20 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 import threading
 import time
 from typing import Any, Optional, Type, cast
 
+import i18n
 from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType
 from src.danmaku_monitor import DanmakuMonitorHub
 from src.logger import logger
 from src.srt_writer import SrtWriter
+
+# 弹幕客户端 stop() 的等待上限（秒）：SDK 因半开连接挂住时，若无限等待，
+# 关闭协程里的 loop.stop() 永不执行，采集线程会永久驻留（join 超时后线程与 SRT 句柄双泄漏）。
+_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 # 弹幕采集器：在独立守护线程的 asyncio loop 中驱动某平台弹幕客户端，
@@ -55,6 +61,9 @@ class DanmakuCollector:
         _cls_name = str(getattr(self._danmaku_cls, "__name__", "danmaku"))
         self._room_name = room_name or _cls_name
         self._platform_name = platform_name or _cls_name
+        # 缓存类名：Mock 型测试替身可能没有 __name__，行内重复访问会在 start()
+        # 与日志处抛 AttributeError（start() 明确承诺不抛异常）。
+        self._cls_name = _cls_name
         self._monitor: Optional[DanmakuMonitorHub] = monitor
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -64,6 +73,14 @@ class DanmakuCollector:
         self._started = False
         self._stop_called = False  # stop() 防重入标记：提前中断与尾收兜底可能重复触发
         self._msg_count = 0
+        # SRT 写入与弹幕接收解耦：_on_message 跑在 asyncio 事件循环上，若同步调
+        # srt.write 会阻塞 ws_recv → 引起心跳掉线/对端断连误判。把 (user, msg, now)
+        # 推入有界队列，独立守护线程从队列取出再写盘。SimpleQueue 无界但 SrtWriter 写盘
+        # 极快（O(80 字节)）且与弹幕接收速率同量级，长期运行内存不增长。
+        # sentinel = None 通知消费者退出；stop() 在 srt.close() 之前先发 sentinel
+        # 并 join 线程，确保「队列清空 → srt.close 兜底刷尾」顺序。
+        self._srt_queue: "queue.SimpleQueue[Optional[tuple[str, str, float]]]" = queue.SimpleQueue()
+        self._srt_writer: Optional[threading.Thread] = None
 
     # 惰性解析监控枢纽：未显式注入时取进程级单例（失败静默返回 None，监控缺位不影响录制）。
     def _monitor_hub(self) -> Optional[DanmakuMonitorHub]:
@@ -88,12 +105,18 @@ class DanmakuCollector:
             try:
                 self._srt.start()
             except Exception as e:
-                logger.warning(f"[弹幕采集]SRT 初始化失败(继续尝试写弹幕): {e}")
+                logger.warning(i18n.tr("[弹幕采集]SRT 初始化失败(继续尝试写弹幕): {e}", e=e))
+            # 启动 SRT 写盘守护线程：把 (user, msg, now) 从队列取出再写盘，
+            # 保证 _on_message 在事件循环里只做入队（O(1)）不阻塞 ws 接收。
+            self._srt_writer = threading.Thread(
+                target=self._srt_writer_loop, name=f"srt_writer_{self._cls_name}", daemon=True
+            )
+            self._srt_writer.start()
         # 上报监控枢纽：房间采集开始（重置该房间统计）
         hub = self._monitor_hub()
         if hub is not None:
             hub.room_started(self._room_name, self._platform_name)
-        self._thread = threading.Thread(target=self._run, name=f"danmaku_{self._danmaku_cls.__name__}", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=f"danmaku_{self._cls_name}", daemon=True)
         self._thread.start()
 
     # 停止采集：置停止标记、跨线程调度关闭弹幕连接，最多等待 timeout 秒回收线程，最后关闭 SRT 文件。
@@ -121,6 +144,11 @@ class DanmakuCollector:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+        # SRT 写线程收尾：sentinel 通知消费者排空队列后退出，join 超时降级为「未排空也关文件」，
+        # 避免 srt.close() 之前还有未刷盘的弹幕丢失（保留 flush-on-close 的兜底）。
+        if self._srt_writer is not None and self._srt is not None:
+            self._srt_queue.put(None)
+            self._srt_writer.join(timeout=3.0)
         if self._srt is not None:
             self._srt.close()
 
@@ -130,7 +158,14 @@ class DanmakuCollector:
         async def _shutdown() -> None:
             if self._danmaku is not None:
                 try:
-                    await self._danmaku.stop()
+                    # 限时等待：stop() 若因半开连接挂住，下方的 loop.stop() 将永不执行，
+                    # 采集线程随之永久驻留（join 超时后线程与 SRT 句柄双泄漏）。
+                    # asyncio.TimeoutError 在 3.11+ 即内置 TimeoutError，故只捕后者。
+                    await asyncio.wait_for(self._danmaku.stop(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+                except TimeoutError:
+                    logger.warning(
+                        i18n.tr("[弹幕采集]{cls_name} stop() 超时,强制停止事件循环", cls_name=self._cls_name)
+                    )
                 except Exception:
                     pass
             if self._loop is not None:
@@ -147,6 +182,23 @@ class DanmakuCollector:
         loop = asyncio.new_event_loop()
         self._loop = loop
         asyncio.set_event_loop(loop)
+        # 与 stop() 的握手：stop() 先 set(_stop_event) 再读 self._loop，而本线程先发布
+        # self._loop 再检查 _stop_event——两个相反的顺序保证信号必被一方接收。
+        # 若此处已置位（stop() 在采集线程建好 loop 之前就到达），直接退出，不再拉起连接；
+        # 否则 _loop 仍为 None 时 stop() 的 call_soon_threadsafe 会被整段跳过，信号永久丢失。
+        if self._stop_event.is_set():
+            logger.debug(
+                i18n.tr(
+                    "[弹幕采集]{cls_name} 启动前已收到停止信号,跳过连接",
+                    cls_name=self._cls_name,
+                )
+            )
+            try:
+                loop.close()
+            except Exception:
+                pass
+            self._loop = None
+            return
         try:
             danmaku = self._danmaku_cls(
                 on_message=self._on_message,
@@ -163,9 +215,21 @@ class DanmakuCollector:
             except asyncio.CancelledError, RuntimeError:
                 pass
             except Exception as e:
-                logger.warning(f"[弹幕采集]{self._danmaku_cls.__name__} 运行异常,不影响录制: {e}")
+                logger.warning(
+                    i18n.tr(
+                        "[弹幕采集]{cls_name} 运行异常,不影响录制: {e}",
+                        cls_name=self._cls_name,
+                        e=e,
+                    )
+                )
         finally:
-            logger.debug(f"[弹幕采集]{self._danmaku_cls.__name__} 采集线程已退出,共收到 {self._msg_count} 条消息")
+            logger.debug(
+                i18n.tr(
+                    "[弹幕采集]{cls_name} 采集线程已退出,共收到 {msg_count} 条消息",
+                    cls_name=self._cls_name,
+                    msg_count=self._msg_count,
+                )
+            )
             try:
                 loop.close()
             except Exception:
@@ -173,6 +237,26 @@ class DanmakuCollector:
             self._loop = None
 
     # ---- 回调（在采集线程的 loop 中调用）----
+    # SRT 写盘线程主体：阻塞从 self._srt_queue 取 (user, msg, now) 元组并调 srt.write；
+    # 收到 sentinel (None) 后退出循环。now 来自事件循环侧（采集时刻），保证时间轴不被
+    # 写线程调度延迟影响。srt.write 失败（磁盘满/文件被删）仅记 warning 不退出，
+    # 与「弹幕失败不影响录制」契约一致。
+    def _srt_writer_loop(self) -> None:
+        srt = self._srt
+        if srt is None:
+            return
+        while True:
+            item = self._srt_queue.get()
+            if item is None:
+                return
+            user_name, message, now = item
+            try:
+                srt.write(user_name, message, now=now)
+            except Exception as e:
+                logger.warning(
+                    i18n.tr("[弹幕采集]SRT 写入失败(继续采集): {type_name}: {e}", type_name=type(e).__name__, e=e)
+                )
+
     # 收到弹幕回调：全部类型转发监控枢纽；SRT 仅记录 CHAT 且用户名或内容非空的消息，
     # 计数后按当前 monotonic 时间写入 SRT。
     def _on_message(self, msg: DanmakuMessage) -> None:
@@ -189,23 +273,35 @@ class DanmakuCollector:
         # if self._msg_count == 1:
         #     logger.debug(f"[弹幕采集]{self._danmaku_cls.__name__} 收到第一条弹幕: {msg.user_name}: {msg.message}")
         now = time.monotonic()
-        # 在工作线程直接写 SRT（SrtWriter 内部已加锁）；仅监控模式无 SrtWriter
+        # 仅监控模式无 SrtWriter、无写线程，_srt_queue 也不消费——但 _srt_writer 线程不启动
+        # 时队列就只由 stop() 的 sentinel 闭合，且 _srt is not None 才启线程，二者同步
         if self._srt is not None:
-            self._srt.write(msg.user_name, msg.message, now=now)
+            self._srt_queue.put((msg.user_name, msg.message, now))
 
     # 连接就绪回调：上报监控枢纽并输出一条 debug 日志，无返回值。
     def _on_ready(self) -> None:
         hub = self._monitor_hub()
         if hub is not None:
             hub.room_connected(self._room_name)
-        logger.debug(f"[弹幕采集]{self._danmaku_cls.__name__} 连接就绪,开始接收弹幕")
+        logger.debug(
+            i18n.tr(
+                "[弹幕采集]{cls_name} 连接就绪,开始接收弹幕",
+                cls_name=self._cls_name,
+            )
+        )
 
     # 连接关闭回调：上报监控枢纽，并把关闭原因 reason 记入 debug 日志，无返回值。
     def _on_close(self, reason: str) -> None:
         hub = self._monitor_hub()
         if hub is not None:
             hub.room_closed(self._room_name, reason)
-        logger.debug(f"[弹幕采集]{self._danmaku_cls.__name__} 连接关闭: {reason}")
+        logger.debug(
+            i18n.tr(
+                "[弹幕采集]{cls_name} 连接关闭: {reason}",
+                cls_name=self._cls_name,
+                reason=reason,
+            )
+        )
 
     # 只读属性：返回本次采集已写入的弹幕条数（int）。
     @property

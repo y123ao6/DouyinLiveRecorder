@@ -1,5 +1,16 @@
 # src/web_api.py
 # Web 管理面板 FastAPI 应用：认证、路由、静态资源。
+#
+# 鉴权模型总览（web_api 与 web/ 前端共用）：
+# ① 认证开关：config.ini [Web].web_auth_enable=true 时开启；关闭时所有 /api/* 公开访问（局域网用）
+# ② 密码存储：首次登录时明文密码自动升级为 PBKDF2-HMAC-SHA256 哈希（盐随机，迭代次数 600k）
+# ③ Token：secrets.token_urlsafe(32) 生成 256-bit bearer，过期时间由 web_token_expiry 控制（默认 1 小时）
+# ④ 登录限流：单 IP 滑动窗口 5 次失败/300 秒即 429；仅信任 web_trusted_proxy 列表内代理的 XFF
+# ⑤ 密码变更：吊销全部 token，强制重登；认证开启时禁止清空密码（防自锁）
+# ⑥ 危险配置键：黑名单（_DANGEROUS_CONFIG_KEYS）即使 auth 关闭也禁止 Web 写入（防 RCE）
+# ⑦ 写接口：房间/画质/语言/日志归档/录制开关/配置写均需 Bearer；读接口/静态资源放行
+# ⑧ 响应头：X-Content-Type-Options: nosniff（防 MIME 嗅探）、X-Frame-Options: DENY（防点击劫持）
+# ⑨ 状态可见：GET /api/status 在认证关闭时返回 auth_required=false 与告警，前端可提示风险
 # pyright: reportUnusedFunction=none, reportCallInDefaultInitializer=none
 from __future__ import annotations
 
@@ -185,21 +196,30 @@ def create_app(
         if (
             not cast(bool, cfg["web_auth_enable"])
             or path == "/api/login"
+            or path == "/api/auth/status"
             or path == "/"
             or path.startswith("/web/")
             or path == "/favicon.ico"
         ):
-            return await call_next(request)
-
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-            with _tokens_lock:
-                exp = _tokens.get(token)
-                valid = exp is not None and exp > time.time()
-            if valid:
-                return await call_next(request)
-        return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+            response = await call_next(request)
+        else:
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth[7:]
+                with _tokens_lock:
+                    exp = _tokens.get(token)
+                    valid = exp is not None and exp > time.time()
+                if valid:
+                    response = await call_next(request)
+                else:
+                    response = JSONResponse(status_code=401, content={"detail": "unauthorized"})
+            else:
+                response = JSONResponse(status_code=401, content={"detail": "unauthorized"})
+        # 安全响应头（defense in depth：放行与拒绝路径均附加），防 MIME 嗅探与点击劫持
+        # 注：SSE 端点 (/api/status/stream) 需 text/event-stream，nosniff 不会与之冲突
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        return response
 
     # ===== 路由 =====
 
@@ -248,6 +268,20 @@ def create_app(
         except Exception as e:
             status = cast("dict[str, object]", {"error": str(e)})
         return status
+
+    # 公开端点：暴露 Web 认证状态供前端「未启用认证」警告横幅使用
+    # （/api/login 在认证关闭时也会通过此契约告知前端放行）。
+    # 故意不走 Bearer 校验（read_web_config 已是同步轻量操作），
+    # 让前端在登录前即可提示「当前面板未启用认证，所有接口可公开访问」。
+    @app.get("/api/auth/status")
+    async def auth_status() -> dict[str, object]:
+        cfg = read_web_config(cast(str, app.state.config_file))
+        auth_enabled = cast(bool, cfg["web_auth_enable"])
+        return {
+            "auth_required": auth_enabled,
+            # 显式说明关闭状态下无人能保护面板：仅供局域网可信环境使用
+            "warning": None if auth_enabled else "Web 认证未启用，任何能访问本面板的网络均可操控录制配置",
+        }
 
     @app.get("/api/status/stream")
     async def status_stream() -> StreamingResponse:
