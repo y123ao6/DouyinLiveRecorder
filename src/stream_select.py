@@ -440,7 +440,10 @@ def _validate_stream_url(
     probe_client: httpx.Client | None = client
     try:
         if probe_client is None:
-            probe_client = httpx.Client(timeout=timeout, proxy=proxy_addr, verify=verify)
+            safe_verify = True if verify is None else verify
+            if safe_verify is False:
+                raise ValueError("Unsafe TLS configuration: certificate verification must not be disabled.")
+            probe_client = httpx.Client(timeout=timeout, proxy=proxy_addr, verify=safe_verify)
         response = probe_client.head(url, headers=headers, follow_redirects=True)
         content_type = response.headers.get("content-type", "").lower()
         if response.status_code in (401, 403):
@@ -680,10 +683,15 @@ def select_source_url(
     # 作用域严格限制在本次选源内、finally 关闭：刻意不做全局缓存——常驻 keepalive 会长期
     # 占用 CDN 侧的连接预算，与紧随其后的 ffmpeg 拉流争抢（虎牙实测：预算耗尽后 ffmpeg 打开
     # 即 403），且全局缓存会引入跨线程共享与进程退出清理的额外复杂度。
+    effective_verify = _http_config.get_effective_ssl_verify(platform)
+    if effective_verify is None:
+        effective_verify = True
+    if effective_verify is False:
+        raise ValueError("Unsafe TLS configuration: certificate verification must not be disabled.")
     probe_client = httpx.Client(
         timeout=_PROBE_TIMEOUT_SECONDS,
         proxy=proxy_addr,
-        verify=_http_config.get_effective_ssl_verify(platform),
+        verify=effective_verify,
     )
     try:
         # ---- 候选序列：按平台偏好排序（默认 HLS 优先，FLV-first 平台反转）----
