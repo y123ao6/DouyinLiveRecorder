@@ -376,12 +376,13 @@ def _confirm_get_ok(
     return False
 
 
-# 探测流地址 url 是否可用于录制：proxy_addr 为可选代理、timeout 为超时秒数；
-# TLS 证书校验强制开启；返回可达且内容类型为流媒体则 True，否则 False（并打日志说明原因）
+# 探测流地址 url 是否可用于录制：proxy_addr 为可选代理、timeout 为超时秒数、
+# verify 为 SSL 证书校验开关（None 时取全局配置）；返回可达且内容类型为流媒体则 True，否则 False（并打日志说明原因）
 def _validate_stream_url(
     url: str,
     proxy_addr: str | None = None,
     timeout: int = _PROBE_TIMEOUT_SECONDS,
+    verify: bool | None = None,
     platform: str | None = None,
     cookies: str | None = None,
     last_resort: bool = False,
@@ -439,7 +440,7 @@ def _validate_stream_url(
     probe_client: httpx.Client | None = client
     try:
         if probe_client is None:
-            probe_client = httpx.Client(timeout=timeout, proxy=proxy_addr, verify=True)
+            probe_client = httpx.Client(timeout=timeout, proxy=proxy_addr, verify=verify)
         response = probe_client.head(url, headers=headers, follow_redirects=True)
         content_type = response.headers.get("content-type", "").lower()
         if response.status_code in (401, 403):
@@ -679,11 +680,10 @@ def select_source_url(
     # 作用域严格限制在本次选源内、finally 关闭：刻意不做全局缓存——常驻 keepalive 会长期
     # 占用 CDN 侧的连接预算，与紧随其后的 ffmpeg 拉流争抢（虎牙实测：预算耗尽后 ffmpeg 打开
     # 即 403），且全局缓存会引入跨线程共享与进程退出清理的额外复杂度。
-    effective_verify = _http_config.get_effective_ssl_verify(platform)
     probe_client = httpx.Client(
         timeout=_PROBE_TIMEOUT_SECONDS,
         proxy=proxy_addr,
-        verify=True,
+        verify=_http_config.get_effective_ssl_verify(platform),
     )
     try:
         # ---- 候选序列：按平台偏好排序（默认 HLS 优先，FLV-first 平台反转）----
