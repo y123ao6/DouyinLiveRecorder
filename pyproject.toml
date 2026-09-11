@@ -1,12 +1,12 @@
 [project]
 name = "DouyinLiveRecorder"
-version = "4.0.9.4"
+version = "4.1.0"
 description = "支持抖音、TikTok、YouTube、快手等60+平台的直播录制工具，支持循环录制、多人录制、消息推送"
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }
 authors = [
-    { name = "Hmily", email = "ihmily@users.noreply.github.com" }
+    { name = "y123ao6", email = "zmzx0690@agent.qq.com" }
 ]
 keywords = [
     "live-streaming",
@@ -89,12 +89,12 @@ douyin-recorder-gui = "gui:main"
 douyin-recorder-web = "web:main"
 
 [project.urls]
-Homepage = "https://github.com/ihmily/DouyinLiveRecorder"
-Documentation = "https://github.com/ihmily/DouyinLiveRecorder"
-Repository = "https://github.com/ihmily/DouyinLiveRecorder"
-Issues = "https://github.com/ihmily/DouyinLiveRecorder/issues"
-Changelog = "https://github.com/ihmily/DouyinLiveRecorder/releases"
-Sponsor = "https://github.com/sponsors/ihmily"
+Homepage = "https://github.com/y123ao6/DouyinLiveRecorder"
+Documentation = "https://github.com/y123ao6/DouyinLiveRecorder"
+Repository = "https://github.com/y123ao6/DouyinLiveRecorder"
+Issues = "https://github.com/y123ao6/DouyinLiveRecorder/issues"
+Changelog = "https://github.com/y123ao6/DouyinLiveRecorder/releases"
+Sponsor = "https://github.com/sponsors/y123ao6"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -106,7 +106,7 @@ build-backend = "setuptools.build_meta"
 # 运行时以 ModuleNotFoundError 形式炸在导入链上（egg-info/SOURCES.txt 可核对）
 packages = ["src", "src.platforms", "src.proto"]
 # 顶层单文件模块：保证 [project.scripts] 三个入口（main/gui/web）安装后可用
-py-modules = ["main", "web", "gui", "gui_legacy", "i18n", "msg_push"]
+py-modules = ["main", "web", "gui", "i18n", "msg_push"]
 
 [tool.setuptools.package-data]
 src = ["javascript/*.js"]

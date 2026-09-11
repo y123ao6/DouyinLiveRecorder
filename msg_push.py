@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 消息推送模块 - 支持多种消息推送渠道用于直播状态通知
-# 提供钉钉/微信(Server酱)/Telegram/Bark/ntfy/PushPlus 推送及 SMTP 邮件发送，
-# 各推送函数接收地址与内容，返回 {"success": [...], "error": [...]}。
-
 import base64
 import http.client
 import json
@@ -16,6 +12,13 @@ from email.mime.text import MIMEText
 from typing import cast
 
 from loguru import logger
+
+import i18n
+
+# 消息推送模块 - 支持多种消息推送渠道用于直播状态通知
+# 提供钉钉/微信(Server酱)/Telegram/Bark/ntfy/PushPlus 推送及 SMTP 邮件发送，
+# 各推送函数接收地址与内容，返回 {"success": [...], "error": [...]}。
+
 
 # 配置 HTTP 客户端（不使用代理，防止本地推送被代理干扰）
 no_proxy_handler: urllib.request.ProxyHandler = urllib.request.ProxyHandler({})
@@ -93,10 +96,18 @@ def dingtalk(url: str, content: str, number: str | None = None, is_atall: bool =
                 success.append(api)
             else:
                 error.append(api)
-                logger.warning(f'钉钉推送失败, 推送地址：{_mask_url(api)}, {resp_data.get("errmsg", "未知错误")}')
+                logger.warning(
+                    i18n.tr(
+                        "钉钉推送失败, 推送地址：{masked_api}, {errmsg}",
+                        masked_api=_mask_url(api),
+                        errmsg=resp_data.get("errmsg", "未知错误"),
+                    )
+                )
         except Exception as e:
             error.append(api)
-            logger.warning(f"钉钉推送失败, 推送地址：{_mask_url(api)}, 错误信息:{e}")
+            logger.warning(
+                i18n.tr("钉钉推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(api), e=e)
+            )
     return {"success": success, "error": error}
 
 
@@ -122,11 +133,17 @@ def xizhi(url: str, title: str, content: str) -> dict[str, list[str | int]]:
             else:
                 error.append(api)
                 logger.warning(
-                    f'微信推送失败, 推送地址：{_mask_url(api)}, 失败信息：{resp_data.get("msg", "未知错误")}'
+                    i18n.tr(
+                        "微信推送失败, 推送地址：{masked_api}, 失败信息：{msg}",
+                        masked_api=_mask_url(api),
+                        msg=resp_data.get("msg", "未知错误"),
+                    )
                 )
         except Exception as e:
             error.append(api)
-            logger.warning(f"微信推送失败, 推送地址：{_mask_url(api)}, 错误信息:{e}")
+            logger.warning(
+                i18n.tr("微信推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(api), e=e)
+            )
     return {"success": success, "error": error}
 
 
@@ -175,10 +192,10 @@ def send_email(
         _ = smtp_obj.sendmail(sender_email, receivers, message.as_string())
         return {"success": receivers, "error": []}
     except smtplib.SMTPException as e:
-        logger.warning(f"邮件推送失败, 推送邮箱：{to_email}, 错误信息:{e}")
+        logger.warning(i18n.tr("邮件推送失败, 推送邮箱：{to_email}, 错误信息:{e}", to_email=to_email, e=e))
         return {"success": [], "error": receivers}
     except Exception as e:
-        logger.warning(f"邮件推送失败, 推送邮箱：{to_email}, 错误信息:{e}")
+        logger.warning(i18n.tr("邮件推送失败, 推送邮箱：{to_email}, 错误信息:{e}", to_email=to_email, e=e))
         return {"success": [], "error": receivers}
     # 无论成功失败都主动 quit() 关闭 SMTP 会话，避免连接悬挂；quit 失败忽略（连接本就要丢弃）。
     finally:
@@ -206,10 +223,24 @@ def tg_bot(chat_id: str | int, token: str, content: str) -> dict[str, list[str |
         if resp_data.get("ok") is True:
             return {"success": [str(chat_id)], "error": []}
         error_detail = resp_data.get("description", "未知错误")
-        logger.warning(f"tg推送失败, 聊天ID：{chat_id}, 推送地址：{_mask_url(url)}, 失败信息:{error_detail}")
+        logger.warning(
+            i18n.tr(
+                "tg推送失败, 聊天ID：{chat_id}, 推送地址：{masked_url}, 失败信息:{error_detail}",
+                chat_id=chat_id,
+                masked_url=_mask_url(url),
+                error_detail=error_detail,
+            )
+        )
         return {"success": [], "error": [str(chat_id)]}
     except Exception as e:
-        logger.warning(f"tg推送失败, 聊天ID：{chat_id}, 推送地址：{_mask_url(url)}, 错误信息:{e}")
+        logger.warning(
+            i18n.tr(
+                "tg推送失败, 聊天ID：{chat_id}, 推送地址：{masked_url}, 错误信息:{e}",
+                chat_id=chat_id,
+                masked_url=_mask_url(url),
+                e=e,
+            )
+        )
         return {"success": [], "error": [str(chat_id)]}
 
 
@@ -257,11 +288,17 @@ def bark(
             else:
                 error.append(_api)
                 logger.warning(
-                    f'Bark推送失败, 推送地址：{_mask_url(_api)}, 失败信息：{resp_data.get("message", "未知错误")}'
+                    i18n.tr(
+                        "Bark推送失败, 推送地址：{masked_api}, 失败信息：{message}",
+                        masked_api=_mask_url(_api),
+                        message=resp_data.get("message", "未知错误"),
+                    )
                 )
         except Exception as e:
             error.append(_api)
-            logger.warning(f"Bark推送失败, 推送地址：{_mask_url(_api)}, 错误信息:{e}")
+            logger.warning(
+                i18n.tr("Bark推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(_api), e=e)
+            )
     return {"success": success, "error": error}
 
 
@@ -325,7 +362,13 @@ def ntfy(
                 success.append(_api)
             else:
                 error.append(_api)
-                logger.warning(f'ntfy推送失败, 推送地址：{_mask_url(_api)}, 失败信息：{resp_data["error"]}')
+                logger.warning(
+                    i18n.tr(
+                        "ntfy推送失败, 推送地址：{masked_api}, 失败信息：{error}",
+                        masked_api=_mask_url(_api),
+                        error=resp_data["error"],
+                    )
+                )
         except urllib.error.HTTPError as e:
             error.append(_api)
             try:
@@ -335,10 +378,18 @@ def ntfy(
                 error_detail = str(e)
             finally:
                 e.close()
-            logger.warning(f"ntfy推送失败, 推送地址：{_mask_url(_api)}, 错误信息:{error_detail}")
+            logger.warning(
+                i18n.tr(
+                    "ntfy推送失败, 推送地址：{masked_api}, 错误信息:{error_detail}",
+                    masked_api=_mask_url(_api),
+                    error_detail=error_detail,
+                )
+            )
         except Exception as e:
             error.append(_api)
-            logger.warning(f"ntfy推送失败, 推送地址：{_mask_url(_api)}, 错误信息:{e}")
+            logger.warning(
+                i18n.tr("ntfy推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(_api), e=e)
+            )
     return {"success": success, "error": error}
 
 
@@ -367,11 +418,17 @@ def pushplus(token: str, title: str, content: str) -> dict[str, list[str | int]]
             else:
                 error.append(_token)
                 logger.warning(
-                    f'PushPlus推送失败, Token：{_mask_secret(_token)}, 失败信息：{resp_data.get("msg", "未知错误")}'
+                    i18n.tr(
+                        "PushPlus推送失败, Token：{masked_token}, 失败信息：{msg}",
+                        masked_token=_mask_secret(_token),
+                        msg=resp_data.get("msg", "未知错误"),
+                    )
                 )
         except Exception as e:
             error.append(_token)
-            logger.warning(f"PushPlus推送失败, Token：{_mask_secret(_token)}, 错误信息:{e}")
+            logger.warning(
+                i18n.tr("PushPlus推送失败, Token：{masked_token}, 错误信息:{e}", masked_token=_mask_secret(_token), e=e)
+            )
 
     return {"success": success, "error": error}
 

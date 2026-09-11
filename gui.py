@@ -391,7 +391,7 @@ class SystemTray:
         self.running = False
         self.icon = None
         try:
-            print(f"[tray] 系统托盘启动失败，已忽略：{exc}", file=sys.stderr)
+            print(i18n_module.tr("[tray] 系统托盘启动失败，已忽略：{exc}", exc=exc), file=sys.stderr)
         except Exception:
             pass
 

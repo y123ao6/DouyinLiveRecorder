@@ -116,6 +116,53 @@ class TestAuthMiddleware:
         resp = app_env.client.get("/api/rooms")
         assert resp.status_code == 401
 
+
+class TestSecurityHeaders:
+    # 守护安全响应头中间件：放行/拒绝两条路径均须附加 nosniff + DENY 帧选项。
+    # 防止通过 MIME 嗅探把 JSON 响应当 HTML 渲染（XSS 攻击面），以及点击劫持。
+    def test_401_response_includes_security_headers(self, app_env: types.SimpleNamespace) -> None:
+        resp = app_env.client.get("/api/rooms")  # 无 token → 401
+        assert resp.status_code == 401
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+
+    def test_200_response_includes_security_headers(self, app_env: types.SimpleNamespace) -> None:
+        # 登录成功后 200 响应也须带头（防登录页被嵌入 iframe 钓鱼）
+        resp = app_env.client.post("/api/login", json={"password": "secret123"})
+        assert resp.status_code == 200
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+
+    def test_auth_status_exposes_disabled_warning(self, tmp_path: Path, fake_main: types.ModuleType) -> None:
+        # 公开端点 /api/auth/status 在认证关闭时返回 warning，前端可据此展示警示横幅
+        from src import web_api as wa
+
+        cfg = tmp_path / "config.ini"
+        _write_web_section(cfg, auth="false", password="")
+        app = wa.create_app(
+            config_file=str(cfg),
+            url_config_file=str(tmp_path / "u.ini"),
+            downloads_root=str(tmp_path),
+            logs_dir=str(tmp_path),
+        )
+        client = TestClient(app)
+        try:
+            resp = client.get("/api/auth/status")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["auth_required"] is False
+            assert body["warning"] is not None and "未启用" in body["warning"]
+        finally:
+            client.close()
+
+    def test_auth_status_no_warning_when_enabled(self, app_env: types.SimpleNamespace) -> None:
+        # 认证开启时 warning 字段为 None，避免误导
+        resp = app_env.client.get("/api/auth/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["auth_required"] is True
+        assert body["warning"] is None
+
     def test_api_open_when_auth_disabled(self, tmp_path: Path, fake_main: types.ModuleType) -> None:
         from src import web_api as wa
 
@@ -283,13 +330,9 @@ class TestRoomQualityApi:
         resp = app_env.client.post("/api/rooms", json={"url": url}, headers=headers)
         assert resp.status_code == 200
 
-        resp = app_env.client.put(
-            "/api/rooms/quality", json={"url": url, "quality": "8K无敌"}, headers=headers
-        )
+        resp = app_env.client.put("/api/rooms/quality", json={"url": url, "quality": "8K无敌"}, headers=headers)
         assert resp.status_code == 422
-        resp = app_env.client.put(
-            "/api/rooms/quality", json={"url": url, "quality": "高清\n# evil"}, headers=headers
-        )
+        resp = app_env.client.put("/api/rooms/quality", json={"url": url, "quality": "高清\n# evil"}, headers=headers)
         assert resp.status_code == 422
         text = app_env.url_cfg.read_text(encoding="utf-8-sig")
         assert "8K无敌" not in text
@@ -297,9 +340,7 @@ class TestRoomQualityApi:
 
     def test_change_quality_requires_auth(self, app_env: types.SimpleNamespace) -> None:
         # 认证启用时无 Bearer token 的画质切换请求必须 401（写接口 fail-closed）
-        resp = app_env.client.put(
-            "/api/rooms/quality", json={"url": "https://live.douyin.com/1", "quality": "高清"}
-        )
+        resp = app_env.client.put("/api/rooms/quality", json={"url": "https://live.douyin.com/1", "quality": "高清"})
         assert resp.status_code == 401
 
     def test_change_quality_on_disabled_room_preserves_comment(self, app_env: types.SimpleNamespace) -> None:
@@ -316,10 +357,7 @@ class TestRoomQualityApi:
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["changed"] is True
-        assert (
-            app_env.url_cfg.read_text(encoding="utf-8-sig")
-            == "# 超清,https://www.huya.com/dank1ng,主播: DANK1NG\n"
-        )
+        assert app_env.url_cfg.read_text(encoding="utf-8-sig") == "# 超清,https://www.huya.com/dank1ng,主播: DANK1NG\n"
         # 房间列表仍为禁用，但画质已更新（重新启用后即按预设画质录制）
         rooms = app_env.client.get("/api/rooms", headers=headers).json()
         room = next(r for r in rooms if r["url"] == "https://www.huya.com/dank1ng")

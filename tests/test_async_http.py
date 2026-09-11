@@ -215,7 +215,11 @@ class TestAsyncReq:
             result = await async_req("https://api.example.com", data={"key": "value"})
 
         assert result == '{"ok": true}'
+        # 必须校验实际传入的关键字：只断言「被调用过」时，data=/json=/content=
+        # 三者写反的回归测不出来（本用例注释声称的就是「用 data= 传 dict」）。
         mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.kwargs["data"] == {"key": "value"}
+        assert mock_client.post.call_args.kwargs["json"] is None
 
     @pytest.mark.asyncio
     async def test_post_with_string_data(self) -> None:
@@ -233,6 +237,9 @@ class TestAsyncReq:
             result = await async_req("https://api.example.com", data="raw body")
 
         assert result == "ok"
+        # 字符串体必须走 content= 而非 data=（httpx 语义不同：data= 会被当作表单编码）
+        mock_client.post.assert_called_once()
+        assert mock_client.post.call_args.kwargs["content"] == "raw body"
 
     @pytest.mark.asyncio
     async def test_post_with_bytes_data(self) -> None:

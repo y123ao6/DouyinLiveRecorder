@@ -328,3 +328,15 @@ def translated_print(
         translated_args.append(text)
 
     original_print(sep.join(translated_args), sep=sep, end=end, file=file, flush=flush)  # 调用原始 print
+
+
+# 带占位符的翻译入口（先查表再插值）：
+# 调用方传「原文模板 + 字段值」，避免 f-string 在查表前先把模板替换为已插值字符串、
+# 导致目录里 [{record_name}] 这类 msgid 永远查不到、翻译静默退化为原文。
+# 翻译命中时按 .format(**kwargs) 二次插值；未命中则直接对原文格式化为最终输出。
+# 表达式类占位符（如 {type(e).__name__}）调用方须提前求值为局部变量后再传入。
+def tr(template: str, **kwargs: Any) -> str:
+    # 模板必须是字面量（与目录键严格一致），kwargs 提供 .format() 所需字段；
+    # 若模板含 format 不识别的占位符，KeyError 直接抛出（不该静默吞），
+    # 这会与 f-string 的「字段未传即 NameError」对称地暴露拼写错误。
+    return _tr(template).format(**kwargs)

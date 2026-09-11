@@ -62,7 +62,7 @@ Excluding `.git/`, the workspace contains **324** Markdown files in total, categ
 ### Project Basic Information
 
 - **Project Name**: DouyinLiveRecorder (Douyin Live Recorder)
-- **Version**: 4.0.8.3
+- **Version**: 4.1.0
 - **Author**: Hmily
 - **License**: MIT
 - **Project URL**: [GitHub](https://github.com/ihmily/DouyinLiveRecorder)
@@ -254,7 +254,6 @@ DouyinLiveRecorder/
 ├── node/                                # Node.js 二进制目录（Windows，git 忽略）
 ├── main.py                              # 命令行入口
 ├── gui.py                               # GUI 图形界面入口（CustomTkinter）
-├── gui_legacy.py                        # 旧版 GUI（兼容保留）
 ├── web.py                               # Web 管理面板入口
 ├── i18n.py                              # 国际化实现（print 翻译包装）
 ├── msg_push.py                          # 消息推送模块
@@ -1584,6 +1583,224 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 ---
 
 ## Changelog
+
+### v4.1.0-dev (2026-09-11) — Disable `-reconnect_at_eof` for HLS(m3u8) inputs: fixes live recording producing only subtitles and no video (P0, overturns previous open observation)
+
+**Change summary**: With `-reconnect_at_eof 1`, an HLS(m3u8) input makes ffmpeg reconnect infinitely at the playlist layer, keeping the child process alive while producing zero bytes of video — the real-world failure looked like "live recording saved only the danmaku SRT, no video file". The previous entry (`Fix recording startup failure (-22 EINVAL) caused by missing values on ffmpeg -reconnect* options`) ended with an open observation that "live playlists have no ENDLIST so it never triggers / intended semantics" — **that was disproven by measurement: the end of the HTTP response of the m3u8 playlist itself is an EOF**. The option makes the http layer reconnect forever right after the playlist is fully downloaded (backoff 1/3/7/15/31s, no retry cap), so the hls demuxer never leaves the "waiting for playlist" stage and never pulls a single media segment. Fix: strip the option pair when the input is m3u8, keep it for FLV inputs.
+
+#### 1. Incident shape & root cause (`main.py` base recording command)
+
+- **Incident shape** (early 2026-09-11, user machine): Douyu/Douyin rooms (HLS-first source selection, honoring the existing "never add Douyu to FLV-first" rule) produced only danmaku SRT files — the SRT writer is started after `Popen`, so **the presence of SRT actually proves the ffmpeg process was up** — while the video directory stayed at zero bytes and ffmpeg stayed alive indefinitely (`-loglevel error` gives zero output and zero errors, so the `check_subprocess` guardian loop only ever saw the process alive). The same batch of Huya rooms (`_FLV_FIRST_PLATFORMS` + HLS exclusion list) recorded a normal 25MB `.ts`.
+- **Root cause**: `-reconnect_at_eof 1` makes the http layer reconnect infinitely once a "read the full response" request reaches EOF. For HLS the demuxer must fully read the playlist (reaching EOF) before it considers parsing complete and moves on to pulling media segments — the perpetual re-fetch of the playlist means it never reaches the next stage. The signature `ffmpeg -report` log shows: consecutive `Will reconnect at 752 in 0/1/3/7/15... second(s), error=End of file` (752 being the playlist byte size).
+- **Control experiment** (local ffmpeg 9.0.1, identical production command): with `-t 10` bound, the broken command still had not exited after 60s and produced zero bytes; removing only `-reconnect_at_eof 1` recorded 9MB in 10s and exited 0 — decisive evidence.
+
+#### 2. Fix (the only correct approach)
+
+- `main.py`: when `real_url` contains `.m3u8`, delete the `-reconnect_at_eof` option pair at command construction (`if ".m3u8" in real_url: idx = ffmpeg_command.index("-reconnect_at_eof"); del ffmpeg_command[idx:idx+2]`); FLV inputs keep it (reconnect-at-EOF continues appending to the same file after the CDN drops a long connection — the existing mitigation for Douyu guest FLV being cut at ~70s). The pair is removed via `del`, not set to `"0"`, keeping the command line clean.
+- `scripts/douyin_live_recorder_standalone.py`: both `build_ffmpeg_cmd` and the inlined literal list in `run_ffmpeg` fixed in lockstep (preserving the "inline literal arguments at the call site + shell=False" gate semantics — `del` only removes by literal flag pair and never introduces concatenated-variable injection surface).
+
+#### 3. Guardrails & verification (2026-09-11)
+
+- `tests/test_ffmpeg_reconnect_args.py` gains a third invariant class `TestReconnectAtEofDroppedForHls`: AST-based assertion that every command definition point (1 in main.py, 2 in the standalone script) carries a "`.m3u8` in url guard + delete the `-reconnect_at_eof` pair in the function body" — removing any one of them regresses HLS recording into an infinite hang.
+- Targeted: `test_ffmpeg_reconnect_args.py` 5 passed + `test_record_container.py` 18 passed; full regression **`pytest`: 907 passed, 2 skipped**; `black --check` / `isort --check-only` / `py_compile` all green.
+- `AGENTS.md` "Known pitfalls" entry for `-reconnect*` gained the third form (existing text untouched, appended incrementally, overturning the outdated "semantics boundary" note at its end).
+
+### v4.1.0-dev (2026-09-11) — Web panel rooms-list misalignment fix on narrow viewports (table-layout:fixed + URL ellipsis + horizontal scroll fallback)
+
+**Summary**: Fixed the triple misalignment of the "Rooms" list on narrow viewports (effective width ≈500px, triggered by narrow windows or Windows high-DPI scaling): the "Enabled" / "Recording" column headers squeezed into one-character-wide vertical stacks, the "Delete" button and enable switch overflowing past the panel card's right edge, and long URLs (`discover?modal_id=` etc.) / long names wrapping into 2–3 lines causing uneven row heights. Only `web/style.css` changed (one new rule block scoped to `#rooms-view` appended at the end); no HTML/JS touched, and the dashboard / danmaku / files tables are unaffected.
+
+#### Root cause & fix (new block at the end of `web/style.css`)
+
+- Root cause: `.data-table` used the browser-default `table-layout: auto` with no column-width or truncation constraints. The 6 columns' min-content width (110px quality select + 40px switch + delete button + 24px cell paddings ≈ 360px) plus the URL column's min-content exceeds the `.panel` container on narrow viewports — `width:100%` breaks down and the table renders at min-content width, overflowing the card; `.panel` had no `overflow-x` fallback, and the existing ≤768px breakpoint only covered stat-cards / config-row / tabs, not tables.
+- Fix: `#rooms-view .data-table` switched to `table-layout: fixed` with per-column header widths (quality 128 / name 150 / enabled 72 / recording 72 / actions 76; the URL column takes the remaining width); URL and name `td` render as a single ellipsized line (`overflow:hidden + text-overflow:ellipsis + white-space:nowrap`), with the full URL available via hover title (the URL `td` rendered by `loadRooms` already carries `title`); `td` gets explicit `vertical-align:middle` to remove cross-browser UA differences. ≤768px fallback: table `min-width:640px` + `.panel` `overflow-x:auto` — right-side control columns are no longer squeezed and scroll horizontally inside the panel instead.
+- Browser notes: Chrome/Edge break lines at `/?&=`, Firefox distributes auto-table column widths differently, and Safari only renders cell ellipsis together with `table-layout:fixed` — the fixed layout is the one solution covering overflow + ellipsis across all three.
+
+#### Verification (2026-09-11, Chrome 153 headless rendering the real `web/style.css`)
+
+- 1200 / 768px: table fits the panel, delete button inside the card, all headers horizontal, uniform 47px row heights across 8 rows;
+- 500 / 375px: every element clipped inside the panel card (`overflow-x:auto` active, right columns reachable by horizontal scroll), zero out-of-card overflow; all symptoms from the pre-fix screenshot (vertical headers, delete button drawn on the gray page background) eliminated;
+- Regression: pure CSS scoped to `#rooms-view`; no pytest / frontend node:test impact.
+
+### v4.1.0-dev (2026-09-11) — Fix recording startup failure (-22 EINVAL) caused by missing values on ffmpeg `-reconnect*` options
+
+**Summary**: Fixed the option values lost during the 2026-09-10 refactor that moved `-reconnect*` before `-i` — the boolean `1` values of `-reconnect_streamed` / `-reconnect_at_eof` were dropped, so ffmpeg parsed the next option name as the value (`Unable to parse "reconnect_streamed" option value "-reconnect_at_eof" as boolean` → Invalid argument), **failing at input open with return code -22**. The defect reproduced 100% in real recording on a Douyin h264 HLS candidate in the early hours of 09-11 (the h265 FLV candidate had been skipped by the expected downgrade path, hitting the HLS branch instead).
+
+#### 1. Root cause (`main.py` base recording command)
+
+- The 09-10 code-review fix moved `-reconnect_delay_max 60 / -reconnect_streamed / -reconnect_at_eof` from after `-i` to before it, **dropping the values `1` of the latter two options** (`-reconnect_delay_max 60` survived because it kept its value). The old form (after `-i`) was silently accepted by ffmpeg with exit code 0 and no visible symptom, so the defect stayed hidden until now.
+- Also corrected the `_FFMPEG_ERRNO_HINTS[-22]` hint text: besides "container/codec mismatch (HEVC into ipod)", `-22` can also mean "input option parsing failure"; the old hint misdirected troubleshooting toward container issues (it did in this investigation).
+
+#### 2. Fix and guardrails
+
+- `main.py`: restored `-reconnect_streamed 1` / `-reconnect_at_eof 1` (still before `-i`).
+- `tests/test_ffmpeg_reconnect_args.py` (new, 3 cases): AST scan over both definition points (`main.py` + `scripts/douyin_live_recorder_standalone.py`), asserting ① every `-reconnect*` is immediately followed by a literal value that is not an option name; ② all of them precede `-i` (landing the guardrail suggested in the 09-10 review but never implemented). The assertion was verified to have teeth against the broken (value-less) form.
+- Local ffmpeg test: the broken arguments reproduced the user's log verbatim against a local HLS stream; the fixed arguments opened the input and recorded successfully.
+
+#### 3. Verification (2026-09-11)
+
+- `pytest` (test_ffmpeg_reconnect_args / test_record_container / test_main_fixes): **50 passed**;
+- `black --check` / `isort --check-only` / `mypy`: all green;
+- Open observation: `-reconnect_at_eof 1` reconnects indefinitely on streams that reach EOF (reconnect has no retry cap) — live playlists have no ENDLIST so it never triggers, and after a stream ends failure relies on the CDN 403/404; this is intended semantics. Real-machine incremental verification (one recording round with a fresh live URL) still recommended.
+
+### v4.1.0-dev (2026-09-10) — Full migration of parameterized logs from f-string to i18n.tr (242 sites / 27 files; placeholder renames across the four language catalogs)
+
+**Change summary**: Rewrote **242 f-string call sites** in `logger.*` / `print` into `i18n.tr(template, **kw)`, and renamed the placeholders in the four language catalogs in lockstep so that "msgids with placeholders" can finally be matched — before this migration the f-string completed interpolation **before** the catalog lookup, so keys like `[{record_name}] ...` could never match and translation silently fell back to the source text (200+ parameterized logs were effectively "translated but unusable"). The scanner in `scripts/extract_i18n_strings.py` was also updated to recognise `tr()` — otherwise migrated call sites would vanish from the extraction result and the missing-entry check would degrade into a false green.
+
+#### I. Migration mechanism (`i18n.py`, added in the previous batch, applied at scale here)
+
+- `i18n.tr(template, **kwargs)`: `_tr(template)` **lookup** first, then `str.format(**kwargs)` **interpolation**. The template must be a literal constant string and placeholders must be plain identifiers (`str.format` rejects `{a.b}` / `{f(x)}`).
+- Format specs / conversions are **pre-evaluated by the caller** and passed as arguments rather than kept in the template: `f"{_backoff:.0f}"` → `_backoff=f"{_backoff:.0f}"`; `f"{value!r}"` → `value=repr(value)`. The extractor already discards `:spec` / `!conv`, so both sides agree.
+- Placeholder names are **deterministically derived** from the expression (duplicates within one template get a `_2`/`_3` suffix), guaranteeing the same name on the source side and the catalog side: `type(e).__name__`→`type_name`, `utils.mask_credentials(url)`→`masked_url`, `self._cls_name`→`cls_name`, `X.get('k')`→`k`, `X['k']`→`k`, `len(X)`→`X_count`, `X.__name__`→`X_name`; otherwise the longest non-keyword identifier.
+
+#### II. Source migration (242 sites / 27 files)
+
+- Counts: `main.py` 58, `src/spider.py` 25, `src/stream_select.py` 20, `msg_push.py` 15, `src/recorder_status.py` 12, `web.py` 11, `src/danmaku_monitor.py` 11, `src/ffmpeg_install.py` 11, `src/config_io.py` 9, `src/video_postprocess.py` 9, `src/log_archive.py` 7, `src/utils.py` 7, `src/async_http.py` 6, `src/node_install.py` 6, `src/ffmpeg_proc.py` 5, `src/notify.py` 5, `src/scheduler.py` 5, `src/stream.py` 4, `src/collector.py` 3, `src/sync_http.py` 3, `src/platforms/bilibili.py` 2, `src/room.py` 2, `src/ttwid.py` 2, `gui.py` 1, `src/cookie_cache.py` 1, `src/platforms/douyin.py` 1, `src/web_tray.py` 1.
+- 9 **untranslatable** decorative / placeholder-only templates were skipped (e.g. `f"{'=' * 60}"`), matching the extractor's `is_valuable` rule.
+- Existing `tr()` calls were normalised: in `src/ffmpeg_proc.py` the placeholder derived from `len(still_running)` became `{still_running_count}`, so the `count=` keyword was renamed to `still_running_count=` (the mismatch would have raised `KeyError` in `.format` at runtime — caught by the new regression test).
+- `import i18n` was added to all 27 files; in `main.py` it was moved **before** the module-level banner prints (module code executes top-down, so an import placed after the banner is useless). `gui.py` keeps its existing alias `import i18n as i18n_module`.
+
+#### III. Four-language catalog rewrite (key set 539 → 544)
+
+- `i18n/zh_CN/LC_MESSAGES/zh_CN.po`: 250 lines of placeholder rewrites (line-by-line, preserving CRLF and section comments); 5 new warning strings appended (`JSON 解析失败(已忽略)`, `ffmpeg 转封装/转码超时`, `ffmpeg 转 MP4 超时`, `ffmpeg 抽音频超时`, `执行自定义脚本超时`).
+- `i18n/en_US.json` / `i18n/en_GB.json`: 125 key/value rewrites each + 5 new entries, written back with `sort_keys=True` in the original format (no BOM / CRLF).
+- `i18n/zh_TW.yaml`: 134 lines rewritten + 5 new entries (single-quoted style). Note that YAML single-quoted scalars escape `'` as `''`, and some entries use the `? key` explicit key indicator and multi-line scalars — renaming must first un-escape `''`→`'` before deriving names, and must not filter lines by "contains an ASCII colon" (otherwise `? ` lines and continuation lines are missed, producing 9 key differences against `.po`).
+- `zh_CN.mo` recompiled: 545 entries (544 + header empty msgid), 65232 bytes; `--check` byte-level sync passes.
+- The `.po` header maintenance note was updated: placeholders must be plain identifiers; three translation lookup entry points (`print` constant strings / `tr()` parameterized logs / other `tr()` call sites); and a note that the zh_CN catalog is **not** an identity mapping (128 English source strings are translated into Chinese).
+
+#### IV. Tooling and gate changes
+
+- `scripts/extract_i18n_strings.py`: `scan_file` now recognises the first positional constant string of `tr(...)` / `<alias>.tr(...)` (during the f-string/tr coexistence period both forms must be scanned); the caller module name set is the constant `TR_CALLER_IDS = {"i18n", "i18n_module"}` — missing an alias makes that call site vanish from the extraction result, degrading the missing-entry check into a false green for it (`gui.py` uses `i18n_module`). Rule 5 added to the module header.
+- `tests/conftest.py`: new autouse fixture `_pin_identity_translation` pinning `i18n._tr` to `lambda t: t`. Rationale: after the `tr()` migration, log text varies with `config.ini`'s `language` and the host system language (empty `language` → detected `en_US` on this machine, so the same assertion yields different text on different machines), and the zh_CN catalog is also not identity (128 English source strings → Chinese), so there is **no** single language that reproduces the source text. Freezing to identity makes `tr(template, **kw) == f-string output before migration`, decoupling assertions from language. The translation mechanism itself is covered by `tests/test_i18n_tr.py` and the language cases in `test_web_api.py`.
+- `tests/test_i18n_migration.py` (new, 3 cases): ① no remaining "valuable" `logger/print` f-strings; ② every `tr()` template's placeholder set equals its keyword-argument set and all placeholders are plain identifiers; ③ the runtime template set is a subset of the `zh_CN.po` key set (equivalent to the extractor's "0 missing").
+- `AGENTS.md`: 2 new anti-regression entries (parameterized logs must use `tr()`; tests must freeze translation to identity).
+
+#### V. Verification (2026-09-10)
+
+- `pytest -q`: **902 passed, 2 skipped** (899 → +3 migration regression cases; green both before and after the migration);
+- `python scripts/extract_i18n_strings.py`: **0 missing, zero key divergence across the four catalogs** (544 each; the 191 historical/compat entries are intentionally retained);
+- `python scripts/compile_po.py --check`: in sync with `.po` (545 entries);
+- `black --check .`: 128 files unchanged; `isort --check-only .`: exit 0 (9 skipped); `mypy src/ main.py web.py gui.py i18n.py msg_push.py`: 44 files, 0 errors;
+- `python scripts/check_annotations.py`: all pass (new test file comment density 13.8% ≥ 13.0%);
+- `python scripts/check_version.py`: PASS.
+
+#### VI. Rollback point
+
+- A full pre-migration snapshot is kept at `.workbuddy/tmp/i18n_param_migration_backup/` (four catalogs + the extractor + 27 source files; 53 files / 1.6 MB). The workspace is not a git repository, so this is the only rollback baseline.
+
+### v4.1.0-dev (2026-09-10) — 28 code-review fixes + repository metadata sync + four-language catalog completion (521 → 539 entries)
+
+**Change Summary**: This round fixes every item from `CODE_REVIEW_2026-09-10.md` one by one (all P1 cleared, P2/P3 as applicable) and closes out two consistency tasks. ① **Code-review fixes**: 28 items across `main.py`, `src/ffmpeg_proc.py`, `src/stream_select.py`, `src/web_config.py`, `web/app.js`, `src/collector.py`, `src/srt_writer.py`, `src/spider.py`, `src/ttwid.py`, `src/async_http.py`, `src/sync_http.py`, `src/danmaku_monitor.py`, `src/cookie_cache.py`, `src/utils.py`, plus `scripts/` and `tests/` — notably the ffmpeg `-reconnect*` option placement, acquiring the semaphore before `Popen`, the collector stop/loop handshake, `SRT` injection, sensitive-config masking, and `utils.mask_credentials`. ② **Metadata sync**: `pyproject.toml` (4.1.0) is the single source of truth; version/dependency/directory-listing drift across the eight metadata files was checked. ③ **Localization completion**: the extractor scan backfilled the 18 logger strings introduced during the fixes; the four catalogs' key sets are consistent again (539 each) and `zh_CN.mo` was recompiled.
+
+#### 1. Code-review fixes (by module)
+
+- **`main.py`**:
+  - The ffmpeg flags `-reconnect_delay_max 60 / -reconnect_streamed / -reconnect_at_eof` were moved from **after** `-i` to **before** `-i`: `-reconnect*` are input-level options; placed after `-i` they are silently merged into the output group with no warning and exit 0, so stream-reconnect never actually happens (verified empirically with the bundled `ffmpeg/ffmpeg.exe`).
+  - `_rec_sem.acquire()` was moved from **after** `Popen` to **before** it, and the "Popen → register → danmaku start → loop" sequence is now wrapped in a single `try/finally: _rec_sem.release()`, eliminating the permanent semaphore leak on startup exceptions that depressed the concurrency ceiling for later recordings.
+  - `process.wait(timeout=30)`'s `except Exception: pass` was changed to `except subprocess.TimeoutExpired:` followed by `kill()` + re-`wait()`; a `return_code is None` fallback of `-1` avoids silently misjudging a timeout as success.
+- **`src/ffmpeg_proc.py`**: `_cleanup_single_ffmpeg_process` / `cleanup_all_ffmpeg_processes` now check the return value — on failure they warn and only remove entries whose `poll() is None`, keeping survivors (no longer blindly dropping registry entries).
+- **`src/stream_select.py`**: the exception branch now does `if last_resort: warning; return True`, matching the stable-reject `last_resort` pass-through above.
+- **`src/web_config.py`**: added `is_sensitive_key()` / `is_sensitive_item()` (regex `令牌|密码|授权码|token|secret|passwd|password|api[_-]?key`, case-insensitive; excludes `expiry|timeout|有效期|过期`); `read_config_safe` masks the 6 credential classes while leaving validity-period fields like `web_token_expiry` unmasked (verified with a non-empty temp config: 6 keys masked, non-sensitive preserved).
+- **`web/app.js`**: added the JS equivalent `isSensitiveField(section,key)`; `inputType` is chosen as `password`/`text` from it; `showView` now calls `stopSSE()` at the start (previously only in the else branch, so switching views leaked the old SSE connection).
+- **`src/collector.py`**: cached `self._cls_name`; `_run()` publishes `self._loop` before checking `self._stop_event` (reverse-paired with `stop()`'s "set event then read loop" so the signal is guaranteed to arrive); added `_SHUTDOWN_TIMEOUT_SECONDS=5.0` and `_shutdown` uses `asyncio.wait_for(self._danmaku.stop(), timeout=...)`; `_on_message`'s SRT write is wrapped in `try/except` with a warning (one failure does not abort capture).
+- **`src/srt_writer.py`**: added `_sanitize_srt_text()` (`\r\n→space`, `-->→->`); both user name and message are sanitized on write, preventing danmaku text containing `\n` from tearing subtitle blocks or `-->` from forging timecodes; `end` is clamped to `max(start, min(end, float(self._seg_seconds)))`.
+- **`src/spider.py`**: added `import os` and `_read_haixiu_token_override(is_haixiu)`, reading the access token via "env `HAIXIU_ACCESS_TOKEN`/`HAIHAI_ACCESS_TOKEN` → `config.ini [Cookie]` → built-in fallback", removing the hardcoded token.
+- **`src/ttwid.py`**: on a non-blocking acquire failure it now re-acquires in blocking mode (serial takeover) instead of fetching outside the lock, avoiding duplicated concurrent fetches.
+- **`src/async_http.py` / `src/sync_http.py`**: the request-body check `if data or json_data:` was changed to `if data is not None or json_data is not None:` (an empty dict is a valid body; the old form swallowed `data={}`).
+- **`src/danmaku_monitor.py`**: `setdefault` replaced with explicit `get` + on-demand creation (stops evaluating the default-arg factory on every message, removing noise).
+- **`src/cookie_cache.py` / `src/async_http.py`**: logs now pass through `utils.mask_credentials()`.
+- **`src/utils.py`**: added `mask_credentials(text)` — regex strips proxy credentials (`://user@`) and Secret query params (`signature|token|access_token|apikey|api_key|secret|key|x-bogus|a-bogus|ms_token|nonce|sid`, etc.); verified `http://***@host`, `?expire=123&signature=***&codec=h265`.
+- **`scripts/check_coverage.py`**: `missing_modules` now returns `1` instead of warning (gate no longer "falsely green").
+- **`scripts/smoke_test.py`**: `load_config` raises `ValueError` on an invalid top-level structure; `main()` catches `(OSError, ValueError)` → `sys.exit(2)`.
+- **`scripts/compile_po.py`**: added `import os`; writes now go to a temp file + `os.replace` for atomic replacement (avoids leaving a truncated `.mo` on mid-write failure).
+- **`scripts/check_version.py`**: `strip_v` changed from `lstrip("v")` to `removeprefix("v")` (avoids accidentally stripping prefixes like `ver`).
+- **`tests/`**:
+  - `test_concurrency_rate_limit.py` fully rewritten to drive the real `src.ttwid.get_ttwid()` (8 threads assert `_fetch_ttwid` is called only once) + `src.stream_select._throttle_probe()`, killing the "re-implement logic then assert, passes even if src/ is deleted" false-green.
+  - `test_record_container.py`: `_segment_format_nodes(path=_MAIN_PATH)` gained a `path` parameter; added `TestSegmentFormatSecondDefinitionPoint` covering `src/video_postprocess.py`.
+  - `test_danmaku_wiring.py`: `monkeypatch.setattr(main.time, "sleep", ...)` replaced with a `SimpleNamespace` shim overriding only `sleep` (avoids polluting the global `time` module).
+  - `test_async_http.py`: added `call_args.kwargs["data"]`/`["content"]` assertions.
+  - Deleted `tests/test_utils.py.isorted` (isort residue).
+
+#### 2. Repository metadata sync (8 files)
+
+- `pyproject.toml` version is the single source of truth (4.1.0); `AGENTS.md` version `4.0.9.4 → 4.1.0` and `docker-compose.yaml`'s `APP_VERSION` example `4.0.9.4 → 4.1.0` both align with `pyproject.toml`.
+- `requirements.txt` and `pyproject.toml [project.dependencies]` (20 deps) were checked entry-by-entry with no drift; `.coveragerc-concurrency`'s `omit` matches `pyproject.toml [tool.coverage.run].omit` entry-by-entry; no other directory-listing/path drift.
+
+#### 3. Localization completion (4 catalogs + build artifact)
+
+- Backfilled the 18 logger strings introduced during the fixes (source: `main.py` 3, `src/collector.py` 7, `src/async_http.py` 1, `src/ffmpeg_proc.py` 2, `src/cookie_cache.py` 2, `src/stream_select.py` 3); the four catalogs (zh_CN.po / en_US.json / en_GB.json / zh_TW.yaml) were re-checked by the extractor and are **fully consistent** (539 each), clearing the "runtime has it, catalog doesn't" gap (191 historical/compat redundancy entries intentionally kept).
+- `python scripts/compile_po.py` recompiled `zh_CN.mo` (540 entries incl. header empty msgid, 67700 bytes); `--check` passes at byte level.
+
+#### 4. Deletions
+
+- Deleted `tests/test_utils.py.isorted` (isort process residue).
+
+#### 5. Deferred (needs product decision / real-device verification, unchanged this round)
+
+- **Needs product decision**: audio extension/container, notify script timeout, `http_config` TLS split, web_api auth model, `gui_legacy.py` deprecation, hls.js `@latest` pinning, danmaku disk-write off the main loop, i18n parameterized text.
+- **Needs real-device verification**: `spider.py` SSRF/JSON points, `ws_client.py` cipher suites/heartbeat, `proxy.py` Windows format, `video_postprocess.py` timeout.
+
+#### 6. Verification (2026-09-10)
+
+- `pytest -q` full run: `870 passed, 2 skipped, 0 warnings` (pre-fix targeted 11 modules: 201 passed);
+- `python scripts/extract_i18n_strings.py`: 0 missing, zero diff across the four catalogs;
+- `python scripts/compile_po.py` / `--check`: in sync with .po (540 entries);
+- mypy 106 files 0 errors; black 124 unchanged; isort pass; basedpyright 0 errors (changed files);
+- `python scripts/check_version.py`: PASS (version dynamicization state intact).
+
+> **The second batch of this entry — "8 product-decision items + 4 machine-validation items + uv.lock aligned to 4.1.0" — is appended at the end as a separate `v4.1.0-dev (2026-09-10)` entry, to keep this section readable.**
+
+### v4.1.0-dev (2026-09-10) — 8 product-decision items + 4 machine-validation items + uv.lock aligned to 4.1.0 (v4.1.0 second batch)
+
+**Change summary**: Continuing the previous section's "V. Unprocessed (needs product decision / machine validation)" list, this batch implements the user's "all 8 + conservative with tests" strategy and aligns `uv.lock` with `pyproject.toml` 4.1.0. ① **All 8 product-decision items**: pin `hls.js` CDN dependency, split `http_config` TLS verification (stream-fetch vs control-plane), fix audio extension/container/encoder three-way mismatch, add `notify` script timeout control, strengthen web_api auth model (security response headers + public auth-status endpoint), delete `gui_legacy.py`, decouple danmaku SRT disk-write from the event loop, introduce i18n `tr()` parameterized interface. ② **4 machine-validation items with conservative defaults + stub tests**: `spider.py` JSON/URL validation, `ws_client.py` heartbeat timeout, `proxy.py` IPv6, `video_postprocess.py` timeout classification — use loose defaults and add stub tests per the user's instructions; the real-machine validation list is handed to the user for execution. ③ **Metadata cleanup**: `uv.lock` project version `4.0.9.4 → 4.1.0` with `uv lock --check` passing; stale `DouyinLiveRecorder.egg-info/` regenerated via `pip install -e . --no-deps`.
+
+#### I. 8 product-decision items (by module)
+
+- **`index.html`**: `hls.js@latest` → pinned `hls.js@1.7.2` (jsdelivr CDN supply-chain risk; aligns with `flv.js@1.6.2` pinning convention in the same file).
+- **`src/http_config.py` + `main.py`**: TLS verification split into a stream-fetch-only path (`get_effective_ssl_verify`) and a control-plane general path (`ssl_verify`); removed `set_ssl_verify(not enable_https_recording)` in `main.py` which would have globally disabled TLS verification for login / cookie-fetch / token-push endpoints whenever the "HTTPS recording" switch was on. `tests/test_http_config.py` rewritten to lock the "control plane not affected by stream-fetch switch" contract.
+- **`main.py`**: Audio branch `SEGMENT_FORMAT_BY_SUFFIX` aligned with extension/encoder — pure-audio platforms (MaoeFM/Look etc.) with `m4a` in save type output `.m4a` + aac + ipod; with `TS` save type output `.ts` + aac + mpegts. Removed the `.get(..., "ipod")` fallback so potential mismatches surface as explicit `KeyError` rather than silently reverting (the previous 3 assertions in `tests/test_record_container.py` locked the wrong design and are updated to match the corrected design).
+- **`src/notify.py`**: `run_script` now uses `communicate(timeout=_SCRIPT_TIMEOUT_SECONDS=300.0)` with `process.kill()` + secondary `communicate()` on timeout, preventing third-party scripts from blocking the calling thread indefinitely. `tests/test_notify.py` adds 4 tests: normal completion, 30s-hang 1s-timeout-kill, error command takes OSError, shlex parse failure takes ValueError.
+- **`src/web_api.py`**: Three real auth-model hardening items — ① middleware uniformly adds `X-Content-Type-Options: nosniff` + `X-Frame-Options: DENY` (both allow and deny paths; defense in depth); ② new public endpoint `GET /api/auth/status` exposing `auth_required` + warning text so the front-end can show a "web auth disabled" banner before login; ③ file header updated with a 9-point auth model documentation (auth switch / password storage / token / rate limit / password change / dangerous key / write endpoints / response headers / status visibility). `tests/test_web_api.py` adds `TestSecurityHeaders` (4 tests) locking the response-header contract and the auth-status endpoint.
+- **`gui_legacy.py` deleted + metadata sync**: Deleted root `gui_legacy.py` (functionally redundant with `gui.py` and carrying a `CREATE_NO_WINDOW` child-process bug that silently disabled `send_signal(CTRL_BREAK_EVENT)`); `pyproject.toml` `py-modules` drops `gui_legacy`; `.dockerignore` removes the `gui_legacy.py` exclusion; `AGENTS.md` exclusion list and project tree cleaned up; `CODE_WIKI.md` / `CODE_WIKI_EN.md` project tree diagram and dependency table updated; the `gui_legacy.py known leftover issue` block rewritten to "deleted" status. The `42 modules` count in `pyproject.toml` and `AGENTS.md` stays consistent (`gui_legacy.py` not counted).
+- **`src/collector.py`**: Decoupled danmaku SRT disk-write from the event-loop thread — `_on_message` only does O(1) `queue.SimpleQueue.put`, an independent daemon thread `_srt_writer_loop` consumes `(user, msg, now)` tuples and calls `srt.write` (now captured on the event-loop side so the timeline is unaffected by writer-thread scheduling delay). `stop()` order: send sentinel (`None`) → writer-thread `join(timeout=3.0)` → `srt.close()` as fallback; prevents both "writer thread stuck when SRT close loses tail data" and "double close throws I/O on closed file". `tests/test_danmaku_offloop.py` adds 5 tests: writer thread exists/daemon/naming convention, monitor-only mode does not enqueue, end-to-end N subtitle blocks written, `srt.close` called exactly once (`stop` idempotent), slow `srt.write` doesn't block enqueue (10 messages enqueue < 0.5s).
+- **`i18n.py` + 18 call sites**: New `tr(template, **kwargs)` helper — `_tr(template)` lookup first, then `.format(**kwargs)` for second-pass interpolation. Fixes the root cause where f-strings replace the template before lookup, making catalog keys like `[{record_name}]` un-matchable and translations silently fall back to the original. The 18 new log lines with placeholders added in the fix phase now use `tr()`: from `main.py` 3, `src/collector.py` 7, `src/async_http.py` 1, `src/ffmpeg_proc.py` 2, `src/cookie_cache.py` 2, `src/stream_select.py` 3; f-string expression placeholders like `{type(e).__name__}` are pre-evaluated by the caller into a `type_name=type(e).__name__` local variable. `tests/test_i18n_tr.py` adds 6 tests: identity mapping, format normal, expression placeholder, missing-field KeyError (no silent fallback), lookup-then-format, reverse regression (already-interpolated string misses the template key).
+
+> **The pre-existing 200+ parameterized logs still use the f-string form** (historical technical debt, not in this batch's scope); a future "full i18n parameterized migration" project will replace them.
+
+#### II. 4 machine-validation items (conservative implementation, by module)
+
+- **`src/spider.py`**: New `_safe_loads(text) -> Optional[dict]` exception-safe parser (catches `JSONDecodeError`, logs a warning, returns `None`) and `_is_safe_http_url(url)` URL scheme whitelist (only allow `http`/`https`/`ws`/`wss`; reject `file`/`gopher`/`ftp` and scheme-less relative paths) as defensive baselines. The ~100+ existing `json.loads(json_str)` calls in `spider.py` remain to be migrated one-by-one; this batch only provides the migration infrastructure.
+- **`src/ws_client.py`**: `_heartbeat_loop` adds `asyncio.wait_for` guard (timeout = `heartbeat_interval + 1.0`); when a heartbeat callback hangs past the threshold the loop actively closes the underlying connection and exits, letting the outer `connect()` take the reconnect path — fixes the "heartbeat hangs forever, server-initiated FIN gets misread as a clean close" root cause. `typing` import adds `cast` (mypy error fix).
+- **`src/proxy.py`**: `ProxyInfo.__post_init__` now accepts IPv6 literals — `[::1]:8080` (the typical IPv6 form in Windows registry `ProxyServer` values) is recognized explicitly; bare IPv6 (`::1` / `2001:db8::1`) is also let through as a fallback.
+- **`src/video_postprocess.py`**: `segment_video` / `converts_mp4` / `converts_m4a` (the three `_run_ffmpeg_checked` callers) each add an independent `except subprocess.TimeoutExpired as e:` branch with a classified error message ("segmentation timed out" / "transcode timed out" / "audio extraction timed out") — instead of being swallowed by `except Exception` as "unknown error", which lost the "ffmpeg hung" semantic.
+- **`tests/test_machine_validation_fixes.py` adds 7 tests**: ① `_safe_loads` valid/non-dict/garbled JSON paths; ② `_is_safe_http_url` http/https/ws/wss pass + file/gopher/ftp reject + relative path reject; ③ `ws_heartbeat_timeout_closes_connection` (patch `websockets.connect`, use a slow heartbeat to trigger the timeout branch and assert `ws.close()` is called); ④ IPv6 `[::1]` accepted; ⑤ bare IPv6 `::1` accepted; ⑥ invalid IP `not a host!@#` raises `ValueError`; ⑦ the three `_run_ffmpeg_checked` timeout classifications (asserting 3 occurrences of the word "timed out").
+
+#### III. Repository metadata cleanup
+
+- `uv.lock` project version `4.0.9.4 → 4.1.0` (single-line change: `version = "4.0.9.4"` → `4.1.0` in the `name = "douyinliverecorder"` block); no dependency-graph re-resolution (other 73 packages untouched); `uv lock --check` passes.
+- Regenerated `DouyinLiveRecorder.egg-info/PKG-INFO` (previously 4.0.9.2, lagging pyproject 4.1.0): `pip install -e . --no-deps`, `importlib.metadata.version('douyinliverecorder')` now reads `4.1.0`.
+- `scripts/check_version.py` PASS (no regression in dynamic-version state).
+
+#### IV. Deletions
+
+- `gui_legacy.py` (legacy GUI, redundant with `gui.py` and the `CREATE_NO_WINDOW` bug made graceful stop never work).
+
+#### V. Unprocessed (still untouched this batch)
+
+- Full migration of pre-existing 200+ parameterized f-string logs to `tr()` (dedicated project, out of scope here).
+- Real-machine validation of the 4 items (handed off to the user): `spider.py` SSRF/JSON validation against real APIs, `ws_client.py` cipher suite handshake under `OpenSSL 3.x`, `proxy.py` IPv6 actual detection on Windows, `video_postprocess.py` ffmpeg actual hang timeout path.
+
+#### VI. Verification (2026-09-10)
+
+- `pytest -q` full: `899 passed, 2 skipped, 0 warnings` (from 870 before this batch; +29 new tests: test_notify 4 + test_web_api 4 + test_danmaku_offloop 5 + test_i18n_tr 6 + test_machine_validation_fixes 7 + the original 11 module-targeted 201 passed unchanged);
+- `python scripts/extract_i18n_strings.py`: 0 missing, zero divergence across the four-language catalogs;
+- `python scripts/compile_po.py` / `--check`: in sync with .po (540 entries);
+- mypy 44 files 0 error (including `Optional` import added to `src/spider.py` and `cast` import added to `src/ws_client.py`); black 104 files unchanged (isort adjusted 5 files then passed); isort pass;
+- `python scripts/check_version.py`: PASS (uv.lock 4.1.0, egg-info 4.1.0, pyproject 4.1.0 all consistent);
+- `uv lock --check`: passes (73 packages unchanged).
+
+### v4.0.9.4-dev (2026-09-07) — CI dependency versions aligned with latest official stable releases (codecov-action v5→v7, isort 8.0.1→9.0.1, mypy 2.3.0→2.3.1)
+
+**Change Summary**: Every dependency and runtime version referenced by `.github/workflows/ci.yml` was audited against the latest official stable releases as of 2026-09-07; the stale ones were upgraded, the rest verified current. **Upgraded (3)**: ① `codecov/codecov-action@v5 → @v7` (latest v7.0.0, 2026-06-07; v6's only breaking change is the node24 runtime migration, natively supported on ubuntu-latest — and setup-python/setup-node v7 are node24 ESM actions themselves; `files` / `token` / `fail_ci_if_error` / `slug` inputs verified unchanged against v7.0.0's action.yml, so the existing usage is drop-in compatible); ② pinned lint tool `isort 8.0.1 → 9.0.1` (released 2026-08-28; 9.0.0 only removes long-deprecated legacy option logic, `--profile black` defaults untouched); ③ `mypy 2.3.0 → 2.3.1` (patch release, 2026-08-15). **Verified current, kept as-is (6)**: checkout / setup-python / setup-node / upload-artifact all @v7 (each already the latest major), `dorny/paths-filter@v4` (latest v4.0.3), black 26.5.1 (already the newest stable on PyPI), Python 3.14 (3.15 GA expected 2026-10), Node 24 (Active LTS until 2028-04; Node 26 enters LTS only on 2026-10-28, so 24 remains the official production recommendation). **Verification**: the three affected gates were run locally (venv 3.14.7) with the exact CI commands — `isort --check-only --diff --profile black --line-length 120 .` exit 0; `mypy src/` and `mypy --platform linux src/` both 0 errors (a one-off mypy internal error on the first run after the version switch was stale `.mypy_cache` residue; clean-cache reruns reproduce nothing); `black --check --line-length 120 --target-version py314 .` reports 124 files unchanged; both workflows parse as valid YAML (ci 8 jobs / release 4 jobs). `AGENTS.md`'s "CI / workflow conventions" actions-baseline entry was updated to codecov-action@v7. Zero changes to requirements.txt / pyproject.toml runtime dependencies (only CI-inline tool pins and action versions moved; test / concurrency-test / integration-verify / build-verify jobs are unaffected). `uv.lock` was refreshed in the same pass: `uv lock --upgrade-package isort` moved isort 8.0.1 → 9.0.1 (9.0.1 is a mypyc-compiled distribution and newly depends on `mypy-extensions`, already present in the lock, so no new package entry) and also brought the project's own version recorded in the lock 4.0.9.2 → 4.0.9.4 (aligned with `pyproject.toml`); `uv lock --check` passes (73 packages). black 26.5.1 and mypy 2.3.1 in the lock were already the target versions — no change needed.
 
 ### v4.0.9.4-dev (2026-09-06) — Eight-file repository metadata sync + i18n catalog completion (516 → 521 entries) + this cycle's change overview (classified by module)
 
@@ -4141,7 +4358,7 @@ This round fixed item-by-item per the reference info the user provided (editor-s
 - Now when the interpreter basename starts with `pythonw`, use the same-directory **python.exe** (console subsystem) to launch the recording core; the packaged version (CLI exe `console=True`) is unaffected
 - **Real-test verification** (pythonw as parent + python.exe launching a child with SIGBREAK handler): after fix `AttachConsole` succeeded, `GenerateConsoleCtrlEvent` returned True, event truly delivered to child (without handler it's default-terminated, exit code `0xC000013A`=STATUS_CONTROL_C_EXIT; with handler registered it received `signum=21`). Discovered CPython behavior along the way: Python 3.13's `time.sleep()` **isn't woken by CTRL_BREAK** (event goes through the pending-call mechanism, main thread in C-layer sleep doesn't check signals), but main.py's recording main loop has no long sleep, so after receiving the event `safe_exit` executes within the GUI's 15-second wait window
 
-> **gui_legacy.py known leftover issue (not changed)**: The old GUI used `CREATE_NO_WINDOW` to start the child, under which `send_signal(CTRL_BREAK_EVENT)` is forever silently ineffective, so its "graceful stop" never actually worked (each time waited 15s timeout then force-killed). Root fix needs changing start params + AttachConsole approach, a larger change, recommend migrating to `gui.py`.
+> Removed `gui_legacy.py` (v4.1.0-dev, 2026-09-10): the file was functionally redundant with `gui.py` and carried a `CREATE_NO_WINDOW` child-process bug that silently disabled `send_signal(CTRL_BREAK_EVENT)`. Migration to `gui.py` is complete, so the legacy entry has been removed.
 
 ### v4.0.8.1-dev (2026-08-05) — CI static-verification workflow, concurrency-test integration, and coverage-gate uplift
 
@@ -4435,8 +4652,8 @@ This round fixed item-by-item per the reference info the user provided (editor-s
 | tqdm              | Declared       | src/ffmpeg_install.py, src/node_install.py                                        |
 | PyExecJS          | Declared       | src/room.py, src/spider.py, src/utils.py                                          |
 | customtkinter     | Declared       | gui.py                                                                            |
-| pystray           | Declared       | gui.py, gui_legacy.py (lazy import)                                                      |
-| Pillow            | Declared       | gui.py, gui_legacy.py                                                             |
+| pystray           | Declared       | gui.py (lazy import)                                                                 |
+| Pillow            | Declared       | gui.py                                                                            |
 | fastapi           | Declared       | src/web_api.py                                                                    |
 | uvicorn[standard] | Declared       | web.py (lazy import)                                                                     |
 | python-multipart  | Declared       | FastAPI form handling implicit dependency                                                                  |
