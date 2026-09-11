@@ -18,6 +18,7 @@ import time
 import urllib.parse
 from typing import Any, Union, cast
 
+import i18n
 from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType
 from src.logger import logger
 from src.platforms._xbogus import danmaku_signature
@@ -68,7 +69,9 @@ class DouyinDanmaku(DanmakuBase):
             try:
                 cookie = await get_ttwid()
             except Exception as e:
-                logger.warning(f"[抖音弹幕]动态获取 ttwid 失败: {type(e).__name__}: {e}")
+                logger.warning(
+                    i18n.tr("[抖音弹幕]动态获取 ttwid 失败: {type_name}: {e}", type_name=type(e).__name__, e=e)
+                )
                 cookie = ""
             if not cookie:
                 logger.warning("[抖音弹幕]无可用 cookie/ttwid，WS 握手可能被服务端拒绝")

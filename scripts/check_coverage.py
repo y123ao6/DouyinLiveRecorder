@@ -139,17 +139,22 @@ def check_coverage(data_file: str | None = None) -> int:
             print(f"   {module:25s} {pct:5.1f}%  (>= {threshold:.0f}%)")
 
     if missing_modules:
-        print(f"\n[WARN] {len(missing_modules)} module(s) not found in coverage data:")
+        print(f"\n[FAIL] {len(missing_modules)} module(s) missing from coverage data:")
         for module in missing_modules:
             print(f"   {module}")
+        # 模块在覆盖率数据里查不到，通常意味着 .coverage 未采集到它、或 --cov=src 未生效。
+        # 这是「门禁失效」而非「达标」，必须判失败——否则会输出
+        # 「PASSED: All 0 module(s) meet coverage threshold」的假绿。
+        print("       （查不到即视为门禁失效，按失败处理）")
 
-    if failures:
-        print(f"\n[FAIL] {len(failures)} module(s) below threshold:")
-        for module, pct, threshold in failures:
-            deficit = threshold - pct
-            print(f"   {module:25s} {pct:5.1f}%  (>= {threshold:.0f}%)  <- {deficit:.1f}% short")
+    if failures or missing_modules:
+        if failures:
+            print(f"\n[FAIL] {len(failures)} module(s) below threshold:")
+            for module, pct, threshold in failures:
+                deficit = threshold - pct
+                print(f"   {module:25s} {pct:5.1f}%  (>= {threshold:.0f}%)  <- {deficit:.1f}% short")
         print(f"\n{'=' * 60}")
-        print(f"FAILED: {len(failures)} module(s) did not meet coverage threshold")
+        print(f"FAILED: {len(failures)} module(s) below threshold, {len(missing_modules)} module(s) missing from data")
         print(f"{'=' * 60}")
         return 1
 

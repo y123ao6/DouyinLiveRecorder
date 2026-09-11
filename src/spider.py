@@ -1,4 +1,21 @@
 # -*- encoding: utf-8 -*-
+import asyncio
+import hashlib
+import json
+import os
+import random
+import re
+import subprocess
+import threading
+import time
+import urllib.parse
+import uuid
+from operator import itemgetter
+from typing import Optional, cast
+
+import httpx
+
+import i18n
 
 # 抖音直播录制工具 - 爬虫模块
 #
@@ -37,20 +54,6 @@
 # 故对本文件放宽相关检查，仅保留其余基础类型检查。
 # pyright: reportUnknownVariableType=none, reportUnknownParameterType=none, reportUnknownArgumentType=none, reportUnknownMemberType=none, reportUnknownLambdaType=none, reportMissingTypeArgument=none, reportMissingParameterType=none, reportIndexIssue=none, reportOperatorIssue=none, reportImplicitStringConcatenation=none, reportUnnecessaryIsInstance=none, reportUnusedCallResult=none, reportArgumentType=none, reportReturnType=none
 
-import asyncio
-import hashlib
-import json
-import random
-import re
-import subprocess
-import threading
-import time
-import urllib.parse
-import uuid
-from operator import itemgetter
-from typing import cast
-
-import httpx
 
 # 优先使用 exejs（PyExecJS 的活跃维护继任者），未安装时回退到 PyExecJS
 try:
@@ -138,7 +141,7 @@ async def _ensure_kuaishou_did(proxy_addr: OptionalStr = None) -> str:
                     _cached_kuaishou_did = f"did={did}; didv={didv}" if didv else f"did={did}"
                     logger.debug("自动获取快手 did 成功")
         except Exception as e:
-            logger.warning(f"自动获取快手 did 失败: {e}")
+            logger.warning(i18n.tr("自动获取快手 did 失败: {e}", e=e))
     return _cached_kuaishou_did
 
 
@@ -167,7 +170,7 @@ async def _ensure_twitch_client_id(proxy_addr: OptionalStr = None) -> str:
                 _cached_twitch_client_id = match.group(1)
                 logger.debug("自动获取 Twitch Client-Id 成功")
         except Exception as e:
-            logger.warning(f"自动获取 Twitch Client-Id 失败: {e}")
+            logger.warning(i18n.tr("自动获取 Twitch Client-Id 失败: {e}", e=e))
     return _cached_twitch_client_id
 
 
@@ -197,6 +200,29 @@ def _loads_dict(text: object) -> dict[str, object]:
         return {}
     parsed = cast(object, json.loads(s))
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _safe_loads(text: str) -> Optional[dict[str, object]]:
+    # 异常安全的 json.loads：捕获 JSONDecodeError 并记录 warning 后回 None。
+    # 用于替换 spider.py 中大量裸 json.loads(json_str) 调用，平台接口轻微变更
+    # （如返回 HTML 错误页或截断）不至于把整个解析链路拉崩。仅解析失败时记日志，
+    # 解析成功但非 dict 的非合法值仍由调用方按业务判空处理。
+    try:
+        parsed = cast(object, json.loads(text))
+    except json.JSONDecodeError as e:
+        logger.warning(i18n.tr("JSON 解析失败(已忽略): {type_name}: {e}", type_name=type(e).__name__, e=e))
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_safe_http_url(url: str) -> bool:
+    # 平台 URL 白名单校验：仅放行 http(s) 协议。防用户在 URL_config.ini 写入
+    # file:// / gopher:// / ftp:// 等协议造成 SSRF（虽然本项目无 request 直接
+    # fetch 的攻击面，但 stream_select 校验和后续解析链路仍会按 URL 触发请求，
+    # 收紧 scheme 边界是最低成本的防御）。允许 webcal/ws(s) 等平台专用协议放行
+    # （弹幕 wsclient 仍需 ws://）。
+    parsed = urllib.parse.urlsplit(url)
+    return parsed.scheme in ("http", "https", "ws", "wss")
 
 
 def get_params(url: str, params: str) -> OptionalStr:
@@ -426,7 +452,9 @@ async def get_douyin_web_stream_data(
                 if attempt == 0:
                     await asyncio.sleep(0.5)  # 给瞬时风控一个缓冲窗口
                     continue
-                logger.warning(f"Douyin web API failed: {api_error}, falling back to HTML scraping")
+                logger.warning(
+                    i18n.tr("Douyin web API failed: {api_error}, falling back to HTML scraping", api_error=api_error)
+                )
                 try:
                     html_str = _get_str_response(await async_req(url=url, proxy_addr=proxy_addr, headers=headers))
                     room_data = _extract_room_data_from_html(html_str)
@@ -521,7 +549,7 @@ async def get_douyin_web_stream_data(
     # 但副作用是「解析失败」与「未开播」被上游同样视作「需重试的不可录」，可能空转。
     except Exception as e:
         tb_lineno = e.__traceback__.tb_lineno if e.__traceback__ else 0
-        logger.error(f"Error message: {e} Error line: {tb_lineno}")
+        logger.error(i18n.tr("Error message: {e} Error line: {tb_lineno}", e=e, tb_lineno=tb_lineno))
         room_data = cast(dict[str, object], {"anchor_name": ""})
     return room_data
 
@@ -663,7 +691,7 @@ async def get_douyin_app_stream_data(
     # 但副作用是「解析失败」与「未开播」被上游同样视作「需重试的不可录」，可能空转。
     except Exception as e:
         tb_lineno = e.__traceback__.tb_lineno if e.__traceback__ else 0
-        logger.error(f"Error message: {e} Error line: {tb_lineno}")
+        logger.error(i18n.tr("Error message: {e} Error line: {tb_lineno}", e=e, tb_lineno=tb_lineno))
         room_data = cast(dict[str, object], {"anchor_name": ""})
     return room_data
 
@@ -737,7 +765,7 @@ async def get_kuaishou_stream_data(
     except Exception as e:
         # 用 print 而非 logger：抓取失败必须始终暴露到控制台（即使 logger 被静默/重定向），
         # 否则网络抖动会被静默吞掉、房间永久按「未开播」空转。直接回未开播，主循环下轮重试。
-        print(f"Failed to fetch data from {url}.{e}")
+        print(i18n.tr("Failed to fetch data from {url}.{e}", url=url, e=e))
         return {"type": 1, "is_live": False}
 
     try:
@@ -755,7 +783,7 @@ async def get_kuaishou_stream_data(
     except (AttributeError, IndexError, json.JSONDecodeError) as e:
         # 只捕获「结构解析」类异常（页面改版/字段缺失/JSON 坏），按未开播返回；
         # 其它异常（如超时已由上层兜住）不在此吞掉，避免把非解析错误也误判成未开播而静默丢失根因。
-        print(f"Failed to parse JSON data from {url}. Error: {e}")
+        print(i18n.tr("Failed to parse JSON data from {url}. Error: {e}", url=url, e=e))
         return {"type": 1, "is_live": False}
 
     result: dict[str, object] = {"type": 2, "is_live": False}
@@ -767,7 +795,7 @@ async def get_kuaishou_stream_data(
         title = error_type.get("title", "")
         content = error_type.get("content", "")
         error_msg = (title if isinstance(title, str) else "") + (content if isinstance(content, str) else "")
-        print(f"Failed URL: {url} Error message: {error_msg}")
+        print(i18n.tr("Failed URL: {url} Error message: {error_msg}", url=url, error_msg=error_msg))
         return result
 
     live_stream = cast(dict[str, object], play_list.get("liveStream") or {})
@@ -867,7 +895,7 @@ async def get_kuaishou_stream_data2(
     # 都转去走 get_kuaishou_stream_data（网页 __INITIAL_STATE__ 路径）再试一次；
     # 注意即使本路径已拿到流地址，只要 anchor_name 为空也会触发这次回退，可能重复解析。
     except Exception as e:
-        print(f"{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.")
+        print(i18n.tr("{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.", e=e, url=url))
     return await get_kuaishou_stream_data(url, cookies=cookies, proxy_addr=proxy_addr)
 
 
@@ -1070,7 +1098,7 @@ async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> di
         auth = md5(auth + key + sign_str)
         return {"enc_data": enc_key.get("enc_data"), "did": did, "ts": ts, "auth": auth}
     except Exception as e:
-        print(f"Get douyu sign params error: {e}")
+        print(i18n.tr("Get douyu sign params error: {e}", e=e))
         return {}
 
 
@@ -1532,7 +1560,7 @@ async def get_bilibili_danmaku_info(
         _uid = init_room.get("uid")
         uid = int(_uid) if isinstance(_uid, int) else 0
     except Exception as e:
-        logger.warning(f"[B站直播]room_init 失败: {type(e).__name__}: {e}")
+        logger.warning(i18n.tr("[B站直播]room_init 失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
     # 2) nav 取 wbi_img（img_key/sub_key）
     img_key = ""
@@ -1554,7 +1582,7 @@ async def get_bilibili_danmaku_info(
         img_key = img_url.rsplit("/", 1)[-1].split(".")[0]
         sub_key = sub_url.rsplit("/", 1)[-1].split(".")[0]
     except Exception as e:
-        logger.warning(f"[B站直播]nav(wbi) 获取失败: {type(e).__name__}: {e}")
+        logger.warning(i18n.tr("[B站直播]nav(wbi) 获取失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
     # 3) buvid 获取链（匿名弹幕进房也需要 buvid 字段），按「真实注册标识优先」排序：
     #    a. 进程缓存   —— 设备级标识，长期有效；
@@ -1574,7 +1602,7 @@ async def get_bilibili_danmaku_info(
             _m = re.search(r"buvid3=([^;\s]+)", str(cookies))
             if _m and _m.group(1).strip():
                 buvid = _m.group(1).strip()
-                logger.debug(f"[B站直播]使用 cookie 中的 buvid3: {buvid}")
+                logger.debug(i18n.tr("[B站直播]使用 cookie 中的 buvid3: {buvid}", buvid=buvid))
         if not buvid:
             for _attempt in range(2):
                 try:
@@ -1592,9 +1620,15 @@ async def get_bilibili_danmaku_info(
                         break
                 except Exception as e:
                     if _attempt == 0:
-                        logger.debug(f"[B站直播]buvid 获取失败(将重试): {type(e).__name__}: {e}")
+                        logger.debug(
+                            i18n.tr(
+                                "[B站直播]buvid 获取失败(将重试): {type_name}: {e}", type_name=type(e).__name__, e=e
+                            )
+                        )
                     else:
-                        logger.warning(f"[B站直播]buvid 获取失败: {type(e).__name__}: {e}")
+                        logger.warning(
+                            i18n.tr("[B站直播]buvid 获取失败: {type_name}: {e}", type_name=type(e).__name__, e=e)
+                        )
         if not buvid:
             # spi 两跳仍空（风控）：改走首页 Set-Cookie（真实注册标识，cookie_cache 内置
             # TTL 缓存与并发去重；UA 需浏览器态——headers 已是 Firefox UA）
@@ -1604,13 +1638,21 @@ async def get_bilibili_danmaku_info(
                 )
                 buvid = str(home_cookies.get("buvid3", "")).strip()
                 if buvid:
-                    logger.debug(f"[B站直播]spi 失败，从首页 Set-Cookie 获取 buvid3: {buvid}")
+                    logger.debug(i18n.tr("[B站直播]spi 失败，从首页 Set-Cookie 获取 buvid3: {buvid}", buvid=buvid))
             except Exception as e:
-                logger.debug(f"[B站直播]首页 Set-Cookie 获取 buvid3 失败: {type(e).__name__}: {e}")
+                logger.debug(
+                    i18n.tr(
+                        "[B站直播]首页 Set-Cookie 获取 buvid3 失败: {type_name}: {e}", type_name=type(e).__name__, e=e
+                    )
+                )
         if not buvid:
             buvid = str(uuid.uuid4())
             _bili_buvid_is_fallback = True
-            logger.debug(f"[B站直播]spi/首页均无 buvid，使用生成兜底 buvid3（未注册，AUTH 可能被拒）: {buvid}")
+            logger.debug(
+                i18n.tr(
+                    "[B站直播]spi/首页均无 buvid，使用生成兜底 buvid3（未注册，AUTH 可能被拒）: {buvid}", buvid=buvid
+                )
+            )
         else:
             _bili_buvid_is_fallback = False
         _bili_buvid_cached = buvid
@@ -1621,7 +1663,7 @@ async def get_bilibili_danmaku_info(
         try:
             _sign_wbi(danmu_params, img_key, sub_key)
         except Exception as e:
-            logger.warning(f"[B站直播]wbi 签名失败: {type(e).__name__}: {e}")
+            logger.warning(i18n.tr("[B站直播]wbi 签名失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
     try:
         danmu_str = await async_req(
             f"https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?"
@@ -1648,7 +1690,7 @@ async def get_bilibili_danmaku_info(
             return None
         server_host = host_list[0]
     except Exception as e:
-        logger.warning(f"[B站直播]getDanmuInfo 失败: {type(e).__name__}: {e}")
+        logger.warning(i18n.tr("[B站直播]getDanmuInfo 失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
         return None
 
     return {
@@ -1892,7 +1934,7 @@ async def login_sooplive(username: str, password: str, proxy_addr: OptionalStr =
         cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
         return cookie_str
     except Exception as e:
-        print(f"An error occurred during login: {e}")
+        print(i18n.tr("An error occurred during login: {e}", e=e))
         raise Exception(
             "sooplive login failed, please check if the account password in the configuration file is correct."
         )
@@ -2546,7 +2588,7 @@ async def login_flextv(username: str, password: str, proxy_addr: OptionalStr = N
             return None
 
     except Exception as e:
-        print(f"FlexTV login request exception: {e}")
+        print(i18n.tr("FlexTV login request exception: {e}", e=e))
         raise Exception(
             "FlexTV login failed, please check if the account and password in the configuration file are correct."
         )
@@ -2837,10 +2879,10 @@ async def login_popkontv(
             else:
                 raise Exception(f"popkontv login failed, {json_data.get('statusMsg', 'unknown error')}")
     except httpx.HTTPStatusError as e:
-        print(f"HTTP status error occurred during login: {e.response.status_code}")
+        print(i18n.tr("HTTP status error occurred during login: {status_code}", status_code=e.response.status_code))
         raise
     except Exception as e:
-        print(f"An exception occurred during popkontv login: {e}")
+        print(i18n.tr("An exception occurred during popkontv login: {e}", e=e))
         raise
 
 
@@ -4226,6 +4268,22 @@ async def get_chzzk_stream_data(
 
 
 @trace_error_decorator
+# 读取哫秀/哫哫接口 accessToken 的外部覆盖值：优先环境变量，其次 config.ini 的 [Cookie] 段。
+# 背景：内置 token 为「双重 URL 编码」的长期凭据，已随公开仓库分发；提供覆盖入口，
+# 使平台轮换或凭据失效时无需改代码即可替换（正式换发仍需维护者更新内置缺省值）。
+def _read_haixiu_token_override(is_haixiu: bool) -> str:
+    env_key = "HAIXIU_ACCESS_TOKEN" if is_haixiu else "HAIHAI_ACCESS_TOKEN"
+    cfg_key = "haixiu_access_token" if is_haixiu else "haihai_access_token"
+    override = os.environ.get(env_key, "").strip()
+    if override:
+        return override
+    try:
+        cfg_value = utils.read_config_value(f"{script_path}/config/config.ini", "Cookie", cfg_key)
+    except Exception:
+        return ""
+    return (cfg_value or "").strip()
+
+
 async def get_haixiu_stream_url(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
@@ -4243,10 +4301,14 @@ async def get_haixiu_stream_url(
     # access_token 是两段写死的「双重 URL 编码」凭据（嗨秀/嗨嗨两套各一个），调用前再 unquote 两次还原。
     # 该 token 长期有效、与账号无关，是接口鉴权的关键；改动会导致 401。lehaitv 走另一域名与 origin。
     # 嗨秀/嗨嗨两套域名各对应一个写死双重编码 token，按域名选择
-    if "haixiutv" in url:
-        access_token = "pLXSC%252FXJ0asc1I21tVL5FYZhNJn2Zg6d7m94umCnpgL%252BuVm31GQvyw%253D%253D"
-    else:
-        access_token = "s7FUbTJ%252BjILrR7kicJUg8qr025ZVjd07DAnUQd8c7g%252Fo4OH9pdSX6w%253D%253D"
+    _is_haixiu = "haixiutv" in url
+    # 先取外部覆盖（env / config.ini），未配置时回退内置值以保持既有行为不变
+    access_token = _read_haixiu_token_override(_is_haixiu)
+    if not access_token:
+        if _is_haixiu:
+            access_token = "pLXSC%252FXJ0asc1I21tVL5FYZhNJn2Zg6d7m94umCnpgL%252BuVm31GQvyw%253D%253D"
+        else:
+            access_token = "s7FUbTJ%252BjILrR7kicJUg8qr025ZVjd07DAnUQd8c7g%252Fo4OH9pdSX6w%253D%253D"
 
     params = {"accessToken": access_token, "tku": "3000006", "c": "10138100100000", "_st1": int(time.time() * 1000)}
     with open(f"{JS_SCRIPT_PATH}/haixiu.js", encoding="utf-8") as f:

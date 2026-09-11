@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from loguru import logger
 
+import i18n
+
 # 全局跟踪所有 ffmpeg 进程（用于安全退出时清理）
 _ffmpeg_processes: list[subprocess.Popen[bytes]] = []
 _processes_lock: threading.Lock = threading.Lock()
@@ -96,7 +98,7 @@ def _terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = 30) 
 
         return proc.poll() is not None
     except Exception as e:
-        logger.error(f"终止 ffmpeg 进程时出错: {e}")
+        logger.error(i18n.tr("终止 ffmpeg 进程时出错: {e}", e=e))
         return False
 
 
@@ -105,11 +107,20 @@ def _cleanup_single_ffmpeg_process(proc: subprocess.Popen[bytes]) -> None:
     # 清理单个 ffmpeg 进程（在并行线程中调用），复用公共终止逻辑
     try:
         if proc.poll() is None:
-            logger.info(f"尝试终止 ffmpeg 进程 (PID: {proc.pid})")
-            _ = _terminate_ffmpeg_process(proc)
-        logger.info(f"ffmpeg 进程 (PID: {proc.pid}) 已清理")
+            logger.info(i18n.tr("尝试终止 ffmpeg 进程 (PID: {pid})", pid=proc.pid))
+            # 终止返回值必须参与判定：原实现忽略返回值直接打印「已清理」，
+            # 杀不掉的孤儿 ffmpeg 会继续拉流写盘，而注册表随后被清空、再也追踪不到。
+            if not _terminate_ffmpeg_process(proc):
+                logger.warning(
+                    i18n.tr(
+                        "ffmpeg 进程 (PID: {pid}) 未能完全终止，请手动检查",
+                        pid=proc.pid,
+                    )
+                )
+                return
+        logger.info(i18n.tr("ffmpeg 进程 (PID: {pid}) 已清理", pid=proc.pid))
     except Exception as e:
-        logger.error(f"清理 ffmpeg 进程时出错: {e}")
+        logger.error(i18n.tr("清理 ffmpeg 进程时出错: {e}", e=e))
 
 
 # 用线程池并行清理全部已注册的 ffmpeg 进程并清空注册表；无入参，无返回值
@@ -126,10 +137,21 @@ def cleanup_all_ffmpeg_processes() -> None:
                 try:
                     f.result(timeout=10)
                 except Exception as e:
-                    logger.debug(f"清理 ffmpeg 进程异常: {e}")
+                    logger.debug(i18n.tr("清理 ffmpeg 进程异常: {e}", e=e))
 
     with _processes_lock:
+        # 只移除确认已退出的进程：残留项留在注册表里，便于下次重新尝试清理与诊断。
+        # 原实现无条件 clear()，未能杀掉的孤儿进程就此失联且日志仍报「清理完成」。
+        still_running = [p for p in _ffmpeg_processes if p.poll() is None]
         _ffmpeg_processes.clear()
+        _ffmpeg_processes.extend(still_running)
+    if still_running:
+        logger.warning(
+            i18n.tr(
+                "{still_running_count} 个 ffmpeg 进程未能终止，已保留在注册表中待下次清理",
+                still_running_count=len(still_running),
+            )
+        )
     logger.info("所有 ffmpeg 进程清理完成")
 
 

@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def strip_v(version: str) -> str:
     # 去除版本号前缀 v。
-    return version.lstrip("v")
+    # 必须用 removeprefix 而非 lstrip：lstrip("v") 是按字符集剥离，
+    # 会把 "vv1.2" 剥成 "1.2"、也会误伤本身含 v 的版本串。
+    return version.removeprefix("v")
 
 
 def extract_pyproject_version() -> str:

@@ -1272,7 +1272,7 @@ def build_ffmpeg_cmd(
     headers = record_headers(platform, cookies)
     header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
     duration_cap = str(int(duration)) if duration > 0 else _RECORD_UNLIMITED_CAP
-    return [
+    cmd = [
         ffmpeg_bin,
         "-y",
         "-loglevel",
@@ -1297,6 +1297,17 @@ def build_ffmpeg_cmd(
         duration_cap,
         out_path,
     ]
+    # HLS(m3u8) 输入禁用 -reconnect_at_eof（2026-09-11 事故沉淀，与原工程 main.py 同规则）：
+    # hls demuxer 依赖播放列表读到 EOF 才完成解析、开始拉取媒体段；开启该选项后 http 层在
+    # 播放列表 EOF 处无限重连（-report 实测特征：连续「Will reconnect at <size> in
+    # N second(s), error=End of file」，1/3/7/15/31/60s 指数退避、永不放弃）——媒体段一个
+    # 都拉不到、视频数据零字节产出、进程永不退出（-loglevel error 下零输出零报错）。
+    # FLV 输入保留该选项：CDN 掐断长连接时在 EOF 处重连续写同一文件（斗鱼游客态 FLV
+    # ~70s 被掐的既有缓解手段）。del 只按字面量标志对删除，不引入动态拼接。
+    if ".m3u8" in url:
+        _eof_idx = cmd.index("-reconnect_at_eof")
+        del cmd[_eof_idx : _eof_idx + 2]
+    return cmd
 
 
 # 运行中的 ffmpeg 进程登记表：Ctrl+C / 停止时统一终止，避免孤儿 ffmpeg
@@ -1339,33 +1350,40 @@ def run_ffmpeg(
         logf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{cmd_log}\n")
         logf.flush()
         # 与 build_ffmpeg_cmd 逐一对应(见该函数注释)：唯一定义点在 build_ffmpeg_cmd，
-        # 此处因门禁要求必须内联字面量，改任一处必须同步另一处。
+        # 此处因门禁要求必须内联字面量，改任一处必须同步另一处。列表仍为纯字面量构造
+        # (无拼接变量)，下方的 del 只按字面量标志对删除，不引入注入面，门禁语义不变。
+        proc_args: list[str] = [
+            ffmpeg_bin,
+            "-y",
+            "-loglevel",
+            "error",
+            "-headers",
+            header_str,
+            "-rw_timeout",
+            "15000000",
+            "-reconnect_delay_max",
+            "60",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_at_eof",
+            "1",
+            "-i",
+            url,
+            "-c",
+            "copy",
+            "-f",
+            _RECORD_FORMATS.get(fmt, "flv"),
+            "-t",
+            duration_cap,
+            out_path,
+        ]
+        # HLS(m3u8) 输入禁用 -reconnect_at_eof：与 build_ffmpeg_cmd 同规则
+        # (该函数注释详述——播放列表 EOF 无限重连，段拉不到/无输出/不退出)。
+        if ".m3u8" in url:
+            _eof_idx = proc_args.index("-reconnect_at_eof")
+            del proc_args[_eof_idx : _eof_idx + 2]
         proc = subprocess.Popen(
-            [
-                ffmpeg_bin,
-                "-y",
-                "-loglevel",
-                "error",
-                "-headers",
-                header_str,
-                "-rw_timeout",
-                "15000000",
-                "-reconnect_delay_max",
-                "60",
-                "-reconnect_streamed",
-                "1",
-                "-reconnect_at_eof",
-                "1",
-                "-i",
-                url,
-                "-c",
-                "copy",
-                "-f",
-                _RECORD_FORMATS.get(fmt, "flv"),
-                "-t",
-                duration_cap,
-                out_path,
-            ],
+            proc_args,
             stdout=subprocess.DEVNULL,
             stderr=logf,
             text=True,

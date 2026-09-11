@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 工具函数模块 - 提供通用工具函数，包括配置文件读写、文件操作、字符串处理等
-
 import functools
 import hashlib
 import inspect
@@ -18,6 +16,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable, ParamSpec, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
+
+import i18n
+
+# 工具函数模块 - 提供通用工具函数，包括配置文件读写、文件操作、字符串处理等
+
 
 # 优先使用 exejs（PyExecJS 的活跃维护继任者），未安装时回退到 PyExecJS
 try:
@@ -179,16 +182,16 @@ def read_config_value(file_path: str | Path, section: str, key: str) -> str | No
     try:
         _ = config.read(file_path, encoding="utf-8-sig")
     except Exception as e:
-        print(f"Error occurred while reading the configuration file: {e}")
+        print(i18n.tr("Error occurred while reading the configuration file: {e}", e=e))
         return None
 
     if section in config:
         if key in config[section]:
             return config[section][key]
         else:
-            print(f"Key [{key}] does not exist in section [{section}].")
+            print(i18n.tr("Key [{key}] does not exist in section [{section}].", key=key, section=section))
     else:
-        print(f"Section [{section}] does not exist in the file.")
+        print(i18n.tr("Section [{section}] does not exist in the file.", section=section))
 
     return None
 
@@ -201,11 +204,11 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     try:
         _ = config.read(file_path, encoding="utf-8-sig")
     except Exception as e:
-        print(f"An error occurred while reading the configuration file: {e}")
+        print(i18n.tr("An error occurred while reading the configuration file: {e}", e=e))
         return
 
     if section not in config:
-        print(f"Section [{section}] does not exist in the file.")
+        print(i18n.tr("Section [{section}] does not exist in the file.", section=section))
         return
 
     config[section][key] = new_value
@@ -213,9 +216,15 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     try:
         with open(file_path, "w", encoding="utf-8-sig") as configfile:
             config.write(configfile)
-        print(f"The value of {key} under [{section}] in the configuration file has been updated.")
+        print(
+            i18n.tr(
+                "The value of {key} under [{section}] in the configuration file has been updated.",
+                key=key,
+                section=section,
+            )
+        )
     except Exception as e:
-        print(f"Error occurred while writing to the configuration file: {e}")
+        print(i18n.tr("Error occurred while writing to the configuration file: {e}", e=e))
 
 
 def get_file_paths(directory: str) -> list[str]:
@@ -323,3 +332,18 @@ def get_query_params(url: str, param_name: OptionalStr) -> dict[str, list[str]] 
     else:
         values = query_params.get(param_name, [])
         return values
+
+
+# 脱敏 URL / 代理地址中的凭据后再写日志：logs 下的日志会轮转保留多份，把带
+# user:pass 的代理地址或带 signature/token 的直链直接写进去等于凭据长期落盘。
+# 只抹凭据，保留 host/path 与其余查询参数，便于定位问题。
+_PROXY_CREDENTIAL_RE = re.compile(r"(?i)(://)[^/@\s]+@")
+_SECRET_QUERY_RE = re.compile(
+    r"(?i)((?:signature|token|access_token|apikey|api_key|secret|key|x-bogus|a-bogus|a_bogus|ms_token|nonce|sid)=)[^&\s]*"
+)
+
+
+def mask_credentials(text: str) -> str:
+    # 抹去代理凭据（scheme://user:pass@ → scheme://***@）与查询串里的签名/token 类参数值
+    masked = _PROXY_CREDENTIAL_RE.sub(r"\1***@", text)
+    return _SECRET_QUERY_RE.sub(r"\1***", masked)

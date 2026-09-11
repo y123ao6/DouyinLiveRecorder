@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# FFmpeg 自动安装模块 - 跨平台 FFmpeg 自动检测与安装
-#
-# 职责：检测系统是否已安装 ffmpeg（check_ffmpeg_installed），未安装则按平台自动拉取并安装
-#   （Windows 官方源 gyan.dev 优先、蓝奏云备用；macOS 走 Homebrew；Linux 走 yum/apt）。
-# 安装落点：execute_dir（冻结后指向 _internal/，与运行时资源同目录），装好后把 ffmpeg 目录
-#   前置注入 os.environ["PATH"]，使同进程后续 subprocess 调用 `ffmpeg` 能直接命中。
-# 校验约定：所有安装路径最后都跑一次 `ffmpeg -version`，returncode==0 才认成功，否则回退下一源/报错。
-# 设计取舍：安装失败只返回 False、不抛异常（由调用方决定提示用户手动安装），避免中断主程序启动。
-
 import os
 import platform
 import re
@@ -26,11 +17,23 @@ import requests
 from loguru import logger
 from tqdm import tqdm
 
+import i18n
+
 # 应用根目录复用 src.logger 公开导出的 script_path（等价原私有 _app_root() 的返回值）
 from src.logger import script_path
 
 # 解压实现与 node_install 共用同一份（原先两处逐字重复，见 src/utils.unzip_file）
 from src.utils import unzip_file
+
+# FFmpeg 自动安装模块 - 跨平台 FFmpeg 自动检测与安装
+#
+# 职责：检测系统是否已安装 ffmpeg（check_ffmpeg_installed），未安装则按平台自动拉取并安装
+#   （Windows 官方源 gyan.dev 优先、蓝奏云备用；macOS 走 Homebrew；Linux 走 yum/apt）。
+# 安装落点：execute_dir（冻结后指向 _internal/，与运行时资源同目录），装好后把 ffmpeg 目录
+#   前置注入 os.environ["PATH"]，使同进程后续 subprocess 调用 `ffmpeg` 能直接命中。
+# 校验约定：所有安装路径最后都跑一次 `ffmpeg -version`，returncode==0 才认成功，否则回退下一源/报错。
+# 设计取舍：安装失败只返回 False、不抛异常（由调用方决定提示用户手动安装），避免中断主程序启动。
+
 
 # 全局路径和环境变量
 current_platform = platform.system()
@@ -101,10 +104,10 @@ def download_ffmpeg_official(url: str, dest_dir: str) -> bool:
             return False
 
     except requests.RequestException as e:
-        logger.warning(f"Official ffmpeg download failed (network error): {e}")
+        logger.warning(i18n.tr("Official ffmpeg download failed (network error): {e}", e=e))
         return False
     except Exception as e:
-        logger.error(f"Official ffmpeg installation failed: {type(e).__name__} - {e}")
+        logger.error(i18n.tr("Official ffmpeg installation failed: {type_name} - {e}", type_name=type(e).__name__, e=e))
         return False
 
 
@@ -150,7 +153,7 @@ def get_lanzou_download_link(url: str, password: str | None = None) -> str | Non
         with requests.get(download_url, headers=headers, timeout=30) as response:
             return response.url
     except Exception as e:
-        logger.error(f"Failed to obtain ffmpeg download address. {e}")
+        logger.error(i18n.tr("Failed to obtain ffmpeg download address. {e}", e=e))
     return None
 
 
@@ -200,7 +203,7 @@ def _install_ffmpeg_lanzou() -> bool:
             logger.error("ffmpeg lanzou installation verification failed")
             return False
     except Exception as e:
-        logger.error(f"ffmpeg lanzou installation failed: {type(e).__name__} - {e}")
+        logger.error(i18n.tr("ffmpeg lanzou installation failed: {type_name} - {e}", type_name=type(e).__name__, e=e))
         return False
 
 
@@ -234,10 +237,10 @@ def install_ffmpeg_mac() -> bool:
         else:
             logger.error("ffmpeg installation failed")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to install ffmpeg using Homebrew. {e}")
+        logger.error(i18n.tr("Failed to install ffmpeg using Homebrew. {e}", e=e))
         logger.error("Please install ffmpeg manually or check your Homebrew installation.")
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+        logger.error(i18n.tr("An unexpected error occurred: {e}", e=e))
     return False
 
 
@@ -265,7 +268,7 @@ def install_ffmpeg_linux() -> bool:
         logger.debug("yum command not found, trying to install using apt...")
         is_RHS = False
     except Exception as e:
-        logger.error(f"An error occurred while trying to install ffmpeg using yum: {e}")
+        logger.error(i18n.tr("An error occurred while trying to install ffmpeg using yum: {e}", e=e))
 
     # 尝试 apt (Debian/Ubuntu)
     if not is_RHS:
@@ -285,7 +288,7 @@ def install_ffmpeg_linux() -> bool:
         except FileNotFoundError:
             logger.error("apt command not found, unable to install ffmpeg. Please manually install ffmpeg by yourself")
         except Exception as e:
-            logger.error(f"An error occurred while trying to install ffmpeg using apt: {e}")
+            logger.error(i18n.tr("An error occurred while trying to install ffmpeg using apt: {e}", e=e))
     logger.error("Manual installation of ffmpeg is required. Please manually install ffmpeg by yourself.")
     return False
 
@@ -301,7 +304,10 @@ def install_ffmpeg() -> bool:
         return install_ffmpeg_mac()
     else:
         logger.debug(
-            f"ffmpeg auto installation is not supported on this platform: {current_platform}. Please install ffmpeg manually."
+            i18n.tr(
+                "ffmpeg auto installation is not supported on this platform: {current_platform}. Please install ffmpeg manually.",
+                current_platform=current_platform,
+            )
         )
     return False
 
@@ -319,11 +325,14 @@ def check_ffmpeg_installed() -> bool:
         pass
     except OSError as e:
         logger.warning(
-            f"OSError occurred: {e}. ffmpeg may not be installed correctly or is not available in the system PATH."
+            i18n.tr(
+                "OSError occurred: {e}. ffmpeg may not be installed correctly or is not available in the system PATH.",
+                e=e,
+            )
         )
         logger.warning("Please delete the ffmpeg and try to download and install again.")
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+        logger.error(i18n.tr("An unexpected error occurred: {e}", e=e))
     return False
 
 

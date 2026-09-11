@@ -37,6 +37,12 @@ def _format_ts(seconds: float) -> str:
 
 
 # SRT 字幕写入器：线程安全地按分片时长切换输出文件，并把弹幕按片内相对时间写成 SRT 条目。
+# 清洗弹幕文本，避免污染 SRT 结构：换行会截断字幕块，"-->" 会被解析为新的时间轴行
+# （可伪造任意字幕/时间轴）。替换为可见字符而非直接删除，保留原文可读性。
+def _sanitize_srt_text(text: str) -> str:
+    return text.replace("\r", " ").replace("\n", " ").replace("-->", "->")
+
+
 class SrtWriter:
     # 初始化写入器：base_filename 为输出文件名前缀，segment_seconds 为分片时长（<=0/None 为单文件），
     # display_duration 为单条弹幕最小显示秒数；只做字段与锁初始化，不创建文件。
@@ -124,10 +130,21 @@ class SrtWriter:
             end = start + self._display_duration
             if self._last_end is not None and end <= self._last_end:
                 end = self._last_end + self._display_duration
+            # 片内上界：末条弹幕的 end 不得越过本片时长，否则会与片边界及下一片首条
+            # 时间轴重叠（下一片 _open_segment 会把片内时间轴归 0 重算）。
+            # max(start, ...) 兜底保证 start <= end，不产生非法区间。
+            if self._seg_seconds is not None:
+                end = max(start, min(end, float(self._seg_seconds)))
             self._last_end = end
 
             self._index += 1
-            line = f"{self._index}\n" f"{_format_ts(start)} --> {_format_ts(end)}\n" f"{user_name}: {message}\n\n"
+            # 弹幕原文与用户名均为外部可控：换行会破坏 SRT 块结构、"-->" 会被解析成
+            # 伪时间轴行，必须先清洗再拼行。
+            line = (
+                f"{self._index}\n"
+                f"{_format_ts(start)} --> {_format_ts(end)}\n"
+                f"{_sanitize_srt_text(user_name)}: {_sanitize_srt_text(message)}\n\n"
+            )
             if self._fp is not None:
                 self._fp.write(line)
                 self._fp.flush()

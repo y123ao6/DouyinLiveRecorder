@@ -69,9 +69,9 @@ def load_config(path: str) -> tuple[list[CheckConfig], str | None]:
         # 允许顶层写成 {"base_url": "...", "checks": [...]}
         typed = cast(dict[str, object], cfg)
         return cast(list[CheckConfig], typed.get("checks", [])), cast(str | None, typed.get("base_url"))
-    # 既不是 list 也不是 dict：返回空 checks；main 会 0 检查全"通过"并以退出码 0 结束，
-    # CI 不会感知到配置损坏——配置格式错误是静默通过而非失败。
-    return [], None
+    # 既不是 list 也不是 dict：配置已损坏，必须让 CI 感知。原实现返回空 checks，
+    # main 会 0 检查全"通过"并以退出码 0 结束——门禁形同虚设。
+    raise ValueError(f"冒烟配置格式非法（顶层须为 list 或 {{'checks': [...]}}）: {path}")
 
 
 # 把配置里的 url/path 解析为最终请求地址：已是完整 http(s) 则原样使用；否则与 base_url 拼接。
@@ -309,7 +309,12 @@ def main() -> None:
     report_path = cast(str | None, args.report)
     report_format = cast(str | None, args.format)
 
-    checks, cfg_base = load_config(config_path)
+    try:
+        checks, cfg_base = load_config(config_path)
+    except (OSError, ValueError) as e:
+        # 配置读取/格式错误退出码 2，与「检查失败(1)」区分，便于 CI 分辨是脚本/配置问题还是接口问题
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
     base_url = base_url_arg or cfg_base
 
     t0 = time.time()
@@ -330,6 +335,8 @@ def main() -> None:
 
     # CI 以退出码判定成败：任一检查 failed 即返回 1 使流水线变红；全部通过（含 0 检查）返回 0。
     # 与 load_config 的空配置静默通过呼应——零检查也会退出 0。
+    # （2026-09-10 修订：配置格式非法已改为在 load_config 抛 ValueError、由 main 退出 2，
+    #   故「零检查」现在只可能来自合法但空的 checks 列表，不再掩盖配置损坏。）
     failed = cast(int, summary["failed"])
     sys.exit(1 if failed else 0)
 

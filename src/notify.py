@@ -1,4 +1,16 @@
 # -*- coding: utf-8 -*-
+import shlex
+import subprocess
+import time
+from typing import cast
+
+from loguru import logger
+
+import i18n
+import main
+from msg_push import bark, dingtalk, ntfy, pushplus, send_email, tg_bot, xizhi
+from src.video_postprocess import get_startup_info
+
 # 通知与录制状态钩子（独立模块）
 #
 # 负责：
@@ -13,17 +25,6 @@
 # （推送渠道配置、录制状态集合、错误率窗口、并发信号量等），
 # 通过 `import main` 在运行时惰性读写，保证状态在 main 与各模块间实时共享，
 # 同时避免循环导入与 `python main.py` 直接运行时的 __main__ 二次执行。
-
-import shlex
-import subprocess
-import time
-from typing import cast
-
-from loguru import logger
-
-import main
-from msg_push import bark, dingtalk, ntfy, pushplus, send_email, tg_bot, xizhi
-from src.video_postprocess import get_startup_info
 
 
 # 按配置的推送渠道（微信/钉钉/邮箱/TG/BARK/NTFY/PUSHPLUS）分发直播状态消息：
@@ -67,10 +68,23 @@ def push_message(record_name: str, live_url: str, content: str) -> None:
                 result = func()  # type: ignore[no-untyped-call]
                 result_dict = cast(dict[str, list[str | int]], result)
                 logger.info(
-                    f'提示信息：已经将[{record_name}]直播状态消息推送至你的{platform}, 成功{len(result_dict["success"])}, 失败{len(result_dict["error"])}'
+                    i18n.tr(
+                        "提示信息：已经将[{record_name}]直播状态消息推送至你的{platform}, 成功{success_count}, 失败{error_count}",
+                        record_name=record_name,
+                        platform=platform,
+                        success_count=len(result_dict["success"]),
+                        error_count=len(result_dict["error"]),
+                    )
                 )
             except Exception as e:
                 main.color_obj.print_colored(f"直播消息推送到{platform}失败: {e}", main.color_obj.RED)
+
+
+# 录后自定义脚本执行超时（秒）：脚本由用户在配置里提供，若其挂起（等输入 / 死循环 /
+# 网络阻塞），无超时的 communicate() 会一直占用调用线程。超时后终止子进程并记日志，
+# 不让第三方脚本拖住录制主流程。默认给足 5 分钟以兼容耗时较长的上传 / 转码类脚本；
+# 模块级常量便于测试注入。
+_SCRIPT_TIMEOUT_SECONDS = 300.0
 
 
 # 执行用户自定义的录后脚本命令 command（shlex 拆分，不用 shell），打印其 stdout/stderr；无返回值
@@ -82,7 +96,19 @@ def run_script(command: str) -> None:
         process = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=get_startup_info(main.os_type)
         )
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=_SCRIPT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # 脚本挂起：先 kill 再回收管道，避免读取线程残留导致调用方永久阻塞
+            process.kill()
+            stdout, stderr = process.communicate()
+            logger.error(
+                i18n.tr(
+                    "执行自定义脚本超时（{_SCRIPT_TIMEOUT_SECONDS} 秒），已终止: {command}",
+                    _SCRIPT_TIMEOUT_SECONDS=_SCRIPT_TIMEOUT_SECONDS,
+                    command=command,
+                )
+            )
         stdout_decoded = stdout.decode("utf-8")
         stderr_decoded = stderr.decode("utf-8")
         if stdout_decoded.strip():
@@ -90,13 +116,26 @@ def run_script(command: str) -> None:
         if stderr_decoded.strip():
             print(stderr_decoded)
     except PermissionError as e:
-        logger.error(f"执行自定义脚本失败（无执行权限）: {command} - {type(e).__name__}: {e}")
+        logger.error(
+            i18n.tr(
+                "执行自定义脚本失败（无执行权限）: {command} - {type_name}: {e}",
+                command=command,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
         logger.error("脚本无执行权限!, 若是Linux环境, 请先执行:chmod +x your_script.sh 授予脚本可执行权限")
     except OSError as e:
-        logger.error(f"执行自定义脚本失败: {command} - {type(e).__name__}: {e}")
+        logger.error(
+            i18n.tr(
+                "执行自定义脚本失败: {command} - {type_name}: {e}", command=command, type_name=type(e).__name__, e=e
+            )
+        )
         logger.error("Please add `#!/bin/bash` at the beginning of your bash script file.")
     except ValueError as e:
-        logger.error(f"脚本命令解析失败: {command} - {type(e).__name__}: {e}")
+        logger.error(
+            i18n.tr("脚本命令解析失败: {command} - {type_name}: {e}", command=command, type_name=type(e).__name__, e=e)
+        )
 
 
 # 线程安全记录一次错误：累计计数 error_count 加一，并向错误率窗口追加样本 1；无入参无返回值

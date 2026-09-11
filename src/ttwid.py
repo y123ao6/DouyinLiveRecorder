@@ -19,6 +19,8 @@ import os
 import sys
 import threading
 
+import i18n
+
 from .async_http import async_req
 from .cookie_cache import fetch_cookies as _cache_fetch_cookies
 from .logger import logger
@@ -84,7 +86,7 @@ async def _fetch_ttwid(proxy_addr: OptionalStr = None) -> str:
             _cached_ttwid = f"ttwid={cookies_dict['ttwid']}"
             logger.debug("自动获取抖音 ttwid 成功")
     except Exception as e:
-        logger.warning(f"自动获取抖音 ttwid 失败: {e}")
+        logger.warning(i18n.tr("自动获取抖音 ttwid 失败: {e}", e=e))
     return _cached_ttwid
 
 
@@ -96,12 +98,11 @@ async def get_ttwid(proxy_addr: OptionalStr = None) -> str:
         return _cached_ttwid
     # 非阻塞抢占：抢到锁的线程负责获取，其余线程等待其完成
     if not _ttwid_lock.acquire(blocking=False):
-        with _ttwid_lock:
-            pass
-        # owner 已完成；若仍为空（owner 失败，极少见），本线程兜底重试一次
-        if not _cached_ttwid:
-            return await _fetch_ttwid(proxy_addr)
-        return _cached_ttwid
+        # 抢不到锁 = 已有 owner 在拉取。原写法是「等待后若缓存仍为空，就在锁外直接
+        # _fetch_ttwid」——多个等待者会同时发起请求，正是本模块要消除的
+        # 「重复请求触发风控」。改为阻塞重新取锁，再走下方统一的二次检查：
+        # owner 成功时直接复用缓存；owner 失败时由本线程接管（仍串行，不会并发）。
+        _ttwid_lock.acquire()
     try:
         # 二次检查：等待锁期间可能已被其他线程填充
         if _cached_ttwid:
@@ -123,4 +124,4 @@ def warmup_ttwid(proxy_addr: OptionalStr = None) -> None:
     try:
         asyncio.run(get_ttwid(proxy_addr))
     except Exception as e:
-        logger.warning(f"启动时预热 ttwid 失败: {e}")
+        logger.warning(i18n.tr("启动时预热 ttwid 失败: {e}", e=e))

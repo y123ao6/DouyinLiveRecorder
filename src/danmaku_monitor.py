@@ -20,6 +20,7 @@ import time
 from collections import deque
 from typing import Any, Optional, TextIO
 
+import i18n
 from src.logger import logger, script_path
 
 # 消息展示流采样上限（条/秒/房间）：仅约束展示流，统计计数不受影响
@@ -74,7 +75,7 @@ class DanmakuMonitorHub:
                 )
                 self._ensure_stats_thread()
         except Exception as e:
-            logger.debug(f"[弹幕监控]room_started 处理失败(忽略): {e}")
+            logger.debug(i18n.tr("[弹幕监控]room_started 处理失败(忽略): {e}", e=e))
 
     # 弹幕连接就绪（collector.on_ready）：置连接状态并写 conn/ready 事件。
     def room_connected(self, room: str) -> None:
@@ -93,7 +94,7 @@ class DanmakuMonitorHub:
                     }
                 )
         except Exception as e:
-            logger.debug(f"[弹幕监控]room_connected 处理失败(忽略): {e}")
+            logger.debug(i18n.tr("[弹幕监控]room_connected 处理失败(忽略): {e}", e=e))
 
     # 弹幕连接关闭（collector.on_close / stop）：清除连接状态并写 conn/closed 事件。
     def room_closed(self, room: str, reason: str = "") -> None:
@@ -113,7 +114,7 @@ class DanmakuMonitorHub:
                     }
                 )
         except Exception as e:
-            logger.debug(f"[弹幕监控]room_closed 处理失败(忽略): {e}")
+            logger.debug(i18n.tr("[弹幕监控]room_closed 处理失败(忽略): {e}", e=e))
 
     # 房间停止监控（房间录制线程退出：URL 被注释/移除）：从房间表移除条目并写
     # conn/stopped 事件（GUI 据此移除房间行，Web 快照随房间表自动消失）。
@@ -134,7 +135,7 @@ class DanmakuMonitorHub:
                     }
                 )
         except Exception as e:
-            logger.debug(f"[弹幕监控]room_stopped 处理失败(忽略): {e}")
+            logger.debug(i18n.tr("[弹幕监控]room_stopped 处理失败(忽略): {e}", e=e))
 
     # 收到一条弹幕消息（collector.on_message 转发，msg_type 取 DanmakuMessageType.value）。
     # chat 累计并按采样写入展示流；gift/superChat 计入礼物数且不采样直接入流；
@@ -142,7 +143,13 @@ class DanmakuMonitorHub:
     def room_message(self, room: str, msg_type: str, user: str, text: str) -> None:
         try:
             with self._lock:
-                state = self._rooms.setdefault(room, self._default_state("未知"))
+                # 用 get 而非 setdefault：setdefault 的默认值实参会**先求值**——即使房间
+                # 已存在，每条弹幕仍会白建一个 dict+deque 并多次调用 time。
+                # 高刷新直播间下这是热路径上的纯浪费。
+                state = self._rooms.get(room)
+                if state is None:
+                    state = self._default_state("未知")
+                    self._rooms[room] = state
                 now = time.time()
                 state["last_msg_at"] = now
                 if msg_type == "chat":
@@ -157,7 +164,7 @@ class DanmakuMonitorHub:
                 elif msg_type == "online":
                     state["online"] = self._parse_online(text, int(state["online"]))
         except Exception as e:
-            logger.debug(f"[弹幕监控]room_message 处理失败(忽略): {e}")
+            logger.debug(i18n.tr("[弹幕监控]room_message 处理失败(忽略): {e}", e=e))
 
     # 生成监控快照：rooms 为各房间统计（含人读时间），messages 为 seq 大于
     # since 的近期消息（最多 _MAX_MESSAGES_PER_RESPONSE 条，超出置 truncated），
@@ -196,7 +203,7 @@ class DanmakuMonitorHub:
                     "truncated": truncated,
                 }
         except Exception as e:
-            logger.debug(f"[弹幕监控]snapshot 处理失败(忽略): {e}")
+            logger.debug(i18n.tr("[弹幕监控]snapshot 处理失败(忽略): {e}", e=e))
             return {"rooms": [], "messages": [], "last_seq": since, "truncated": False}
 
     # ── 内部实现（调用方须已持有 self._lock） ────────────────
@@ -323,7 +330,7 @@ class DanmakuMonitorHub:
                             }
                         )
             except Exception as e:
-                logger.debug(f"[弹幕监控]stats 循环异常(忽略): {e}")
+                logger.debug(i18n.tr("[弹幕监控]stats 循环异常(忽略): {e}", e=e))
 
     # ── JSONL 边车文件 ─────────────────────────────────────
 
@@ -336,7 +343,7 @@ class DanmakuMonitorHub:
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
             return log_path
         except Exception as e:
-            logger.debug(f"[弹幕监控]日志目录创建失败，禁用文件输出: {e}")
+            logger.debug(i18n.tr("[弹幕监控]日志目录创建失败，禁用文件输出: {e}", e=e))
             return None
 
     # 追加一行 JSON 事件到边车文件；超过轮转阈值时先轮转（保留一代 .1 备份）。
@@ -363,7 +370,7 @@ class DanmakuMonitorHub:
         except Exception as e:
             # 与本模块「异常全吞但必须留痕」的约定一致：写失败记 debug 日志
             # （弹幕边车是旁路功能，绝不影响录制主流程，但不允许静默丢数据无迹可查）
-            logger.debug(f"弹幕边车文件写入失败: {type(e).__name__}: {e}")
+            logger.debug(i18n.tr("弹幕边车文件写入失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
             # 句柄可能已损坏：关闭置空，下一条事件重新打开
             try:
                 if self._file is not None:
@@ -383,12 +390,14 @@ class DanmakuMonitorHub:
                         self._file.flush()
                         self._file.close()
                 except Exception as e:
-                    logger.debug(f"[弹幕监控]关闭边车文件异常(忽略): {type(e).__name__}: {e}")
+                    logger.debug(
+                        i18n.tr("[弹幕监控]关闭边车文件异常(忽略): {type_name}: {e}", type_name=type(e).__name__, e=e)
+                    )
                 finally:
                     # 无论关闭成功与否都置空引用：半损坏句柄交给 _write_line 的异常恢复路径重建
                     self._file = None
         except Exception as e:
-            logger.debug(f"[弹幕监控]close_file 失败(忽略): {type(e).__name__}: {e}")
+            logger.debug(i18n.tr("[弹幕监控]close_file 失败(忽略): {type_name}: {e}", type_name=type(e).__name__, e=e))
 
     # 进程级单例访问：首次调用时以默认路径 <script_path>/logs/danmaku_monitor.jsonl 创建。
 

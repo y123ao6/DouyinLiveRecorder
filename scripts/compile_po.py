@@ -12,6 +12,7 @@
 #   python scripts/compile_po.py --check    # 校验已提交的 .mo 与 .po 是否同步（CI 用，零副作用不写盘）
 
 import io
+import os
 import struct
 import sys
 from pathlib import Path
@@ -147,7 +148,11 @@ def main() -> int:
         print(f"OK: {MO_PATH.name} 与 .po 同步（{len(entries)} 条）")
         return 0
 
-    MO_PATH.write_bytes(fresh)
+    # 写入原子化：直接覆盖时中途失败会留下截断的 .mo，gettext 静默回落到原文，
+    # 而 --check 门禁不再报警。先写同目录临时文件再 os.replace，保证要么旧要么新。
+    tmp_path = MO_PATH.with_name(MO_PATH.name + ".tmp")
+    _ = tmp_path.write_bytes(fresh)
+    os.replace(tmp_path, MO_PATH)
     print(f"OK: 已生成 {MO_PATH}（{len(entries)} 条，{len(fresh)} 字节）")
     return 0
 

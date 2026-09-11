@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import ssl
-from typing import Awaitable, Callable, Optional, Union
+from typing import Awaitable, Callable, Optional, Union, cast
 
 import websockets
 
@@ -169,8 +169,12 @@ class WsClient:
         asyncio.ensure_future(self.send(data))
 
     # 心跳循环任务：每隔 heartbeat_interval 秒调用 on_heartbeat（同步或协程均支持），
-    # 已停止或连接为空时退出；单次心跳异常忽略以免中断循环。
+    # 已停止或连接为空时退出；单次心跳加 asyncio.wait_for 兜底——心跳回调若因网络阻塞
+    # 永久挂起（无 asyncio.TimeoutError 出口），后续心跳将永远无法被调度，连接「无心跳
+    # 被服务端主动切断」时也误判为正常关闭。timeout 取 heartbeat_interval + 1s 缓冲：
+    # 心跳正常 1 秒内必返回，超时即视为本轮失败但仍让连接继续走重连路径。
     async def _heartbeat_loop(self) -> None:
+        _HEARTBEAT_TIMEOUT_SECONDS = max(1.0, self.heartbeat_interval + 1.0)
         while not self._stopped:
             await asyncio.sleep(self.heartbeat_interval)
             if self._stopped or self._ws is None:
@@ -179,7 +183,23 @@ class WsClient:
                 try:
                     result = self._on_heartbeat()
                     if inspect.isawaitable(result):
-                        await result
+                        # 协程型心跳加 wait_for 兜底：超时即关连接、退出心跳循环
+                        # 让外层 connect 走重连；非协程型（同步回调）则原样调用、不加超时
+                        # ——同步回调阻塞本协程属于「调用方违反契约」,此处无法挽救。
+                        try:
+                            await asyncio.wait_for(cast(Awaitable[None], result), timeout=_HEARTBEAT_TIMEOUT_SECONDS)
+                        except TimeoutError:
+                            from loguru import logger as _log
+
+                            _log.warning(
+                                f"[ws_client] 心跳回调超时 ({_HEARTBEAT_TIMEOUT_SECONDS:.0f}s),关闭连接以触发重连"
+                            )
+                            try:
+                                if self._ws is not None:
+                                    await self._ws.close()
+                            except Exception:
+                                pass
+                            break
                 except Exception:
                     pass
 

@@ -45,6 +45,9 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+import i18n
+
+from . import utils
 from .async_http import async_req
 from .logger import logger
 
@@ -158,7 +161,12 @@ async def fetch_cookies(
         except TimeoutError:
             # 拉取者所在线程异常退出（循环被硬杀等极端场景）：超时返回空结果，
             # 失败不缓存，下次访问重新走拉取
-            logger.warning(f"等待其它线程的 cookie 拉取超时，返回空结果: {key}")
+            logger.warning(
+                i18n.tr(
+                    "等待其它线程的 cookie 拉取超时，返回空结果: {masked_key}",
+                    masked_key=utils.mask_credentials(key),
+                )
+            )
             return {}
 
     # 本协程为拉取者：异常/空结果同样要交付等待者（失败语义与单协程路径一致）
@@ -174,7 +182,9 @@ async def fetch_cookies(
             )
         except Exception as e:
             # 失败不缓存，下次访问会重试；带类型+URL 便于排查（Windows 下 e 的 str 可能为空）
-            logger.warning(f"动态获取 cookie 失败: {url} - {type(e).__name__}: {e}")
+            logger.warning(
+                i18n.tr("动态获取 cookie 失败: {url} - {type_name}: {e}", url=url, type_name=type(e).__name__, e=e)
+            )
             cookies = {}
         else:
             # async_req(return_cookies=True, include_cookies=False) 成功返回 dict，异常返回 {}
@@ -196,7 +206,12 @@ async def fetch_cookies(
     if cookies:
         with _cache_lock:
             _cookie_cache[key] = (cookies, time.monotonic())
-        logger.debug(f"动态获取 cookie 成功并缓存: {key}")
+        logger.debug(
+            i18n.tr(
+                "动态获取 cookie 成功并缓存: {masked_key}",
+                masked_key=utils.mask_credentials(key),
+            )
+        )
     with _cache_lock:
         pending = _inflight.pop(key, [])
     for waiter_loop, waiter_fut in pending:
