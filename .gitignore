@@ -255,10 +255,11 @@ desktop.ini
 .codebuddy/
 .trae/
 
-# 临时 / 过程性文档（CODE_WIKI.md 是正式架构文档，随仓库分发，不忽略）
+# 临时 / 过程性文档（CODE_WIKI*.md / CODE_REVIEW_FIX_1.md / DIAGNOSIS_*.md 是正式架构与审查记录，
+# 随仓库分发，不忽略；此处只兜底开发期随手记的临时笔记名）
 CODE_CHANGES.md
 TRAE_AGENT_CODE_WIKI.md
-PERF_REVIEW_2026-08-28.md
+PERF_REVIEW_*.md
 
 # 本地工具 / 审查生成物（第三方编码代理 / 浏览器测试 / 插件源码等；与 .dockerignore 及 pyproject 各工具排除列表同源维护）
 .qoder/
