@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import hashlib
 import os
 import platform
 import re
@@ -35,6 +36,49 @@ execute_dir = script_path  # 冻结后指向 _internal/，与 __file__ 定位的
 current_env_path = os.environ.get("PATH", "")
 
 
+# 分块计算文件 SHA256（2026-09-12 审查 H-1）：用于二进制下载完整性校验。
+def _sha256_of_file(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# SHA256 校验/记录一体化（trust-on-first-use，与 ffmpeg_install 同模式）。
+_NODE_HASH_SUFFIX = ".sha256"
+
+
+def _check_or_record_zip_sha256(zip_path: Path) -> bool:
+    hash_file = Path(str(zip_path) + _NODE_HASH_SUFFIX)
+    current_hash = _sha256_of_file(zip_path)
+    if hash_file.exists():
+        try:
+            expected = hash_file.read_text(encoding="ascii").strip().lower()
+        except OSError as e:
+            logger.warning(i18n.tr("读取 SHA256 缓存失败，跳过校验: {e}", e=e))
+            return True
+        if expected != current_hash:
+            logger.error(
+                i18n.tr(
+                    "Node.js zip SHA256 与上次记录不一致（{expected} vs {actual}）。"
+                    "可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。",
+                    expected=expected,
+                    actual=current_hash,
+                    hash_file=str(hash_file),
+                )
+            )
+            return False
+        logger.debug("Node.js SHA256 校验通过")
+        return True
+    try:
+        hash_file.write_text(current_hash, encoding="ascii")
+        logger.debug(i18n.tr("首次下载 Node.js SHA256 已记录：{current_hash}", current_hash=current_hash))
+    except OSError as e:
+        logger.warning(i18n.tr("写入 SHA256 缓存失败（不影响本次安装）: {e}", e=e))
+    return True
+
+
 def install_nodejs_windows() -> bool:
     # 在 Windows 系统上安装 Node.js，从 npmmirror 下载最新稳定版
     try:
@@ -53,9 +97,17 @@ def install_nodejs_windows() -> bool:
             logger.error("Failed to retrieve the download URL for the latest version of Node.js...")
             return False
         version = match.group(1)
-        # 以 platform.machine() 是否含 "32" 粗略判架构：仅覆盖 x86/x64，不含 ARM(arm64)——
-        # Windows on ARM 的 machine 为 "ARM64" 不含 "32" 会被误判 x64，下载的 zip 无法运行。
-        system_bit = "x64" if "32" not in platform.machine() else "x86"
+        # 2026-09-12 审查（低危）：原以 machine 是否含 "32" 判架构——
+        # Windows on ARM 的 machine 为 "ARM64"（不含 "32"）会被误判成 x64，
+        # 下载 x64 构建在 ARM 机器上无法运行（且错误表现为「装完仍找不到 node」，
+        # 极难归因）。改为显式识别 arm64，其余按位宽回落。
+        _machine = platform.machine().upper()
+        if "ARM" in _machine or "AARCH" in _machine:
+            system_bit = "arm64"
+        elif "32" in _machine or "86" in _machine and "64" not in _machine:
+            system_bit = "x86"
+        else:
+            system_bit = "x64"
         url = f"https://npmmirror.com/mirrors/node/{version}/node-{version}-win-{system_bit}.zip"
 
         full_file_name = url.rsplit("/", maxsplit=1)[-1]
@@ -76,6 +128,14 @@ def install_nodejs_windows() -> bool:
                         for data in response.iter_content(block_size):
                             _ = t.update(len(data))
                             _ = f.write(data)
+
+        # H-1 修复：SHA256 校验/记录（trust-on-first-use，与 ffmpeg_install 同模式）
+        if not _check_or_record_zip_sha256(zip_file_path):
+            try:
+                zip_file_path.unlink()
+            except OSError:
+                pass
+            return False
 
         # 解压到 execute_dir；zip 内顶层目录名为 node-vX.Y.Z-win-x64，提取后整体改名为 "node" 目录以便固定 PATH 引用。
         unzip_file(zip_file_path, execute_dir)

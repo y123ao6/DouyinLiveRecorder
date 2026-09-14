@@ -3,7 +3,7 @@
 #
 # 鉴权模型总览（web_api 与 web/ 前端共用）：
 # ① 认证开关：config.ini [Web].web_auth_enable=true 时开启；关闭时所有 /api/* 公开访问（局域网用）
-# ② 密码存储：首次登录时明文密码自动升级为 PBKDF2-HMAC-SHA256 哈希（盐随机，迭代次数 600k）
+# ② 密码存储：首次登录时明文密码自动升级为 PBKDF2-HMAC-SHA256 哈希（盐随机，迭代次数 200k）
 # ③ Token：secrets.token_urlsafe(32) 生成 256-bit bearer，过期时间由 web_token_expiry 控制（默认 1 小时）
 # ④ 登录限流：单 IP 滑动窗口 5 次失败/300 秒即 429；仅信任 web_trusted_proxy 列表内代理的 XFF
 # ⑤ 密码变更：吊销全部 token，强制重登；认证开启时禁止清空密码（防自锁）
@@ -36,7 +36,6 @@ from src.web_config import (
     BUILTIN_QUALITIES,
     QUALITY_OPTIONS_KEY,
     QUALITY_OPTIONS_SECTION,
-    append_config_line,
     format_url_line,
     hash_web_password,
     is_hashed_web_password,
@@ -46,6 +45,7 @@ from src.web_config import (
     read_quality_options,
     read_web_config,
     update_config_line,
+    update_or_append_config_line,
     update_room_quality,
     validate_config_target,
     validate_room_target,
@@ -72,6 +72,9 @@ _LOGIN_FAILURE_WINDOW = 300.0
 
 # 危险配置键黑名单：允许通过 Web 修改等价于远程命令执行，任何认证状态下都禁止写入
 _DANGEROUS_CONFIG_KEYS = {"自定义脚本执行命令"}
+# casefold 后的黑名单（2026-09-12 审查 C-1 加固）：行匹配大小写不敏感（re.IGNORECASE），
+# 黑名单判定须同等强度，防止 ASCII 危险键的大小写变体绕过（当前集合为中文键，casefold 幂等）
+_DANGEROUS_CONFIG_KEYS_FOLDED = {k.casefold() for k in _DANGEROUS_CONFIG_KEYS}
 
 # 房间列表写入互斥锁：序列化「查重 + 追加」的 TOCTOU 窗口，
 # 多线程 uvicorn 下并发 POST 同一 URL 时只允许一条成功
@@ -219,6 +222,25 @@ def create_app(
         # 注：SSE 端点 (/api/status/stream) 需 text/event-stream，nosniff 不会与之冲突
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        # 2026-09-12 审查（低危）：补 CSP。面板前端无 CDN 外链、无内联脚本、无 eval
+        # （仅用 innerHTML 拼接表格，属 DOM 操作，不受 script-src 约束），故可收紧到
+        # 'self'。style-src 放行 'unsafe-inline' 是唯一妥协——若后续出现内联 <style>
+        # 或元素 style 属性由 HTML 解析产生（而非 JS DOM API 设置）时才需要它，
+        # 保留以免收紧过度导致面板样式失效。
+        # form-action / base-uri 显式限制，防表单劫持与 <base> 注入改相对路径指向。
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' ws: wss:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none'",
+        )
         return response
 
     # ===== 路由 =====
@@ -233,6 +255,10 @@ def create_app(
         # 登录失败限流：滑动窗口内失败达上限后直接拒绝，避免密码被在线爆破
         now = time.time()
         with _FAILED_LOGINS_LOCK:
+            # 顺带全表清理窗口外条目（2026-09-12 审查 6.6）：仅成功登录才 pop 的话，
+            # IPv6 前缀轮换爆破可让键集合无界增长（内存泄漏面）
+            for ip in [ip for ip, ts in _FAILED_LOGINS.items() if not any(now - t < _LOGIN_FAILURE_WINDOW for t in ts)]:
+                _FAILED_LOGINS.pop(ip, None)
             failures = [t for t in _FAILED_LOGINS.get(client_ip, []) if now - t < _LOGIN_FAILURE_WINDOW]
             _FAILED_LOGINS[client_ip] = failures
             if len(failures) >= _LOGIN_MAX_FAILURES:
@@ -244,7 +270,11 @@ def create_app(
         # 兼容历史明文存储：首次登录时升级为 PBKDF2 哈希，避免明文落盘
         if not is_hashed_web_password(cast(str, cfg["web_password"])):
             hashed = hash_web_password(cast(str, cfg["web_password"]))
-            _ = update_config_line(cast(str, app.state.config_file), "Web", "web_password", hashed)
+            # H-6：持引擎配置锁写 config.ini，避免与主循环热加载读/其他写并发交错
+            import main as _main
+
+            with _main.file_update_lock:
+                _ = update_config_line(cast(str, app.state.config_file), "Web", "web_password", hashed)
             cfg["web_password"] = hashed
         if not verify_web_password(req.password, cast(str, cfg["web_password"])):
             with _FAILED_LOGINS_LOCK:
@@ -284,16 +314,32 @@ def create_app(
         }
 
     @app.get("/api/status/stream")
-    async def status_stream() -> StreamingResponse:
+    async def status_stream(request: Request) -> StreamingResponse:
+        # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-20）：消除「慢速占用面」。
+        # 原实现 `while True` 无客户端断开检测——连接一旦建立就永不释放，
+        # 每 2 秒轮询一次 main.get_status()（内含锁与字典拷贝）。误开标签页、
+        # 爬虫或恶意连接可无限累积常驻协程，缓慢吃满线程池/内存。
+        # 端点本身已文档化于 README（对外契约），故保留并修好而非删除：
+        #   ① 每轮开头检测客户端是否断开（ASGI http.disconnect）后退出；
+        #   ② 连续失败达上限即终止，避免「错误流」也无限推送。
+        _MAX_CONSECUTIVE_ERRORS = 5
+
         async def event_gen() -> AsyncGenerator[str, None]:
+            consecutive_errors = 0
             while True:
+                if await request.is_disconnected():
+                    return
                 try:
                     import main
 
                     status = main.get_status()
                     yield f"data: {json.dumps(status, ensure_ascii=False)}\n\n"
+                    consecutive_errors = 0
                 except Exception as e:
+                    consecutive_errors += 1
                     yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                        return
                 await asyncio.sleep(2)
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
@@ -360,23 +406,26 @@ def create_app(
         # 写入行同样使用归一化 URL：与 add/delete/toggle 的查重口径一致，
         # 否则 PUT 写回的原始 URL 下一轮再也匹配不到（归一化 vs 未归一化）
         new_line = format_url_line(normalize_url(req.url), req.quality, req.name)
-        old_rooms = parse_url_config(cast(str, app.state.url_config_file))
-        # 找到匹配行（含注释状态）
         import main as _main
 
+        # 2026-09-12 审查 6.6：与 add_room 同款双锁保护读改写窗口——无锁时
+        # 并发「改房间/删房间/切开关」可 TOCTOU 静默失败或改错行
         replaced = False
-        for r in old_rooms:
-            if r["url"] == old_url:
-                old_raw = cast(str, r["raw_line"]).rstrip("\n").rstrip("\r")
-                prefix = "# " if not r["enabled"] else ""
-                new_raw = (prefix + new_line) if prefix else new_line
-                _ = _main.update_file(
-                    cast(str, app.state.url_config_file),
-                    old_str=old_raw,
-                    new_str=new_raw,
-                )
-                replaced = True
-                break
+        with _rooms_config_lock, _main.file_update_lock:
+            old_rooms = parse_url_config(cast(str, app.state.url_config_file))
+            # 找到匹配行（含注释状态）
+            for r in old_rooms:
+                if r["url"] == old_url:
+                    old_raw = cast(str, r["raw_line"]).rstrip("\n").rstrip("\r")
+                    prefix = "# " if not r["enabled"] else ""
+                    new_raw = (prefix + new_line) if prefix else new_line
+                    _ = _main.update_file(
+                        cast(str, app.state.url_config_file),
+                        old_str=old_raw,
+                        new_str=new_raw,
+                    )
+                    replaced = True
+                    break
         if not replaced:
             raise HTTPException(404, "未找到原直播间")
         return {"ok": True}
@@ -386,11 +435,13 @@ def create_app(
         url = normalize_url(url)
         import main as _main
 
-        rooms = parse_url_config(cast(str, app.state.url_config_file))
-        for r in rooms:
-            if r["url"] == url:
-                _main.delete_line(cast(str, app.state.url_config_file), cast(str, r["raw_line"]))
-                return {"ok": True}
+        # 2026-09-12 审查 6.6：与 add_room 同款双锁保护「查行 + 删行」窗口
+        with _rooms_config_lock, _main.file_update_lock:
+            rooms = parse_url_config(cast(str, app.state.url_config_file))
+            for r in rooms:
+                if r["url"] == url:
+                    _main.delete_line(cast(str, app.state.url_config_file), cast(str, r["raw_line"]))
+                    return {"ok": True}
         raise HTTPException(404, "未找到直播间")
 
     @app.post("/api/rooms/toggle")
@@ -398,18 +449,20 @@ def create_app(
         url = normalize_url(req.url)
         import main as _main
 
-        rooms = parse_url_config(cast(str, app.state.url_config_file))
-        for r in rooms:
-            if r["url"] == url:
-                old_raw = cast(str, r["raw_line"]).rstrip("\n").rstrip("\r")
-                content = old_raw.lstrip("#").strip()
-                new_raw = content if req.enable else "# " + content
-                _ = _main.update_file(
-                    cast(str, app.state.url_config_file),
-                    old_str=old_raw,
-                    new_str=new_raw,
-                )
-                return {"ok": True, "enabled": req.enable}
+        # 2026-09-12 审查 6.6：与 add_room 同款双锁保护「查行 + 改注释前缀」窗口
+        with _rooms_config_lock, _main.file_update_lock:
+            rooms = parse_url_config(cast(str, app.state.url_config_file))
+            for r in rooms:
+                if r["url"] == url:
+                    old_raw = cast(str, r["raw_line"]).rstrip("\n").rstrip("\r")
+                    content = old_raw.lstrip("#").strip()
+                    new_raw = content if req.enable else "# " + content
+                    _ = _main.update_file(
+                        cast(str, app.state.url_config_file),
+                        old_str=old_raw,
+                        new_str=new_raw,
+                    )
+                    return {"ok": True, "enabled": req.enable}
         raise HTTPException(404, "未找到直播间")
 
     # 按房间切换画质：与 GUI 画质监控页「切换画质」菜单共用 update_room_quality 落盘
@@ -452,7 +505,12 @@ def create_app(
             validate_config_target(QUALITY_OPTIONS_SECTION, QUALITY_OPTIONS_KEY, ",".join(req.options))
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
-        options = write_quality_options(cast(str, app.state.config_file), req.options)
+        # H-6：持引擎配置锁写 config.ini（write_quality_options 内部另有串行锁），
+        # 避免与主循环热加载读/其他 Web 写并发交错
+        import main as _main
+
+        with _main.file_update_lock:
+            options = write_quality_options(cast(str, app.state.config_file), req.options)
         return {"ok": True, "options": options}
 
     @app.get("/api/config")
@@ -461,28 +519,38 @@ def create_app(
 
     @app.put("/api/config")
     async def update_config(req: ConfigUpdate) -> dict[str, object]:
-        # 危险配置键（可致远程命令执行）任何认证状态下都禁止修改
-        if req.key in _DANGEROUS_CONFIG_KEYS:
+        # 2026-09-12 审查 C-1：Pydantic 默认不 strip 字段，key 首尾空白可绕过黑名单的
+        # 精确匹配、而 web_config 行匹配正则的 \s* 仍命中真实配置行（前缀捕获含尾空白），
+        # 构成未认证 RCE；判定与写入前统一规范化（str.strip 覆盖半角/全角空格等 Unicode 空白），
+        # 并用规范化后的值写入，保证黑名单判定与行匹配共用同一 key。
+        key = req.key.strip()
+        section = req.section.strip()
+        # 危险配置键（可致远程命令执行）任何认证状态下都禁止修改（casefold：与行匹配的 IGNORECASE 同强度）
+        if key.casefold() in _DANGEROUS_CONFIG_KEYS_FOLDED:
             raise HTTPException(403, "该配置项不允许通过 Web 修改")
         # 认证开启时禁止清空密码：空密码 + 开启认证会让 login 直接 500，面板自锁
-        if req.section == "Web" and req.key == "web_password" and not req.value.strip():
+        if section == "Web" and key == "web_password" and not req.value.strip():
             current_cfg = read_web_config(cast(str, app.state.config_file))
             if cast(bool, current_cfg["web_auth_enable"]):
                 raise HTTPException(400, "请先关闭 Web 认证再清空密码")
         value = req.value
         try:
-            validate_config_target(req.section, req.key, value)
+            validate_config_target(section, key, value)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         # 密码统一以 PBKDF2 哈希存储，避免明文落盘
-        if req.section == "Web" and req.key == "web_password" and value.strip():
+        if section == "Web" and key == "web_password" and value.strip():
             if not is_hashed_web_password(value):
                 value = hash_web_password(value)
-        ok = update_config_line(cast(str, app.state.config_file), req.section, req.key, value)
+        # H-6：持引擎配置锁写 config.ini，避免与主循环热加载读/其他 Web 写并发交错
+        import main as _main
+
+        with _main.file_update_lock:
+            ok = update_config_line(cast(str, app.state.config_file), section, key, value)
         if not ok:
             raise HTTPException(404, "未找到对应的配置项")
         # 密码变更后吊销所有现有 token，强制重新登录
-        if req.section == "Web" and req.key == "web_password" and req.value.strip():
+        if section == "Web" and key == "web_password" and req.value.strip():
             with _tokens_lock:
                 _tokens.clear()
         return {"ok": True}
@@ -508,10 +576,12 @@ def create_app(
             # 无法识别的语言值（既非受支持码也非已知别名）→ 400 而非静默回退
             raise HTTPException(400, f"不支持的语言: {req.language}")
         normalized = i18n_module.normalize_language(req.language)
-        if not update_config_line(cast(str, app.state.config_file), "录制设置", "language", normalized):
-            # 键不存在（历史 config.ini 无 language 键，Web 先于引擎首轮读配置启动）：
-            # 行级替换失败时降级为节末追加补建，仍失败才 500
-            if not append_config_line(cast(str, app.state.config_file), "录制设置", "language", normalized):
+        # H-6：替换+补建两步经 update_or_append_config_line 持锁原子化，
+        # 并持引擎配置锁与主循环热加载读互斥
+        import main as _main
+
+        with _main.file_update_lock:
+            if not update_or_append_config_line(cast(str, app.state.config_file), "录制设置", "language", normalized):
                 raise HTTPException(500, "语言配置写回失败")
         _ = i18n_module.set_language(normalized)
         return {"ok": True, "language": normalized}

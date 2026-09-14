@@ -1,5 +1,7 @@
 # -*- encoding: utf-8 -*-
 import math
+import os
+import random
 import time
 from typing import cast
 
@@ -287,8 +289,19 @@ def generate_random_str() -> str:
     #     Returns:
     #         随机字符串
     #
-    # 使用与JS版本相同的固定随机值
-    random_values = [0.123456789, 0.987654321, 0.555555555]
+    # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-19）：原使用与 JS 版本一致的固定值
+    # [0.123456789, 0.987654321, 0.555555555]——所有请求的签名前缀完全相同，
+    # 服务端可据此对「同前缀签名」做请求指纹聚类，把本项目流量一锅端。
+    # 改为每次调用真随机（值域与原实现一致：[0,1) 浮点 ×10000 取整参与位合并，
+    # 输出长度与字节结构不变，不影响签名格式兼容性）。
+    #
+    # 回退开关：个别平台若对「随机段」有值域/一致性校验导致签名被拒，可设
+    # 环境变量 DLR_AB_SIGN_FIXED_RANDOM=1 回退到固定值（保持旧行为），便于
+    # 定位问题；默认真随机。
+    if os.environ.get("DLR_AB_SIGN_FIXED_RANDOM", "").strip().lower() in ("1", "true", "yes"):
+        random_values = [0.123456789, 0.987654321, 0.555555555]
+    else:
+        random_values = [random.random() for _ in range(3)]
 
     # 生成三组随机字节并合并
     random_bytes: list[int] = []

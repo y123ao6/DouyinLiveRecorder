@@ -58,9 +58,21 @@ def _fail(s: str) -> str:
     return _c(s, _RED)
 
 
+# 不跟随重定向的 handler（2026-09-12 审查 6.7）：urlopen 默认自动跟随 3xx，
+# 使「期望 301/302」的断言永远拿不到 3xx 状态码。redirect_request 返回 None 即
+# 中止跟随，3xx 会以 urllib.error.HTTPError 抛出（带真实 code），从而可被断言。
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 # ---------- 配置加载 ----------
 def load_config(path: str) -> tuple[list[CheckConfig], str | None]:
-    with open(path, "r", encoding="utf-8") as f:
+    # 2026-09-12 审查 6.7：编码由 utf-8 改 utf-8-sig。配置文件若带 BOM（Windows
+    # 记事本/部分编辑器保存产物），utf-8 读取会把 BOM 当成首字符，json.load 直接
+    # 抛 JSONDecodeError——排障时只看到"JSON 解析失败"，很难想到是 BOM。
+    # utf-8-sig 对无 BOM 的文件行为与 utf-8 完全一致，无副作用。
+    with open(path, "r", encoding="utf-8-sig") as f:
         cfg = cast(object, json.load(f))
     if isinstance(cfg, list):
         # 允许顶层直接写成 checks 列表
@@ -87,7 +99,14 @@ def _resolve_url(check: CheckConfig, base_url: str | None) -> str:
 
 
 # ---------- 单个检查 ----------
+# 单条检查的入口：发请求并做状态码 / 文本 / JSON 字段校验。
 def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) -> CheckResult:
+    # 2026-09-12 审查 6.7：重定向策略按期望码决定——
+    # urllib.request.urlopen 默认自动跟随 3xx 重定向，导致「期望 301/302」的断言
+    # 永远不可能通过（拿到的是重定向后的最终 200），门禁自相矛盾。
+    # 期望 3xx 时改用不跟随重定向的 opener，让 3xx 以 HTTPError 形式暴露真实状态码；
+    # 其余情况保持默认跟随（避免破坏依赖短链跳转的既有检查）。
+    _no_redirect_opener = urllib.request.build_opener(_NoRedirectHandler)
     method_raw = cast(str, check.get("method") or DEFAULT_METHOD)
     # 方法统一大写：配置里写 get/Get 都能匹配，urlopen 对方法大小写敏感。
     method = method_raw.upper()
@@ -111,6 +130,8 @@ def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) 
     expected_status = cast(int, check.get("expected_status", 200))
     expect_contains = cast(list[str], check.get("expect_contains", []) or [])
     expect_json = cast(dict[str, object] | None, check.get("expect_json"))  # dict: 顶层字段 -> 期望值
+    # 期望 3xx → 用不跟随重定向的 opener（详见函数头说明）
+    _opener = _no_redirect_opener if 300 <= expected_status < 400 else None
 
     # 未配置 name 时用 "METHOD url" 兜底，保证控制台/报告每行都有可读标识。
     name = check.get("name") or f"{method} {url}"
@@ -131,9 +152,15 @@ def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) 
     req = urllib.request.Request(url, data=cast("bytes | None", body), method=method, headers=headers)
     start = time.time()
     try:
-        with cast(http.client.HTTPResponse, urllib.request.urlopen(req, timeout=timeout)) as resp:
-            status = resp.status
-            content = resp.read().decode("utf-8", errors="replace")
+        # 期望 3xx 时走 _opener.open（不跟随重定向）；否则走默认 urlopen
+        if _opener is not None:
+            with cast(http.client.HTTPResponse, _opener.open(req, timeout=timeout)) as resp:
+                status = resp.status
+                content = resp.read().decode("utf-8", errors="replace")
+        else:
+            with cast(http.client.HTTPResponse, urllib.request.urlopen(req, timeout=timeout)) as resp:
+                status = resp.status
+                content = resp.read().decode("utf-8", errors="replace")
         result["status"] = status
         result["time_ms"] = round((time.time() - start) * 1000, 1)
         if status != expected_status:
@@ -183,11 +210,15 @@ def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) 
 # ---------- 报告 ----------
 def _safe_print(*values: object) -> None:
     # 打印并在控制台编码不兼容时（如 Windows GBK 下的非 ASCII 字符）做容错替换。
+    # 2026-09-12 审查 6.7：原回退用 ascii+replace，会把整行中文/全角字符全变成 '?'，
+    # 排障时关键信息（哪个检查失败、响应片段）全部消失。改为按标准输出实际编码
+    # 做 replace（GBK 控制台 → 只替换真正无法编码的少数字符），信息损失最小。
     text = " ".join(str(v) for v in values)
     try:
         print(text)
     except UnicodeEncodeError:
-        print(text.encode("ascii", "replace").decode("ascii"))
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(enc, "replace").decode(enc, "replace"))
 
 
 def print_console(results: list[CheckResult], elapsed_ms: float) -> None:

@@ -236,6 +236,122 @@ async def get_cookie_str(
     return "; ".join(f"{k}={v}" for k, v in cookies.items())
 
 
+# 通用 singleflight 缓存（2026-09-12 审查 H-2）：与 fetch_cookies 完全同范式，
+# 但缓存值是任意对象而非 cookie dict，供「一次性拉取、长期复用」的凭据类数据
+# （Twitch Client-Id、B站 buvid3、快手 did 字符串、抖音 ttwid）复用。
+#
+# 背景：这些拉取点原先是「threading.Lock 临界区内 await 网络请求」的反模式——
+# 本项目为「每房间独立线程 + 独立事件循环」模型，锁内 await 期间房间 B 执行到
+# with 语句会同步阻塞其整个事件循环线程；B站处为不可重入锁，同循环内两协程并发
+# 进入即互等死锁。本函数把「临界区只做字典读写、网络请求移出锁外」固化成公共实现。
+_generic_cache: dict[str, tuple[Any, float]] = {}
+_generic_inflight: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Future[Any]]]] = {}
+
+
+def _deliver_generic(waiter_loop: asyncio.AbstractEventLoop, fut: asyncio.Future[Any], value: Any) -> None:
+    # 与 _deliver 同语义，仅类型放宽为 Any（见 _deliver 的跨循环交付说明）
+    def _set() -> None:
+        if not fut.done():
+            fut.set_result(value)
+
+    if waiter_loop is asyncio.get_running_loop():
+        _set()
+        return
+    try:
+        waiter_loop.call_soon_threadsafe(_set)
+    except RuntimeError:
+        pass
+
+
+async def singleflight(
+    key: str,
+    factory: Callable[[], Any],
+    *,
+    ttl: float = DEFAULT_TTL,
+    timeout: float = 10.0,
+    cache_falsy: bool = False,
+) -> Any:
+    # 通用 singleflight：同 key 的并发调用只执行一次 factory，其余等待复用同一结果。
+    #
+    # - key：缓存键（调用方自行保证不同用途不碰撞，建议带前缀，如 "twitch_client_id|proxy"）
+    # - factory：无参协程工厂（Callable[[], Awaitable[Any]]）；被调用于锁外，故可安全 await
+    # - ttl：缓存秒数；cache_falsy=False（默认）时空结果不缓存（视为失败，下次重试）
+    # - timeout：等待其它协程在途拉取的超时（秒），超时返回 None 而非永久挂起
+    #
+    # 返回值语义：命中缓存返回缓存值；本协程为拉取者返回 factory 结果；
+    # 等待者返回拉取者结果（拉取者异常/取消时返回 None）。
+    now = time.monotonic()
+
+    # 快速路径（无锁）
+    entry = _generic_cache.get(key)
+    if entry is not None and (now - entry[1]) < ttl:
+        return entry[0]
+
+    loop = asyncio.get_running_loop()
+    waiter: asyncio.Future[Any] | None = None
+    with _cache_lock:
+        entry = _generic_cache.get(key)
+        if entry is not None and (time.monotonic() - entry[1]) < ttl:
+            return entry[0]
+        if key in _generic_inflight:
+            waiter = loop.create_future()
+            _generic_inflight[key].append((loop, waiter))
+        else:
+            _generic_inflight[key] = []
+
+    if waiter is not None:
+        try:
+            return await asyncio.wait_for(waiter, timeout + _INFLIGHT_WAIT_MARGIN)
+        except TimeoutError:
+            logger.warning(
+                i18n.tr(
+                    "等待其它线程的凭据拉取超时，返回空结果: {masked_key}",
+                    masked_key=utils.mask_credentials(key),
+                )
+            )
+            return None
+
+    # 本协程为拉取者：锁外执行 factory（临界区内绝无 await）
+    try:
+        try:
+            value = await factory()
+        except Exception as e:
+            logger.warning(
+                i18n.tr(
+                    "凭据拉取失败: {masked_key} - {type_name}: {e}",
+                    masked_key=utils.mask_credentials(key),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
+            )
+            value = None
+    except BaseException:
+        # 本协程被取消：摘除登记并给等待者交付 None，避免其空等超时
+        with _cache_lock:
+            pending = _generic_inflight.pop(key, [])
+        for waiter_loop, waiter_fut in pending:
+            _deliver_generic(waiter_loop, waiter_fut, None)
+        raise
+
+    if value or cache_falsy:
+        with _cache_lock:
+            _generic_cache[key] = (value, time.monotonic())
+    with _cache_lock:
+        pending = _generic_inflight.pop(key, [])
+    for waiter_loop, waiter_fut in pending:
+        _deliver_generic(waiter_loop, waiter_fut, value)
+    return value
+
+
+def invalidate_generic(key: str | None = None) -> None:
+    # 失效通用缓存（key 为 None 时清空全部）。供调试或凭据失效后强制刷新。
+    with _cache_lock:
+        if key is None:
+            _generic_cache.clear()
+            return
+        _generic_cache.pop(key, None)
+
+
 def invalidate(url: str | None = None, proxy_addr: OptionalStr = None) -> None:
     # 失效指定网址（或整份）缓存。url 为 None 时清空全部。
     with _cache_lock:
@@ -246,6 +362,10 @@ def invalidate(url: str | None = None, proxy_addr: OptionalStr = None) -> None:
 
 
 def clear() -> None:
-    # 清空全部 cookie 缓存（调试/测试用）
+    # 清空全部缓存（调试/测试用）：cookie 缓存与通用 singleflight 缓存一并清。
+    # 2026-09-12 审查 H-2：新增通用缓存后，若 clear() 只清 cookie 缓存，
+    # 单测间会残留上一条用例的凭据（如 ttwid=fetched），导致下一条用例
+    # 命中旧缓存而非本次打桩值——表现为"测试莫名失败且只在整包运行时出现"。
     with _cache_lock:
         _cookie_cache.clear()
+        _generic_cache.clear()

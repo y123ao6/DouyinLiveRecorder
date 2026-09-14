@@ -37,8 +37,14 @@ async def _get_client(
 ) -> httpx.AsyncClient:
     # 按 (代理, verify, http2) 维度复用 AsyncClient
     # timeout 在每次请求时单独传入，避免不同调用方覆盖彼此的超时
+    # 按 (代理, verify, http2) 维度复用 AsyncClient
+    # timeout 在每次请求时单独传入，避免不同调用方覆盖彼此的超时
     key = (proxy_addr or "", verify, http2)
     current_loop = asyncio.get_running_loop()
+    # 2026-09-12 审查 6.3：原实现在锁外创建 client 后于锁内无条件覆盖写入，
+    # 两个协程并发首建同一 key 时后写者覆盖先写者——被覆盖的 AsyncClient 从此
+    # 无引用、连接池无人 aclose，跨事件循环场景下随房间数累积泄漏。
+    # 改为「先探查 → 按需创建 → 写前二次检查 → 落败者主动关闭自建实例」。
     with _client_cache_lock:
         cached = _client_cache.get(key)
     if cached is not None:
@@ -72,7 +78,9 @@ async def _get_client(
             # 外部线程无法可靠控制他线程循环的生命周期，唯一可靠做法就是不创建协程，
             # 释放引用交由 GC 兜底（httpx.AsyncClient 析构会尝试关闭底层传输；
             # 进程级收尾仍由 atexit 的 close_all_clients_sync 负责）
-    client = httpx.AsyncClient(
+
+    # 构造放在锁外（httpx.AsyncClient.__init__ 涉及传输层初始化，不宜持锁）
+    new_client = httpx.AsyncClient(
         proxy=proxy_addr,
         timeout=timeout,
         verify=verify,
@@ -80,8 +88,21 @@ async def _get_client(
         limits=_httpx_limits,
     )
     with _client_cache_lock:
-        _client_cache[key] = (client, current_loop)
-    return client
+        # 写前二次检查：并发首建时可能已有他协程写入同 key。
+        # 落败者必须主动关闭自建实例，否则其连接池同样泄漏（与审查指出的同型问题）
+        winner = _client_cache.get(key)
+        if winner is not None and not winner[0].is_closed and winner[1] is current_loop:
+            loser = new_client
+        else:
+            _client_cache[key] = (new_client, current_loop)
+            loser = None
+    if loser is not None:
+        try:
+            await loser.aclose()
+        except Exception as e:
+            logger.debug(i18n.tr("关闭并发重复创建的 AsyncClient 失败: {e}", e=e))
+        return winner[0]
+    return new_client
 
 
 async def _close_all_clients() -> None:
@@ -148,6 +169,22 @@ async def async_req(
     _ = (abroad, content_encoding)
     if headers is None:
         headers = {}
+    # 2026-09-12 审查 6.3：请求入口接入 scheme 白名单（SSRF 防线接线）。
+    # utils.is_safe_http_url 先前定义在 spider.py 时因循环依赖无法在此引用，
+    # 导致这条防线零生产调用；上移后在此统一拦截 file:// / gopher:// 等协议。
+    if not utils.is_safe_http_url(url):
+        logger.warning(
+            i18n.tr(
+                "async_req 拒绝非白名单协议的请求: {masked_url}",
+                masked_url=utils.mask_credentials(url),
+            )
+        )
+        if redirect_url:
+            return ""
+        elif return_cookies:
+            return ("", cast(dict[str, str], {})) if include_cookies else cast(dict[str, str], {})
+        else:
+            return ""
     # 未显式指定时使用全局 SSL 验证开关
     if verify is None:
         verify = config.ssl_verify
@@ -220,6 +257,10 @@ async def get_response_status(
     # 检查 URL 响应状态，确认是否可访问
     # 未显式指定时使用全局 SSL 验证开关
     _ = abroad
+    # 同 async_req：请求入口接入 scheme 白名单（见上方说明）
+    if not utils.is_safe_http_url(url):
+        logger.warning(i18n.tr("get_response_status 拒绝非白名单协议的请求: {url}", url=url))
+        return False
     if verify is None:
         verify = config.ssl_verify
     try:
@@ -232,7 +273,9 @@ async def get_response_status(
         # 对 m3u8 源额外做一次 Range GET 轻量可达性探测，避免误判不可达而降级画质。
         # 注意：仅覆盖 400/401/403/405 会漏掉 404（部分 CDN 对 HEAD 一律回 404），
         # 因此 HEAD 非 2xx 的 m3u8 源一律进入探测。
-        if ".m3u8" in url and response.status_code != 200:
+        # 2026-09-12 审查（低危）：扩展名按小写判定——大写 .M3U8 的源会漏掉
+        # Range GET 探测，被 HEAD 的 4xx 直接判成不可达，导致明明可播的源被降级/跳过
+        if ".m3u8" in url.lower() and response.status_code != 200:
             probe = await client.get(
                 url, headers={**(headers or {}), "Range": "bytes=0-0"}, follow_redirects=True, timeout=timeout
             )

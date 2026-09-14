@@ -21,7 +21,7 @@ from typing import cast
 
 import httpx
 
-from . import JS_SCRIPT_PATH, utils
+from . import JS_SCRIPT_PATH, http_config, utils
 from .ttwid import get_ttwid as _shared_get_ttwid
 
 
@@ -67,9 +67,11 @@ async def get_xbogus(url: str, headers: dict[str, str] | None = None) -> str:
     query = urllib.parse.urlparse(url).query
     # headers 键大小写不敏感，回退到 HEADERS 的真实 UA（此前默认值误写为字面量 "user-agent"）
     user_agent = next((v for k, v in headers.items() if k.lower() == "user-agent"), HEADERS["User-Agent"])
-    with open(f"{JS_SCRIPT_PATH}/x-bogus.js", encoding="utf-8") as f:
-        xbogus_js = f.read()
-    xbogus = cast(str, execjs.compile(xbogus_js).call("sign", query, user_agent))
+    # 2026-09-12 审查 6.3：原为同步读文件 + execjs.compile().call()（内部起 node
+    # 子进程并阻塞等待 stdout）。本函数是 async 且被抖音解析链路高频调用，同步阻塞
+    # 会冻结调用方房间的整个事件循环；且每次调用都重复读文件 + compile。
+    # 改 utils.run_js_async：阻塞段丢线程池，编译产物按 (路径, mtime) 缓存。
+    xbogus = cast(str, await utils.run_js_async(f"{JS_SCRIPT_PATH}/x-bogus.js", "sign", query, user_agent))
     return xbogus
 
 
@@ -82,7 +84,11 @@ async def get_sec_user_id(
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15) as client:
+        # 2026-09-12 审查 6.3：补 verify=http_config.ssl_verify（控制面开关）。
+        # 原先三处 AsyncClient 均未传该参数，httpx 默认恒校验——用户在 config.ini
+        # 关闭证书校验后，抖音解析链路（sec_user_id / unique_id / web_rid）仍会
+        # 因证书问题失败，开关形同不一致
+        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15, verify=http_config.ssl_verify) as client:
             response = await client.get(url, headers=headers, follow_redirects=True)
             redirect_url = response.url
             if "reflow/" in str(redirect_url):
@@ -166,7 +172,7 @@ async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict[s
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15) as client:
+        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15, verify=http_config.ssl_verify) as client:
             # 快速路径：网页端主页链接的 sec_user_id 已在路径中，无需发请求跟随重定向，
             # 可省去一次约 70KB 的主页 HTML 下载。
             sec_user_id = extract_sec_user_id(url) if is_user_homepage_url(url) else ""
@@ -257,7 +263,8 @@ async def get_live_room_id(
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15) as client:
+        # 2026-09-12 审查 6.3：同 get_sec_user_id，补 verify=http_config.ssl_verify
+        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15, verify=http_config.ssl_verify) as client:
             response = await client.get(api, headers=headers)
             _ = response.raise_for_status()
             json_data = cast(dict[str, object], response.json())

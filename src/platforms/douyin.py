@@ -114,6 +114,17 @@ class DouyinDanmaku(DanmakuBase):
         ]
         query = urllib.parse.urlencode(params)
         sign = danmaku_signature(room_id, user_id)
+        # signature **不做** URL 编码（与上游 dart 行为一致，勿「顺手修复」）：
+        # 上游 simple_live_core/lib/src/danmaku/douyin_danmaku.dart 第 88 行附近为
+        #   var sign = DouyinSign.getSignature(danmakuArgs.roomId, danmakuArgs.userId);
+        #   var url = "$uri&signature=$sign";
+        # 即直接字符串拼接、不 encodeComponent。XBogus 自定义字符表（_xbogus.XBOGUS_ALPHABET）
+        # 含 `+` 与 `/`，理论上 `+` 在 application/x-www-form-urlencoded 语义下会被解析成空格；
+        # 但抖音 WS 握手侧实测不按该语义解码（若按之解码，约四成签名含 `+` 会系统性失败，
+        # 社区实现——dart simple_live_core / f2 / DouyinLiveWebFetcher——均长期沿用未编码形态），
+        # 且 WebSocket 握手 URL 由服务端按标准 query 解析、会做百分号解码，故保持与上游逐字一致。
+        # 若将来线上出现「签名无效」类风控，应先用抓包对照上游实际发出的字节再决定，
+        # 不得凭静态审查结论直接加 quote()——那会让本端成为全网的唯一异类指纹。
         url = f"{SERVER_URL}?{query}&signature={sign}"
         backup_url = url.replace("webcast100-ws-web-lq", "webcast100-ws-web-lf")
 
@@ -130,7 +141,7 @@ class DouyinDanmaku(DanmakuBase):
             on_ready=self._on_ws_ready,
             on_heartbeat=self.heartbeat,
             on_close=self._on_close,
-            on_reconnect=self._on_close,
+            on_reconnect=self._on_reconnect,
         )
         await self._ws.connect()
 
@@ -176,8 +187,13 @@ class DouyinDanmaku(DanmakuBase):
                     self._decode_chat(msg.payload)
                 elif method == METHOD_ONLINE:
                     pass  # 在线人数不进 SRT
-        except Exception:
-            pass  # 无效包丢弃，不影响录像
+        except Exception as e:
+            # 无效包丢弃不影响录像，但须留异常类型+帧头 hex 线索，避免「0 弹幕零线索」
+            logger.debug(
+                i18n.tr(
+                    "[抖音弹幕]帧解析异常: {type_name} head={head}", type_name=type(e).__name__, head=data[:16].hex()
+                )
+            )
 
     # 解析 ChatMessage 的 payload，提取昵称与内容并 emit 弹幕。
     def _decode_chat(self, payload: bytes) -> None:
@@ -196,8 +212,15 @@ class DouyinDanmaku(DanmakuBase):
                     color="#FFFFFF",
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            # 单条消息解码失败不影响后续，但须留线索（protobuf 字段变更时排障依赖此日志）
+            logger.debug(
+                i18n.tr(
+                    "[抖音弹幕]弹幕解析异常: {type_name} payload={payload}",
+                    type_name=type(e).__name__,
+                    payload=payload[:16].hex(),
+                )
+            )
 
     # 对需要确认的帧发送 ack（payloadType='ack' + logId）。
     def _send_ack(self, log_id: int) -> None:

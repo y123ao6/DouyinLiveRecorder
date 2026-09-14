@@ -91,15 +91,35 @@ def _find_module_coverage(coverage_data: CoverageData, module_path: str) -> Cove
     if module_path in files:
         return files[module_path]
 
-    # Fuzzy match for different path separators / absolute vs relative
+    # 2026-09-12 审查 6.7：原模糊匹配过宽——`Path(file).name == Path(module).name`
+    # 会按**纯文件名**命中任意同名文件（如 src/utils.py 的配置命中 tests/utils.py、
+    # 或 vendor 目录下的同名模块），读到的覆盖率根本不是目标模块，门禁据此判定
+    # 通过 = 静默变绿。改为按「规范化相对路径」匹配，逐级收紧：
     module_normalized = Path(module_path).as_posix()
+
+    # 归一化两侧：去 src/ 前缀与盘符，使 "src/x.py" 与 "x.py" 可互相匹配
+    def _norm(p: str) -> str:
+        q = Path(p).as_posix()
+        if q.startswith("src/"):
+            q = q[4:]
+        return q
+
+    module_norm = _norm(module_normalized)
+    # ① 相对路径完全相等（覆盖 src/ 前缀差异）
     for file_path, file_data in files.items():
-        file_normalized = Path(file_path).as_posix()
-        if file_normalized.endswith(module_normalized):
+        if _norm(file_path) == module_norm:
             return file_data
-        if Path(file_normalized).name == Path(module_normalized).name:
-            parent = Path(file_normalized).parent.name
-            if parent in ("src", ""):
+    # ② 路径后缀匹配，但必须以 "/" 边界起始——避免 "myutils.py" 命中 "utils.py"
+    for file_path, file_data in files.items():
+        file_norm = _norm(file_path)
+        if file_norm.endswith("/" + module_norm) or file_norm.endswith("/src/" + module_norm):
+            return file_data
+    # ③ 仅当 module_path 本身不含目录（配置里写的就是纯文件名）时，才允许按文件名
+    #    匹配，且限定父目录为 src 或项目根——不再无门槛接受任意同名文件
+    if "/" not in module_normalized:
+        for file_path, file_data in files.items():
+            file_norm_path = Path(file_path)
+            if file_norm_path.name == module_normalized and file_norm_path.parent.name in ("src", ""):
                 return file_data
 
     return None

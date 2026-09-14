@@ -8,11 +8,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from typing import Any, Union
 
-from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType
+from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType, spawn_danmaku_task
+from src.logger import logger
 from src.platforms._tars import TarsInputStream, TarsOutputStream
 from src.ws_client import WsClient
 
@@ -51,7 +51,7 @@ class HuyaDanmaku(DanmakuBase):
             on_ready=self._on_ws_ready,
             on_heartbeat=self.heartbeat,
             on_close=self._on_close,
-            on_reconnect=self._on_close,
+            on_reconnect=self._on_reconnect,
         )
         await self._ws.connect()
 
@@ -59,7 +59,8 @@ class HuyaDanmaku(DanmakuBase):
     def _on_ws_ready(self) -> None:
         if self._on_ready:
             self._on_ready()
-        asyncio.ensure_future(self._join_room())
+        # spawn_danmaku_task：进房协程异常（参数缺失/发送失败）静默死亡无日志，改带异常落盘
+        spawn_danmaku_task(self._join_room())
 
     # 异步发送进房数据（WSRegisterReq）加入直播间。
     async def _join_room(self) -> None:
@@ -108,8 +109,13 @@ class HuyaDanmaku(DanmakuBase):
                 return  # 非消息推送（如注册回应），忽略
             push_data = stream.read_bytes(1)
             self._decode_push_message(push_data)
-        except Exception:
-            pass  # 无效包丢弃，不影响录像
+        except Exception as e:
+            # 无效包丢弃不影响录像，但须留异常类型+帧头 hex 线索，避免「0 弹幕零线索」
+            logger.debug(
+                i18n.tr(
+                    "[虎牙弹幕]帧解析异常: {type_name} head={head}", type_name=type(e).__name__, head=data[:16].hex()
+                )
+            )
 
     # 解析推送消息：按 uri 分发弹幕(1400)/在线人数(8006)。
     def _decode_push_message(self, data: bytes) -> None:

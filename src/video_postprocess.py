@@ -112,6 +112,12 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> No
         if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
             if main.converts_to_h264:
                 main.color_obj.print_colored("正在转码为MP4格式并重新编码为h264\n", main.color_obj.YELLOW)
+                # 2026-09-12 审查 6.1：补 `-n`（覆盖同名 .mp4 不询问）。
+                # 原无 `-n`：输出已存在时 ffmpeg 写盘前提示 "File 'xxx.mp4' already exists.
+                # Overwrite? [y/N]"（无 stdin → read EOF → 等同 N），communicate(timeout=600)
+                # 走满 600s 超时后才被回收。开弹幕 + 分段 + 转码组合下每个分段都触发
+                # 一次 600s 挂死，严重占满转码线程。`converts_m4a` 已正确加 `-n`，本函数
+                # 与之对齐。
                 ffmpeg_command = [
                     "ffmpeg",
                     "-i",
@@ -128,6 +134,7 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> No
                     "copy",
                     "-f",
                     "mp4",
+                    "-n",
                     converts_file_path.rsplit(".", maxsplit=1)[0] + ".mp4",
                 ]
             else:
@@ -142,6 +149,7 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> No
                     "copy",
                     "-f",
                     "mp4",
+                    "-n",
                     converts_file_path.rsplit(".", maxsplit=1)[0] + ".mp4",
                 ]
             _ = _run_ffmpeg_checked(ffmpeg_command)

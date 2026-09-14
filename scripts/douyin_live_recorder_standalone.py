@@ -625,6 +625,23 @@ def resolve_douyin(url: str, proxy: str | None = None, cookies: str = "") -> Str
         info_.error = f"抖音接口返回非 JSON: {type(e).__name__}: {e}"
         return info_
 
+    # 2026-09-12 审查 6.7：补第二道检测（对齐主工程 spider.py:446-449）。
+    # 抖音风控的第二形态是「HTTP 200 + 合法 JSON，但业务层 status_code 非零」
+    # （如 status_code=8 需登录、=4002 参数异常）。精简版原先只看 HTTP 状态与
+    # 空响应体，漏掉这一形态 → 风控被误报成"未开播"，用户得不到「去配 cookie」
+    # 的有效提示，只会反复重试。
+    if isinstance(data, dict):
+        try:
+            api_status_code = int(cast(str, data.get("status_code"))) if data.get("status_code") is not None else 0
+        except TypeError, ValueError:
+            api_status_code = 0
+        if api_status_code != 0:
+            status_msg = data.get("status_msg", "unknown error")
+            info_.error = (
+                f"抖音接口业务层拒绝: status_code={api_status_code}, msg={status_msg}，建议配置 抖音cookie 后重试"
+            )
+            return info_
+
     room = dig(data, "data", "data", 0, default={}) or {}
     info_.anchor_name = str(dig(room, "anchor", "nickname", default="") or "")
     info_.title = str(dig(room, "title", default="") or "")
@@ -1007,10 +1024,15 @@ _probe_last_seen: dict[str, float] = {}
 
 def _throttle_probe(url: str) -> None:
     # 同 host 探针节流：锁内计算、锁外睡眠，不阻塞其它 host。
+    # 2026-09-12 审查（低危）：计时由 time.time()（墙上时钟）改 time.monotonic()。
+    # 墙上时钟会被 NTP 校时/手动改表/虚拟机时钟漂移回拨；一旦回拨，`now - last`
+    # 变成负数且绝对值很大 → `now - last < gap` 恒不成立倒是不会卡，
+    # 但向前跳变时会算出巨大的 wait，把探针线程冻结数十秒甚至更久
+    # （表现为「某房间突然长时间不检测」且无日志）。monotonic 不受系统时钟调整影响。
     host = host_of(url)
     wait = 0.0
     with _throttle_lock:
-        now = time.time()
+        now = time.monotonic()
         gap = _PROBE_MIN_HOST_INTERVAL + _SYS_RANDOM.uniform(0, _PROBE_JITTER)
         last = _probe_last_seen.get(host, 0.0)
         if now - last < gap:
@@ -1304,7 +1326,10 @@ def build_ffmpeg_cmd(
     # 都拉不到、视频数据零字节产出、进程永不退出（-loglevel error 下零输出零报错）。
     # FLV 输入保留该选项：CDN 掐断长连接时在 EOF 处重连续写同一文件（斗鱼游客态 FLV
     # ~70s 被掐的既有缓解手段）。del 只按字面量标志对删除，不引入动态拼接。
-    if ".m3u8" in url:
+    # 2026-09-12 审查（低危）：大小写敏感致 HLS 挂起回归——平台/用户手填地址扩展名
+    # 为 .M3U8 等大写形态时本判定落空，-reconnect_at_eof 未被删除 → 复现 2026-09-11
+    # 的「播放列表 EOF 无限重连、零字节产出、进程永不退出」。统一按小写判定。
+    if ".m3u8" in url.lower():
         _eof_idx = cmd.index("-reconnect_at_eof")
         del cmd[_eof_idx : _eof_idx + 2]
     return cmd
@@ -1314,15 +1339,32 @@ def build_ffmpeg_cmd(
 # 继续拉流占用 CDN 连接预算与磁盘
 _ACTIVE_FFMPEG: set[subprocess.Popen] = set()
 _ACTIVE_FFMPEG_LOCK = threading.Lock()
+# 终止宽限期（秒）：terminate() 后留给 ffmpeg 自行收尾的时间。
+_TERMINATE_GRACE_SECONDS = 3.0
 
 
 def terminate_all_ffmpeg() -> int:
+    # 2026-09-12 审查 6.7：原实现只 proc.terminate() 就返回——SIGTERM 后 ffmpeg 仍需
+    # 时间 flush 缓冲并写 mp4 的 moov box，调用方（Ctrl+C / 停止流程）紧接着退出或
+    # 删除句柄，会把输出文件截断成「不可播放」（moov 缺失，播放器报 invalid data）。
+    # 改为 terminate → 宽限 wait(3s) → 仍存活才 kill 的两级终止。
     with _ACTIVE_FFMPEG_LOCK:
         procs = list(_ACTIVE_FFMPEG)
     killed = 0
     for proc in procs:
         try:
+            if proc.poll() is not None:
+                continue  # 已自然退出，无需终止
             proc.terminate()
+            try:
+                proc.wait(timeout=_TERMINATE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                # 宽限期未退出（卡在写盘/网络读）：强制 kill 并再回收一次，避免僵尸
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    debug(f"ffmpeg kill 后仍未退出: pid={proc.pid}")
             killed += 1
         except Exception as e:
             debug(f"ffmpeg 终止失败: {type(e).__name__}: {e}")
@@ -1379,7 +1421,8 @@ def run_ffmpeg(
         ]
         # HLS(m3u8) 输入禁用 -reconnect_at_eof：与 build_ffmpeg_cmd 同规则
         # (该函数注释详述——播放列表 EOF 无限重连，段拉不到/无输出/不退出)。
-        if ".m3u8" in url:
+        # 同 build_ffmpeg_cmd：按小写判定（大写 .M3U8 会漏判并复现挂起事故）。
+        if ".m3u8" in url.lower():
             _eof_idx = proc_args.index("-reconnect_at_eof")
             del proc_args[_eof_idx : _eof_idx + 2]
         proc = subprocess.Popen(
@@ -1463,6 +1506,12 @@ def load_settings(config_path: str) -> Settings:
 
     if get("是否启用代理").startswith("是"):
         st.proxy = get("代理地址").strip()
+        # 2026-09-12 审查（低危）：启用代理但地址为空 → 后续 `proxy or None` 判为
+        # falsy 而静默直连。用户以为流量走了代理（可能正是为了隐藏真实出口 IP
+        # 或绕过地域限制），实际全部裸连——既不达预期也无任何提示。
+        # 显式告警并要求补填，而不是悄悄降级。
+        if not st.proxy:
+            warn("「是否启用代理 = 是」但「代理地址」为空，将按直连处理；请填写代理地址或关闭代理开关")
     st.save_dir = get("视频保存路径") or "downloads"
     st.loop_interval = _safe_float(get("循环时间(秒)"), 120.0)
     if st.loop_interval < 5.0:

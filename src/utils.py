@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import asyncio
 import functools
 import hashlib
 import inspect
@@ -9,6 +10,8 @@ import random
 import re
 import shutil
 import string
+import subprocess
+import threading
 import traceback
 import zipfile
 from collections import OrderedDict
@@ -20,6 +23,136 @@ from urllib.parse import parse_qs, urlparse
 import i18n
 
 # 工具函数模块 - 提供通用工具函数，包括配置文件读写、文件操作、字符串处理等
+
+
+# URL scheme 白名单校验（2026-09-12 审查 6.3 从 src/spider.py 上移至此）：
+# 仅放行 http(s) 与 ws(s)。防用户在 URL_config.ini 写入 file:// / gopher:// /
+# ftp:// 等协议造成 SSRF——本项目虽无「服务端直接 fetch 用户 URL」的经典攻击面，
+# 但 stream_select 的流地址校验与后续解析链路仍会按 URL 触发请求，收紧 scheme
+# 边界是最低成本的防御。
+# 上移原因：原先定义在 spider.py，而真正的请求入口（async_http / sync_http）在
+# 依赖链更底层，无法反向 import spider（循环依赖）→ 函数零生产调用，退化成纸面
+# 防御。放到 utils（无业务依赖的底层模块）后各层均可直接引用。
+_SAFE_URL_SCHEMES = frozenset({"http", "https", "ws", "wss"})
+
+
+def is_safe_http_url(url: str) -> bool:
+    # 校验 URL 的 scheme 是否在白名单内；空串/缺 scheme 的相对路径一律拒绝。
+    parsed = urlparse(url)
+    return parsed.scheme in _SAFE_URL_SCHEMES
+
+
+# ─────────────────────────────────────────────────────────────
+# JS 执行（2026-09-12 审查 6.3）
+#
+# 背景：多个平台（LiveMe / 嗨秀 / 抖音 X-Bogus / 咪咕）需调用 node 子进程执行
+# 签名脚本。原先各调用点直接在 async 协程里同步 `execjs.compile(...).call(...)`
+# 或 `subprocess.run(["node", ...], timeout=30)`——execjs 内部就是起 node 子进程
+# 并阻塞等待 stdout，在「每房间独立线程 + 独立事件循环」模型下会**冻结该房间的
+# 整个事件循环**（咪咕最坏 30s，期间该房间的其它协程全部停摆）；且每次调用都
+# 重新读文件 + compile，重复开销。
+#
+# 本组工具统一解决两点：
+#   1. 按 (路径, mtime) 缓存编译产物，省去重复读文件与 compile；
+#   2. run_js_async 把阻塞段整体丢进 asyncio.to_thread，协程侧只 await。
+# ─────────────────────────────────────────────────────────────
+
+# path -> (源文件 mtime, 编译产物)。mtime 参与键判定：脚本更新后自动重编译，
+# 无需重启进程（开发期频繁改签名脚本场景）。
+_js_compile_cache: dict[str, tuple[float, object]] = {}
+_js_compile_lock = threading.Lock()
+
+# ── 签名脚本完整性钉定（2026-09-12 修复 CODE_REVIEW_FIX_1 F-25）──
+# src/javascript/ 下的脚本是各平台签名算法的混淆产物，内含 eval，经 execjs 交给
+# node 执行。它们是**被执行的代码**，一旦被篡改（供应链投毒、误操作覆盖、下载
+# 到错误版本）就会静默产出错误签名，表现为「某平台突然全部解析失败」且极难归因。
+# 这里记录 2026-09-12 基线的 SHA256，供 get_compiled_js 比对。
+#
+# 默认**只告警不阻断**：平台改版时用户/维护者必须能自行更新脚本，强制校验会把
+# 正当更新变成「程序不可用」。需要强约束的场景（CI、加固部署）可设环境变量
+# DLR_JS_STRICT_HASH=1，届时哈希不符将拒绝执行。
+# 更新脚本后请把新哈希同步到此处（并注明来源版本/日期）。
+_JS_SHA256_EXPECTED: dict[str, str] = {
+    "crypto-js.min.js": "769a555de553babc35a3338f344dd7aa16260c93cea2c7db290707c90484e7cc",
+    "haixiu.js": "e8f13f4a4048f99fa12c44b26381d8711582ce81c902f523fbec0c668bbf83d7",
+    "laixiu.js": "c08d9f7128d121d822068edc2956e8662787aed30c904815ffe9fc846290fc57",
+    "liveme.js": "62199fc7847c157d2f0554e6a4f6447208b391ad19db8211251522d487e5d27d",
+    "migu.js": "01bf22bdd4ce77457b441bb659271010fc6d99ccdd46ba986b6533db117b9a54",
+    "taobao-sign.js": "c1ebd683b564ded7ee81a2135f3a9a7b2e4dde266c46441a9e02872685075528",
+    "x-bogus.js": "12077d60606ee652ef218e21440db47d6604a9647517beaa05e6d262555badd0",
+}
+
+
+def _check_js_hash(js_path: str, raw: bytes) -> None:
+    # 比对签名脚本哈希与钉定值；不符时按严格模式开关决定告警还是拒绝。
+    name = os.path.basename(js_path)
+    expected = _JS_SHA256_EXPECTED.get(name)
+    if not expected:
+        return  # 未登记的脚本（动态生成/第三方）不校验
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual == expected:
+        return
+    strict = os.environ.get("DLR_JS_STRICT_HASH", "").strip().lower() in ("1", "true", "yes")
+    if strict:
+        raise RuntimeError(
+            f"签名脚本 {name} 的 SHA256 与钉定值不符，已按 DLR_JS_STRICT_HASH=1 拒绝执行"
+            f"（期望 {expected}，实际 {actual}）"
+        )
+    logger.warning(
+        i18n.tr(
+            "签名脚本 {name} 的 SHA256 与钉定值不符（期望 {expected}，实际 {actual}）；"
+            "若你刚更新过该脚本请同步更新 utils._JS_SHA256_EXPECTED，否则请核查文件是否被篡改",
+            name=name,
+            expected=expected,
+            actual=actual,
+        )
+    )
+
+
+def get_compiled_js(js_path: str) -> object:
+    # 读取并编译 JS 脚本，按 (路径, mtime) 缓存；被并发调用时由锁串行化。
+    try:
+        mtime = os.path.getmtime(js_path)
+    except OSError:
+        mtime = 0.0
+    with _js_compile_lock:
+        cached = _js_compile_cache.get(js_path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        # 读字节再解码：哈希必须对原始字节计算（BOM / 换行形态都会影响摘要，
+        # 用解码后的 str 反算会与文件实际内容不一致）
+        with open(js_path, "rb") as f:
+            raw = f.read()
+        _check_js_hash(js_path, raw)
+        source = raw.decode("utf-8")
+        compiled = execjs.compile(source)
+        _js_compile_cache[js_path] = (mtime, compiled)
+        return compiled
+
+
+async def run_js_async(js_path: str, func_name: str, *args: object) -> object:
+    # 异步执行 JS 脚本中的 func_name（阻塞段整体丢线程池，事件循环不被冻结）。
+    # 返回脚本调用结果（各平台脚本约定返回 str / dict，由调用方自行 cast）。
+    def _sync_call() -> object:
+        return cast(object, getattr(get_compiled_js(js_path), "call")(func_name, *args))
+
+    return await asyncio.to_thread(_sync_call)
+
+
+async def run_node_script_async(script_path: str, *args: str, timeout: float = 30.0) -> str:
+    # 异步执行 node 脚本（subprocess.run 阻塞段丢线程池，事件循环不被冻结）。
+    # 咪咕签名等「整段脚本 + 命令行参数」形态走此入口。
+    def _sync_run() -> str:
+        proc = subprocess.run(
+            ["node", script_path, *args],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
+        return proc.stdout.strip()
+
+    return await asyncio.to_thread(_sync_run)
 
 
 # 优先使用 exejs（PyExecJS 的活跃维护继任者），未安装时回退到 PyExecJS
@@ -149,19 +282,43 @@ def check_md5(file_path: str | Path) -> str:
 
 
 def unzip_file(zip_path: str | Path, extract_to: str | Path, delete: bool = True) -> None:
-    # 解压 ZIP 文件到指定目录（含 Zip Slip 目录穿越校验）。
+    # 解压 ZIP 文件到指定目录（含 Zip Slip 目录穿越校验 + 解压炸弹防护）。
     # node_install / ffmpeg_install 共用同一份实现——原先两处逐字重复，
     # 任一处打安全补丁都会漏掉另一处
     if not os.path.exists(extract_to):
         os.makedirs(extract_to)
 
     extract_root = os.path.realpath(extract_to)
+    # 解压炸弹防护（2026-09-12 审查 H-1）：恶意压缩包可声明极小尺寸但解压后膨胀到磁盘满 / OOM。
+    # 设置上限：单文件 4GB、累计 8GB、压缩比上限 100x（正常压缩比通常 <10x，FFmpeg 二进制 ~70MB）。
+    # 上限宁可误拦合法大包（用户改 max_total_size 重试），不可放过炸弹。
+    _MAX_ENTRY_SIZE = 4 * 1024 * 1024 * 1024
+    _MAX_TOTAL_SIZE = 8 * 1024 * 1024 * 1024
+    _MAX_RATIO = 100
+
+    total_uncompressed = 0
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         # 防止 Zip Slip 目录穿越攻击：校验每个成员解压后的真实路径
         for member in zip_ref.namelist():
             member_path = os.path.realpath(os.path.join(extract_root, member))
             if not member_path.startswith(extract_root + os.sep) and member_path != extract_root:
                 raise ValueError(f"Unsafe path in zip file: {member}")
+            info = zip_ref.getinfo(member)
+            # 单文件大小校验
+            if info.file_size > _MAX_ENTRY_SIZE:
+                raise ValueError(f"Zip entry too large (bomb?): {member} declared {info.file_size} bytes")
+            total_uncompressed += info.file_size
+            # 压缩比校验：恶意包可仅写 1 字节并循环引用，未压缩累计总和炸出数 TB；
+            # zip 物理大小阈值取磁盘占用超 10MB 才有意义（小包算压缩比误差大）
+            if info.compress_size > 0 and info.file_size > 10 * 1024 * 1024:
+                ratio = info.file_size / info.compress_size
+                if ratio > _MAX_RATIO:
+                    raise ValueError(
+                        f"Zip compression ratio too high (bomb?): {member} ratio={ratio:.1f}x "
+                        f"({info.compress_size} -> {info.file_size})"
+                    )
+            if total_uncompressed > _MAX_TOTAL_SIZE:
+                raise ValueError(f"Zip total uncompressed size too large (bomb?): {total_uncompressed} bytes")
         zip_ref.extractall(extract_to)
 
     if delete and os.path.exists(zip_path):
@@ -174,9 +331,17 @@ def dict_to_cookie_str(cookies_dict: Mapping[str, object]) -> str:
     return cookie_str
 
 
-def read_config_value(file_path: str | Path, section: str, key: str) -> str | None:
-    # 从配置文件读取指定配置项的值
+def read_ini_value(file_path: str | Path, section: str, key: str) -> str | None:
+    # 从配置文件读取指定配置项的值（按**文件路径**读取，每次调用重新解析文件）
     # 关闭插值：值中的裸 %（如 cookie、时间格式）不应触发 InterpolationSyntaxError
+    #
+    # 2026-09-12 重命名（CODE_REVIEW_FIX_1 F-16）：原名 `read_config_value`，与
+    # `src/config_io.read_config_value(config_parser, section, option, default_value)`
+    # **同名但签名与语义都不同**——后者接收已解析的 parser、缺键会补写默认值回
+    # 配置文件并返回 str；本函数接收文件路径、不写回、缺键返回 None。
+    # 两个同名函数在 main.py（约 70 处调用 config_io 版）与 spider.py 间混用，
+    # 极易传错参数（kwargs 数量与首个参数类型都不同）。
+    # 因 config_io 版调用点过多，改本侧（调用点仅 spider.py 一处 + 单测）。
     config = configparser.ConfigParser(interpolation=None)
 
     try:
@@ -194,6 +359,12 @@ def read_config_value(file_path: str | Path, section: str, key: str) -> str | No
         print(i18n.tr("Section [{section}] does not exist in the file.", section=section))
 
     return None
+
+
+# F-16 兼容别名：保留旧名以免外部脚本/插件突然失效。
+# 新代码请用 read_ini_value（与 config_io.read_config_value 区分）。
+def read_config_value(file_path: str | Path, section: str, key: str) -> str | None:
+    return read_ini_value(file_path, section, key)
 
 
 def update_config(file_path: str | Path, section: str, key: str, new_value: str) -> None:

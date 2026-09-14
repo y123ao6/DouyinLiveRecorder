@@ -8,10 +8,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
+
+import i18n
 
 
 # 弹幕消息类型枚举：取值为字符串（chat/gift/online/superChat），供消息过滤与分发判断使用。
@@ -41,6 +44,26 @@ class DanmakuMessage:
     timestamp_ms: float = 0.0
 
 
+# 后台弹幕协程的统一异常落盘（2026-09-12 审查）：裸 asyncio.ensure_future 的异常仅在
+# 任务被 GC 时以 "Task exception was never retrieved" 打印到 stderr，进房协程抛异常
+# （如 room_id 非数字、发送失败）将完全无日志地静默死亡；各平台调度后台协程一律改用
+# spawn_danmaku_task，在完成回调里捕获并落盘异常。
+def _log_task_exception(task: "asyncio.Task[None]") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        from src.logger import logger
+
+        logger.warning(i18n.tr("[弹幕]后台协程异常: {type_name}: {exc}", type_name=type(exc).__name__, exc=exc))
+
+
+def spawn_danmaku_task(coro: Awaitable[None]) -> "asyncio.Task[None]":
+    task = asyncio.ensure_future(coro)
+    task.add_done_callback(_log_task_exception)
+    return task
+
+
 # 平台弹幕客户端抽象基类：统一连接生命周期与回调协议，子类需实现四个抽象方法。
 class DanmakuBase(ABC):
     # 弹幕基类，对标 dart LiveDanmaku。
@@ -62,6 +85,16 @@ class DanmakuBase(ABC):
         self._on_close = on_close
         self._on_ready = on_ready
         self._stopped = False
+
+    # 断线重连回调（2026-09-12 审查 6.4）：各平台原先一律把 on_reconnect 指向
+    # self._on_close，而 _on_close 的语义是「房间已关闭」——它会调监控枢纽的
+    # room_closed() 把房间标记为断开。重连是**中间态**（连接仍在 max_reconnect
+    # 次数内会自动恢复），把它当成关闭上报，会让监控面板出现「房间已断开」的假事件，
+    # 实际几秒后重连成功又活过来。改为独立的重连回调：只记 debug 日志，不上报关闭。
+    def _on_reconnect(self, reason: str) -> None:
+        from src.logger import logger
+
+        logger.debug(i18n.tr("[{cls}]弹幕连接断开，正在重连: {reason}", cls=type(self).__name__, reason=reason))
 
     # 抽象方法：用平台启动参数 args（room_id / token 等）建立连接并持续接收弹幕，无返回值。
     @abstractmethod
