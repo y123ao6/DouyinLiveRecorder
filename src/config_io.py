@@ -29,6 +29,35 @@ from src.ffmpeg_proc import _get_error_line
 # 通过 `import main` 在运行时惰性读写，避免循环导入与 __main__ 二次执行。
 
 
+# 段级精确替换（2026-09-12 审查 6.1）：old_str 仅在「等于整行（去行尾换行与首尾空白后）」
+# 或「等于行内某个半角/全角逗号分隔段（strip 后）」时才替换为 new_str。返回重写后的
+# 整行文本（保留原行尾与多逗号），未命中返回 None。
+# 原实现为整行 substring 替换（str.replace），URL 前缀重叠时（如 .../room1 与 .../room12）
+# 会把别的配置行静默改坏，滥用者只在下次“未生效”才会发现。
+def _rewrite_line_by_match(text_line: str, old_str: str, new_str: str) -> str | None:
+    raw = text_line.rstrip("\r\n")
+    eol = text_line[len(raw) :]
+    target = old_str.strip()
+    if not target:
+        return None
+    # 整行匹配：raw.strip() 同时容忍首尾空白；new_str 的行尾须补 eol；
+    # whole-line 与 segment 两种情况下都需 rstrip 掉 new_str 的潜在换行以免双换行
+    cleaned_new = new_str.rstrip("\r\n")
+    if raw.strip() == target:
+        return f"{cleaned_new}{eol}"
+    # 段级匹配：按半角/全角逗号切分，保留分隔符。new_str 可含逗号（“new_url,主播: 名称”）
+    # 与原 substring 语义兼容，且不会误伤相似前缀行
+    parts = re.split(r"([,，])", raw)
+    hit = False
+    for i in range(0, len(parts), 2):
+        if parts[i].strip() == target:
+            parts[i] = cleaned_new
+            hit = True
+    if not hit:
+        return None
+    return "".join(parts) + eol
+
+
 # 把 file_path 中所有 old_str 替换为 new_str（start_str 非空时给命中行加该前缀，如 "#" 注释掉），
 # 顺带去重相同行；返回实际生效的字符串（失败时返回 old_str）
 def update_file(file_path: str, old_str: str, new_str: str, start_str: str | None = None) -> str | None:
@@ -37,14 +66,21 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str | Non
         return old_str
     with main.file_update_lock:
         file_data: list[str] = []
+        # 2026-09-12 审查（低危 6.1）：原 list 成员判定为 O(n)，80+ 房间场景退化为 O(N²)；
+        # 换为 set 保持 O(1) 插入与判定，同时保留首次出现顺序（set 不保证，但「仅记录是否见过」
+        # 的用法重放为顺序 + 去重即可）
+        seen: set[str] = set()
         try:
-            with open(file_path, "r", encoding=main.text_encoding) as f:
+            # newline=""：读/写均不做换行符翻译，保留文件原有的 \n / \r\n 行尾风格，
+            # 配合下方的原子写实现字节级 round-trip（Windows 下的 CRLF 不会走 universal newlines
+            # 被错误转换为 LF）
+            with open(file_path, "r", encoding=main.text_encoding, newline="") as f:
                 for text_line in f:
-                    if old_str in text_line:
-                        text_line = text_line.replace(old_str, new_str)
-                        if start_str:
-                            text_line = f"{start_str}{text_line}"
-                    if text_line not in file_data:
+                    rewritten = _rewrite_line_by_match(text_line, old_str, new_str)
+                    if rewritten is not None:
+                        text_line = f"{start_str}{rewritten}" if start_str else rewritten
+                    if text_line not in seen:
+                        seen.add(text_line)
                         file_data.append(text_line)
         except (RuntimeError, UnicodeDecodeError) as e:
             logger.error(
@@ -52,17 +88,44 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str | Non
             )
             # 读取失败时尝试用初始内容恢复，避免文件被清空
             if main.ini_URL_content:
-                with open(file_path, "w", encoding=main.text_encoding) as f2:
-                    _ = f2.write(main.ini_URL_content)
+                _ = _atomic_write_text(file_path, main.ini_URL_content)
                 return old_str
             return old_str
-        if file_data:
-            joined = "".join(file_data)
-            with open(file_path, "w", encoding=main.text_encoding) as f:
-                _ = f.write(joined)
-            # 更新快照为当前已落盘内容，使后续异常恢复只回滚到最近一次成功修改，而非整个循环开始时的旧内容
-            main.ini_URL_content = joined
+        if not file_data:
+            return old_str
+        joined = "".join(file_data)
+        # 2026-09-12 审查 6.1：原 open(..., "w") 是 truncate+write 非原子，读方（主循环、GUI）
+        # 可能在写入窗口内读到空/半写文件；改同目录临时文件 + os.replace 原子写
+        if not _atomic_write_text(file_path, joined):
+            return old_str
+        # 更新快照为当前已落盘内容，使后续异常恢复只回滚到最近一次成功修改，而非整个循环开始时的旧内容
+        main.ini_URL_content = joined
         return new_str
+
+
+# 原子写文本：同目录临时文件写完后 os.replace 覆盖，读方只会看到旧/新完整内容。
+# 返回是否成功落盘（False 表示在写临时文件 / replace 阶段发生 OSError）。
+def _atomic_write_text(file_path: str, text: str) -> bool:
+    tmp = f"{file_path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding=main.text_encoding, newline="") as f:
+            _ = f.write(text)
+        os.replace(tmp, file_path)
+    except OSError as e:
+        logger.warning(
+            i18n.tr(
+                "原子写失败（已保留原文件）: {file_path} - {type_name}: {e}",
+                file_path=file_path,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 # 将 URL 配置文件中指定 URL 所在行的主播名字段更新为 new_name（行内无主播名字段时追加），
@@ -142,23 +205,34 @@ def delete_line(file_path: str, del_line: str, delete_all: bool = False) -> None
     # 从文件中删除指定行
     # delete_all=False 时仅删除第一个匹配行
     with main.file_update_lock:
-        with open(file_path, "r+", encoding=main.text_encoding) as f:
-            lines = f.readlines()
-            _ = f.seek(0)
-            _ = f.truncate()
-            deleted_one = False
-            for txt_line in lines:
-                if del_line == txt_line and (delete_all or not deleted_one):
-                    deleted_one = True
-                    continue
-                _ = f.write(txt_line)
+        try:
+            with open(file_path, "r", encoding=main.text_encoding) as f:
+                lines = f.readlines()
+        except (OSError, UnicodeDecodeError) as e:
+            logger.error(i18n.tr("读取 URL 配置失败，跳过删除: {e}", e=e))
+            return
+        deleted_one = False
+        out: list[str] = []
+        for txt_line in lines:
+            if del_line == txt_line and (delete_all or not deleted_one):
+                deleted_one = True
+                continue
+            out.append(txt_line)
+        if not deleted_one:
+            return
+        # 2026-09-12 审查 6.5：原 r+truncate 式写中途崩溃会清空整个 URL_config.ini；
+        # 改临时文件 + os.replace 原子写（读方只见旧/新完整内容）
+        if not _atomic_write_text(file_path, "".join(out)):
+            return
+        # 同步更新 URL 配置快照，与 update_file 保持一致的异常恢复基线
+        if file_path == main.url_config_file:
+            main.ini_URL_content = "".join(out)
 
 
-# 从 config_parser 读取 section/option 的配置值；缺节或缺键时用 default_value 补写回配置文件
-# 并返回该默认值；返回值一律为字符串
 def read_config_value(
     config_parser: configparser.RawConfigParser, section: str, option: str, default_value: str | int | float | bool = ""
-) -> str:
+) -> str:  # 从 config_parser 读取 section/option 的配置值；缺节或缺键时用 default_value 补写回配置文件
+    # 并返回该默认值；返回值一律为字符串
     # 读取配置文件指定节键值
     try:
         if "录制设置" not in config_parser.sections():
@@ -188,8 +262,10 @@ def read_config_value(
             try:
                 buffer = io.StringIO()
                 config_parser.write(buffer)
-                with open(main.config_file, "w", encoding=main.text_encoding) as f:
-                    _ = f.write(buffer.getvalue())
+                # 2026-09-12 审查 6.5：原 open(...,"w") 是 truncate+write 非原子；
+                # 改临时文件 + os.replace 原子写（与 update_file / delete_line 保持一致）
+                if not _atomic_write_text(main.config_file, buffer.getvalue()):
+                    _ = config_parser.remove_option(section, option)
             except (OSError, configparser.Error) as e:
                 logger.warning(
                     i18n.tr(

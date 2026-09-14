@@ -354,9 +354,14 @@ def is_downgrade(requested: str | None, actual: str | None) -> bool:
     return act_level > req_level
 
 
-def _pad_list(url_list: list[_PadT], min_length: int = 5) -> list[_PadT] | list[None]:
+def _pad_list(url_list: list[_PadT], min_length: int = 6) -> list[_PadT] | list[None]:
     # 将列表填充到指定最小长度
     # 空列表无法以"最后一个元素"填充，返回 None 列表避免调用方索引越界
+    # 2026-09-12 审查 6.5：默认 min_length 由 5 改为 6。
+    # LD 档在 QUALITY_MAPPING 中索引为 5（见 get_quality_index），原 min_length=5 时
+    # 平台恰返回 5 档（UHD/HD/SD/LD/更低端）url_list[5] 即越界，被下游 min(...) 钳制
+    # 后退回"未开播"分支——用户选"流畅"画质时部分平台永远录不上。改为 6 后下游
+    # index 钳制（min(quality_index, len-1)）仍生效，仅当 len>=6 时才真正使用 LD。
     if not url_list:
         return [None] * min_length
     while len(url_list) < min_length:
@@ -442,9 +447,17 @@ async def get_douyin_stream_url(
         if not ok:
             # m3u8 不可达时向"相邻档"降级：还有更高档就升一档，否则降到前一档；
             # 仅做单步回退，避免跨档跳过可用画质。
-            index = flv_idx + 1 if flv_idx < len(flv_pairs) - 1 else max(flv_idx - 1, 0)
+            # 2026-09-12 审查 6.5：原写法直接用 flv_idx 衍生 index 索引 m3u8_pairs，
+            # 当 flv_pairs 比 m3u8_pairs 长时 m3u8_pairs[index] 越界（抖音部分档位仅
+            # 在 flv 侧存在）。各自钳制到对应列表长度，避免 IndexError 被上游吞成
+            # 「未开播」而漏录
+            if flv_pairs:
+                index = flv_idx + 1 if flv_idx < len(flv_pairs) - 1 else max(flv_idx - 1, 0)
+            else:
+                index = m3u8_idx
             if m3u8_pairs:
-                m3u8_quality_name, m3u8_url = m3u8_pairs[index]
+                m3u8_index = min(index, len(m3u8_pairs) - 1)
+                m3u8_quality_name, m3u8_url = m3u8_pairs[m3u8_index]
             if not use_hevc_flv and flv_pairs:
                 flv_quality_name, flv_url = flv_pairs[index]
             actual_quality = _norm_code(flv_quality_name or m3u8_quality_name)

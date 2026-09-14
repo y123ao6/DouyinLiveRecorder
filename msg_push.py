@@ -147,6 +147,16 @@ def xizhi(url: str, title: str, content: str) -> dict[str, list[str | int]]:
     return {"success": success, "error": error}
 
 
+# SMTP 头注入防护（与 src/web_config._reject_newline 同款语义）
+# 邮件头以 \r\n 分隔：任何进入 From/To/Subject 的外部数据（title 部分来自主播名等
+# 平台返回内容，攻击者可控）含换行即可伪造任意邮件头（如 Bcc 批量投递、伪造 From
+# 绕过 SPF 显示）。email.header.Header 会编码非 ASCII 但**不会**剥离 CRLF，故必须
+# 在组装前显式拒绝。
+def _reject_smtp_newline(kind: str, value: str) -> None:
+    if value and ("\n" in value or "\r" in value):
+        raise ValueError(f"{kind} 含换行符，禁止用于邮件头")
+
+
 # 通过 SMTP 发送邮件（支持 SSL/非SSL），返回成功与失败收件人列表
 def send_email(
     email_host: str,
@@ -165,6 +175,14 @@ def send_email(
     smtp_obj: smtplib.SMTP | smtplib.SMTP_SSL | None = None
 
     try:
+        # 2026-09-12 审查 6.6：CRLF 注入校验前置。放行则攻击者可用含换行的主播名
+        # 伪造 Bcc/Reply-To 等邮件头；拒绝并记 warning 比静默发送伪造邮件安全
+        _reject_smtp_newline("邮件标题", title)
+        _reject_smtp_newline("发件人地址", sender_email)
+        _reject_smtp_newline("发件人名称", sender_name)
+        for rcpt in receivers:
+            _reject_smtp_newline("收件人地址", rcpt)
+
         message = MIMEMultipart()
         send_name = base64.b64encode(sender_name.encode("utf-8")).decode()
         message["From"] = f"=?UTF-8?B?{send_name}?= <{sender_email}>"
@@ -191,6 +209,10 @@ def send_email(
         _ = smtp_obj.login(login_email, email_pass)
         _ = smtp_obj.sendmail(sender_email, receivers, message.as_string())
         return {"success": receivers, "error": []}
+    except ValueError as e:
+        # 换行注入被拒：与 SMTPException 分开记，便于区分「配置被污染/攻击」与「网络故障」
+        logger.warning(i18n.tr("邮件推送被拒绝（疑似头注入）: {e}", e=e))
+        return {"success": [], "error": receivers}
     except smtplib.SMTPException as e:
         logger.warning(i18n.tr("邮件推送失败, 推送邮箱：{to_email}, 错误信息:{e}", to_email=to_email, e=e))
         return {"success": [], "error": receivers}
@@ -463,11 +485,17 @@ if __name__ == "__main__":
     bark_url = "https://xxx.xxx.com/key/"
     # bark(bark_url, send_title, send_content)
 
-    _ = ntfy(
-        api="https://ntfy.sh/xxxxx",
-        title="直播推送",
-        content="xxx已开播",
-    )
+    # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-24）：本调用原先未注释——本文件 `if __name__`
+    # 块是手工调试入口，其余渠道（钉钉/邮件/TG/Bark 等）全部已注释，仅 ntfy 一处漏网。
+    # 直接执行 `python msg_push.py` 会向公网 ntfy.sh 主题发出真实推送（主题名可被
+    # 任何人订阅），属误操作外泄。注释掉，与其余渠道保持一致。
+    # _ = ntfy(
+    #     api="https://ntfy.sh/xxxxx",
+    #     title="直播推送",
+    #     content="xxx已开播",
+    # )
+
+    _ = ntfy  # 保留引用，避免 lint 将 ntfy 判为未使用导入/定义
 
     pushplus_token = ""
     # pushplus(pushplus_token, send_title, send_content)

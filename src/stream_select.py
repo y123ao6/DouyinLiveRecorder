@@ -20,7 +20,7 @@ import threading
 import time
 from collections.abc import Mapping
 from typing import cast
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from loguru import logger
@@ -298,6 +298,112 @@ def _is_h265(url: str) -> bool:
 _PROBE_TIMEOUT_SECONDS = 5
 
 
+# HLS 播放列表可达 ≠ 可录制：媒体分片必须单独探测（2026-09-13 斗鱼 hw CDN 实测事故）。
+# 事故形态：hw3a.douyucdn2.cn 的 m3u8 播放列表恒 200（CDN 动态合成，列表层无风控），
+# 但边缘节点（f19c*.livehwc4.com）上所有 .ts 分片 404 —— ffmpeg 拉列表成功后逐分片 404，
+# hls demuxer 无限「Segment failed too many times, skipping」循环：零字节产出、进程常驻、
+# -loglevel error 下零输出（404 属 demuxer warning 级，不上 stderr）。生产表现即
+# 「录制只出弹幕 SRT、无视频文件」；同房间同 token 的 FLV 完全可用（10s 录制 10.6MB）。
+# 根因在探针假绿：旧校验「列表 200 即可达」从未看过分片。本函数补上分片层：
+# GET 播放列表 → 若为 master playlist（含 #EXT-X-STREAM-INF）跟随首个变体到媒体列表 →
+# 取末行分片（最新，避开已滚出窗口的旧分片误杀）→ Range bytes=0-0 GET 探测。
+# 判定原则（保守优先，不误杀可用源）：
+# - 分片 200/206 → 真可达；
+# - 分片明确 4xx/5xx → 列表假绿，判不可达（调用方回退下一候选，如 FLV）；
+# - 任何解析不出分片（空列表 / 非 .ts|.mp4 行 / 子列表取不到 / 探测异常）→ 维持旧结论
+#   「列表可达」，交由 ffmpeg 定夺——只有「探到了分片且被明确拒绝」才推翻列表结论。
+# 401/403 分片按既有偶发限流语义隔 _GET_RECHECK_INTERVAL 重试一次再定罪（斗鱼 hw/虎牙 al
+# 实测毫秒级连击探针偶发 403，重试即恢复）；404 是「分片不存在」的确定性信号，不重试。
+def _probe_hls_segment(
+    client: httpx.Client,
+    playlist_url: str,
+    headers: Mapping[str, str],
+    platform: str | None = None,
+) -> bool:
+    media_url = playlist_url
+    media_lines: list[str] = []
+    try:
+        resp = client.get(playlist_url, headers=dict(headers), follow_redirects=True)
+        if resp.status_code != 200:
+            return True  # 列表 GET 失败（HEAD/Range-GET 已通过）——不据此推翻，交由 ffmpeg
+        text = resp.text or ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+        # master playlist：跟随首个变体（最多两层，覆盖 变体→子列表 的嵌套形态如斗鱼 hw）
+        for _ in range(2):
+            if "#EXT-X-STREAM-INF" in text and lines:
+                variant_url = urljoin(media_url, lines[0])
+                sub = client.get(variant_url, headers=dict(headers), follow_redirects=True)
+                if sub.status_code != 200:
+                    return True  # 子列表取不到——保守，不下分片结论
+                media_url = variant_url
+                text = sub.text or ""
+                lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+                continue
+            break
+        media_lines = lines
+        if not media_lines:
+            return True  # 空列表（直播刚结束/未推流）——无分片可探，维持列表可达结论
+        seg_line = media_lines[-1]
+        is_media = seg_line.endswith((".ts", ".mp4", ".m4s")) or any(
+            ext + "?" in seg_line for ext in (".ts", ".mp4", ".m4s")
+        )
+        if not is_media:
+            return True  # 非标准分片行（加密/自定义格式）——解析不出，保守放行
+        seg_url = urljoin(media_url, seg_line)
+    except Exception as e:
+        logger.debug(
+            i18n.tr(
+                "HLS 分片探测解析异常(按列表可达处理): {url} - {type_name}: {e}",
+                url=playlist_url,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
+        return True
+    probe_status: int | None = None
+    for attempt in range(2):
+        # 同 host 探针节流（分片 host 常与列表 host 不同，如 hw3a…→f19c…livehwc4）：
+        # 多房间并发下对同一边缘 host 的分片探测同样存在毫秒级连击风控面
+        _throttle_probe(seg_url)
+        try:
+            seg_resp = client.get(seg_url, headers={**headers, "Range": "bytes=0-0"}, follow_redirects=True)
+        except Exception as e:
+            logger.debug(
+                i18n.tr(
+                    "HLS 分片探测异常(按列表可达处理): {url} - {type_name}: {e}",
+                    url=seg_url,
+                    type_name=type(e).__name__,
+                    e=e,
+                )
+            )
+            return True
+        if seg_resp.status_code in (200, 206):
+            if attempt:
+                logger.debug(
+                    i18n.tr(
+                        "HLS 分片探测重试通过({status_code})，先前拒绝为偶发: {url}",
+                        url=seg_url,
+                        status_code=seg_resp.status_code,
+                    )
+                )
+            return True
+        probe_status = seg_resp.status_code
+        if seg_resp.status_code in (401, 403):
+            _mark_probe_reject(seg_url, platform)
+            if attempt == 0:
+                time.sleep(_recheck_delay())
+                continue
+        break  # 404 等确定性拒绝不重试
+    logger.warning(
+        i18n.tr(
+            "HLS 播放列表可达但媒体分片不可达({status_code})，列表层为假绿: {url}",
+            url=seg_url,
+            status_code=probe_status,
+        )
+    )
+    return False
+
+
 # FLV/record_url 源 HEAD 通过后的 GET 复核（流式请求、不读 body）：
 # 虎牙 al.flv.huya.com 等 CDN 出现过 HEAD=200 而 GET=403 —— 校验“假绿”后 ffmpeg 打开即 403、
 # 录制反复失败。ffmpeg 拉流是「无 Range 的全量 GET」，复核必须与之完全一致：
@@ -447,11 +553,27 @@ def _validate_stream_url(
             _mark_probe_reject(url, platform)
         # m3u8 源：抖音等 CDN 对 HEAD 常回 4xx（如 405）+ text/html，但 GET 实际可拉流。
         # 优先做 Range GET 探测，绕过 HEAD 不可靠的 content-type/状态码（与 async_http.get_response_status 保持一致）。
-        if ".m3u8" in url:
+        # 2026-09-12 审查（低危）：扩展名按小写判定——大写 .M3U8 的源会漏掉
+        # Range GET 探测，被 HEAD 的 4xx 直接判成不可达（与 async_http 同型问题）
+        if ".m3u8" in url.lower():
             if response.status_code == 200 or any(
                 k in content_type for k in ("video", "octet-stream", "flash", "mpegurl")
             ):
-                return True
+                # 2026-09-13 斗鱼 hw 事故：列表 200 ≠ 可录制——必须补分片层探测
+                # （_probe_hls_segment 内部保守判定，解析不出分片时维持旧「可达」结论）。
+                if _probe_hls_segment(probe_client, url, headers, platform=platform):
+                    return True
+                # 分片明确不可达（假绿）：非末位候选回退下一候选（如 FLV）；
+                # 末位候选保持「探针拒绝 ≠ ffmpeg 不可拉流」的既有放行语义。
+                if last_resort:
+                    logger.warning(
+                        i18n.tr(
+                            "流地址校验: {url} - HLS 媒体分片不可达；已无备选源，仍交由 ffmpeg 尝试",
+                            url=url,
+                        )
+                    )
+                    return True
+                return False
             # Range-GET 401/403 先隔 _GET_RECHECK_INTERVAL 原样重试一次再定罪（与 _confirm_get_ok
             # 同语义）：斗鱼 hw/虎牙 al 等 CDN 对毫秒级连击探针（HEAD→GET）偶发 403，同 URL
             # 片刻后重试即 200（探针误杀、ffmpeg 单次 GET 正常）。HLS 优先于 FLV 录制——
@@ -470,7 +592,19 @@ def _validate_stream_url(
                                 status_code=probe.status_code,
                             )
                         )
-                    return True
+                    # 2026-09-13 斗鱼 hw 事故：Range-GET 拉到列表（200/206）同样只是列表层，
+                    # 分片可达性必须单独探测（与上方 HEAD 200 路径同一假绿成因）。
+                    if _probe_hls_segment(probe_client, url, headers, platform=platform):
+                        return True
+                    if last_resort:
+                        logger.warning(
+                            i18n.tr(
+                                "流地址校验: {url} - HLS 媒体分片不可达；已无备选源，仍交由 ffmpeg 尝试",
+                                url=url,
+                            )
+                        )
+                        return True
+                    return False
                 if probe.status_code not in (401, 403):
                     break  # 非探针误杀类拒绝（如 404），不重试
                 _mark_probe_reject(url, platform)
@@ -593,6 +727,55 @@ def _validate_stream_url(
                 logger.debug(i18n.tr("关闭探针客户端失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
 
+# 读取 main 的 HLS 采集配置（是否启用 + 排除平台名），对「全局缺失 / 类型异常」做兜底：
+# main 的这两个全局在启动早期（配置文件尚未加载完）或测试替身下可能缺省，直接属性访问会抛
+# AttributeError，使整轮选源中断——表现为房间静默不录制且无任何选源日志，极难定位。
+# 此处一律回退到安全默认（启用 HLS、无排除平台），并容忍「逗号分隔字符串」形态
+# （与 main() 的配置解析同语义，亦兼容把配置全局直接写成字符串的场景）。
+# 返回 (是否启用 HLS, 排除平台名元组)
+def _hls_selection_config() -> tuple[bool, tuple[str, ...]]:
+    enabled = bool(getattr(main, "hls_collection_enabled", True))
+    raw: object = getattr(main, "hls_collection_exclude_platforms", ())
+    if isinstance(raw, str):
+        names = raw.replace("，", ",").split(",")
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        names = [str(p) for p in raw]
+    else:
+        names = []
+    return enabled, tuple(name.strip() for name in names if name.strip())
+
+
+# 从 FLV 候选里找出与给定 HLS 地址「同源」的那条：部分平台（如斗鱼）把 FLV 直链按扩展名
+# 替换成 m3u8（.flv→.m3u8）后再下发（见 src/stream.py 的 get_douyu_stream_url），二者共享
+# 同一防盗链 token（wsAuth），仅容器/协议不同。2026-09-13 斗鱼 hw 事故即：m3u8 列表 200 但
+# 边缘节点分片全 404，而同 token 的 FLV 可正常拉流——同源 FLV 是首选回退目标。此函数用于在
+# 选择/日志里显式识别这层同源关系，避免把同源 FLV 当作无关候选而漏掉回退。
+# 命中返回该 FLV 候选（原样），无同源返回 None
+def _same_origin_flv(hls_url: str, flv_candidates: list[str]) -> str | None:
+    stem = hls_url.lower().split("?", 1)[0]
+    if not stem.endswith(".m3u8"):
+        return None
+    target = stem[: -len(".m3u8")] + ".flv"
+    for candidate in flv_candidates:
+        if candidate.lower().split("?", 1)[0] == target:
+            return candidate
+    return None
+
+
+# 选源结论单行日志（观测增强）：记下「最终采用哪条源、属于哪一类候选」，便于在
+# 「只出弹幕 SRT、无视频」类故障里一眼确认 ffmpeg 实际拉的是 HLS 还是 FLV，无需翻找
+# 逐候选的告警。kind 为机器可读字面量（HLS/FLV/record_url），不翻译，便于日志检索。
+def _log_source_choice(platform: str | None, kind: str, url: str) -> None:
+    logger.debug(
+        i18n.tr(
+            "选源结论: platform={platform} 采用 {kind} 源: {url}",
+            platform=platform or "",
+            kind=kind,
+            url=url,
+        )
+    )
+
+
 # 从 stream_info（解析结果，含 m3u8_url/flv_url/record_url 等键）挑选本轮实际录制地址：
 # 候选尝试顺序：默认优先 HLS，其次 FLV，最后 record_url；FLV-first 平台（见
 # _FLV_FIRST_PLATFORMS，当前仅虎牙）反转为 FLV → HLS → record_url。proxy_addr 透传给
@@ -640,8 +823,11 @@ def select_source_url(
 
     # HLS 采集排除列表：命中平台无视「是否启用HLS采集」配置（等效于仅对该平台关闭 HLS
     # 采集），HLS 候选整组剔除、不作回退，恒按 FLV 采集；列表外平台不受影响。
-    hls_excluded = platform is not None and platform in main.hls_collection_exclude_platforms
-    hls_effective_enabled = main.hls_collection_enabled and not hls_excluded
+    # 配置兜底：经 _hls_selection_config 读取，缺失/类型异常时回退安全默认
+    # （启用 HLS、无排除平台），避免配置全局尚未就绪时 AttributeError 中断整轮选源
+    _hls_enabled, _hls_exclude_platforms = _hls_selection_config()
+    hls_excluded = platform is not None and platform in _hls_exclude_platforms
+    hls_effective_enabled = _hls_enabled and not hls_excluded
 
     # 三类地址全为空：此前静默返回 None，房间会永远打印“正在直播中...”却不录制且无任何
     # 诊断线索（斗鱼 rtmp_live 为空即此形态）。必须留一条日志暴露根因。
@@ -730,7 +916,15 @@ def select_source_url(
                 last_resort=is_last and not has_record_url,
                 client=probe_client,
             ):
+                _log_source_choice(platform, "HLS" if is_hls else "FLV", cand)
                 return cand
+            # 同源候选（观测增强）：HLS 被拒（含「列表 200 但分片 404」假绿）时，若存在同
+            # token 的 FLV 候选，显式点名该回退目标——它是斗鱼 hw 事故的首选可用源，
+            # 单独记一条便于巡检确认「是否已按预期回退同源 FLV」。
+            if is_hls:
+                same_origin = _same_origin_flv(cand, flv_candidates)
+                if same_origin:
+                    logger.warning(i18n.tr("HLS 源校验失败，将回退同 token 的 FLV 源: {url}", url=same_origin))
         if usable and has_record_url:
             logger.warning("HLS/FLV URL validation failed, trying record_url fallback")
 
@@ -746,7 +940,11 @@ def select_source_url(
                 last_resort=True,
                 client=probe_client,
             ):
+                _log_source_choice(platform, "record_url", record_url)
                 return record_url
+        # 观测增强：整轮无可用源时补一条收束结论（逐候选告警已各自给出原因），
+        # 让「房间一直不录制」在日志里有一句可检索的结论行
+        logger.warning(i18n.tr("选源结论: platform={platform} 本轮无可用源", platform=platform or ""))
         return None
     finally:
         # 选源结束即释放连接：连接预算要让给随后的 ffmpeg 拉流

@@ -11,6 +11,7 @@ import hmac
 import os
 import re
 import secrets
+import threading
 from pathlib import Path
 from typing import Iterable, cast
 
@@ -236,9 +237,9 @@ def write_quality_options(config_file: str | Path, options: Iterable[str]) -> li
     normalized = normalize_quality_options(raw_list)
     value = ",".join(normalized)
     _reject_newline("画质选项", value)
-    if not update_config_line(config_file, QUALITY_OPTIONS_SECTION, QUALITY_OPTIONS_KEY, value):
-        # 键缺失（历史 config.ini 无此项）：补建到目标节内，不改其余内容
-        _ = append_config_line(config_file, QUALITY_OPTIONS_SECTION, QUALITY_OPTIONS_KEY, value)
+    # 键缺失（历史 config.ini 无此项）时补建到目标节内，不改其余内容；
+    # 替换/补建两步经 update_or_append_config_line 持锁原子化，防并发补建重复行
+    _ = update_or_append_config_line(config_file, QUALITY_OPTIONS_SECTION, QUALITY_OPTIONS_KEY, value)
     return normalized
 
 
@@ -335,7 +336,10 @@ def update_room_quality(url_config_file: str | Path, url: str, quality: str | No
         return False
 
     joined = "".join(out_lines)
-    _atomic_write_text(path, joined)
+    # 持串行锁原子写（2026-09-12 审查 H-6）：GUI 与 Web 可并发切同一房间画质，
+    # 无锁时两次 read-modify-write 交错会丢失一次变更
+    with _config_write_lock:
+        _atomic_write_text(path, joined)
     return True
 
 
@@ -444,6 +448,12 @@ def _key_line_pattern(key: str) -> re.Pattern[str]:
     return re.compile(r"^(\s*" + re.escape(key) + r"\s*[=:：]\s*)(.*)$", re.IGNORECASE)
 
 
+# config.ini 写入串行锁（2026-09-12 审查 H-6）：Web 侧「改配置/改语言/密码升级写」、
+# GUI 的 language 写回与引擎的 SSL 平台列表写回均为无锁 read-modify-write，并发交错
+# 会互相覆盖丢写；RLock 可重入保证组合操作（update_or_append_config_line）持锁调用单步函数不自锁。
+_config_write_lock = threading.RLock()
+
+
 def update_config_line(config_file: str | Path, section: str, key: str, value: str) -> bool:
     # 注释保留的行级配置更新。
     # 逐行扫描：进入目标 section 后，匹配 `^\\s*key\\s*[=：:]\\s*` 的行并替换其值；
@@ -455,41 +465,64 @@ def update_config_line(config_file: str | Path, section: str, key: str, value: s
     path = Path(config_file)
     if not path.exists():
         return False
-    lines: list[str] = path.read_text(encoding=TEXT_ENCODING).splitlines(keepends=True)
-    cur_section: str | None = None
-    in_target = False
-    replaced = False
-    key_pattern = _key_line_pattern(key)
-    new_lines: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        # section header: [name]
-        if stripped.startswith("[") and stripped.endswith("]"):
-            cur_section = stripped[1:-1].strip()
-            in_target = cur_section == section
-            new_lines.append(line)
-            continue
-        if in_target and not replaced:
-            m = key_pattern.match(line.rstrip("\n").rstrip("\r"))
-            if m:
-                prefix = m.group(1)  # "key = " 部分
-                old_tail = m.group(2)  # 原值（可能含行内注释）
-                # 检测行内注释：首个 " #" 或 " ;"（前置空白），保留注释部分
-                inline_comment = ""
-                for marker in (" #", " ;"):
-                    idx = old_tail.find(marker)
-                    if idx > 0:  # >0 表示前面有非空内容（不是行首注释）
-                        inline_comment = old_tail[idx:]
-                        break
-                # 保留原行尾换行符
-                eol = "\n" if line.endswith("\n") else ("\r\n" if line.endswith("\r\n") else "")
-                new_lines.append(f"{prefix}{value}{inline_comment}{eol}")
-                replaced = True
+    with _config_write_lock:
+        # newline=""：读侧不做换行翻译，\r\n 原样保留，配合原子写字节级 round-trip
+        with path.open("r", encoding=TEXT_ENCODING, newline="") as f:
+            lines = f.readlines()
+        cur_section: str | None = None
+        in_target = False
+        replaced = False
+        key_pattern = _key_line_pattern(key)
+        new_lines: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            # section header: [name]
+            if stripped.startswith("[") and stripped.endswith("]"):
+                cur_section = stripped[1:-1].strip()
+                in_target = cur_section == section
+                new_lines.append(line)
                 continue
-        new_lines.append(line)
-    if not replaced:
-        return False
-    _ = path.write_text("".join(new_lines), encoding=TEXT_ENCODING)
+            if in_target and not replaced:
+                m = key_pattern.match(line.rstrip("\n").rstrip("\r"))
+                if m:
+                    prefix = m.group(1)  # "key = " 部分
+                    old_tail = m.group(2)  # 原值（可能含行内注释）
+                    # 检测行内注释：首个 " #" 或 " ;"（前置空白），保留注释部分
+                    #
+                    # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-23）：引号优先。
+                    # 原实现一律按首个 " #" / " ;" 切分——值本身含该串时会被当成注释，
+                    # 写回后变成「新值 + 半个原值」，配置被静默截断。典型受害者：
+                    # 颜色值、含井号的密码/token、URL 锚点（如 `key = "a#b" # 说明`，
+                    # 原逻辑会在 "a#b" 内部的 " #"... 之前先命中 a 与 # 之间无空格故不中，
+                    # 但 `key = "v" # x` 之后的任意含 " #" 值都会错位）。
+                    # 引号包裹的值其注释必在**闭合引号之后**，按此切分可精确定界；
+                    # 引号未闭合（畸形行）或值无引号时回落原启发式，行为不退化。
+                    inline_comment = ""
+                    _stripped_tail = old_tail.lstrip()
+                    if _stripped_tail[:1] in ('"', "'"):
+                        _quote = _stripped_tail[0]
+                        _q_start = old_tail.find(_quote) + 1
+                        _q_end = old_tail.find(_quote, _q_start)
+                        if _q_end > 0:
+                            inline_comment = old_tail[_q_end + 1 :]
+                    if not inline_comment:
+                        for marker in (" #", " ;"):
+                            idx = old_tail.find(marker)
+                            if idx > 0:  # >0 表示前面有非空内容（不是行首注释）
+                                inline_comment = old_tail[idx:]
+                                break
+                    # 保留原行尾换行符：先判 \r\n 再判 \n（CRLF 行同样以 \n 结尾，
+                    # 顺序反了会把 CRLF 行降级成 LF，往 CRLF 文件里混入异风格行尾）
+                    eol = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+                    new_lines.append(f"{prefix}{value}{inline_comment}{eol}")
+                    replaced = True
+                    continue
+            new_lines.append(line)
+        if not replaced:
+            return False
+        # 2026-09-12 审查 H-6：write_text 为 truncate+write 非原子，与引擎热加载的持锁读
+        # 竞态时可读到空/半写文件；改同目录临时文件 + os.replace 原子写（读方只见旧/新完整内容）
+        _atomic_write_text(path, "".join(new_lines))
     return True
 
 
@@ -501,29 +534,43 @@ def append_config_line(config_file: str | Path, section: str, key: str, value: s
     path = Path(config_file)
     if not path.exists():
         return False
-    lines: list[str] = path.read_text(encoding=TEXT_ENCODING).splitlines(keepends=True)
-    insert_at: int | None = None  # 目标节内的插入点（下一节头之前）；None＝文件尾
-    in_section = False
-    for idx, line in enumerate(lines):
-        stripped = line.strip()
-        if not (stripped.startswith("[") and stripped.endswith("]")):
-            continue
-        name = stripped[1:-1].strip()
+    with _config_write_lock:
+        # newline="" 保留 \r\n 原样，配合原子写字节级 round-trip（同 update_config_line）
+        with path.open("r", encoding=TEXT_ENCODING, newline="") as f:
+            lines = f.readlines()
+        insert_at: int | None = None  # 目标节内的插入点（下一节头之前）；None＝文件尾
+        in_section = False
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not (stripped.startswith("[") and stripped.endswith("]")):
+                continue
+            name = stripped[1:-1].strip()
+            if in_section:
+                insert_at = idx  # 走到下一节头部即目标节结束
+                break
+            if name == section:
+                in_section = True
+        # 末行无尾换行时先补一个：无论插入文件中间还是尾部，都不得与原内容粘连成一行
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        entry = f"{key} = {value}\n"
         if in_section:
-            insert_at = idx  # 走到下一节头部即目标节结束
-            break
-        if name == section:
-            in_section = True
-    # 末行无尾换行时先补一个：无论插入文件中间还是尾部，都不得与原内容粘连成一行
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    entry = f"{key} = {value}\n"
-    if in_section:
-        lines.insert(insert_at if insert_at is not None else len(lines), entry)
-    else:
-        lines.append(f"[{section}]\n{entry}")
-    _ = path.write_text("".join(lines), encoding=TEXT_ENCODING)
+            lines.insert(insert_at if insert_at is not None else len(lines), entry)
+        else:
+            lines.append(f"[{section}]\n{entry}")
+        # 原子写（同 update_config_line，审查 H-6）：truncate+write 窗口内读方会看到半写文件
+        _atomic_write_text(path, "".join(lines))
     return True
+
+
+# 行级「替换优先、缺键补建」的组合写入（2026-09-12 审查 H-6）：两步全程持同一把
+# 可重入锁，杜绝「替换失败→追加」间隙被并发写交错（如 language 键被 Web 与 GUI
+# 同时补建导致重复行）。返回是否发生任一写入。
+def update_or_append_config_line(config_file: str | Path, section: str, key: str, value: str) -> bool:
+    with _config_write_lock:
+        if update_config_line(config_file, section, key, value):
+            return True
+        return append_config_line(config_file, section, key, value)
 
 
 # === Web 登录密码哈希（PBKDF2-HMAC-SHA256）===

@@ -6,12 +6,13 @@
 import gzip
 import http.client
 import json
+import ssl
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sync_http import _get_opener, sync_req
+from src.sync_http import _get_opener, _resolve_ssl_verify, sync_req
 
 
 class TestGetOpener:
@@ -296,3 +297,75 @@ class TestSyncReq:
                 assert any("sync_req 请求失败" in str(c.args) for c in mock_logger.error.call_args_list)
         assert result == ""
         assert "unexpected" not in result
+
+
+# F-12：CERT_NONE 上下文 / opener 惰性化 + 单次请求 ssl_verify 覆盖。
+# 契约：①不校验证书的对象只在真正需要时创建；②显式覆盖优先于控制面全局开关；
+# ③覆盖值必须透传到 urllib 与 requests（代理）两条实现路径。
+class TestSslVerifyScoping:
+    @patch("src.sync_http.config")
+    def test_resolve_ssl_verify_follows_global_when_no_override(self, mock_config: MagicMock) -> None:
+        # 未指定覆盖时跟随控制面全局开关（向后兼容现状语义）
+        mock_config.ssl_verify = True
+        assert _resolve_ssl_verify(None) is True
+        mock_config.ssl_verify = False
+        assert _resolve_ssl_verify(None) is False
+
+    def test_resolve_ssl_verify_override_wins(self) -> None:
+        # 显式覆盖优先于全局开关：凭据类调用点可强制校验，不受全局降级影响
+        assert _resolve_ssl_verify(True) is True
+        assert _resolve_ssl_verify(False) is False
+
+    def test_insecure_context_is_built_lazily_and_cached(self) -> None:
+        # 惰性：未走到降级分支前不构造 CERT_NONE 上下文（import 期常驻是 F-12 的根因）
+        import importlib
+
+        import src.sync_http as sync_http_mod
+
+        reloaded = importlib.reload(sync_http_mod)
+        assert reloaded._ssl_context_insecure is None
+        assert reloaded._opener_insecure is None
+        ctx = reloaded._get_insecure_context()
+        assert ctx.verify_mode is ssl.CERT_NONE
+        assert ctx.check_hostname is False
+        # 缓存：同一进程内重复取应为同一对象，避免每次请求重建上下文
+        assert reloaded._get_insecure_context() is ctx
+
+    @patch("src.sync_http.config")
+    def test_get_opener_override_forces_secure_even_when_global_disabled(self, mock_config: MagicMock) -> None:
+        # 全局关闭校验时，显式传 True 的调用仍须走安全 opener（控制面恒校验的落点）
+        # 注意：上方惰性用例 reload 过本模块，模块级 _opener_secure 已换新对象，
+        # 故此处按运行时属性取，不用 import 期绑定的名字（否则跨用例比较到旧对象）
+        from src import sync_http as sync_http_mod
+
+        mock_config.ssl_verify = False
+        assert _get_opener(True) is sync_http_mod._opener_secure
+        assert _get_opener() is sync_http_mod._get_insecure_opener()
+        assert _get_opener(False) is not sync_http_mod._opener_secure
+
+    @patch("src.sync_http.config")
+    @patch("src.sync_http._get_opener")
+    def test_sync_req_forwards_override_to_opener(self, mock_opener_fn: MagicMock, mock_config: MagicMock) -> None:
+        # 覆盖值必须透传给 _get_opener，而不是被丢弃后退回全局开关
+        mock_config.ssl_verify = False
+        mock_response = MagicMock()
+        mock_response.headers.get.return_value = None
+        mock_response.read.return_value = b"ok"
+        mock_opener_fn.return_value.open.return_value = mock_response
+        sync_req("http://example.com", ssl_verify=True)
+        mock_opener_fn.assert_called_once_with(True)
+        mock_response.close.assert_called_once()
+
+    @patch("src.sync_http.config")
+    @patch("src.sync_http._session")
+    def test_sync_req_forwards_override_to_proxied_session(
+        self, mock_session_fn: MagicMock, mock_config: MagicMock
+    ) -> None:
+        # 代理路径走 requests.Session：verify 必须同为裁决后的值（两条路径口径一致）
+        mock_config.ssl_verify = True
+        mock_session = MagicMock()
+        mock_session.get.return_value.text = "ok"
+        mock_session_fn.return_value = mock_session
+        sync_req("http://example.com", proxy_addr="http://127.0.0.1:1", ssl_verify=False)
+        _args, kwargs = mock_session.get.call_args
+        assert kwargs["verify"] is False

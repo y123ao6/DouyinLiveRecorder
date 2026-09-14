@@ -46,7 +46,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/ihmily/DouyinLiveRecorder.git
+git clone https://github.com/y123ao6/DouyinLiveRecorder.git
 cd DouyinLiveRecorder
 
 # 安装依赖（推荐使用 uv）
@@ -613,7 +613,7 @@ Windows 下控制台默认「最小化到系统托盘」（`web_minimize_to_tray
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/ihmily/DouyinLiveRecorder.git
+git clone https://github.com/y123ao6/DouyinLiveRecorder.git
 cd DouyinLiveRecorder
 
 # 2. 编辑配置文件
@@ -786,7 +786,7 @@ brew install ffmpeg
 
 ```bash
 # Ubuntu/Debian
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
 sudo apt-get install -y nodejs
 
 # macOS
@@ -847,6 +847,34 @@ brew install node
 
 ## ⏳ 更新日志
 
+### v4.2.0 (2026-09-12 ~ 2026-09-14) — 代码审查全量修复（~120 项·安全/并发/平台）+ 斗鱼「只出 SRT 无视频」根因定位与 HLS 分片层假绿探针 + 选源加固 + start_record 命令构造/平台分派单一定义点重构 + 仓库元数据同源同步与四语本地化一致性修复
+
+> 本版本（v4.2.0，2026-09-12 ~ 09-14）为一次覆盖安全、并发、平台层与门禁的综合性修复与加固周期。核心修复：① 定位并修复斗鱼等平台「仅生成弹幕 SRT、无视频文件」——HLS 播放列表层恒返 200，但边缘节点媒体分片全 404，ffmpeg 零媒体段产出；弹幕链路仅依赖 `room_id` 与视频解耦，故 SRT 照常写出。新增 HLS 分片层探针 `_probe_hls_segment`（把「列表 200」与「可录制」解耦）与三方向选源加固（配置兜底 / 观测增强 / 同源 FLV 候选回退）。② 收敛 `start_record` 五路 ffmpeg 命令构造为单一定义点、平台分派由 53 层 `elif` 改为分发表驱动，行为零差异（黄金快照 + 分派快照逐字节/逐项比对）。③ 完成 `CODE_REVIEW_FIX_1`（F-01~F-25，22 项落地 + 3 项暂缓）与 09-12 代码审查全量修复（约 120 项：SHA256 钉定、原子写、解压炸弹防护、singleflight 并发、斗鱼粘包 / B站看门狗 / Shopee 等平台修复）。④ 仓库元数据（pyproject 排除目录 / .gitignore / .dockerignore / AGENTS.md）同源同步，并修复 en_GB 目录 21 条误填繁体中文，四语目录重校准至 594 条一致。**无破坏性变更**（运行时语义全部保持）。详细根因与验证见 [CODE_WIKI.md](CODE_WIKI.md)。
+
+**🐛 修复的问题**
+- **斗鱼「只出 SRT、无视频」根因定位 + HLS 分片层假绿探针**：HLS 播放列表层恒返 200，但媒体分片落在另一边缘节点且全 404 → ffmpeg 拉到零媒体段、零字节产出；弹幕链路仅依赖 `room_id` 与视频解耦，SRT 照常写出。新增 `_probe_hls_segment()`（列表层 GET → 跟随 master 变体 → 对**末行分片**发 `Range bytes=0-0` 探测；分片 4xx/5xx 明确拒→不可达的「假绿」，200/206→可达；解析不出分片时**保守放行**），接入 `_validate_stream_url`，把「列表 200」与「可录制」解耦。
+- **选源加固（配置兜底 / 观测增强 / 同源候选）**：`_hls_selection_config()`（经 `getattr(main, "hls_collection_enabled"/"hls_collection_exclude_platforms", 默认)` 读取，默认可达、容忍逗号字符串、缺失/类型异常不再 `AttributeError` 中断选源）；`_same_origin_flv()`（按 `?` 前路径比对、`.m3u8`↔`.flv` 互认，识别同 token FLV 供 HLS 分片全死后回退）；`_log_source_choice()`（「选源结论」单行日志，覆盖回退/命中/无可用源三路径）。
+- **代码审查全量修复（09-12，约 120 项）**：H-1 SHA256 钉定（`ffmpeg_install`/`node_install` `_sha256_of_file`/`_check_or_record_zip_sha256`，蓝奏云 `FFMPEG_LANZOU_SHA256`）；C-1 Web 黑名单绕过（`req.key.strip()` + `_DANGEROUS_CONFIG_KEYS_FOLDED`）；utils 解压炸弹防护（单文件 4GB / 累计 8GB / 压缩比 100x）；H-2 singleflight 隔离锁内 await + GUI 6.2 全修（SMTP 头注入 `_reject_smtp_newline`、会话代号、画质表去重）；URL scheme 白名单 `is_safe_http_url`、JS/子进程走 `run_js_async`/`run_node_script_async`；C-2 斗鱼粘包 `offset+=full_len+4`；C-3 only_fans=False；H-4 B站看门狗 `spawn_danmaku_task(self._auth_watchdog(self._ws))`；H-5 Shopee 清除路径 finally `_not_record_prefix`；H-3 `websockets>=14.0`；H-6 原子写（`config_io._atomic_write_text` + `web_config._config_write_lock`）；standalone 两级终止（terminate→wait(3s)→kill）；6 处 ffmpeg 路径补 `record_finished=True` 触发 30s 快检；`data={}` 视为有效请求体。
+- **CODE_REVIEW_FIX_1 批量修复（F-01~F-25）**：main.py F-02 移除死 import（`converts_m4a`/`segment_video` 函数保留于 `video_postprocess.py`）、F-03 直下流 `finally` 仅当零字节才清理残留；gui.py F-04~F-09 会话代号闭环 / 画质表去重 / crash sink 禁 `import src` / 本地原子写（不 import `src.config_io` 以免触发 GUI 进程内 main 初始化）；msg_push.py F-24 ntfy 真实推送加守卫；spider.py F-10 `_read_tiktok_guest_cookie` 须插在 `@trace_error_decorator` 之上（往「@decorator+def」间插代码会劫持装饰器归属）、F-11 多参 print 改 logger 拼接、F-19 ab_sign 默认真随机；web_config.py F-23 行内注释引号优先 + 原子写；utils.py F-16 `read_ini_value` 不写回 + F-25 JS 签名脚本哈希钉定（`_JS_SHA256_EXPECTED`，7 脚本，默认告警、`DLR_JS_STRICT_HASH=1` 拒绝）。
+- **F-13 抖音 signature 保持不编码**：对照上游 `dart_simple_live` 确认其直接字符串拼接、不 `encodeComponent`，与本仓逐字一致；贸然加 `quote()` 会让本端成为全网唯一异类指纹。用 `tests/test_douyin_signature_encoding.py`（4 例）锁定「原样拼接、无百分号编码」契约。
+- **F-12 sync_http SSL 作用域收窄**：`CERT_NONE` 上下文与 opener 由 import 期常驻改为惰性构造；新增 `sync_req(..., ssl_verify=None)` 单次覆盖（透传 urllib 与 requests 两路径）。修正原风险描述——`sync_req` 调用点全部位于 `src/spider.py`，生产链路无任何 `set_ssl_verify(False)`，CERT_NONE 路径在生产不可达。
+- **check_annotations 违规修复**：`tests/test_start_record_command_golden.py` 的 `class _Cap:` 三引号 docstring 改为 `#` 行注释（符合「禁 docstring」约束）；并修一处 `main.py` 只监测不录制分支误写 `main.recording_enabled`（模块级 `main` 是入口函数非模块对象，必抛 `AttributeError`）。
+
+**✨ 新增功能 / 改进**
+- **start_record 命令构造与平台分派单一定义点（F-01）**：五路内联 `command=[]` 收敛为模块级 `_build_ffmpeg_output_args` / `_build_ffmpeg_input_args` / `_build_record_output_path` / `_ffmpeg_network_tuning`，容器映射全查 `SEGMENT_FORMAT_BY_SUFFIX`（零裸字面量）；`_resolve_platform_stream` 的 53 层 `elif` 改为 `_PLATFORM_RESOLVERS` 分发表（52 个平台各抽 `_resolve_<host>()`，共享 `_PlatformResolveContext`），新平台接入 = 追加一个处理函数 + 一条表项。附带修正两处行为漂移（TS 非分段无条件转 MP4、准备提示打印非分段文件名）。
+- **JS 签名脚本哈希钉定（F-25）**：`get_compiled_js` 读原始字节比对 `_JS_SHA256_EXPECTED` 基线，默认告警不阻断、`DLR_JS_STRICT_HASH=1` 拒绝执行，收敛签名脚本被篡改的运行期面。
+- **F-14 protobuf 兼容护栏**：本环境无 protoc，不重新生成 `douyin_pb2.py`（生成物 DO NOT EDIT）；改为 CI 前置 `tests/test_proto_runtime_compat.py` 断言「声明区间含上限 / runtime 满足区间 / runtime 不早于 gencode / 可 import 且 PushFrame 往返正常」，升到 8.x 立即变红提示先用同代 protoc 重新生成。
+
+**🛠️ 仓库维护与质量门禁**
+- **pyproject 排除目录同源补全**：`logs`/`backup_config` 原先只进部分工具——现已补齐到 black `.exclude`、isort `extend_skip`、mypy `exclude`、basedpyright `exclude`、coverage `omit`，五处统一「运行期产物目录（与 .gitignore/.dockerignore 同源维护）」注释。`.coveragerc-concurrency` 的 omit 一并对齐。
+- **.gitignore / .dockerignore 通配化**：移除已不存在的 `PERF_REVIEW_2026-08-28.md` 等逐文件名条目，改为 `PERF_REVIEW_*.md`/`CODE_REVIEW_*.md`/`DIAGNOSIS_*.md` 三组通配；.dockerignore 新增 `*.jsonl`。AGENTS.md 补 `.gitignore`/`.dockerignore` 两个条目与 `logs/`/`downloads/`/`backup_config/` 运行期目录、根文档 `CODE_REVIEW_FIX_1.md`。
+- **四语本地化一致性修复**：修复 `i18n/en_GB.json` 21 条值误填繁体中文（弹幕解析异常 7 条 + ffmpeg/Node 安装 SHA256 提示 14 条），按「en_GB 与 en_US 差异仅限拼写」回填英式英语；复核 `zh_CN(.mo)`/`en_US`/`en_GB`/`zh_TW` 四目录均 **594 条**键集两两零差异，en_US/en_GB 无中文残留、zh_TW 无未译；`zh_CN.mo` 重编译（595 条），`scripts/compile_po.py --check` 字节级同步通过。
+- **仓库元数据同步**：`AGENTS.md` / `docker-compose.yaml` 示例版本 `4.1.0`→`4.2.0`；`config/config.ini` 在 `[Cookie]` 节新增 `tiktok_guest_cookie = `（F-10 配置覆盖键槽）；requirements.txt 与 pyproject 依赖逐条核对一致（含 `protobuf>=6.31.1,<8` 上限与 `websockets>=14.0`）。
+
+**🧪 测试与验证**
+- 全量 `pytest` **974 passed / 2 skipped / 0 failed**（909→929→944→974 递增）；前端 `node --test tests/frontend/*.mjs` 6 passed；`tests/test_stream_select.py` 新增 15 例（分片探针 + 加固）、`tests/test_platform_dispatch.py` 16 例、`test_douyin_signature_encoding.py` 4 例、黄金快照 `test_start_record_command_golden.py` 20 例。
+- `black --check --line-length 120 --target-version py314 .` 134 文件全绿；`isort --check-only` 全绿；`scripts/check_annotations.py` 0 违规（平均密度 22.1%）；`scripts/compile_po.py --check` 同步；`scripts/extract_i18n_strings.py` 运行时缺失 0 条；`scripts/check_version.py` PASS；mypy/basedpyright 改动文件 0 error。
+
 ### v4.1.0 (2026-09-10 ~ 2026-09-11) — P0 修复 ffmpeg `-reconnect*` 缺值与 HLS 无限重连（直播只出字幕无视频）/ 代码审查 28 项修复 / 遗留 8+4 项推进 / i18n 形参日志 242 处全量迁移 / Web 面板窄视口修复 / 四语本地化补全
 
 > 本版本（v4.1.0，2026-09-10 ~ 09-11）修复两处 P0 录制链路缺陷：① ffmpeg `-reconnect*` 选项移入 `-i` 之前时丢失布尔值 `1`，真实录制输入未打开即退出（返回码 -22）；② `-reconnect_at_eof 1` 对 HLS(m3u8) 输入在**播放列表层无限重连**，hls demuxer 永远拉不到媒体段——直播表现为「只产出了弹幕 SRT、无视频文件」。同期推进代码审查 28 项修复、遗留 8+4 项（hls.js 钉版 / TLS 拆流 / 音频容器对齐 / `gui_legacy.py` 删除 / 弹幕落盘移出事件循环 / i18n `tr()` 接口等）、242 处形参日志 f-string → `i18n.tr` 全量迁移、Web 面板窄视口错位修复，并完成八文件元数据同源同步与四语本地化补全（521 → 539 → 544 键）。**无破坏性变更**（录制/弹幕/网络/推送运行时语义全部保持）。详细根因与验证见 [CODE_WIKI.md](CODE_WIKI.md)。
@@ -870,6 +898,8 @@ brew install node
 **🧪 测试与验证**
 - 全量 `pytest` **907 passed / 2 skipped / 0 warnings**（870 → 899 → 902 → 907 递增）；`tests/test_ffmpeg_reconnect_args.py` 新增第三个不变量类（AST 断言 m3u8 守卫存在于 main.py + standalone 全部定义点）。
 - `scripts/extract_i18n_strings.py` 缺失 0 条、四语目录零差异；`scripts/compile_po.py --check` 与 `.po` 同步（545 条）；`mypy` / `basedpyright` 0 error；`black --check` / `isort --check-only` / `scripts/check_annotations.py` / `scripts/check_version.py` 全绿。
+
+<details><summary>点击展开更多历史版本</summary>
 
 ### v4.0.9.4 (2026-09-03 ~ 2026-09-06) — HLS 采集排除平台列表 / 画质选项增删与行内切换 / P0 分段容器错配修复 / 打包缺陷修复 / 全仓注释补齐与元数据同源同步
 
@@ -1182,8 +1212,6 @@ brew install node
 - **缺陷修复**：`trace_error_decorator` 同步装饰器误用于 71 个异步函数致错误捕获失效；`asyncio.run()` 致 httpx 跨事件循环复用问题；多个 IndexError/KeyError/类型错误。
 - **凭据清理**：硬编码过期凭据改自动获取（抖音 ttwid、快手 did、Twitch Client-Id 等）。
 - **构建/依赖**：Dockerfile 升 Node.js 22 LTS、非 root 运行；新增 `pydantic>=2.0.0` 依赖声明；全项目类型检查（Pyright/Pyrefly/basedpyright）清理。
-
-<details><summary>点击展开更多历史版本</summary>
 
 ### v4.0.7 (2025-10-24)
 

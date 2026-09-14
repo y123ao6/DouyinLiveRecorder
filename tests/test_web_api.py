@@ -670,28 +670,29 @@ class TestLanguageApi:
             _ = i18n_module.set_language(saved)
 
     def test_append_config_line_edge_cases(self, app_env: types.SimpleNamespace) -> None:
-        # append_config_line 行级追加的边界：目标节存在（含无尾换行文件）与节缺失时新建于尾部
-        wa = app_env.wa
+        # append_config_line 行级追加的边界：目标节存在（含无尾换行文件）与节缺失时新建于尾部。
+        # 直接测 web_config 纯函数（web_api 自 H-6 改造后不再转发导入该符号）
+        from src.web_config import append_config_line
 
         # 节存在但中间夹有其他内容：插入点应在下一节头之前、保留注释与顺序
         cfg = app_env.cfg
         cfg.write_text(
             "[Web]\nweb_auth = true\n# 注释行\n[录制设置]\ndelay = 5\n[Cookie]\nk = v\n", encoding="utf-8-sig"
         )
-        assert wa.append_config_line(str(cfg), "录制设置", "language", "en_US") is True
+        assert append_config_line(str(cfg), "录制设置", "language", "en_US") is True
         lines = cfg.read_text(encoding="utf-8-sig").splitlines()
         assert lines.index("language = en_US") < lines.index("[Cookie]")
         assert "# 注释行" in lines
 
         # 目标节是最后一节且文件无尾换行：追加后不应与原末行粘连
         cfg.write_text("[Web]\nweb_auth = true\n[录制设置]\ndelay = 5", encoding="utf-8-sig")
-        assert wa.append_config_line(str(cfg), "录制设置", "language", "zh_TW") is True
+        assert append_config_line(str(cfg), "录制设置", "language", "zh_TW") is True
         text = cfg.read_text(encoding="utf-8-sig")
         assert "delay = 5\nlanguage = zh_TW" in text
 
         # 节缺失：文件尾新建节再插键，返回 True
         cfg.write_text("[Web]\nweb_auth = true\n", encoding="utf-8-sig")
-        assert wa.append_config_line(str(cfg), "录制设置", "language", "en_GB") is True
+        assert append_config_line(str(cfg), "录制设置", "language", "en_GB") is True
         assert "[录制设置]\nlanguage = en_GB\n" in cfg.read_text(encoding="utf-8-sig")
 
     def test_put_language_rejects_empty(self, app_env: types.SimpleNamespace) -> None:

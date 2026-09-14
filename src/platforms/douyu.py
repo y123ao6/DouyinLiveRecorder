@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import struct
 from typing import Any
 
-from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType
+import i18n
+from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType, spawn_danmaku_task
+from src.logger import logger
 from src.ws_client import WsClient
 
 SERVER_URL = "wss://danmuproxy.douyu.com:8506"
@@ -31,9 +32,11 @@ class DouyuDanmaku(DanmakuBase):
     heartbeat_interval = 45.0
 
     # 初始化：记录是否只显示粉丝弹幕，重置房间号与 WS 连接。
-    def __init__(self, *args: Any, only_fans: bool = True, **kwargs: Any) -> None:
+    # only_fans 默认 False（2026-09-12 审查 C-3）：dart 上游无任何粉丝过滤，移植时引入
+    # True 默认值导致普通观众弹幕（通常占绝大多数）被静默丢弃，且 main 调用链无开关可关。
+    def __init__(self, *args: Any, only_fans: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._only_fans = only_fans  # 是否只显示粉丝弹幕（dart if=='1' 过滤）
+        self._only_fans = only_fans  # 是否只显示粉丝弹幕（True 时过滤 if!='1' 的消息，默认不过滤）
         self._room_id: str = ""
         self._ws: WsClient | None = None
 
@@ -56,7 +59,7 @@ class DouyuDanmaku(DanmakuBase):
             on_ready=self._on_ws_ready,
             on_heartbeat=self.heartbeat,
             on_close=self._on_close,
-            on_reconnect=self._on_close,
+            on_reconnect=self._on_reconnect,
         )
         await self._ws.connect()
 
@@ -64,8 +67,8 @@ class DouyuDanmaku(DanmakuBase):
     def _on_ws_ready(self) -> None:
         if self._on_ready:
             self._on_ready()
-        # ready 后异步登录进房
-        asyncio.ensure_future(self._join_room())
+        # ready 后异步登录进房（spawn_danmaku_task 兜底异常落盘，防止静默死亡）
+        spawn_danmaku_task(self._join_room())
 
     # 异步发送 loginreq 与 joingroup 请求，登录并加入房间。
     async def _join_room(self) -> None:
@@ -103,12 +106,16 @@ class DouyuDanmaku(DanmakuBase):
         n = len(data)
         while offset + 12 <= n:
             full_len = struct.unpack_from("<I", data, offset)[0]
-            if full_len <= 0 or offset + full_len > n:
+            # 斗鱼长度域值 = 帧总字节数 - 4（不含首个长度域自身，见 _serialize 的 total 定义）。
+            # 截断判断与帧推进均须按「整帧 = full_len + 4 字节」计算——2026-09-12 审查 C-2：
+            # 原来只按 full_len 推进，粘包时第二帧起点错位 4 字节，长度域读出垃圾值后
+            # 触发截断 break，第二帧起全部静默丢失（高热度直播间消息密集时必然粘包）。
+            if full_len <= 0 or offset + full_len + 4 > n:
                 break
             try:
                 body_len = full_len - 9  # dart: bodyLength = fullMsgLength - 9
                 if body_len < 0:
-                    offset += full_len
+                    offset += full_len + 4
                     continue
                 # 帧头结构：[full_len 4][full_len 4][packType 2][enc 1][res 1] = 12 字节，之后是 body 与尾0
                 body_start = offset + 12
@@ -119,9 +126,16 @@ class DouyuDanmaku(DanmakuBase):
                 stt = body.decode("utf-8", errors="ignore")
                 obj = self._stt_to_obj(stt)
                 self._dispatch(obj)
-            except Exception:
-                pass
-            offset += full_len  # 下一帧起点（尾0已含在 full_len 内）
+            except Exception as e:
+                # 平台改版/异常帧时的唯一线索：异常类型 + 帧头 16 字节 hex，避免「0 弹幕零线索」
+                logger.debug(
+                    i18n.tr(
+                        "[斗鱼弹幕]帧解析异常: {type_name} head={head}",
+                        type_name=type(e).__name__,
+                        head=data[offset : offset + 16].hex(),
+                    )
+                )
+            offset += full_len + 4  # 下一帧起点：整帧长度 = full_len + 4（首个长度域自身不计入长度域值）
 
     # 递归解析 STT 文本协议为 dict/list（处理 @= / @A= 与转义），返回解析结果。
     @staticmethod

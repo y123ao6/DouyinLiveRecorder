@@ -2007,3 +2007,159 @@ msgstr "ffmpeg 抽音频超时（{type_name}）: {e}"
 
 msgid "执行自定义脚本超时（{_SCRIPT_TIMEOUT_SECONDS} 秒），已终止: {command}"
 msgstr "执行自定义脚本超时（{_SCRIPT_TIMEOUT_SECONDS} 秒），已终止: {command}"
+
+msgid "[弹幕]后台协程异常: {type_name}: {exc}"
+msgstr "[弹幕]后台协程异常: {type_name}: {exc}"
+
+msgid "[B站弹幕]帧解析异常: {type_name} head={head}"
+msgstr "[B站弹幕]帧解析异常: {type_name} head={head}"
+
+msgid "[B站弹幕]消息解析异常: {type_name} item={item}"
+msgstr "[B站弹幕]消息解析异常: {type_name} item={item}"
+
+msgid "[抖音弹幕]帧解析异常: {type_name} head={head}"
+msgstr "[抖音弹幕]帧解析异常: {type_name} head={head}"
+
+msgid "[抖音弹幕]弹幕解析异常: {type_name} payload={payload}"
+msgstr "[抖音弹幕]弹幕解析异常: {type_name} payload={payload}"
+
+msgid "[斗鱼弹幕]帧解析异常: {type_name} head={head}"
+msgstr "[斗鱼弹幕]帧解析异常: {type_name} head={head}"
+
+msgid "[虎牙弹幕]帧解析异常: {type_name} head={head}"
+msgstr "[虎牙弹幕]帧解析异常: {type_name} head={head}"
+
+msgid "ffmpeg SHA256 校验通过"
+msgstr "ffmpeg SHA256 校验通过"
+
+msgid "Node.js SHA256 校验通过"
+msgstr "Node.js SHA256 校验通过"
+
+msgid "蓝奏云 SHA256 校验通过"
+msgstr "蓝奏云 SHA256 校验通过"
+
+msgid "首次下载 SHA256 已记录：{current_hash}"
+msgstr "首次下载 SHA256 已记录：{current_hash}"
+
+msgid "首次下载 Node.js SHA256 已记录：{current_hash}"
+msgstr "首次下载 Node.js SHA256 已记录：{current_hash}"
+
+msgid "蓝奏云 ffmpeg SHA256: {lanzou_hash}"
+msgstr "蓝奏云 ffmpeg SHA256: {lanzou_hash}"
+
+msgid "蓝奏云为非官方个人分发源，建议优先使用 gyan.dev 官方源。"
+msgstr "蓝奏云为非官方个人分发源，建议优先使用 gyan.dev 官方源。"
+
+msgid "ffmpeg 官方源 zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
+msgstr "ffmpeg 官方源 zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
+
+msgid "Node.js zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
+msgstr "Node.js zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
+
+msgid "蓝奏云 ffmpeg SHA256 与 FFMPEG_LANZOU_SHA256 不一致（{expected} vs {actual}）。拒绝安装。"
+msgstr "蓝奏云 ffmpeg SHA256 与 FFMPEG_LANZOU_SHA256 不一致（{expected} vs {actual}）。拒绝安装。"
+
+msgid "写入 SHA256 缓存失败（不影响本次安装）: {e}"
+msgstr "写入 SHA256 缓存失败（不影响本次安装）: {e}"
+
+msgid "读取 SHA256 缓存失败，跳过校验: {e}"
+msgstr "读取 SHA256 缓存失败，跳过校验: {e}"
+
+msgid "原子写失败（已保留原文件）: {file_path} - {type_name}: {e}"
+msgstr "原子写失败（已保留原文件）: {file_path} - {type_name}: {e}"
+
+msgid "读取 URL 配置失败，跳过删除: {e}"
+msgstr "读取 URL 配置失败，跳过删除: {e}"
+
+msgid "邮件推送被拒绝（疑似头注入）: {e}"
+msgstr "邮件推送被拒绝（疑似头注入）: {e}"
+
+msgid "凭据拉取失败: {masked_key} - {type_name}: {e}"
+msgstr "凭据拉取失败: {masked_key} - {type_name}: {e}"
+
+msgid "等待其它线程的凭据拉取超时，返回空结果: {masked_key}"
+msgstr "等待其它线程的凭据拉取超时，返回空结果: {masked_key}"
+
+msgid "状态栏读取 config.ini 失败，使用默认值: {type_name}: {e}"
+msgstr "状态栏读取 config.ini 失败，使用默认值: {type_name}: {e}"
+
+msgid "async_req 拒绝非白名单协议的请求: {masked_url}"
+msgstr "async_req 拒绝非白名单协议的请求: {masked_url}"
+
+msgid "get_response_status 拒绝非白名单协议的请求: {url}"
+msgstr "get_response_status 拒绝非白名单协议的请求: {url}"
+
+msgid "关闭并发重复创建的 AsyncClient 失败: {e}"
+msgstr "关闭并发重复创建的 AsyncClient 失败: {e}"
+
+msgid "[花椒直播]解析失败（疑似瞬时网络故障，未改动配置文件）: {type_name}: {e}"
+msgstr "[花椒直播]解析失败（疑似瞬时网络故障，未改动配置文件）: {type_name}: {e}"
+
+msgid "[{cls}]弹幕连接断开，正在重连: {reason}"
+msgstr "[{cls}]弹幕连接断开，正在重连: {reason}"
+
+msgid "ffmpeg -version 执行超时（15 秒），按未安装处理: {ffmpeg_path}"
+msgstr "ffmpeg -version 执行超时（15 秒），按未安装处理: {ffmpeg_path}"
+
+msgid "删除残缺压缩包失败: {e}"
+msgstr "删除残缺压缩包失败: {e}"
+
+msgid "检测到残缺的 ffmpeg 压缩包缓存，删除后重新下载"
+msgstr "检测到残缺的 ffmpeg 压缩包缓存，删除后重新下载"
+# =============================================================================
+# 补齐条目（2026-09-13 提取器扫描新增：斗鱼 HLS 分片层探测「列表 200 / 分片 404」假绿告警）
+# =============================================================================
+
+msgid "HLS 分片探测异常(按列表可达处理): {url} - {type_name}: {e}"
+msgstr "HLS 分片探测异常(按列表可达处理): {url} - {type_name}: {e}"
+
+msgid "HLS 分片探测解析异常(按列表可达处理): {url} - {type_name}: {e}"
+msgstr "HLS 分片探测解析异常(按列表可达处理): {url} - {type_name}: {e}"
+
+msgid "HLS 分片探测重试通过({status_code})，先前拒绝为偶发: {url}"
+msgstr "HLS 分片探测重试通过({status_code})，先前拒绝为偶发: {url}"
+
+msgid "HLS 播放列表可达但媒体分片不可达({status_code})，列表层为假绿: {url}"
+msgstr "HLS 播放列表可达但媒体分片不可达({status_code})，列表层为假绿: {url}"
+
+msgid "流地址校验: {url} - HLS 媒体分片不可达；已无备选源，仍交由 ffmpeg 尝试"
+msgstr "流地址校验: {url} - HLS 媒体分片不可达；已无备选源，仍交由 ffmpeg 尝试"
+# =============================================================================
+# 补齐条目（2026-09-13 加固：选源结论观测 + 同源候选回退提示）
+# =============================================================================
+
+msgid "选源结论: platform={platform} 采用 {kind} 源: {url}"
+msgstr "选源结论: platform={platform} 采用 {kind} 源: {url}"
+
+msgid "选源结论: platform={platform} 本轮无可用源"
+msgstr "选源结论: platform={platform} 本轮无可用源"
+
+msgid "HLS 源校验失败，将回退同 token 的 FLV 源: {url}"
+msgstr "HLS 源校验失败，将回退同 token 的 FLV 源: {url}"
+
+msgid "弹幕消息处理异常（已丢弃该帧，连接保持）: {type_name}: {e}"
+msgstr "弹幕消息处理异常（已丢弃该帧，连接保持）: {type_name}: {e}"
+
+msgid "弹幕消息处理异常持续出现，后续同类异常不再逐条记录（累计 {count} 条）"
+msgstr "弹幕消息处理异常持续出现，后续同类异常不再逐条记录（累计 {count} 条）"
+
+msgid "弹幕数据发送失败（已忽略）: {type_name}: {e}"
+msgstr "弹幕数据发送失败（已忽略）: {type_name}: {e}"
+
+msgid "An error occurred: {masked}"
+msgstr "An error occurred: {masked}"
+
+msgid "sync_req 请求失败: {masked_url} - {type_name}: {e}"
+msgstr "sync_req 请求失败: {masked_url} - {type_name}: {e}"
+
+msgid "Web 模式：录制引擎已因磁盘空间不足停止，Web 面板继续服务"
+msgstr "Web 模式：录制引擎已因磁盘空间不足停止，Web 面板继续服务"
+
+msgid "[{record_name}]等待录制槽位期间检测到停止信号，放弃本轮录制"
+msgstr "[{record_name}]等待录制槽位期间检测到停止信号，放弃本轮录制"
+
+msgid "已清理零字节的直下残留文件: {save_path}"
+msgstr "已清理零字节的直下残留文件: {save_path}"
+
+msgid "签名脚本 {name} 的 SHA256 与钉定值不符（期望 {expected}，实际 {actual}）；若你刚更新过该脚本请同步更新 utils._JS_SHA256_EXPECTED，否则请核查文件是否被篡改"
+msgstr "签名脚本 {name} 的 SHA256 与钉定值不符（期望 {expected}，实际 {actual}）；若你刚更新过该脚本请同步更新 utils._JS_SHA256_EXPECTED，否则请核查文件是否被篡改"

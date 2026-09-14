@@ -64,7 +64,7 @@ class TwitchDanmaku(DanmakuBase):
             on_ready=self._on_ws_ready,
             on_heartbeat=self.heartbeat,
             on_close=self._on_close,
-            on_reconnect=self._on_close,
+            on_reconnect=self._on_reconnect,
             proxy=proxy_addr,
         )
         await self._ws.connect()
@@ -117,13 +117,18 @@ class TwitchDanmaku(DanmakuBase):
             content_match = _PRIVMSG_RE.search(line)
             name_match = _NAME_RE.search(line)
             color_match = _COLOR_RE.search(line)
-            if content_match and name_match and color_match:
-                try:
-                    color_int = int(color_match.group(1), 16)
-                    color = f"#{color_match.group(1)}"
-                except ValueError:
-                    color = "#FFFFFF"
-                    color_int = 0
+            # color 标签是可选项：观众未设置颜色时 Twitch 下发 "color=;"（无 hex 值），
+            # 原实现要求三标签全部命中，未设颜色的观众整条弹幕被静默丢弃（2026-09-12 审查）
+            if content_match and name_match:
+                color = "#FFFFFF"
+                color_int = 0
+                if color_match:
+                    try:
+                        color_int = int(color_match.group(1), 16)
+                        color = f"#{color_match.group(1)}"
+                    except ValueError:
+                        color = "#FFFFFF"
+                        color_int = 0
                 # 纯黑(0x000000)在深色弹幕背景上不可见，统一回退为白色
                 if color_int == 0:
                     color = "#FFFFFF"

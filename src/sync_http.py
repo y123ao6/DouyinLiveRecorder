@@ -25,25 +25,66 @@ import i18n
 JsonType: TypeAlias = None | bool | int | float | str | Sequence["JsonType"] | Mapping[str, "JsonType"]
 
 from . import http_config as config
+from . import utils
 from .logger import logger
 
 # 禁用代理的处理器（本地请求不使用代理）
 no_proxy_handler = urllib.request.ProxyHandler({})
 
-# SSL 上下文配置（禁用证书验证）
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
-
-# 预构建 opener：禁用代理 + 禁用证书验证（ssl_verify=False 时使用）
-_opener_insecure = urllib.request.build_opener(no_proxy_handler, urllib.request.HTTPSHandler(context=ssl_context))
 # 预构建 opener：仅禁用代理，保留默认证书验证（ssl_verify=True 时使用）
 _opener_secure = urllib.request.build_opener(no_proxy_handler)
 
+# ── 安全边界说明（2026-09-12 审查 6.7 / 2026-09-14 F-12 落地，行为保持向后兼容）──
+# 「不校验证书」的 SSLContext 与 opener 改为**按需惰性构造**，不再在 import 时常驻：
+# 模块级常驻 CERT_NONE 上下文意味着「只要 import 本模块，进程里就存在一个不校验的
+# SSLContext」，任何误用（含第三方库走默认上下文的分支）都是一次静默的全局降级。
+# 惰性化后，只有真正走到「本次请求要求跳过校验」的分支才会创建它。
+#
+# 调用面核实（2026-09-14，修正 2026-09-12 审查的风险描述）：
+# sync_req 的 123 处调用点**全部位于 src/spider.py**（平台解析 / 流地址获取），
+# 登录、消息推送（msg_push.py 自建 requests/urllib 调用）、Web 面板均不经本模块；
+# 且控制面开关 http_config.ssl_verify 在生产链路中无任何 set_ssl_verify(False)
+# 调用点（该开关已从「是否启用https录制」解耦，详见 http_config 注释），恒为 True。
+# 因此 CERT_NONE 路径在生产中不可达，风险为**潜在误用面**而非现实暴露面。
+#
+# 仍保留按需降级能力的原因：个别平台 CDN 存在证书链/主机名不匹配（虎牙 TX CDN 等），
+# 用户可能需要为解析请求放行；同时提供 ssl_verify 单次覆盖参数，让凭据类调用点
+# （未来新增的登录 / token 刷新等）可以显式强制校验，不被全局开关拖下水。
+_ssl_context_insecure: ssl.SSLContext | None = None
+_opener_insecure: urllib.request.OpenerDirector | None = None
 
-def _get_opener() -> urllib.request.OpenerDirector:
-    # 按全局 SSL 验证开关选择本地请求 opener
-    return _opener_secure if config.ssl_verify else _opener_insecure
+
+def _get_insecure_context() -> ssl.SSLContext:
+    # 惰性构造 CERT_NONE 上下文（仅在确实需要跳过校验时被调用）
+    global _ssl_context_insecure
+    if _ssl_context_insecure is None:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        _ssl_context_insecure = ctx
+    return _ssl_context_insecure
+
+
+def _get_insecure_opener() -> urllib.request.OpenerDirector:
+    # 惰性构造「禁用代理 + 禁用证书验证」的 opener（仅在确实需要时被调用）
+    global _opener_insecure
+    if _opener_insecure is None:
+        _opener_insecure = urllib.request.build_opener(
+            no_proxy_handler, urllib.request.HTTPSHandler(context=_get_insecure_context())
+        )
+    return _opener_insecure
+
+
+def _resolve_ssl_verify(override: bool | None) -> bool:
+    # 单次请求的证书校验裁决：显式 override 优先（凭据类调用点可强制校验），
+    # 未指定时跟随控制面全局开关（现状语义，向后兼容）。
+    return config.ssl_verify if override is None else override
+
+
+def _get_opener(ssl_verify: bool | None = None) -> urllib.request.OpenerDirector:
+    # 按「本次请求」的 SSL 验证裁决选择本地请求 opener。
+    # ssl_verify=None 表示跟随全局开关（历史行为）；显式传值时以该次调用为准。
+    return _opener_secure if _resolve_ssl_verify(ssl_verify) else _get_insecure_opener()
 
 
 _thread_local = threading.local()
@@ -112,10 +153,14 @@ def sync_req(
     redirect_url: bool = False,
     abroad: bool = False,
     content_encoding: str = "utf-8",
+    ssl_verify: bool | None = None,
 ) -> str:
     # 同步 HTTP 请求函数，支持 GET/POST、代理、重定向、gzip 解压等功能
+    # ssl_verify：本次请求的证书校验覆盖（None=跟随控制面全局开关）。
+    # 凭据类调用点（登录 / token 刷新等）应显式传 True，避免被全局降级波及。
     if headers is None:
         headers = {}
+    verify = _resolve_ssl_verify(ssl_verify)
     resp_str = ""
     try:
         if proxy_addr:
@@ -130,27 +175,29 @@ def sync_req(
                     headers=headers,
                     proxies=proxies,
                     timeout=timeout,
-                    verify=config.ssl_verify,
+                    verify=verify,
                 )
             else:
                 # GET 请求（带代理）
-                response = _session().get(
-                    url, headers=headers, proxies=proxies, timeout=timeout, verify=config.ssl_verify
-                )
+                response = _session().get(url, headers=headers, proxies=proxies, timeout=timeout, verify=verify)
             if redirect_url:
                 return response.url
             resp_str = response.text
         else:
             # 不使用代理的请求
             # 处理请求数据编码
-            if data and not isinstance(data, bytes):
+            # 2026-09-12 审查 6.3：判定由真值（`if data and ...`）改 `is not None`。
+            # 原写法与上方代理分支（第 124 行 `data is not None or json_data is not None`）
+            # 语义相反——data="" / json_data={} 时，配代理走 POST、不配代理静默退化成
+            # GET，调用方只看到空响应且无法归因（async_req 侧已于早前统一为 is not None）。
+            if data is not None and not isinstance(data, bytes):
                 if isinstance(data, dict):
                     # dict 类型转换为 URL 编码
                     data = urllib.parse.urlencode(data).encode(content_encoding)
                 else:
                     # 其他类型转换为字符串再编码
                     data = str(data).encode(content_encoding)
-            if json_data and isinstance(json_data, (dict, list)):
+            if json_data is not None and isinstance(json_data, (dict, list)):
                 # JSON 数据编码
                 data = json.dumps(json_data).encode(content_encoding)
 
@@ -163,12 +210,12 @@ def sync_req(
                     _resp = cast(
                         http.client.HTTPResponse,
                         urllib.request.urlopen(
-                            req, timeout=timeout, context=None if config.ssl_verify else ssl_context
+                            req, timeout=timeout, context=None if verify else _get_insecure_context()
                         ),
                     )
                 else:
                     # 本地请求（使用按全局配置选择的 opener）
-                    _resp = cast(http.client.HTTPResponse, _get_opener().open(req, timeout=timeout))
+                    _resp = cast(http.client.HTTPResponse, _get_opener(ssl_verify).open(req, timeout=timeout))
                 try:
                     if redirect_url:
                         return _resp.url
@@ -200,12 +247,25 @@ def sync_req(
                 raise
             except Exception as e:
                 # 其他错误记录日志
-                logger.error(i18n.tr("An error occurred: {e}", e=e))
+                # 2026-09-12 审查（低危）：异常文本经 mask_credentials 脱敏——
+                # URLError/OSError 的文本常内嵌完整 URL（含 signature/token 查询串），
+                # 直连日志轮转保留多份＝凭据长期落盘（与 async_req 的脱敏口径对齐）。
+                logger.error(
+                    i18n.tr("An error occurred: {masked}", masked=utils.mask_credentials(f"{type(e).__name__}: {e}"))
+                )
                 raise
 
     except Exception as e:
         # 请求失败统一记录并返回空串：错误文本伪装成响应体会被上游误当有效数据解析
-        logger.error(i18n.tr("sync_req 请求失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
+        # 同上：URL 与异常文本统一脱敏后再落日志
+        logger.error(
+            i18n.tr(
+                "sync_req 请求失败: {masked_url} - {type_name}: {e}",
+                masked_url=utils.mask_credentials(url),
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
         resp_str = ""
 
     return resp_str

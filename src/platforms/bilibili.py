@@ -17,7 +17,7 @@ import brotli
 from loguru import logger
 
 import i18n
-from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType
+from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType, spawn_danmaku_task
 from src.ws_client import WsClient
 
 HEADER_LEN = 16
@@ -68,7 +68,7 @@ class BilibiliDanmaku(DanmakuBase):
                 on_ready=self._on_ws_ready,
                 on_heartbeat=self.heartbeat,
                 on_close=self._on_close,
-                on_reconnect=self._on_close,
+                on_reconnect=self._on_reconnect,
                 headers={"cookie": cookie} if cookie else None,
                 max_reconnect=2,
                 reconnect_interval=3.0,
@@ -81,9 +81,14 @@ class BilibiliDanmaku(DanmakuBase):
     # WS 就绪回调：置进房成功标志、触发 on_ready 并异步发送进房包。
     def _on_ws_ready(self) -> None:
         self._session_ok = True
+        # 每次新连接（含断线重连）都须重新过 AUTH：上一连接的 _auth_ok 若不清零，
+        # 重连后的看门狗会误判「已认证」而永不兜底（2026-09-12 审查 H-4 接线时补）
+        self._auth_ok = False
         if self._on_ready:
             self._on_ready()
-        asyncio.ensure_future(self._join_room())
+        # spawn_danmaku_task：裸 ensure_future 的进房协程异常（room_id 非数字/发送失败）
+        # 会静默死亡，改用带异常落盘的调度（2026-09-12 审查）
+        spawn_danmaku_task(self._join_room())
 
     # 异步发送进房请求（uid/roomid/token 等），加入指定直播间。
     async def _join_room(self) -> None:
@@ -109,6 +114,10 @@ class BilibiliDanmaku(DanmakuBase):
             separators=(",", ":"),
         )
         await self._ws.send(self._encode(join_body, action=7))
+        # 2026-09-12 审查 H-4：看门狗此前从未接线（全仓无调用点），「服务器静默不回
+        # AUTH_REPLY、连接保持、心跳照发、0 弹幕且无日志」的软拒绝形态无人兜底，
+        # _auth_ok 也永远不会被置 True；进房包发出即挂看门狗，超时未认证按被拒处理。
+        spawn_danmaku_task(self._auth_watchdog(self._ws))
 
     # 进房认证超时（秒）：AUTH 发出后该时长内未收到 code=0 回应视为被拒/异常
     _AUTH_TIMEOUT = 8.0
@@ -175,8 +184,15 @@ class BilibiliDanmaku(DanmakuBase):
                 break
             try:
                 self._decode_packet(data[offset : offset + packet_len])
-            except Exception:
-                pass  # 单帧解析失败不影响后续/录像
+            except Exception as e:
+                # 单帧解析失败不影响后续/录像，但须留异常类型+帧头 hex 线索，避免「0 弹幕零线索」
+                logger.debug(
+                    i18n.tr(
+                        "[B站弹幕]帧解析异常: {type_name} head={head}",
+                        type_name=type(e).__name__,
+                        head=data[offset : offset + 16].hex(),
+                    )
+                )
             offset += packet_len
 
     # 解码单帧：按 protover 解压，解析心跳回应/弹幕消息并 emit。
@@ -243,8 +259,14 @@ class BilibiliDanmaku(DanmakuBase):
             if len(item) > 2 and item.startswith("{"):
                 try:
                     self._parse_message(json.loads(item))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        i18n.tr(
+                            "[B站弹幕]消息解析异常: {type_name} item={item}",
+                            type_name=type(e).__name__,
+                            item=repr(item[:64]),
+                        )
+                    )
 
     # 解析单条 JSON 弹幕消息（弹幕/SC），提取内容、用户、颜色并 emit。
     def _parse_message(self, obj: dict) -> None:

@@ -67,6 +67,7 @@ except ImportError:
 from . import JS_SCRIPT_PATH, http_config, utils
 from .async_http import async_req
 from .cookie_cache import fetch_cookies as _cache_fetch_cookies
+from .cookie_cache import singleflight as _cache_singleflight
 from .logger import logger, script_path
 from .room import UnsupportedUrlError, get_sec_user_id, get_unique_id, is_user_homepage_url
 from .ttwid import get_ttwid as _shared_get_ttwid
@@ -117,31 +118,39 @@ async def _ensure_kuaishou_did(proxy_addr: OptionalStr = None) -> str:
     # 自动获取快手访客 did/didv（访问快手直播主页时服务器下发），替代硬编码过期凭据。
     # 改经统一 cookie 缓存（src/cookie_cache.fetch_cookies）从快手主页动态获取，
     # 同网址下的其他模块直接复用，避免重复请求触发风控。
+    #
+    # 2026-09-12 审查 H-2：原实现为「with _kuaishou_did_lock: 内 await _cache_fetch_cookies」，
+    # 属锁内 await 反模式——本项目每房间独立线程 + 独立事件循环，持锁协程等待网络期间
+    # 其它房间线程执行到 with 会同步阻塞整个事件循环（多房间冷启动全部串行卡顿）。
+    # 改为经 cookie_cache.singleflight 统一去重：临界区内仅做字典读写，网络拉取在锁外，
+    # 等待者经 future 复用同一份结果（跨循环经 call_soon_threadsafe 交付）。
     global _cached_kuaishou_did
     if _cached_kuaishou_did:
         return _cached_kuaishou_did
-    with _kuaishou_did_lock:
-        if _cached_kuaishou_did:
-            return _cached_kuaishou_did
-        try:
-            cookies_dict = await _cache_fetch_cookies(
-                url="https://live.kuaishou.com/",
-                proxy_addr=proxy_addr,
-                headers={
-                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
-                },
-                timeout=10,
-                fetcher=async_req,  # 传入本模块 async_req，使单测对 src.spider.async_req 打桩仍生效
-            )
-            if isinstance(cookies_dict, dict):
-                did = cookies_dict.get("did", "")
-                didv = cookies_dict.get("didv", "")
-                if did:
-                    _cached_kuaishou_did = f"did={did}; didv={didv}" if didv else f"did={did}"
-                    logger.debug("自动获取快手 did 成功")
-        except Exception as e:
-            logger.warning(i18n.tr("自动获取快手 did 失败: {e}", e=e))
+
+    async def _fetch() -> str:
+        cookies_dict = await _cache_fetch_cookies(
+            url="https://live.kuaishou.com/",
+            proxy_addr=proxy_addr,
+            headers={
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+            },
+            timeout=10,
+            fetcher=async_req,  # 传入本模块 async_req，使单测对 src.spider.async_req 打桩仍生效
+        )
+        if not isinstance(cookies_dict, dict):
+            return ""
+        did = cookies_dict.get("did", "")
+        didv = cookies_dict.get("didv", "")
+        if not did:
+            return ""
+        logger.debug("自动获取快手 did 成功")
+        return f"did={did}; didv={didv}" if didv else f"did={did}"
+
+    got = await _cache_singleflight(key=f"kuaishou_did|{proxy_addr or ''}", factory=_fetch, timeout=10)
+    if isinstance(got, str) and got:
+        _cached_kuaishou_did = got
     return _cached_kuaishou_did
 
 
@@ -149,28 +158,33 @@ async def _ensure_twitch_client_id(proxy_addr: OptionalStr = None) -> str:
     # 从 Twitch 主页动态提取 Web 端公开 Client-Id（替代硬编码值，避免后续变更失效）
     # 该 Client-Id 是 Twitch 网页客户端使用的公共标识，非用户私人凭据，
     # 但仍改为动态提取以避免 Twitch 更换后导致功能失效
+    #
+    # 2026-09-12 审查 H-2：同 _ensure_kuaishou_did，原为锁内 await 反模式，
+    # 改经 cookie_cache.singleflight 去重（锁内零 await）
     global _cached_twitch_client_id
     if _cached_twitch_client_id:
         return _cached_twitch_client_id
-    with _twitch_client_id_lock:
-        if _cached_twitch_client_id:
-            return _cached_twitch_client_id
-        fallback_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
-        try:
-            html = await async_req(
-                url="https://www.twitch.tv/",
-                proxy_addr=proxy_addr,
-                headers={"User-Agent": fallback_ua, "Accept-Language": "en-US"},
-                timeout=10,
-            )
-            html = _get_str_response(html)
-            # Twitch 主页 HTML 中通过 "Client-ID" 字符串内嵌公开客户端标识
-            match = re.search(r'"Client-ID"\s*[:=]\s*"([a-z0-9]{20,})"', html)
-            if match:
-                _cached_twitch_client_id = match.group(1)
-                logger.debug("自动获取 Twitch Client-Id 成功")
-        except Exception as e:
-            logger.warning(i18n.tr("自动获取 Twitch Client-Id 失败: {e}", e=e))
+
+    fallback_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
+
+    async def _fetch() -> str:
+        html = await async_req(
+            url="https://www.twitch.tv/",
+            proxy_addr=proxy_addr,
+            headers={"User-Agent": fallback_ua, "Accept-Language": "en-US"},
+            timeout=10,
+        )
+        html = _get_str_response(html)
+        # Twitch 主页 HTML 中通过 "Client-ID" 字符串内嵌公开客户端标识
+        match = re.search(r'"Client-ID"\s*[:=]\s*"([a-z0-9]{20,})"', html)
+        if not match:
+            return ""
+        logger.debug("自动获取 Twitch Client-Id 成功")
+        return match.group(1)
+
+    got = await _cache_singleflight(key=f"twitch_client_id|{proxy_addr or ''}", factory=_fetch, timeout=10)
+    if isinstance(got, str) and got:
+        _cached_twitch_client_id = got
     return _cached_twitch_client_id
 
 
@@ -221,8 +235,12 @@ def _is_safe_http_url(url: str) -> bool:
     # fetch 的攻击面，但 stream_select 校验和后续解析链路仍会按 URL 触发请求，
     # 收紧 scheme 边界是最低成本的防御）。允许 webcal/ws(s) 等平台专用协议放行
     # （弹幕 wsclient 仍需 ws://）。
-    parsed = urllib.parse.urlsplit(url)
-    return parsed.scheme in ("http", "https", "ws", "wss")
+    #
+    # 2026-09-12 审查 6.3：实现已上移到 src/utils.is_safe_http_url（本函数仅保留
+    # 为薄封装，供既有测试与调用点继续引用）。上移原因——原先定义在此处时，真正
+    # 的请求入口（async_http / sync_http）在依赖链更底层，无法反向 import spider
+    # （循环依赖），导致该函数零生产调用、退化成纸面防御；上移后已接入请求入口。
+    return utils.is_safe_http_url(url)
 
 
 def get_params(url: str, params: str) -> OptionalStr:
@@ -267,9 +285,17 @@ async def get_play_url_list(
     if not isinstance(resp, str):
         return []
     play_url_list: list[str] = []
+    # 2026-09-12 审查（低危）：原只认 "https://" 前缀。部分自建/内网 HLS 源与个别
+    # CDN 的分片清单用 http:// 或协议相对（//host/path）写法，会被整条跳过 →
+    # 多清晰度列表为空，上层回退到单地址、用户选不了画质（表现为「画质下拉只有一项」）。
+    # 改为同时接受 http:// 与 https://，并把 "//host/..." 按清单自身协议补全。
+    _m3u8_scheme = urllib.parse.urlparse(m3u8).scheme or "https"
     for i in resp.split("\n"):
-        if i.startswith("https://"):
-            play_url_list.append(i.strip())
+        line = i.strip()
+        if line.startswith(("https://", "http://")):
+            play_url_list.append(line)
+        elif line.startswith("//"):
+            play_url_list.append(f"{_m3u8_scheme}:{line}")
     if not play_url_list:
         for i in resp.split("\n"):
             if i.strip().endswith("m3u8"):
@@ -696,6 +722,29 @@ async def get_douyin_app_stream_data(
     return room_data
 
 
+def _read_tiktok_guest_cookie() -> str:
+    # TikTok 游客 cookie 的外部覆盖值：优先环境变量，其次 config.ini 的 [Cookie] 段，
+    # 最后回落内置缺省值（F-10：参照 _read_haixiu_token_override 的覆盖模式）。
+    # 背景：内置游客 cookie 仅用于绕过「未登录即拦截」，已随公开仓库分发、会随时间失效；
+    # 提供覆盖入口后，凭据轮换无需改代码重新发布。
+    # 注意：本函数必须定义在 get_tiktok_stream_data 的 @trace_error_decorator **之前**，
+    # 否则会把该装饰器劫持到自己头上（首次提交即踩过，表现为 TikTok 测试的
+    # ConnectionError 不再被装饰器转译成 {"is_live": False} 兜底）。
+    override = os.environ.get("TIKTOK_GUEST_COOKIE", "").strip()
+    if override:
+        return override
+    try:
+        cfg_value = utils.read_ini_value(f"{script_path}/config/config.ini", "Cookie", "tiktok_guest_cookie")
+    except Exception:
+        cfg_value = None
+    if cfg_value and cfg_value.strip():
+        return cfg_value.strip()
+    return (
+        "1%7Cz7FKki38aKyy7i-BC9rEDwcrVvjcLcFEL6QIeqldoy4%7C1761302831%7C6c1461e9f1f980cbe0404c5190"
+        "5177d5d53bbd822e1bf66128887d942c9c3e2f"
+    )
+
+
 @trace_error_decorator
 async def get_tiktok_stream_data(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
@@ -707,9 +756,8 @@ async def get_tiktok_stream_data(
         "referer": "https://www.tiktok.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
         + "Chrome/141.0.0.0 Safari/537.36",
-        "cookie": cookies
-        or "1%7Cz7FKki38aKyy7i-BC9rEDwcrVvjcLcFEL6QIeqldoy4%7C1761302831%7C6c1461e9f1f980cbe0404c5190"
-        + "5177d5d53bbd822e1bf66128887d942c9c3e2f",
+        # F-10：调用方 cookies > 环境变量/config 覆盖 > 内置缺省（见 _read_tiktok_guest_cookie）
+        "cookie": cookies or _read_tiktok_guest_cookie(),
     }
 
     # 最多重试 3 次：TikTok 偶发返回半截 HTML（含 UNEXPECTED_EOF_WHILE_READING 截断标记），
@@ -765,7 +813,7 @@ async def get_kuaishou_stream_data(
     except Exception as e:
         # 用 print 而非 logger：抓取失败必须始终暴露到控制台（即使 logger 被静默/重定向），
         # 否则网络抖动会被静默吞掉、房间永久按「未开播」空转。直接回未开播，主循环下轮重试。
-        print(i18n.tr("Failed to fetch data from {url}.{e}", url=url, e=e))
+        logger.error(i18n.tr("Failed to fetch data from {url}.{e}", url=url, e=e))
         return {"type": 1, "is_live": False}
 
     try:
@@ -783,7 +831,7 @@ async def get_kuaishou_stream_data(
     except (AttributeError, IndexError, json.JSONDecodeError) as e:
         # 只捕获「结构解析」类异常（页面改版/字段缺失/JSON 坏），按未开播返回；
         # 其它异常（如超时已由上层兜住）不在此吞掉，避免把非解析错误也误判成未开播而静默丢失根因。
-        print(i18n.tr("Failed to parse JSON data from {url}. Error: {e}", url=url, e=e))
+        logger.error(i18n.tr("Failed to parse JSON data from {url}. Error: {e}", url=url, e=e))
         return {"type": 1, "is_live": False}
 
     result: dict[str, object] = {"type": 2, "is_live": False}
@@ -795,13 +843,13 @@ async def get_kuaishou_stream_data(
         title = error_type.get("title", "")
         content = error_type.get("content", "")
         error_msg = (title if isinstance(title, str) else "") + (content if isinstance(content, str) else "")
-        print(i18n.tr("Failed URL: {url} Error message: {error_msg}", url=url, error_msg=error_msg))
+        logger.error(i18n.tr("Failed URL: {url} Error message: {error_msg}", url=url, error_msg=error_msg))
         return result
 
     live_stream = cast(dict[str, object], play_list.get("liveStream") or {})
     # liveStream 为空也意味着 IP 被封（非开播态），打印提示后按未开播返回。
     if not live_stream:
-        print("IP banned. Please change device or network.")
+        logger.error("IP banned. Please change device or network.")
         return result
 
     author = cast(dict[str, object], play_list.get("author") or {})
@@ -895,7 +943,9 @@ async def get_kuaishou_stream_data2(
     # 都转去走 get_kuaishou_stream_data（网页 __INITIAL_STATE__ 路径）再试一次；
     # 注意即使本路径已拿到流地址，只要 anchor_name 为空也会触发这次回退，可能重复解析。
     except Exception as e:
-        print(i18n.tr("{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.", e=e, url=url))
+        logger.error(
+            i18n.tr("{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.", e=e, url=url)
+        )
     return await get_kuaishou_stream_data(url, cookies=cookies, proxy_addr=proxy_addr)
 
 
@@ -1098,7 +1148,7 @@ async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> di
         auth = md5(auth + key + sign_str)
         return {"enc_data": enc_key.get("enc_data"), "did": did, "ts": ts, "auth": auth}
     except Exception as e:
-        print(i18n.tr("Get douyu sign params error: {e}", e=e))
+        logger.error(i18n.tr("Get douyu sign params error: {e}", e=e))
         return {}
 
 
@@ -1315,7 +1365,7 @@ async def get_bilibili_room_info(
     except Exception as e:
         # 房间信息抓取失败（房间不存在/风控/网络）一律静默返回空名+未开播，交由主循环下轮重试，
         # 不中断整体监控；anchor_name 用 "" 保证下游拼接标题时不会因 None 而 TypeError。
-        print(e)
+        logger.info(e)
         return {"anchor_name": "", "live_status": False, "room_url": url}
 
 
@@ -1379,7 +1429,7 @@ async def get_bilibili_stream_data(
         json_data = json.loads(json_str)
         # live_status==0 表示未开播（1 为开播），此时 playurl_info 不存在，按未开播返回 None。
         if json_data["data"]["live_status"] == 0:
-            print("The anchor did not start broadcasting.")
+            logger.error("The anchor did not start broadcasting.")
             # stream_list 字段缺失即无可用流，返回 None
             return None
         playurl_info = json_data["data"]["playurl_info"]
@@ -1496,11 +1546,19 @@ def _get_mixin_key(orig: str) -> str:
 
 def _sign_wbi(params: dict[str, str], img_key: str, sub_key: str) -> dict[str, str]:
     # 生成 w_rid 签名：拼接 img_key+sub_key -> mixinKey -> 追加参数并 md5
+    #
+    # 2026-09-12 审查（低危）：原实现直接改写调用方传入的 params（就地插入 wts/w_rid）。
+    # 调用方多处复用同一个字典做「签名前的原始参数」与「签名后的请求参数」，副作用会
+    # 让前者被污染——典型后果是重试/多分支共享同一 dict 时 wts 未刷新导致签名过期失败，
+    # 且这类问题表现为偶发、难复现。改为对副本操作后返回新 dict；同时用 pop 显式剔除
+    # 已存在的 w_rid，避免旧签名残留参与本次计算（原实现无此处理）。
+    signed = dict(params)
+    signed.pop("w_rid", None)
     mixin_key = _get_mixin_key(img_key + sub_key)
-    params["wts"] = str(int(time.time()))
-    query = urllib.parse.urlencode(sorted(params.items()))
-    params["w_rid"] = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
-    return params
+    signed["wts"] = str(int(time.time()))
+    query = urllib.parse.urlencode(sorted(signed.items()))
+    signed["w_rid"] = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
+    return signed
 
 
 # B站 buvid 缓存：设备级标识（非房间级），进程内首次获取/生成后全局复用，
@@ -1594,16 +1652,25 @@ async def get_bilibili_danmaku_info(
     #    e. 随机 UUID 兜底 —— 未注册标识，弹幕服务器 AUTH 会软拒绝；仅保进房包非空，
     #                     被拒后由 invalidate_bili_buvid_cache() 清除，下一轮重新获取。
     # 进房包带空 buvid 会被弹幕服务器硬断连（"no close frame received or sent"），故必须非空。
-    # 锁覆盖取值全程：并发首次调用只打一次 spi/首页；兜底 UUID 同样缓存但标记 is_fallback。
+    #
+    # 2026-09-12 审查 H-2：原实现为「with _bili_buvid_lock: 内含 3 处 await」——
+    # 该锁是不可重入 threading.Lock，本项目「每房间独立线程 + 独立事件循环」下：
+    #   ① 持锁协程 await 网络（最坏 30s+ 重试）期间，其它房间线程执行到 with 会
+    #      同步阻塞其整个事件循环（多房间并发冷启动全部串行卡顿）；
+    #   ② 同一事件循环内两个协程并发进入即互等，构成死锁。
+    # 改为 cookie_cache.singleflight 去重：临界区仅做字典读写，网络请求全在锁外。
+    # 兜底 UUID 仍缓存（is_fallback 标记），与原语义一致。
     global _bili_buvid_cached, _bili_buvid_is_fallback
-    with _bili_buvid_lock:
-        buvid = _bili_buvid_cached
-        if not buvid and cookies:
+
+    async def _fetch_buvid() -> str:
+        # 单条获取链（不含进程缓存层，由 singleflight 负责去重与缓存）
+        b = _bili_buvid_cached
+        if not b and cookies:
             _m = re.search(r"buvid3=([^;\s]+)", str(cookies))
             if _m and _m.group(1).strip():
-                buvid = _m.group(1).strip()
-                logger.debug(i18n.tr("[B站直播]使用 cookie 中的 buvid3: {buvid}", buvid=buvid))
-        if not buvid:
+                b = _m.group(1).strip()
+                logger.debug(i18n.tr("[B站直播]使用 cookie 中的 buvid3: {buvid}", buvid=b))
+        if not b:
             for _attempt in range(2):
                 try:
                     spi_str = await async_req(
@@ -1615,8 +1682,8 @@ async def get_bilibili_danmaku_info(
                         s = spi_data.get("data")
                         if isinstance(s, dict):
                             spi_d = s
-                    buvid = str(spi_d.get("b_3") or spi_d.get("buvid") or "")
-                    if buvid:
+                    b = str(spi_d.get("b_3") or spi_d.get("buvid") or "")
+                    if b:
                         break
                 except Exception as e:
                     if _attempt == 0:
@@ -1629,39 +1696,61 @@ async def get_bilibili_danmaku_info(
                         logger.warning(
                             i18n.tr("[B站直播]buvid 获取失败: {type_name}: {e}", type_name=type(e).__name__, e=e)
                         )
-        if not buvid:
+        if not b:
             # spi 两跳仍空（风控）：改走首页 Set-Cookie（真实注册标识，cookie_cache 内置
             # TTL 缓存与并发去重；UA 需浏览器态——headers 已是 Firefox UA）
             try:
                 home_cookies = await _cache_fetch_cookies(
                     "https://www.bilibili.com/", proxy_addr=proxy_addr, headers=headers, fetcher=async_req
                 )
-                buvid = str(home_cookies.get("buvid3", "")).strip()
-                if buvid:
-                    logger.debug(i18n.tr("[B站直播]spi 失败，从首页 Set-Cookie 获取 buvid3: {buvid}", buvid=buvid))
+                b = str(home_cookies.get("buvid3", "")).strip()
+                if b:
+                    logger.debug(i18n.tr("[B站直播]spi 失败，从首页 Set-Cookie 获取 buvid3: {buvid}", buvid=b))
             except Exception as e:
                 logger.debug(
                     i18n.tr(
                         "[B站直播]首页 Set-Cookie 获取 buvid3 失败: {type_name}: {e}", type_name=type(e).__name__, e=e
                     )
                 )
-        if not buvid:
+        return b
+
+    if _bili_buvid_cached:
+        buvid = _bili_buvid_cached
+    else:
+        # 兜底 UUID 也须走 singleflight：否则并发下每个协程各自生成不同 UUID，
+        # 后写覆盖先写，_bili_buvid_cached 抖动。
+        # factory 返回 (buvid, is_fallback) 元组：判据随结果一起缓存，避免调用方
+        # 再用「值是否形似 UUID」这类启发式反推（真实 buvid3 也可能长得像 UUID）
+        async def _fetch_with_fallback() -> tuple[str, bool]:
+            b = await _fetch_buvid()
+            if b:
+                return b, False
+            b = str(uuid.uuid4())
+            logger.debug(
+                i18n.tr("[B站直播]spi/首页均无 buvid，使用生成兜底 buvid3（未注册，AUTH 可能被拒）: {buvid}", buvid=b)
+            )
+            return b, True
+
+        got = await _cache_singleflight(
+            key=f"bili_buvid3|{proxy_addr or ''}",
+            factory=_fetch_with_fallback,
+            timeout=10,
+            cache_falsy=True,  # 兜底 UUID 恒非空；置 True 仅为防御 factory 返回空串
+        )
+        if isinstance(got, tuple) and len(got) == 2 and isinstance(got[0], str) and got[0]:
+            buvid, _bili_buvid_is_fallback = got[0], bool(got[1])
+        else:
+            # 等待超时/拉取异常：退化为本地兜底，不写缓存（下轮重试）
             buvid = str(uuid.uuid4())
             _bili_buvid_is_fallback = True
-            logger.debug(
-                i18n.tr(
-                    "[B站直播]spi/首页均无 buvid，使用生成兜底 buvid3（未注册，AUTH 可能被拒）: {buvid}", buvid=buvid
-                )
-            )
-        else:
-            _bili_buvid_is_fallback = False
-        _bili_buvid_cached = buvid
+    _bili_buvid_cached = buvid
 
     # 4) getDanmuInfo（wbi 签名）；无 wbi 则跳过签名，由调用方 -352 风控日志体现
     danmu_params: dict[str, str] = {"id": real_room_id, "type": "0", "web_location": "444.8"}
     if img_key and sub_key:
         try:
-            _sign_wbi(danmu_params, img_key, sub_key)
+            # _sign_wbi 返回签名后的**新** dict（不就地修改入参，详见其注释）
+            danmu_params = _sign_wbi(danmu_params, img_key, sub_key)
         except Exception as e:
             logger.warning(i18n.tr("[B站直播]wbi 签名失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
     try:
@@ -1934,7 +2023,7 @@ async def login_sooplive(username: str, password: str, proxy_addr: OptionalStr =
         cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
         return cookie_str
     except Exception as e:
-        print(i18n.tr("An error occurred during login: {e}", e=e))
+        logger.error(i18n.tr("An error occurred during login: {e}", e=e))
         raise Exception(
             "sooplive login failed, please check if the account password in the configuration file is correct."
         )
@@ -2186,7 +2275,13 @@ async def get_sooplive_stream_data(
         bandwidth_pattern = _BANDWIDTH_PATTERN
         bandwidth_list = bandwidth_pattern.findall(resp)
         url_to_bandwidth = {purl: int(bandwidth) for bandwidth, purl in zip(bandwidth_list, play_url_list)}
-        play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth[purl], reverse=True)
+        # 2026-09-12 审查 6.3：原为 url_to_bandwidth[purl] 无兜底。zip 会在
+        # bandwidth_list 与 play_url_list 较短的一侧截断，两者长度不一致时（部分
+        # 清晰度行缺 BANDWIDTH 或格式变体）尾部 URL 不在字典里 → KeyError，
+        # 被外层 trace_error_decorator 吞成"未开播"，表现为明明在播却漏录。
+        # 同文件 2110 行 zip(play_url_list) 分支已有长度守卫的正确写法，此处对齐；
+        # 取 0 兜底使缺带宽的 URL 排序落到末尾，不至于整条链路失败。
+        play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth.get(purl, 0), reverse=True)
         return play_url_list
 
     # anchor_name 为空说明接口未返回公开直播间信息（成人房/未登录/房间异常），需按 data.code
@@ -2197,7 +2292,7 @@ async def get_sooplive_stream_data(
             # 处理平台登录认证
             cookie = await login_sooplive(cast(str, username), cast(str, password), proxy_addr=proxy_addr)
             if cookie and "AuthTicket=" in cookie:
-                print("sooplive platform login successful! Starting to fetch live streaming data...")
+                logger.info("sooplive platform login successful! Starting to fetch live streaming data...")
                 return cookie
             return None
 
@@ -2224,12 +2319,12 @@ async def get_sooplive_stream_data(
         # SOOP 网关错误码：-3001 直播刚结束；-3002 成人房需 19+ 登录；-3004 需登录态 cookie；
         # -6001 房间地址错误。-3002/-3004 都触发登录流程（-3004 优先复用已传入 cookie，避免重复登录）。
         if json_data["data"]["code"] == -3001:
-            print("sooplive live stream failed to retrieve, the live stream just ended.")
+            logger.error("sooplive live stream failed to retrieve, the live stream just ended.")
             return result
 
         elif json_data["data"]["code"] == -3002:
-            print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
-            print(
+            logger.error("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
+            logger.warning(
                 "Attempting to log in to the sooplive live streaming platform with your account and password, "
                 "please ensure it is configured."
             )
@@ -2244,7 +2339,7 @@ async def get_sooplive_stream_data(
             else:
                 raise RuntimeError("sooplive login failed, please check if the account and password are correct")
         elif json_data["data"]["code"] == -6001:
-            print("error message：Please check if the input sooplive live room address " "is correct.")
+            logger.error("error message：Please check if the input sooplive live room address " "is correct.")
             return result
     # result==1 且已有 anchor_name：公开可观看的直播间。hls_authentication_key 即 CDN 的 aid 票据，
     # 必须作为 ?aid= 拼到 m3u8 地址后，缺失该票据 CDN 会直接 403（同样的票据也用于登录态的 AID）。
@@ -2567,7 +2662,7 @@ async def login_flextv(username: str, password: str, proxy_addr: OptionalStr = N
     url = "https://www.ttinglive.com/v2/api/auth/signin"
 
     try:
-        print("Logging into FlexTV platform...")
+        logger.info("Logging into FlexTV platform...")
         cookie_result = await async_req(
             url, proxy_addr=proxy_addr, headers=headers, json_data=data, return_cookies=True, timeout=20
         )
@@ -2584,11 +2679,11 @@ async def login_flextv(username: str, password: str, proxy_addr: OptionalStr = N
             cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
             return cookie_str
         else:
-            print("Please check if the FlexTV account and password in the configuration file are correct.")
+            logger.warning("Please check if the FlexTV account and password in the configuration file are correct.")
             return None
 
     except Exception as e:
-        print(i18n.tr("FlexTV login request exception: {e}", e=e))
+        logger.error(i18n.tr("FlexTV login request exception: {e}", e=e))
         raise Exception(
             "FlexTV login failed, please check if the account and password in the configuration file are correct."
         )
@@ -2669,11 +2764,11 @@ async def get_flextv_stream_data(
         # 此时必须走登录流程换 cookie，否则拿不到流；下方触发 login_flextv 重试整页抓取。
         login_need = "message" in channel_data and "로그인후 이용이 가능합니다." in channel_data.get("message")
         if login_need:
-            print(
+            logger.error(
                 "FlexTV live stream retrieval failed [not logged in]: 19+ live streams are only available for "
                 "logged-in adults."
             )
-            print(
+            logger.warning(
                 "Attempting to log in to the FlexTV live streaming platform, please ensure your account and "
                 "password are correctly filled in the configuration file."
             )
@@ -2683,7 +2778,7 @@ async def get_flextv_stream_data(
                 )
             new_cookies = await login_flextv(username, password, proxy_addr=proxy_addr)
             if new_cookies:
-                print("Logged into FlexTV platform successfully! Starting to fetch live streaming data...")
+                logger.info("Logged into FlexTV platform successfully! Starting to fetch live streaming data...")
             else:
                 raise RuntimeError("TTingLive(原Flextv) login failed")
             cookies = new_cookies if new_cookies else cookies
@@ -2726,7 +2821,9 @@ async def get_flextv_stream_data(
                 anchor_name = anchor_name_match.group(1)
                 result["anchor_name"] = anchor_name
     except Exception as e:
-        print("Failed to retrieve data from FlexTV live room", e)
+        # F-11：print → logger（多参数改用字符串拼接，不用 f-string——f-string 会被
+        # i18n 扫描器判为「应改用 i18n.tr」）
+        logger.error("Failed to retrieve data from FlexTV live room " + str(e))
     result["new_cookies"] = new_cookies
     return result
 
@@ -2823,7 +2920,7 @@ async def get_looklive_stream_url(
         result["is_live"] = True
         # liveType==1 是纯音频直播：无视频流可录，仅提示不取 play_url
         if json_data["data"]["roomInfo"]["liveType"] == 1:
-            print("Look live currently only supports audio live streaming, not video live streaming!")
+            logger.info("Look live currently only supports audio live streaming, not video live streaming!")
         else:
             play_url_list = json_data["data"]["roomInfo"]["liveUrl"]
             live_title = json_data["data"]["roomInfo"]["title"]
@@ -2879,10 +2976,12 @@ async def login_popkontv(
             else:
                 raise Exception(f"popkontv login failed, {json_data.get('statusMsg', 'unknown error')}")
     except httpx.HTTPStatusError as e:
-        print(i18n.tr("HTTP status error occurred during login: {status_code}", status_code=e.response.status_code))
+        logger.error(
+            i18n.tr("HTTP status error occurred during login: {status_code}", status_code=e.response.status_code)
+        )
         raise
     except Exception as e:
-        print(i18n.tr("An exception occurred during popkontv login: {e}", e=e))
+        logger.error(i18n.tr("An exception occurred during popkontv login: {e}", e=e))
         raise
 
 
@@ -3039,11 +3138,11 @@ async def get_popkontv_stream_url(
         # token 失效/不存在：接口返回 HTTP 400 或 body 内 statusCd E5000，均表示 Bearer 凭据过期，
         # 触发登录刷新（新 token 长度必须为 640，否则视为登录失败）。登录后复用新 partnerCode 重试。
         if "HTTP Error 400" in json_str or 'statusCd":"E5000' in json_str:
-            print(
+            logger.error(
                 "Failed to retrieve popkontv live stream [token does not exist or has expired]: Please log in to "
                 "watch."
             )
-            print(
+            logger.warning(
                 "Attempting to log in to the popkontv live streaming platform, please ensure your account "
                 "and password are correctly filled in the configuration file."
             )
@@ -3052,14 +3151,14 @@ async def get_popkontv_stream_url(
                     "popkontv login failed! Please enter the correct account and password for the "
                     "popkontv platform in the config.ini file."
                 )
-            print("Logging into popkontv platform...")
+            logger.info("Logging into popkontv platform...")
             new_access_token, new_partner_code = await login_popkontv(
                 username=username, password=password, proxy_addr=proxy_addr, code=current_partner_code
             )
             # 新 token 长度固定 640 字节是登录接口的真实返回特征，偏离即说明登录未真正成功。
             # 新 token 长度固定 640 是登录接口真实返回特征，偏离即说明登录未真正成功
             if new_access_token and len(new_access_token) == 640:
-                print("Logged into popkontv platform successfully! Starting to fetch live streaming data...")
+                logger.info("Logged into popkontv platform successfully! Starting to fetch live streaming data...")
                 headers["Authorization"] = f"Bearer {new_access_token}"
                 new_token = f"Bearer {new_access_token}"
                 current_partner_code = new_partner_code
@@ -3071,7 +3170,8 @@ async def get_popkontv_stream_url(
         status_msg = json_data["statusMsg"]
         # L000A：未实名/未手机验证会员，服务端拒绝提供流；L0000：成功拿到 HLS；L0001：首请求需二次确认。
         if json_data["statusCd"] == "L000A":
-            print("Failed to retrieve live stream source,", status_msg)
+            # F-11：print → logger（多参数用字符串拼接，避免 f-string 触发 i18n 门禁）
+            logger.error("Failed to retrieve live stream source, " + str(status_msg))
             raise RuntimeError(
                 "You are an unverified member. After logging into the popkontv official website, "
                 "please verify your mobile phone at the bottom of the 'My Page' > 'Edit My "
@@ -3149,7 +3249,8 @@ async def login_twitcasting(
             cookie = utils.dict_to_cookie_str(cookie_dict)
             return cookie
     except Exception as e:
-        print("TwitCasting login error,", e)
+        # F-11：print → logger（多参数用字符串拼接，避免 f-string 触发 i18n 门禁）
+        logger.error("TwitCasting login error, " + str(e))
     return None
 
 
@@ -3202,7 +3303,7 @@ async def get_twitcasting_stream_url(
     try:
         to_login = get_params(url, "login")
         if to_login == "true":
-            print("Attempting to log in to TwitCasting...")
+            logger.info("Attempting to log in to TwitCasting...")
             new_cookie = await login_twitcasting(
                 account_type=cast(str, account_type),
                 username=cast(str, username),
@@ -3215,13 +3316,13 @@ async def get_twitcasting_stream_url(
                     "TwitCasting login failed, please check if the account password in the "
                     "configuration file is correct"
                 )
-            print("TwitCasting login successful! Starting to fetch data...")
+            logger.info("TwitCasting login successful! Starting to fetch data...")
             headers["Cookie"] = new_cookie
         anchor_name, live_status, live_title = await get_data(headers)
     # 解析阶段抛 AttributeError（页面结构变化/受限，正则 group 落在 None 上）即视为需登录，
     # 这里统一回落到登录流程再抓一次；登录失败则向上抛 RuntimeError。
     except AttributeError:
-        print("Failed to retrieve TwitCasting data, attempting to log in...")
+        logger.error("Failed to retrieve TwitCasting data, attempting to log in...")
         new_cookie = await login_twitcasting(
             account_type=cast(str, account_type),
             username=cast(str, username),
@@ -3234,7 +3335,7 @@ async def get_twitcasting_stream_url(
                 "TwitCasting login failed, please check if the account and password in the "
                 "configuration file are correct"
             )
-        print("TwitCasting login successful! Starting to fetch data...")
+        logger.info("TwitCasting login successful! Starting to fetch data...")
         headers["Cookie"] = new_cookie
         anchor_name, live_status, live_title = await get_data(headers)
 
@@ -3627,9 +3728,13 @@ async def get_liveme_stream_url(
             url = match_url.group(1)
 
     room_id = url.split("/index.html")[0].rsplit("/", maxsplit=1)[-1]
-    with open(f"{JS_SCRIPT_PATH}/liveme.js", encoding="utf-8") as f:
-        liveme_js = f.read()
-    sign_data = execjs.compile(liveme_js).call("sign", room_id, f"{JS_SCRIPT_PATH}/crypto-js.min.js")
+    # 2026-09-12 审查 6.3：原为同步读文件 + execjs.compile().call()（内部起 node
+    # 子进程并阻塞），在 async 协程内会冻结本房间的整个事件循环；且每次调用都
+    # 重复读文件 + compile。改 utils.run_js_async（to_thread + 按路径缓存编译产物）
+    sign_data = cast(
+        dict[str, object],
+        await utils.run_js_async(f"{JS_SCRIPT_PATH}/liveme.js", "sign", room_id, f"{JS_SCRIPT_PATH}/crypto-js.min.js"),
+    )
     lm_s_sign = sign_data.pop("lm_s_sign")
     tongdun_black_box = sign_data.pop("tongdun_black_box")
     platform = sign_data.pop("os")
@@ -3687,14 +3792,33 @@ async def get_huajiao_sn(
         nickname = json_data["author"]["nickname"]
         live_id = _safe_extract_id(url)
         return nickname, sn, uid, live_id
-    except Exception:
-        # 花椒直播间地址不固定（短链会失效），解析失败时直接把该 URL 在配置文件里注释掉（加 # 前缀），
+    except Exception as e:
+        # 花椒直播间地址不固定（短链会失效），确认失效时把该 URL 在配置文件里注释掉（加 # 前缀），
         # 避免主循环反复重试无效地址；这是少数会写回配置文件的分支，副作用需留意。
+        #
+        # 2026-09-12 审查 6.3：原为裸 except Exception 无条件写回——瞬时网络故障
+        # （超时 / 连接被拒 / DNS 失败 / CDN 5xx）同样会被判定成「地址失效」，
+        # 把用户配置里的房间永久注释掉，重启也不会恢复（配置已被改写）。
+        # 改为分类处理：仅「确认拿到响应但内容表明地址失效」（页面无 feed 数据、
+        # 字段缺失、JSON 解析失败）才写回；网络/传输类异常不写回，交由上层重试。
+        _transient = isinstance(e, (httpx.HTTPError, httpx.TimeoutException, OSError, asyncio.TimeoutError))
+        if _transient:
+            logger.warning(
+                i18n.tr(
+                    "[花椒直播]解析失败（疑似瞬时网络故障，未改动配置文件）: {type_name}: {e}",
+                    type_name=type(e).__name__,
+                    e=e,
+                )
+            )
+            raise RuntimeError(
+                "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
+                "the anchor's homepage address for recording."
+            ) from e
         utils.replace_url(f"{script_path}/config/URL_config.ini", old=url, new="#" + url)
         raise RuntimeError(
             "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
             "the anchor's homepage address for recording."
-        )
+        ) from e
 
 
 async def get_huajiao_user_info(
@@ -3767,7 +3891,7 @@ async def get_huajiao_stream_url_app(
 
     # errmsg 非空或 creatime 缺失即地址失效，返回 None 触发上层回退主页地址
     if json_data["errmsg"] or not json_data["data"].get("creatime"):
-        print(
+        logger.error(
             "Failed to retrieve live room data, the Huajiao live room address is not fixed, please manually change "
             "the address for recording."
         )
@@ -3815,7 +3939,7 @@ async def get_huajiao_stream_url(
 
         # 重定向落到花椒首页说明短链失效，提示换主页地址按未开播返回
         if url.rstrip("/") == "https://www.huajiao.com":
-            print(
+            logger.error(
                 "Failed to retrieve live room data, the Huajiao live room address is not fixed, please manually change "
                 "the address for recording."
             )
@@ -4278,7 +4402,9 @@ def _read_haixiu_token_override(is_haixiu: bool) -> str:
     if override:
         return override
     try:
-        cfg_value = utils.read_config_value(f"{script_path}/config/config.ini", "Cookie", cfg_key)
+        # F-16：`read_ini_value`（按文件路径读取、不写回），勿与 config_io 的
+        # `read_config_value(parser, section, option, default)` 混淆
+        cfg_value = utils.read_ini_value(f"{script_path}/config/config.ini", "Cookie", cfg_key)
     except Exception:
         return ""
     return (cfg_value or "").strip()
@@ -4311,10 +4437,12 @@ async def get_haixiu_stream_url(
             access_token = "s7FUbTJ%252BjILrR7kicJUg8qr025ZVjd07DAnUQd8c7g%252Fo4OH9pdSX6w%253D%253D"
 
     params = {"accessToken": access_token, "tku": "3000006", "c": "10138100100000", "_st1": int(time.time() * 1000)}
-    with open(f"{JS_SCRIPT_PATH}/haixiu.js", encoding="utf-8") as f:
-        haixiu_js = f.read()
     # 用 haixiu.js 对参数做签名得到 _ajaxData1（前端 crypto-js 逻辑迁移到 node 执行）。
-    ajax_data = execjs.compile(haixiu_js).call("sign", params, f"{JS_SCRIPT_PATH}/crypto-js.min.js")
+    # 2026-09-12 审查 6.3：同 LiveMe，改 utils.run_js_async（to_thread + 编译缓存）
+    ajax_data = cast(
+        str,
+        await utils.run_js_async(f"{JS_SCRIPT_PATH}/haixiu.js", "sign", params, f"{JS_SCRIPT_PATH}/crypto-js.min.js"),
+    )
 
     params["accessToken"] = urllib.parse.unquote(urllib.parse.unquote(access_token))
     params["_ajaxData1"] = ajax_data
@@ -4647,7 +4775,9 @@ async def get_shopee_stream_url(
     json_data = json.loads(json_str)
     # session 接口无 data 即拉取失败，提示换地址按未开播返回
     if not json_data.get("data"):
-        print("Fetch shopee live data failed, please update the address of the live broadcast room and try again.")
+        logger.error(
+            "Fetch shopee live data failed, please update the address of the live broadcast room and try again."
+        )
         return result
     uid = json_data["data"]["session"]["uid"]
     anchor_name = json_data["data"]["session"]["nickname"]
@@ -4691,7 +4821,7 @@ async def get_youtube_stream_url(
     result: dict[str, object] = {"anchor_name": "", "is_live": False}
     # 无 videoDetails 说明未登录/无播放数据，提示配置 cookie 按未开播返回
     if "videoDetails" not in json_data:
-        print("Error: Please log in to YouTube on your device's webpage and configure cookies in the config.ini")
+        logger.error("Error: Please log in to YouTube on your device's webpage and configure cookies in the config.ini")
         return result
     result["anchor_name"] = json_data["videoDetails"]["author"]
     live_status = json_data["videoDetails"].get("isLive")
@@ -5027,15 +5157,15 @@ async def get_migu_stream_url(
             # 加密因子与 sv 版本号由脚本端从官网接口获取（失败回退播放器内置
             # 默认因子），此处不再拼接固定 sv=10010（该值已过期）。
             try:
-                result = subprocess.run(
-                    ["node", f"{JS_SCRIPT_PATH}/migu.js", url],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=30,
-                )
-                return result.stdout.strip()
-            except subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError:
+                # 2026-09-12 审查 6.3：原为同步 subprocess.run（timeout=30），
+                # 在 async 协程内会冻结本房间的整个事件循环最长 30 秒（该房间
+                # 其它协程全部停摆）。改 utils.run_node_script_async（to_thread）
+                signed = await utils.run_node_script_async(f"{JS_SCRIPT_PATH}/migu.js", url, timeout=30)
+                return signed
+            except Exception:
+                # 咪咕签名失败/超时统一转 ProgramError，由上层装饰器按平台错误处理，
+                # 不向调用方泄漏 CalledProcessError。to_thread 内抛出的异常会被
+                # 原样传播（asyncio.to_thread 不包装异常类型），故此处宽泛捕获。
                 raise ProgramError("Failed to execute JS code. Please check if the Node.js environment")
 
         real_source_url = await _get_dd_calcu(source_url)

@@ -91,6 +91,16 @@ _SCRIPT_TIMEOUT_SECONDS = 300.0
 def run_script(command: str) -> None:
     # 执行自定义脚本命令
     # 使用 shlex.split 安全解析命令字符串，避免 shell=True 命令注入
+    # 2026-09-12 审查 6.1：
+    # - 保留 posix=True（默认）以正确解析 "python -c \"...\"" 之类含双引号/单引号的命令；
+    #   posix=False 会把外层双引号当字面字符（实测 shlex.split('python -c \"print()\"', posix=False)
+    #   → ['python', '-c', '"print()"']），让 -c 收到带引号的整段，破坏行为
+    # - Windows 反斜杠路径（"C:\\path\\to.exe"）被 POSIX 规则当转义符拆分的问题，
+    #   当前记录为已知限制：要求用户在自定义脚本中用正斜杠（"C:/path/to.exe"）或
+    #   PowerShell 原生语法（& "C:\path\to.exe"）；彻底修复需重写拆分器，超出本审查范围
+    # - stdout/stderr decode 默认按 utf-8 严格匹配，Windows 自定义脚本输出常含 GBK
+    #   字节（如 PowerShell 写入的中文），抛 UnicodeDecodeError 被 except Exception
+    #   兜底误报"命令解析失败"。改 errors="replace" 兜底，保证非致命字符可显示为 �
     try:
         args = shlex.split(command)
         process = subprocess.Popen(
@@ -109,8 +119,8 @@ def run_script(command: str) -> None:
                     command=command,
                 )
             )
-        stdout_decoded = stdout.decode("utf-8")
-        stderr_decoded = stderr.decode("utf-8")
+        stdout_decoded = stdout.decode("utf-8", errors="replace")
+        stderr_decoded = stderr.decode("utf-8", errors="replace")
         if stdout_decoded.strip():
             print(stdout_decoded)
         if stderr_decoded.strip():

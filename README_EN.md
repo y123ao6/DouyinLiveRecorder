@@ -46,7 +46,7 @@ Upstream project: [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLi
 
 ```bash
 # Clone the project
-git clone https://github.com/ihmily/DouyinLiveRecorder.git
+git clone https://github.com/y123ao6/DouyinLiveRecorder.git
 cd DouyinLiveRecorder
 
 # Install dependencies (uv is recommended)
@@ -613,7 +613,7 @@ Four translation catalogs are built in, probed at load time in the order `gettex
 
 ```bash
 # 1. Clone the project
-git clone https://github.com/ihmily/DouyinLiveRecorder.git
+git clone https://github.com/y123ao6/DouyinLiveRecorder.git
 cd DouyinLiveRecorder
 
 # 2. Edit the config file
@@ -784,7 +784,7 @@ brew install ffmpeg
 
 ```bash
 # Ubuntu/Debian
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
 sudo apt-get install -y nodejs
 
 # macOS
@@ -845,6 +845,34 @@ This project is open-sourced under the [MIT License](LICENSE). Stars and Forks a
 
 ## ⏳ Changelog
 
+### v4.2.0 (2026-09-12 ~ 2026-09-14) — full code-review fix (~120 items: security/concurrency/platform) + Douyu "SRT only, no video" root cause & HLS segment-layer false-green probe + source-selection hardening + start_record command-construction / platform-dispatch single-source-of-truth refactor + repo metadata sync & four-language catalog consistency fix
+
+> This release (v4.2.0, 2026-09-12 ~ 09-14) is a comprehensive fix-and-hardening cycle spanning security, concurrency, and the platform layer plus quality gates. Core fixes: ① root-caused and fixed the "only danmaku SRT produced, no video file" issue on Douyu and similar platforms — the HLS playlist layer always returns 200, but the edge node serving the media segments returns 404 for all of them, so ffmpeg pulls zero media segments and produces zero bytes; the danmaku pipeline depends only on `room_id` and is decoupled from the video pipeline, so the SRT is still written. Added the HLS segment-layer probe `_probe_hls_segment` (decoupling "playlist 200" from "recordable") and three directions of source-selection hardening (config fallback / observability / same-origin FLV fallback). ② Collapsed the five inline ffmpeg `command=[]` lists in `start_record` into a single source of truth and replaced the 53-level `elif` chain in platform dispatch with a dispatch table, with zero behavioral difference (byte-level golden snapshots + item-by-item dispatch snapshots). ③ Closed `CODE_REVIEW_FIX_1` (F-01~F-25, 22 landed + 3 deferred) and the 09-12 full code review (~120 items: SHA256 pinning, atomic writes, zip-bomb protection, singleflight concurrency, Douyu packet-boundary / Bilibili watchdog / Shopee fixes). ④ Synced repo metadata (pyproject exclude dirs / .gitignore / .dockerignore / AGENTS.md) from a single source of truth, and fixed 21 entries in en_GB mistakenly filled with Traditional Chinese, re-aligning the four-language catalogs to 594 entries each. **No breaking changes** (all runtime semantics preserved). See [CODE_WIKI.md](CODE_WIKI.md) for full root-cause analysis and verification.
+
+**🐛 Fixes**
+- **Douyu "SRT only, no video" root cause + HLS segment-layer false-green probe**: the HLS playlist layer always returns 200, but the media segments land on another edge node and all return 404 → ffmpeg pulls zero media segments and produces zero bytes; the danmaku pipeline depends only on `room_id` and is decoupled from the video pipeline, so the SRT is still written. Added `_probe_hls_segment()` (playlist GET → follow master variant → send `Range bytes=0-0` probe to the **last segment**; segment 4xx/5xx explicit rejection → unreachable "false green", 200/206 → reachable; conservatively pass when no segment can be parsed), wired into `_validate_stream_url` to decouple "playlist 200" from "recordable".
+- **Source-selection hardening (config fallback / observability / same-origin candidate)**: `_hls_selection_config()` (reads `hls_collection_enabled`/`hls_collection_exclude_platforms` via `getattr(main, ..., default)`, defaults reachable, tolerates comma strings, no longer `AttributeError`-crashes on missing/type errors); `_same_origin_flv()` (matches by path before `?`, treats `.m3u8`↔`.flv` as equivalent, finds the same-token FLV as fallback when all HLS segments die); `_log_source_choice()` (single-line "source-selection conclusion" log covering fallback/hit/no-usable-source paths).
+- **Full code review (09-12, ~120 items)**: H-1 SHA256 pinning (`ffmpeg_install`/`node_install` `_sha256_of_file`/`_check_or_record_zip_sha256`, Lanzou `FFMPEG_LANZOU_SHA256`); C-1 Web blacklist bypass (`req.key.strip()` + `_DANGEROUS_CONFIG_KEYS_FOLDED`); zip-bomb protection (single file 4GB / cumulative 8GB / 100x ratio); H-2 singleflight isolating locks held across `await` + GUI 6.2 fixes (SMTP header injection `_reject_smtp_newline`, session id, quality-table dedup); URL-scheme whitelist `is_safe_http_url`, JS/subprocess via `run_js_async`/`run_node_script_async`; C-2 Douyu packet boundary `offset+=full_len+4`; C-3 only_fans=False; H-4 Bilibili watchdog `spawn_danmaku_task(self._auth_watchdog(self._ws))`; H-5 Shopee clear-path finally `_not_record_prefix`; H-3 `websockets>=14.0`; H-6 atomic writes (`config_io._atomic_write_text` + `web_config._config_write_lock`); standalone two-stage termination (terminate→wait(3s)→kill); 6 ffmpeg paths add `record_finished=True` to trigger the 30s quick check; `data={}` treated as a valid body.
+- **CODE_REVIEW_FIX_1 batch (F-01~F-25)**: main.py F-02 removed dead imports (`converts_m4a`/`segment_video` functions kept in `video_postprocess.py`), F-03 direct-download stream `finally` only cleans zero-byte residue; gui.py F-04~F-09 session-id closure / quality-table dedup / crash sink forbids `import src` / local atomic write (no `import src.config_io` to avoid triggering GUI-process main init); msg_push.py F-24 guarded ntfy real push; spider.py F-10 `_read_tiktok_guest_cookie` must be inserted above `@trace_error_decorator` (inserting code between "@decorator+def" hijacks the decorator), F-11 multi-arg print→logger concat, F-19 ab_sign random by default; web_config.py F-23 inline-comment quote priority + atomic write; utils.py F-16 `read_ini_value` no write-back + F-25 JS-signature-script hash pinning (`_JS_SHA256_EXPECTED`, 7 scripts, warn by default, `DLR_JS_STRICT_HASH=1` rejects).
+- **F-13 Douyin signature kept unencoded**: cross-checked upstream `dart_simple_live` and confirmed it concatenates directly without `encodeComponent`, matching this repo byte-for-byte; blindly adding `quote()` would make this client the only fingerprint outlier on the whole network. Pinned the "concatenate as-is, no percent-encoding" contract with `tests/test_douyin_signature_encoding.py` (4 cases).
+- **F-12 sync_http SSL scope narrowed**: `CERT_NONE` context and opener changed from import-time globals to lazy construction; added `sync_req(..., ssl_verify=None)` for per-request override (propagated through both urllib and requests paths). Corrected the original risk description — all `sync_req` call sites live in `src/spider.py`, and the production path has no `set_ssl_verify(False)`, so the CERT_NONE path is unreachable in production.
+- **check_annotations violation fixed**: the triple-quoted docstring on `class _Cap:` in `tests/test_start_record_command_golden.py` was changed to a `#` line comment (conforming to the "no docstring" rule); also fixed a `main.py` monitor-only branch that wrongly wrote `main.recording_enabled` (module-level `main` is the entry function, not the module object, so it always raised `AttributeError`).
+
+**✨ New Features / Improvements**
+- **start_record command construction & platform dispatch single source of truth (F-01)**: the five inline `command=[]` lists were collapsed into module-level `_build_ffmpeg_output_args` / `_build_ffmpeg_input_args` / `_build_record_output_path` / `_ffmpeg_network_tuning`, with all container mapping going through `SEGMENT_FORMAT_BY_SUFFIX` (no raw literals); the 53-level `elif` chain in `_resolve_platform_stream` became the `_PLATFORM_RESOLVERS` dispatch table (one `_resolve_<host>()` per platform, sharing `_PlatformResolveContext`), so adding a platform = append a handler + one table entry. Also fixed two behavior drifts (TS non-segmented unconditionally converting to MP4; the "preparing to record" hint printing the non-segmented filename).
+- **JS-signature-script hash pinning (F-25)**: `get_compiled_js` reads raw bytes and compares against the `_JS_SHA256_EXPECTED` baseline, warning by default and rejecting execution when `DLR_JS_STRICT_HASH=1`, closing the runtime surface for tampered signature scripts.
+- **F-14 protobuf compatibility guardrail**: this environment has no protoc, so `douyin_pb2.py` is not regenerated (generated file is DO NOT EDIT); instead a CI-fronted `tests/test_proto_runtime_compat.py` asserts "declared range has an upper bound / runtime satisfies the range / runtime not older than gencode / importable and PushFrame round-trips", turning red immediately on 8.x and prompting a same-generation protoc regen first.
+
+**🛠️ Repo Maintenance & Quality Gates**
+- **pyproject exclude dirs single-source completion**: `logs`/`backup_config` were previously only in some tools — now completed across black `.exclude`, isort `extend_skip`, mypy `exclude`, basedpyright `exclude`, and coverage `omit`, all with a unified "runtime-product dirs (maintained with .gitignore/.dockerignore)" comment; `.coveragerc-concurrency`'s omit aligned to match.
+- **.gitignore / .dockerignore globbing**: removed per-filename entries for now-missing files like `PERF_REVIEW_2026-08-28.md` in favor of three glob groups `PERF_REVIEW_*.md`/`CODE_REVIEW_*.md`/`DIAGNOSIS_*.md`; .dockerignore gained `*.jsonl`. AGENTS.md gained the `.gitignore`/`.dockerignore` entries and the `logs/`/`downloads/`/`backup_config/` runtime dirs plus the root doc `CODE_REVIEW_FIX_1.md`.
+- **Four-language catalog consistency fix**: fixed 21 en_GB entries whose values were mistakenly Traditional Chinese (7 danmaku-parse errors + 14 ffmpeg/Node install SHA256 prompts), re-filled with British English per the "en_GB differs from en_US only in spelling" rule; verified all four catalogs `zh_CN(.mo)`/`en_US`/`en_GB`/`zh_TW` at **594 entries** each with zero key-set differences, no Chinese residue in en_US/en_GB, no untranslated entries in zh_TW; `zh_CN.mo` recompiled (595 entries), `scripts/compile_po.py --check` passes byte-level sync.
+- **Repo metadata sync**: `AGENTS.md` / `docker-compose.yaml` example version `4.1.0`→`4.2.0`; `config/config.ini` gained `tiktok_guest_cookie = ` under `[Cookie]` (F-10 config-override slot); requirements.txt and pyproject dependencies verified identical line-by-line (incl. `protobuf>=6.31.1,<8` upper bound and `websockets>=14.0`).
+
+**🧪 Tests & Verification**
+- Full `pytest` **974 passed / 2 skipped / 0 failed** (climbing 909→929→944→974); frontend `node --test tests/frontend/*.mjs` 6 passed; `tests/test_stream_select.py` gained 15 cases (segment probe + hardening), `tests/test_platform_dispatch.py` 16 cases, `test_douyin_signature_encoding.py` 4 cases, golden-snapshot `test_start_record_command_golden.py` 20 cases.
+- `black --check --line-length 120 --target-version py314 .` 134 files green; `isort --check-only` green; `scripts/check_annotations.py` 0 violations (avg density 22.1%); `scripts/compile_po.py --check` in sync; `scripts/extract_i18n_strings.py` 0 runtime-missing; `scripts/check_version.py` PASS; mypy/basedpyright 0 error on changed files.
+
 ### v4.1.0 (2026-09-10 ~ 2026-09-11) — P0 fixes for missing ffmpeg `-reconnect*` values and HLS infinite reconnect (live recording yields subtitles but no video) / 28 code-review fixes / 8 decision + 4 machine-validation items / migration of 242 parameterized logs to i18n.tr / Web-panel narrow-viewport fix / four-language catalog completion
 
 > This release (v4.1.0, 2026-09-10 ~ 09-11) fixes two P0 defects in the recording pipeline: ① moving the ffmpeg `-reconnect*` options before `-i` dropped the boolean value `1`, so real recording failed at input open with exit code -22; ② `-reconnect_at_eof 1` with an HLS(m3u8) input reconnects **infinitely at the playlist layer**, so the hls demuxer never pulls a single media segment — live recording looked like "only the danmaku SRT was produced, no video file". Also shipped 28 code-review fixes, the remaining 8 production-decision + 4 machine-validation items (hls.js pinning / TLS split-stream / audio-container alignment / `gui_legacy.py` removal / danmaku SRT off-loaded off the event loop / i18n `tr()` API, etc.), a full migration of 242 parameterized logs from f-string to `i18n.tr`, the Web-panel narrow-viewport fix, and an eight-file metadata sync plus four-language catalog completion (521 → 539 → 544 keys). **No breaking changes** (all recording/danmaku/network/push runtime semantics preserved). See [CODE_WIKI.md](CODE_WIKI.md) for full root-cause analysis and verification.
@@ -868,6 +896,8 @@ This project is open-sourced under the [MIT License](LICENSE). Stars and Forks a
 **🧪 Tests & Verification**
 - Full `pytest` **907 passed / 2 skipped / 0 warnings** (climbing 870 → 899 → 902 → 907); `tests/test_ffmpeg_reconnect_args.py` gained a third invariant class (AST-asserting the m3u8 guard exists at every definition point in main.py + standalone).
 - `scripts/extract_i18n_strings.py`: 0 missing, zero four-language key-set differences; `scripts/compile_po.py --check` in sync with `.po` (545 entries); `mypy` / `basedpyright` 0 error; `black --check` / `isort --check-only` / `scripts/check_annotations.py` / `scripts/check_version.py` all green.
+
+<details><summary>Click to expand more historical versions</summary>
 
 ### v4.0.9.4 (2026-09-03 ~ 2026-09-06) — HLS capture exclusion list / quality-option add-drop & inline switching / P0 segmented-container mismatch fix / packaging defect fix / repo-wide comment completion & metadata sync
 
@@ -1180,8 +1210,6 @@ This project is open-sourced under the [MIT License](LICENSE). Stars and Forks a
 - **Defect fixes**: `trace_error_decorator` sync decorator misused on 71 async functions causing error capture to fail; `asyncio.run()` causing httpx cross-event-loop reuse issues; multiple IndexError/KeyError/type errors.
 - **Credential cleanup**: hardcoded expired credentials changed to auto-fetch (Douyin ttwid, Kuaishou did, Twitch Client-Id, etc.).
 - **Build/deps**: Dockerfile upgraded to Node.js 22 LTS, non-root run; added `pydantic>=2.0.0` dependency declaration; repo-wide type-check (Pyright/Pyrefly/basedpyright) cleanup.
-
-<details><summary>Click to expand more historical versions</summary>
 
 ### v4.0.7 (2025-10-24)
 

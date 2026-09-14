@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import os
 import shutil
 import sys
 import tokenize
@@ -255,8 +256,71 @@ def check_conventions(root: Path, min_density: float) -> int:
     return len(problems)
 
 
+def _reject_dangerous_baseline(baseline: Path) -> str | None:
+    # 2026-09-12 审查 6.7：--snapshot 会先 shutil.rmtree(baseline) 再重建。
+    # 误传系统根目录 / 用户主目录 / 仓库根 / 祖先目录时，rmtree 会先递归删除
+    # 整个目录树——不可逆数据丢失，且发生在本函数「建立快照」这一看似只读的
+    # 动作里，用户极难预期。这里做防呆：命中即拒绝执行并返回错误说明。
+    resolved = baseline.resolve()
+    # 文件系统根与各盘符根（Windows: C:\ 等）
+    if resolved == resolved.parent:
+        return f"拒绝：基线目录是文件系统根 -> {resolved}"
+    # 用户主目录
+    try:
+        home = Path.home().resolve()
+    except OSError, RuntimeError:
+        home = None
+    if home is not None and (resolved == home or home in resolved.parents):
+        return f"拒绝：基线目录位于用户主目录内 -> {resolved}"
+    # 当前工作目录与其祖先（含仓库根）：快照目录应是其子目录而非祖先
+    try:
+        cwd = Path.cwd().resolve()
+    except OSError:
+        cwd = None
+    if cwd is not None and (resolved == cwd or resolved in cwd.parents):
+        return f"拒绝：基线目录是当前工作目录或其祖先 -> {resolved}"
+    # 系统目录（Windows / POSIX 常见）。刻意不含 Path(os.sep)——在 Windows 上
+    # Path("\\").resolve() 会得到「当前盘符根」（如 D:\），任何绝对路径都在其下，
+    # 会把 .workbuddy/ast-baseline 这类合法的工作区子目录一并误拒（首次实现踩过）。
+    # 盘符根/文件系统根已由上方 `resolved == resolved.parent` 覆盖。
+    if os.name == "nt":
+        system_roots: list[Path] = [
+            Path("C:\\Windows"),
+            Path("C:\\Program Files"),
+            Path("C:\\Program Files (x86)"),
+            Path("C:\\Users"),
+        ]
+    else:
+        system_roots = [
+            Path("/etc"),
+            Path("/usr"),
+            Path("/var"),
+            Path("/bin"),
+            Path("/sbin"),
+            Path("/System"),
+            Path("/Library"),
+        ]
+    for sys_root in system_roots:
+        try:
+            sr = sys_root.resolve()
+        except OSError:
+            continue
+        if resolved == sr or sr in resolved.parents:
+            return f"拒绝：基线目录是系统目录或其祖先 -> {resolved}"
+    # 相对路径必须至少有一层父目录（拒绝 "." / ".."）
+    if not resolved.parts or len(resolved.parts) < 2:
+        return f"拒绝：基线目录层级过浅 -> {resolved}"
+    return None
+
+
 def take_snapshot(root: Path, baseline: Path) -> int:
     # 模式二：建立基线快照，供后续等价性校验使用
+    # 删除前先防呆：rmtree 不可逆，误传根目录 = 整盘数据丢失
+    danger = _reject_dangerous_baseline(baseline)
+    if danger is not None:
+        print(danger, file=sys.stderr)
+        print("提示：快照目录应形如 .workbuddy/ast-baseline 之类的工作区子目录。", file=sys.stderr)
+        return 1
     if baseline.exists():
         shutil.rmtree(baseline)
     count = 0

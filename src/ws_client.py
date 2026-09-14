@@ -12,6 +12,14 @@ from typing import Awaitable, Callable, Optional, Union, cast
 
 import websockets
 
+import i18n
+
+from .logger import logger
+
+# 单次连接内"毒消息"（处理抛异常的帧）的最大逐条记日志条数：
+# 超出后只记一次汇总，避免同型异常把日志刷满、掩盖其它真实问题。
+_POISON_LOG_LIMIT = 5
+
 
 # 根据 url 生成默认 SSL 上下文：wss:// 返回放宽到 @SECLEVEL=1 的 SSLContext 以兼容老套件，ws:// 返回 None。
 def _default_ssl_context(url: str) -> Optional[ssl.SSLContext]:
@@ -83,6 +91,9 @@ class WsClient:
             # 重连时切换备用地址（如有）
             if self._reconnect_count > 0 and self._backup_url:
                 url = self._backup_url
+            # 本次连接内的"毒消息"计数（每次成功建连重置：换地址/重连后重新计数，
+            # 避免一次历史风暴永久压制后续真实告警的日志可见性）
+            _poison_count = 0
             try:
                 async with websockets.connect(
                     url,
@@ -102,7 +113,34 @@ class WsClient:
                         async for data in ws:
                             if self._stopped:
                                 break
-                            self._on_message(data)
+                            # 2026-09-12 审查（低危）：单条"毒消息"隔离。
+                            # 原实现让 _on_message 的异常直接冒泡到外层 except →
+                            # 触发整条连接重建；若某条消息恒定解析失败（平台协议变体、
+                            # 畸形帧），重连后服务端重放同一条 → 无限重连风暴
+                            # （max_reconnect 快速耗尽、CPU 与日志被刷满、弹幕永久不可用）。
+                            # 单帧解析失败只丢该帧并记日志，连接保持——与各平台
+                            # decode_message 内部的 debug 兜底构成两级防御。
+                            try:
+                                self._on_message(data)
+                            except Exception as e:
+                                _poison_count += 1
+                                if _poison_count <= _POISON_LOG_LIMIT:
+                                    logger.warning(
+                                        i18n.tr(
+                                            "弹幕消息处理异常（已丢弃该帧，连接保持）: {type_name}: {e}",
+                                            type_name=type(e).__name__,
+                                            e=e,
+                                        )
+                                    )
+                                elif _poison_count == _POISON_LOG_LIMIT + 1:
+                                    # 超限后降级为不再逐条记，避免日志被同型异常刷满
+                                    logger.warning(
+                                        i18n.tr(
+                                            "弹幕消息处理异常持续出现，后续同类异常不再逐条记录（累计 {count} 条）",
+                                            count=_poison_count,
+                                        )
+                                    )
+                                continue
                     finally:
                         hb_task.cancel()
                         try:
@@ -151,15 +189,19 @@ class WsClient:
                     pass
                 self._ws = None
 
-    # 异步发送一帧数据 data（bytes 或 str）：未连接则直接返回，发送加锁串行化且异常忽略，无返回值。
+    # 异步发送一帧数据 data（bytes 或 str）：未连接则直接返回，发送加锁串行化，异常记日志后忽略，无返回值。
     async def send(self, data: Union[bytes, str]) -> None:
         if self._ws is None:
             return
         async with self._send_lock:
             try:
                 await self._ws.send(data)
-            except Exception:
-                pass
+            except Exception as e:
+                # 2026-09-12 审查（低危）：原为裸 except: pass——发送失败（连接已断、
+                # 帧过大被拒、编码错误）完全无声，表现为「进房包发了但永远收不到弹幕」
+                # 且无任何线索可查。至少留一条 debug；不重抛是刻意的——send 多由
+                # on_ready 等同步回调经 _send_nowait 触发，重抛会打断收包主循环。
+                logger.debug(i18n.tr("弹幕数据发送失败（已忽略）: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
     # 同步版发送：把 send(data) 作为任务丢进事件循环，立即返回不等待结果（供 on_ready 等同步回调使用）。
     def send_nowait(self, data: Union[bytes, str]) -> None:

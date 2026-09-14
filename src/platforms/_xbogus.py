@@ -42,15 +42,20 @@ def _encode_base64(data: bytes) -> str:
     #
     #    dart: alphabetLookup[standardAlphabet.codeUnitAt(v)] == xbogusAlphabet[v]，
     #    即每组 6 bit 值 v 输出 xbogusAlphabet[v]。曾误用按 ASCII 码建的查表导致全 0（NUL）。
+    #
+    # 2026-09-12 审查 6.4：原实现无条件取 data[i+1] / data[i+2]，输入长度非 3 的倍数时
+    # 末组越界抛 IndexError（签名链路上游长度随 query 变化，不是固定值）。
+    # 按标准 base64 尾部规则处理：余 1 字节补 '=='、余 2 字节补 '='。
     out = []
-    for i in range(0, len(data), 3):
+    n = len(data)
+    for i in range(0, n, 3):
         b0 = data[i]
-        b1 = data[i + 1]
-        b2 = data[i + 2]
+        b1 = data[i + 1] if i + 1 < n else 0
+        b2 = data[i + 2] if i + 2 < n else 0
         out.append(XBOGUS_ALPHABET[(b0 >> 2) & 0x3F])
         out.append(XBOGUS_ALPHABET[((b0 << 4) | (b1 >> 4)) & 0x3F])
-        out.append(XBOGUS_ALPHABET[((b1 << 2) | (b2 >> 6)) & 0x3F])
-        out.append(XBOGUS_ALPHABET[b2 & 0x3F])
+        out.append(XBOGUS_ALPHABET[((b1 << 2) | (b2 >> 6)) & 0x3F] if i + 1 < n else "=")
+        out.append(XBOGUS_ALPHABET[b2 & 0x3F] if i + 2 < n else "=")
     return "".join(out)
 
 

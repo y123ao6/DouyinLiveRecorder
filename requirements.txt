@@ -55,8 +55,9 @@ pydantic>=2.13.4           # 请求模型校验（FastAPI 依赖，代码直接�
 # src/platforms/ 各平台采集器 + src/proto/ 协议解码），并非构建期依赖。
 # 缺失会导致：venv 安装后 web.py 启动报 ModuleNotFoundError（douyin_pb2 导入链），
 # 且弹幕采集分支因无法导入而整体失效（2026-08 工作日志已确认需补装）。
-websockets>=12.0          # 弹幕 WebSocket 客户端（src/ws_client.py；支持 proxy=None 直连）
-protobuf>=6.31.1 # 抖音弹幕协议解码（src/proto/douyin_pb2.py，protoc 生成模块）
+websockets>=14.0          # 弹幕 WebSocket 客户端（src/ws_client.py；additional_headers/proxy 参数为 14.0+ API，
+                         # 装到 12.x/13.x 时 connect() 直接 TypeError 且被重连循环吞掉，表现为弹幕永远连不上）
+protobuf>=6.31.1,<8 # 抖音弹幕协议解码（src/proto/douyin_pb2.py，protoc 生成模块）。上限 <8：该生成文件由 protoc 25.x（gencode 4.25.3）产出，跨大版本升级 runtime 存在 gencode 兼容窗口外突然失效的风险（FIX_1 F-14）；升级 runtime 前须先用同代 protoc 重新生成并回归弹幕用例
 brotli>=1.2.0 # B站弹幕解压（src/platforms/bilibili.py，protover=3 需 brotli 解压）
 
 # ---------- 国际化（i18n）----------

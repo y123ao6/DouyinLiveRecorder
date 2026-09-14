@@ -185,6 +185,27 @@ def main() -> None:
     if not web_cfg["web_show_console"]:
         _enter_background_mode(logs_dir, host, port)
 
+    # 不安全绑定防护（C1）：未启用认证时拒绝监听非回环地址，防止局域网内未授权访问
+    # （文件下载/配置读写）。需显式设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 才放行。
+    #
+    # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-22）：本检查块**上移**到录制引擎线程与
+    # uvicorn 实例创建之前。原位置在 server 构造之后、serve() 之前——那时录制引擎
+    # 线程（配置热加载/调度器/日志归档线程）与托盘都已启动，检查一旦拒绝启动，
+    # 走的是 `sys.exit(1)`：daemon 线程虽随进程退出，但在此之前它们已经读取配置、
+    # 初始化调度器并可能改写日志，「拒绝启动」的语义并不干净（日志里会留下一次
+    # 完整的引擎启动痕迹，排障时容易误判成「启动成功过」）。
+    # 上移后：任何初始化之前就判定，拒绝即零副作用退出。
+    if not web_cfg["web_auth_enable"] and not _is_loopback_host(host):
+        allow_insecure = os.environ.get("DOUYIN_WEB_ALLOW_INSECURE", "").strip().lower() in ("1", "true", "yes")
+        if not allow_insecure:
+            print(i18n.tr("[web] ❌ 拒绝启动: 未启用 Web 认证时不允许监听非回环地址 ({host})。请二选一:", host=host))
+            print("      1. config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password；")
+            print("      2. 或设置 web_host = 127.0.0.1 仅限本机访问。")
+            print("      如确需在无认证状态暴露到局域网，请设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 后重启（不推荐）。")
+            sys.exit(1)
+        print("[web] ⚠️ 警告: Web 面板监听非回环地址且未启用认证，局域网内任何人均可访问。")
+        print("      建议在 config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password。")
+
     # Web 模式默认不自动开启录制：录制引擎线程保持运行（配置热加载/调度器就绪），
     # 但不拉起任何房间线程，由面板「开始录制」按钮经 POST /api/recording/toggle 手动触发。
     # CLI/GUI 直跑不受影响（recording_enabled 默认 True）
@@ -221,18 +242,7 @@ def main() -> None:
 
     print(i18n.tr("[web] Web 管理面板启动中: http://{host}:{port}", host=host, port=port))
     print(i18n.tr("[web] 认证: {web_auth_enable}", web_auth_enable="开启" if web_cfg["web_auth_enable"] else "关闭"))
-    # 不安全绑定防护（C1）：未启用认证时拒绝监听非回环地址，防止局域网内未授权访问
-    # （文件下载/配置读写）。需显式设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 才放行。
-    if not web_cfg["web_auth_enable"] and not _is_loopback_host(host):
-        allow_insecure = os.environ.get("DOUYIN_WEB_ALLOW_INSECURE", "").strip().lower() in ("1", "true", "yes")
-        if not allow_insecure:
-            print(i18n.tr("[web] ❌ 拒绝启动: 未启用 Web 认证时不允许监听非回环地址 ({host})。请二选一:", host=host))
-            print("      1. config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password；")
-            print("      2. 或设置 web_host = 127.0.0.1 仅限本机访问。")
-            print("      如确需在无认证状态暴露到局域网，请设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 后重启（不推荐）。")
-            sys.exit(1)
-        print("[web] ⚠️ 警告: Web 面板监听非回环地址且未启用认证，局域网内任何人均可访问。")
-        print("      建议在 config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password。")
+    # 不安全绑定检查已上移至引擎线程启动之前（见上方 F-22 注释）
 
     # 阻塞运行；托盘「退出程序」或 Ctrl+C 会将 should_exit 置真，serve() 优雅返回。
     # server.serve() 为 async 协程，必须用 asyncio.run 驱动事件循环真正运行，

@@ -23,6 +23,7 @@ import i18n
 
 from .async_http import async_req
 from .cookie_cache import fetch_cookies as _cache_fetch_cookies
+from .cookie_cache import singleflight as _cache_singleflight
 from .logger import logger
 
 OptionalStr = str | None
@@ -93,29 +94,32 @@ async def _fetch_ttwid(proxy_addr: OptionalStr = None) -> str:
 async def get_ttwid(proxy_addr: OptionalStr = None) -> str:
     # 统一读取入口：命中缓存直接返回；未命中则加锁只拉取一次，其余并发调用等待复用
     # 获取优先级：已有缓存 > 本地配置文件中的 ttwid > 自动从抖音网站获取
+    #
+    # 2026-09-12 审查 H-2：原实现为「_ttwid_lock 跨越 await _fetch_ttwid 持有」。
+    # 本项目每房间独立线程 + 独立事件循环：持锁协程 await 网络（最坏 10s+ 重试）期间，
+    # 其它房间线程执行到 acquire() 会**同步阻塞其整个事件循环线程**，多房间并发冷
+    # 启动全部串行卡顿；等待者拿到锁后 owner 已失败时又会各自重发请求。
+    # 改为 cookie_cache.singleflight：临界区仅做字典读写，网络拉取在锁外，等待者
+    # 经 future 复用同一份结果（跨循环经 call_soon_threadsafe 交付），彻底消除
+    # 「跨房间阻塞」与「等待者重复请求」两个问题。
     global _cached_ttwid
     if _cached_ttwid:
         return _cached_ttwid
-    # 非阻塞抢占：抢到锁的线程负责获取，其余线程等待其完成
-    if not _ttwid_lock.acquire(blocking=False):
-        # 抢不到锁 = 已有 owner 在拉取。原写法是「等待后若缓存仍为空，就在锁外直接
-        # _fetch_ttwid」——多个等待者会同时发起请求，正是本模块要消除的
-        # 「重复请求触发风控」。改为阻塞重新取锁，再走下方统一的二次检查：
-        # owner 成功时直接复用缓存；owner 失败时由本线程接管（仍串行，不会并发）。
-        _ttwid_lock.acquire()
-    try:
-        # 二次检查：等待锁期间可能已被其他线程填充
-        if _cached_ttwid:
-            return _cached_ttwid
-        # 优先使用本地配置文件中手动填写的 ttwid
-        cfg = _read_config_ttwid()
-        if cfg:
-            _cached_ttwid = cfg
-            logger.debug("使用配置文件中的 ttwid")
-            return _cached_ttwid
+
+    # 配置优先：用户手填 ttwid 属本地确定值，不进 singleflight（无网络、无竞争必要）
+    cfg = _read_config_ttwid()
+    if cfg:
+        _cached_ttwid = cfg
+        logger.debug("使用配置文件中的 ttwid")
+        return _cached_ttwid
+
+    async def _fetch() -> str:
         return await _fetch_ttwid(proxy_addr)
-    finally:
-        _ttwid_lock.release()
+
+    got = await _cache_singleflight(key=f"douyin_ttwid|{proxy_addr or ''}", factory=_fetch, timeout=10)
+    if isinstance(got, str) and got:
+        _cached_ttwid = got
+    return _cached_ttwid
 
 
 def warmup_ttwid(proxy_addr: OptionalStr = None) -> None:

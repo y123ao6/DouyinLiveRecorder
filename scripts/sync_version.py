@@ -83,6 +83,14 @@ def check_all(version: str) -> bool:
         file_ok = True
         for pattern, replacement in patterns:
             fmt_replacement = replacement.format(version=version)
+            # 2026-09-12 审查 6.7：先判命中再判等。原实现只看 `re.sub 结果 != 原文`
+            # ——正则一旦失配（文件改版导致锚点文本变化），re.sub 返回原文本，
+            # 判定分支走进"已一致"，门禁静默变绿：版本号明明没同步却报 OK，
+            # 恰在需要报警的时刻失效。
+            if re.search(pattern, content) is None:
+                print(f"    pattern 未命中（正则已失配，请更新 SYNC_TARGETS）: {pattern}")
+                file_ok = False
+                break
             new_content = re.sub(pattern, fmt_replacement, content, count=1)
             if new_content != content:
                 file_ok = False

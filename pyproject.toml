@@ -1,6 +1,6 @@
 [project]
 name = "DouyinLiveRecorder"
-version = "4.1.0"
+version = "4.2.0"
 description = "支持抖音、TikTok、YouTube、快手等60+平台的直播录制工具，支持循环录制、多人录制、消息推送"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -54,11 +54,15 @@ dependencies = [
     "uvicorn[standard]>=0.51.0",
     "python-multipart>=0.0.32",
     "pydantic>=2.13.4",
-    "websockets>=12.0",
+    # 弹幕 WS 客户端：additional_headers/proxy 为 websockets 14.0+ API，下界须钉 14.0
+    # （12/13.x 时 connect() 直接 TypeError 且被重连循环吞掉，弹幕永远连不上）
+    "websockets>=14.0",
     # 弹幕（src/collector.py 工厂 + src/platforms/ 各平台采集器 + src/proto/ 协议解码）
     # 运行时依赖：protobuf 解析抖音弹幕协议、brotli 解压 B站弹幕。
     # 下界与 requirements.txt 严格保持一致（运行时必需，缺失会导致弹幕采集分支失效）。
-    "protobuf>=6.31.1",
+    # F-14：加 <8 上限——douyin_pb2.py 由 protoc 25.x 生成（gencode 4.25.3），
+    # 跨大版本升级 runtime 有 gencode 兼容窗口外失效风险；升级前须同代 protoc 重新生成
+    "protobuf>=6.31.1,<8",
     "brotli>=1.2.0",
     # i18n YAML 翻译目录支持（i18n/zh_TW.yaml；缺失时仅损失该格式，JSON/gettext 不受影响）
     "PyYAML>=6.0.3",
@@ -127,8 +131,10 @@ exclude = '''
     | \.pyc
     | node
     | ffmpeg
+    # 运行期产物目录（录制文件 / 日志 / 配置备份；均已在 .gitignore、.dockerignore 同源忽略）
     | downloads
     | logs
+    | backup_config
     # 第三方/工具生成目录（非项目代码，不纳入格式化；与 .gitignore/.dockerignore 同源维护）
     | \.agents
     | \.qoder
@@ -155,7 +161,10 @@ known_first_party = ["src", "i18n"]
 extend_skip = [
     "node",
     "ffmpeg",
+    # 运行期产物目录（与 .gitignore/.dockerignore 同源维护）
     "downloads",
+    "logs",
+    "backup_config",
     ".agents",
     ".qoder",
     ".workbuddy",
@@ -182,7 +191,10 @@ ignore_missing_imports = true
 exclude = [
     "node",
     "ffmpeg",
+    # 运行期产物目录（与 .gitignore/.dockerignore 同源维护）
     "downloads",
+    "logs",
+    "backup_config",
     "typings",
     "__pycache__",
     "\\.mimosa",
@@ -222,6 +234,10 @@ omit = [
     "*/__pycache__/*",
     "*/node/*",
     "*/ffmpeg/*",
+    # 运行期产物目录（与 .gitignore/.dockerignore 同源维护）
+    "*/downloads/*",
+    "*/logs/*",
+    "*/backup_config/*",
     "*/.mimosa/*",
     "*/.qoder/*",
     "*/.agents/*",
@@ -272,7 +288,10 @@ exclude = [
     "**/typings",
     "**/node",
     "**/ffmpeg",
+    # 运行期产物目录（与 .gitignore/.dockerignore 同源维护）
     "**/downloads",
+    "**/logs",
+    "**/backup_config",
     "**/build",
     "**/dist",
     "**/__pycache__",

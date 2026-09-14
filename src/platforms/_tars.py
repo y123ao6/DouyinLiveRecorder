@@ -35,7 +35,10 @@ class TarsInputStream:
         typ = b & 0x0F
         tag = (b & 0xF0) >> 4
         if tag == 15 and self._pos + 1 < len(self._data):
-            tag += self._data[self._pos + 1]
+            # 官方 Tars 语义：头字节高4位为 15 时，tag 由下一字节整体替换（非累加）。
+            # 2026-09-12 审查：原 tag += 写法在 tag≥15 字段上读出错误 tag，
+            # 后续字段全部错位（虎牙当前 tag≤6 未触发，前向兼容修正）。
+            tag = self._data[self._pos + 1]
         return typ, tag
 
     # 消费并返回下一个字段头 (type, tag)；tag==15 时再吃一个字节作为扩展 tag。
@@ -45,7 +48,8 @@ class TarsInputStream:
         typ = b & 0x0F
         tag = (b & 0xF0) >> 4
         if tag == 15:
-            tag += self._data[self._pos]
+            # 同 _peek_field：扩展 tag 为替换语义（非累加）
+            tag = self._data[self._pos]
             self._pos += 1
         return typ, tag
 
