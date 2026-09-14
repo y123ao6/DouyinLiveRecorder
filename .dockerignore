@@ -41,13 +41,15 @@ LICENSE
 CODE_WIKI.md
 CODE_WIKI_EN.md
 AGENTS.md
+# 审查 / 排查记录与开发期笔记（仅开发期参考，运行时无需）：
+# 2026-09-14 同步——原逐文件名列举的 bili_danmuku_proxy.md / danmaku_check.md / todo.md
+# 与 PERF_REVIEW_2026-08-28.md 均已从工作区移除，逐文件名维护会持续腐化；
+# 改为通配模式，新增同类根目录文档自动落入排除，无需再改本文件。
 CODE_CHANGES.md
 TRAE_AGENT_CODE_WIKI.md
-PERF_REVIEW_2026-08-28.md
-# 根目录开发 / 排查笔记（弹幕代理决策、弹幕审查、进度清单），仅开发期参考，不打入镜像
-bili_danmuku_proxy.md
-danmaku_check.md
-todo.md
+PERF_REVIEW_*.md
+CODE_REVIEW_*.md
+DIAGNOSIS_*.md
 
 # ---------- Docker 相关（避免自嵌套；.env 由 compose 运行时加载，不打入镜像）----------
 .dockerignore
@@ -144,6 +146,7 @@ i18n/**/compile_po.py
 *.temp
 *.bak
 *.log
+*.jsonl   # 运行日志（logs/danmaku_monitor.jsonl 等），与下方 logs/ 目录排除互补
 *.isorted
 # 过程性探针 / 调试残留（非源码，与 .gitignore 同源维护）
 *.pyc_probe_tmp
