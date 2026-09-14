@@ -141,7 +141,9 @@ def load_catalog_keys() -> dict[str, set[str]]:
     keys = {"zh_CN(po)": set(parse_keys(compile_po)) - {""}}
     for lang in ("en_US", "en_GB"):
         keys[f"{lang}.json"] = set(json.loads((ROOT / "i18n" / f"{lang}.json").read_text(encoding="utf-8-sig")))
-    import yaml
+    # PyYAML 是可选依赖且无类型存根：与 i18n.py 一致，显式忽略 mypy 的
+    # import-untyped，避免要求额外安装 types-PyYAML（本项目不把 PyYAML 当硬依赖）
+    import yaml  # type: ignore[import-untyped]
 
     keys["zh_TW.yaml"] = set(yaml.safe_load((ROOT / "i18n" / "zh_TW.yaml").read_text(encoding="utf-8-sig")))
     return keys
