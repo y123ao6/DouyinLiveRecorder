@@ -35,6 +35,41 @@ def _hermetic_danmaku_hub(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clean_credential_caches() -> None:
+    # 凭据缓存进程级隔离：src/cookie_cache 的 _cookie_cache 与 _generic_cache 是模块级
+    # 全局字典，跨用例残留会让「打桩后重新拉取」的断言命中上一条用例的值，表现为
+    # 「单独跑通过、整包跑失败」。2026-09-12 审查 H-2 把快手 did / Twitch Client-Id /
+    # B站 buvid3 / 抖音 ttwid 四处去重统一到 singleflight 后，残留面从 1 个缓存扩大到
+    # 2 个，必须逐用例清理（yield 前后各清一次，覆盖用例内写入的下游污染）。
+    # clear() 已同时清 cookie 与 generic 两份缓存。
+    #
+    # 另外三处「模块级 _cached_* 兜底变量」与 singleflight 缓存是两套独立状态：
+    # singleflight 命中即返回，模块变量仅在调用方成功时回写；只清一边会让另一边
+    # 继续提供旧值，故一并重置。
+    from src.cookie_cache import clear as _clear
+
+    def _reset() -> None:
+        _clear()
+        try:
+            import src.spider as _spider
+        except Exception:
+            return
+        _spider._cached_kuaishou_did = ""
+        _spider._cached_twitch_client_id = ""
+        _spider._bili_buvid_cached = ""
+        _spider._bili_buvid_is_fallback = False
+        try:
+            import src.ttwid as _ttwid
+        except Exception:
+            return
+        _ttwid._cached_ttwid = ""
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
 def _pin_identity_translation(monkeypatch: pytest.MonkeyPatch) -> None:
     # 冻结翻译为「恒等映射」，使断言与语言配置/宿主 locale 解耦。
     # 背景：i18n.tr() 迁移后，logger/print 的形参日志会按当前语言翻译，而翻译结果

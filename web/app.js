@@ -198,6 +198,10 @@
             'danmaku.col.gifts': '礼物', 'danmaku.col.online': '在线', 'danmaku.emptyRooms': '暂无监控数据',
             'danmaku.live': '实时弹幕', 'danmaku.allRooms': '全部房间', 'danmaku.clear': '清空',
             'danmaku.connected': '已连接', 'danmaku.disconnected': '已断开', 'danmaku.noData': '暂无弹幕数据',
+            // 2026-09-12 新增（CODE_REVIEW_FIX_1 F-21）：筛选无匹配时的空态提示。
+            // 原实现在有消息但筛选不匹配时把区域清空（''），用户分不清是「筛选条件
+            // 选错了」还是「真的没弹幕」，只能逐个切换筛选排查。
+            'danmaku.noMatch': '当前筛选条件下没有弹幕，试试切换房间或选择「全部房间」',
             'danmaku.gift': '[礼物] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' 条已省略)',
             'danmaku.truncated': '（消息量过大，部分已折叠）',
             'danmaku.hint': '未看到数据？请在「配置 → 录制设置」开启「是否弹幕监控(是/否)」，且直播间平台需支持弹幕（斗鱼/B站/虎牙/抖音/Twitch）',
@@ -248,6 +252,8 @@
             'danmaku.col.gifts': 'Gifts', 'danmaku.col.online': 'Online', 'danmaku.emptyRooms': 'No monitoring data',
             'danmaku.live': 'Live danmaku', 'danmaku.allRooms': 'All rooms', 'danmaku.clear': 'Clear',
             'danmaku.connected': 'Connected', 'danmaku.disconnected': 'Disconnected', 'danmaku.noData': 'No danmaku data',
+            // F-21 (2026-09-12): empty state shown when the room filter matches nothing
+            'danmaku.noMatch': 'No danmaku under the current filter — try another room or "All rooms"',
             'danmaku.gift': '[Gift] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' messages omitted)',
             'danmaku.truncated': '(Too many messages, some collapsed)',
             'danmaku.hint': 'No data? Enable "是否弹幕监控(是/否)" in Config → Recording settings, and make sure the platform supports danmaku (Douyu/Bilibili/Huya/Douyin/Twitch)',
@@ -298,6 +304,8 @@
             'danmaku.col.gifts': 'Gifts', 'danmaku.col.online': 'Online', 'danmaku.emptyRooms': 'No monitoring data',
             'danmaku.live': 'Live danmaku', 'danmaku.allRooms': 'All rooms', 'danmaku.clear': 'Clear',
             'danmaku.connected': 'Connected', 'danmaku.disconnected': 'Disconnected', 'danmaku.noData': 'No danmaku data',
+            // F-21 (2026-09-12): empty state shown when the room filter matches nothing
+            'danmaku.noMatch': 'No danmaku under the current filter — try another room or "All rooms"',
             'danmaku.gift': '[Gift] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' messages omitted)',
             'danmaku.truncated': '(Too many messages, some collapsed)',
             'danmaku.hint': 'No data? Enable "是否弹幕监控(是/否)" in Config → Recording settings, and make sure the platform supports danmaku (Douyu/Bilibili/Huya/Douyin/Twitch)',
@@ -348,6 +356,8 @@
             'danmaku.col.gifts': '禮物', 'danmaku.col.online': '線上', 'danmaku.emptyRooms': '暫無監控資料',
             'danmaku.live': '即時彈幕', 'danmaku.allRooms': '全部房間', 'danmaku.clear': '清空',
             'danmaku.connected': '已連線', 'danmaku.disconnected': '已斷線', 'danmaku.noData': '暫無彈幕資料',
+            // F-21（2026-09-12）：篩選無匹配時的空態提示
+            'danmaku.noMatch': '目前篩選條件下沒有彈幕，請切換房間或選擇「全部房間」',
             'danmaku.gift': '[禮物] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' 條已省略)',
             'danmaku.truncated': '（訊息量過大，部分已摺疊）',
             'danmaku.hint': '未看到資料？請在「設定 → 錄製設定」開啟「是否彈幕監控(是/否)」，且直播間平台需支援彈幕（鬥魚/B站/虎牙/抖音/Twitch）',
@@ -674,8 +684,11 @@
             shown++;
         }
         if (!shown) {
-            el.textContent = dmMessages.length ? '' : t('danmaku.noData');
-            if (!dmMessages.length) { return; }
+            // 2026-09-12 修复（CODE_REVIEW_FIX_1 F-21）：原在有消息但筛选不匹配时把
+            // 区域清空（''）——用户分不清「筛选条件选错了」和「真的没弹幕」，只能
+            // 逐个切换筛选去试。改为给出明确的「无匹配」提示。
+            el.textContent = dmMessages.length ? t('danmaku.noMatch') : t('danmaku.noData');
+            return;
         }
         el.innerHTML = html;
         if (nearBottom) {

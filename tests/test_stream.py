@@ -149,11 +149,12 @@ class TestPadList:
         result = _pad_list([1, 2, 3, 4], min_length=3)
         assert result == [1, 2, 3, 4]
 
-    def test_default_min_length_is_5(self) -> None:
-        # 缺省 min_length=5；
+    def test_default_min_length_is_6(self) -> None:
+        # 缺省 min_length=6（2026-09-12 审查 6.5 修复：原 5 致 LD 档（索引 5）越界，
+        # 用户选"流畅"画质时漏录）；
         # 锁住默认填充长度与末项复制。
         result = _pad_list([1])
-        assert len(result) == 5
+        assert len(result) == 6
         assert result[0] == 1
         assert all(x == 1 for x in result[1:])
 

@@ -242,7 +242,16 @@ class TestGenerateRandomStr:
         assert len(result) > 0
 
     def test_deterministic(self) -> None:
-        # 固定随机值种子产生确定性输出.
+        # F-19 后改为真随机：两次调用应产生不同前缀（极小概率碰撞，12 字节可忽略）。
+        # 固定值回退路径由 DLR_AB_SIGN_FIXED_RANDOM=1 覆盖（见 generate_random_str 注释）。
+        r1 = generate_random_str()
+        r2 = generate_random_str()
+        assert r1 != r2
+
+    def test_fixed_random_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 回退开关：DLR_AB_SIGN_FIXED_RANDOM=1 时恢复旧固定值行为（两次调用结果一致），
+        # 用于个别平台对随机段有值域校验时的定位与兼容。
+        monkeypatch.setenv("DLR_AB_SIGN_FIXED_RANDOM", "1")
         r1 = generate_random_str()
         r2 = generate_random_str()
         assert r1 == r2

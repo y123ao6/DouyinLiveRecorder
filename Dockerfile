@@ -75,13 +75,25 @@ ENV PYTHONUNBUFFERED=1 \
 #                    兼容 Node 24.19.0：全部签名脚本 + migu.js 重写版通过；
 #                    与 node_install.py 拉取的最新稳定版保持同代）
 # 随后 apt-get upgrade -y 升级已安装包到最新安全补丁（权衡：牺牲一点可重现性换取及时安全修复）
+# 2026-09-12 审查（低危）：原为 `curl -fsSL <url> | bash -`——直接把远端脚本
+# 喂给 shell 执行，且无哈希/签名校验：源站或 CDN 被替换即以 root 权限在镜像
+# 构建期执行任意代码（构建期无运行时隔离，危害等同生产 RCE）。
+# 改为：先下载脚本 → 校验 SHA256 → 一致才执行。哈希写死在此处，与
+# src/ffmpeg_install.py 的 trust-on-first-use 模型互补（构建期应可钉定）。
+# 升级 NodeSource 主版本时必须同步更新下面两个变量，否则构建失败（fail-closed）。
+# 当前哈希对应 2026-09-12 抓取的 setup_24.x（3907 字节）。
+ARG NODESOURCE_SETUP_URL=https://deb.nodesource.com/setup_24.x
+ARG NODESOURCE_SETUP_SHA256=6e3d580f5bd7ccf2aa1e8df8d35c60d78e873c3ff8beb282c9bebd914904ad72
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     tzdata \
     curl \
     procps \
     ca-certificates \
-    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && curl -fsSL "${NODESOURCE_SETUP_URL}" -o /tmp/nodesource_setup.sh \
+    && echo "${NODESOURCE_SETUP_SHA256}  /tmp/nodesource_setup.sh" | sha256sum -c - \
+    && bash /tmp/nodesource_setup.sh \
+    && rm -f /tmp/nodesource_setup.sh \
     && apt-get install -y nodejs \
     && apt-get upgrade -y \
     && ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime \
@@ -101,9 +113,14 @@ COPY --from=builder /opt/venv /opt/venv
 
 # 复制应用代码，设置正确的所有权（运行时以 recorder 用户运行）
 # 实际内容由 .dockerignore 裁剪：必须保留 main.py / web.py / gui.py + src/（含 javascript/JS 签名脚本、
-# platforms/ 平台实现、proto/ 弹幕协议）+ web/（面板前端静态资源）+ i18n/**/*.mo（gettext 运行时必需）；
-# tests/、scripts/、typings/、uv.lock、根目录文档（README*/CODE_WIKI*/AGENTS.md）、
-# .coveragerc-concurrency、ffmpeg/、node/、config/*.ini、logs/、downloads/ 均不进镜像
+# platforms/ 平台实现、proto/ 弹幕协议）+ web/（面板前端静态资源）+ i18n/**/*.mo（gettext 运行时必需）。
+# 2026-09-14 同步：下面「不进镜像」的清单改为按 .dockerignore 的分组口径描述，避免两处腐化不同步。
+# 不进镜像的四类：
+#   1. 测试与工具：tests/、scripts/、typings/、uv.lock、.coveragerc-concurrency
+#   2. 文档：README*.md、CODE_WIKI*.md、AGENTS.md，以及 CODE_REVIEW_*.md / DIAGNOSIS_*.md /
+#      PERF_REVIEW_*.md / CODE_CHANGES.md 等审查与排查记录（见 .dockerignore 通配模式）
+#   3. 运行期产物（改由卷挂载提供）：logs/、downloads/、backup_config/
+#   4. 平台二进制与本地脚本：ffmpeg/、node/、config/*.ini（含敏感信息）
 COPY --chown=recorder:recorder . ./
 
 # 运行时创建必要目录（日志 / 录制产物 / 配置备份），并统一归属 recorder

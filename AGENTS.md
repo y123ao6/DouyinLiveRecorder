@@ -10,7 +10,7 @@
 
 - **名称**: DouyinLiveRecorder
 
-- **版本**: 4.1.0（唯一事实源：`pyproject.toml` 的 `version` 字段。`main.py` 与 `src/web_api.py` 运行时经 `importlib.metadata` 动态读取；`Dockerfile` 经 `APP_VERSION` 构建参数动态注入；`i18n/zh_CN/LC_MESSAGES/zh_CN.po` 不再携带版本号。`README.md` / `CODE_WIKI.md` 为文档，不再纳入版本同步/校验。）
+- **版本**: 4.2.0（唯一事实源：`pyproject.toml` 的 `version` 字段。`main.py` 与 `src/web_api.py` 运行时经 `importlib.metadata` 动态读取；`Dockerfile` 经 `APP_VERSION` 构建参数动态注入；`i18n/zh_CN/LC_MESSAGES/zh_CN.po` 不再携带版本号。`README.md` / `CODE_WIKI.md` 为文档，不再纳入版本同步/校验。）
 
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具
 
@@ -43,6 +43,17 @@ include = '\.pyi?$'
   会把能放进一行的 `except (A, B):` 改写回无括号形式，加了括号反而过不了格式门禁。
   该语法依赖 **PEP 758**（Python 3.14+），与 `requires-python = ">=3.14"` 下限一致；
   **不要**为兼容 <3.14 而加括号——本仓不支持 3.13 及以下版本。
+- **2026-09-12 实测更正（保留上方约定，仅修正其理由）**：「black 会把 `except (A, B):`
+  改写回无括号」这一说法**与实测不符**——对 `except (ValueError, TypeError) as e:` 跑
+  `black --check` 返回 rc=0（unchanged），本仓现存的 9 处带括号写法同样全部通过门禁。
+  即：两种写法 black 均接受，统一写无括号是**本项目风格约定**（可读性与一致性），
+  而非格式工具强制。因此：
+  - 新增/修改代码仍应写无括号（约定不变）；
+  - 但**不要**以「black 会报错」为由批量改动既有带括号写法，那会造成无意义 diff，
+    且 AST 等价性校验发现不了这种改动（见下方「注释检查工具的两个盲点」第 1 条）；
+  - 历史遗留的带括号写法可随相关功能改动顺手统一，不必单独排期。
+  - 外部审查若建议「统一为 `except (A, B):`」，属与本约定相反，不予采纳
+    （CODE_REVIEW_FIX_1 的 F-08 即属此类，已澄清为非问题）。
 
 ### isort
 
@@ -119,6 +130,8 @@ ignore_missing_imports = true
 ├── .coveragerc-concurrency # 并发测试专用覆盖率配置（CI 经 COVERAGE_RCFILE 引用，fail_under = 0）
 ├── Dockerfile           # Docker 镜像构建（python:3.14-slim 多阶段 + Node 24 LTS）
 ├── docker-compose.yaml  # compose 编排（recorder / web / gui 三模式服务）
+├── .gitignore           # 版本库忽略规则（敏感配置 / 运行期产物 / 本地工具目录）
+├── .dockerignore        # 镜像构建上下文裁剪（与 .gitignore、pyproject 各工具排除列表同源维护）
 │
 ├── src/                 # 核心源码包
 │   ├── __init__.py      # 包出口（含 get_danmaku_collector 工厂）
@@ -177,8 +190,11 @@ ignore_missing_imports = true
 │   ├── en_GB.json          # 英语（英国）目录（JSON 格式）
 │   └── zh_TW.yaml          # 繁体中文目录（YAML 格式）
 │
-├── ffmpeg/              # FFmpeg 运行时（自动下载）
-├── node/                # Node.js 运行时（自动下载）
+├── ffmpeg/              # FFmpeg 运行时（自动下载；已忽略二进制）
+├── node/                # Node.js 运行时（自动下载；已忽略）
+├── logs/                # 运行日志（streamget.log / PlayURL.log / danmaku_monitor.jsonl / web_console.log）
+├── downloads/           # 录制产物（视频 .ts/.mp4/.flv 与弹幕 .srt）
+├── backup_config/       # 配置自动备份（*.ini_<时间戳>）
 ├── typings/             # 第三方库类型存根
 │   ├── customtkinter/   # customtkinter 类型存根（__init__.pyi）
 │   ├── execjs/          # PyExecJS 类型存根（多个 .pyi）
@@ -205,6 +221,7 @@ ignore_missing_imports = true
 ├── README.md / README_EN.md        # 用户说明（中英）
 ├── CODE_WIKI.md / CODE_WIKI_EN.md  # 架构文档（中英）
 ├── AGENTS.md                       # 编码代理约定（本文件）
+├── CODE_REVIEW_FIX_1.md            # 代码审查遗留项清单（2026-09-14 收官：25 项全部结项）
 ├── LICENSE                         # MIT
 ├── index.html                      # 独立 M3U8 播放器页面（Web 面板用 web/ 目录）
 └── StopRecording.vbs               # Windows 停止录制脚本（UTF-16 LE 带 BOM，见「已知坑」）
@@ -371,12 +388,18 @@ docker compose up -d             # 使用 docker-compose.yaml（APP_VERSION 可�
 
 - **dockerignore / gitignore 同源约定**：本地工具生成目录（`.mimosa/`、`.qoder/`、`.agents/`、
   `.pnpm-store/`、`.npm-cache/`、`.dsh-validation/`、`.ego-browser-test/`、`.plugin-src/`、
-  `.tmp-dps-extract/`、`.v2c/`、`pytest-cache-files-*/`）须在两份 ignore 文件与 pyproject 各工具排除列表
+  `.tmp-dps-extract/`、`.v2c/`、`pytest-cache-files-*/`）与运行期产物目录（`downloads/`、
+  `logs/`、`backup_config/`）须在两份 ignore 文件与 pyproject 各工具排除列表
   （black exclude / isort extend\_skip / mypy exclude / basedpyright exclude / coverage omit，
   `.coveragerc-concurrency` 的 omit 与后者一致）中同步维护，漏一处即
-  出现「未跟踪目录 / 误入镜像 / 工具误扫描」。镜像额外排除 `uv.lock` / `scripts/` / `AGENTS.md` /
+  出现「未跟踪目录 / 误入镜像 / 工具误扫描」。2026-09-14 已按此口径把 `logs/` 与
+  `backup_config/` 补齐到 isort / mypy / basedpyright（black 原先只有 `logs/`），
+  并把 `downloads/` / `logs/` / `backup_config/` 补齐到两处 coverage omit。
+  镜像额外排除 `uv.lock` / `scripts/` / `AGENTS.md` /
   `README_EN.md` / `CODE_WIKI_EN.md` / `.coveragerc-concurrency` / `PERF_REVIEW_2026-08-28.md`
-  （运行时链路不消费）。
+  （运行时链路不消费）；审查与排查记录（`CODE_REVIEW_*.md` / `DIAGNOSIS_*.md` /
+  `PERF_REVIEW_*.md`）在 .dockerignore 中走通配模式，新增同类根目录文档无需再改该文件。
+  注意：这些审查记录属**正式文档并随仓库分发**，不得加进 .gitignore。
 
 ## 格式化命令
 
@@ -717,3 +740,20 @@ mypy src/
   同步补对应 `th:nth-child(n)` 定宽**（fixed 布局下未定宽的新列会平分剩余空间、挤压地址列）；
   **该段作用域必须保持 `#rooms-view`**，勿"顺手统一"扩大到仪表盘/弹幕/文件三张表（它们列数与
   内容形态不同，fixed 定宽会破坏其布局）。
+
+- **ffmpeg「输出侧」参数构造已统一到 `_build_ffmpeg_output_args()`，禁止再在各平台分支手写 `command = [...]`（2026-09-13 定稿，F-01）**：`main.start_record` 原先在 音频(MP3/M4A) / FLV / MKV / MP4 / TS 五个分支各写一份 `command = [...]` 列表，正是 5 份复制粘贴导致「`-segment_format` 字面值错配」P0 事故的根因（改一处漏四处）。现全部收敛到 `start_record` 之前的模块级函数 `_build_ffmpeg_output_args(save_file_path, record_save_type, split_video_by_time, split_time, is_audio=False)`；输入级选项（-reconnect*/-headers/-tls_verify/-http_proxy）与 `save_file_path` / 时间戳 `now` 的构造仍留在 `start_record` 内，builder 只拼「输出参数」。新增录制格式/容器分支**必须**经此 builder 的 `record_save_type` / `is_audio` 分发，不得再内联列表；容器取值一律查 `SEGMENT_FORMAT_BY_SUFFIX`（见前述分段封装条目）。行为等价性由黄金快照锁死：回归锁 `tests/test_start_record_command_golden.py`（设 `GOLDEN_REGEN=1` 重生成 `tests/golden/start_record_commands.json`，默认比对字节级命令；20 个用例覆盖 5 条路径 + m3u8 丢弃 `-reconnect_at_eof` + 头/代理注入 + 海外超时 + FLV-h265→TS + shopee 直下）。
+
+- **F-01 收官：录制命令构造与平台分发的四个单一定义点（2026-09-14 定稿，禁止回退成内联复制粘贴）**：
+  ① **输入侧** `_build_ffmpeg_input_args(real_url, user_agent, tuning, headers, tls_verify, proxy_address)`——`-reconnect*` / `-headers` / `-tls_verify` / `-http_proxy` 全在此拼装，一律按 `-i` 锚点定位（`command.index("-i")`）或插到列表头，**禁止再用裸数字下标**（F-02 已修过一处静默插错位置的问题）；海外超时/缓冲参数由 `_ffmpeg_network_tuning(is_overseas)` 给出。
+  ② **输出路径** `_build_record_output_path(...)`——扩展名、分段时间戳格式（`_SEGMENT_NOW_FORMAT_BY_SAVE_TYPE`：FLV 沿用 `%y%m%d_%H%M%S`、其余 `%Y-%m-%d_%H-%M-%S`）、序号占位符（视频 `_%03d`、音频 `_%02d`/`_00`、FLV 非分段保留历史 `_00`）全部查表，禁止在分支里再拼文件名。
+  ③ **执行骨架** `_run_ffmpeg_record(...)`（try/except OSError + `check_subprocess` + 启动失败清幽灵 `recording` 条目）与录后转码 `_convert_after_record(...)`（受 `converts_to_mp4` 裁决；分段按 `_<数字序号>.<ext>` 正则精确匹配，兼容 ffmpeg `%03d` 超过 999 段输出 4 位）。五条保存类型分支**只允许**调用这三个函数，不得各自再写一份 try/except + `check_subprocess`。
+  ④ **平台分发** `_PLATFORM_RESOLVERS`（`(匹配器, 处理函数)` 表）+ `_PlatformResolveContext`：原 53 层 `elif` 链已拆成 52 个 `_resolve_<host>()`。**表项顺序即优先级**，新增平台 = 追加一个处理函数 + 一条表项，禁止往表里插 `elif`。回归锁：`tests/test_platform_dispatch.py`（表结构/优先级头部/自定义流大小写/新平台单表项接入）+ `tests/test_start_record_command_golden.py`（命令字节级）。
+  附带两条已修的行为漂移，改回即回归：**TS 非分段在「被注释/停止」结束时必须受 `converts_to_mp4` 裁决**（原实现无条件转 MP4，无视用户设置，与 TS 分段路径及 `check_subprocess` 自然结束路径口径不一致）；**分段录制的提示行打印实际输出路径 basename**（原打印非分段文件名，三种保存类型形态互不一致）。
+
+- **`sync_req` 的 SSL 降级路径必须保持惰性 + 单次覆盖（F-12，2026-09-14 定稿）**：`src/sync_http.py` 的 CERT_NONE 上下文与 opener 由 `_get_insecure_context()` / `_get_insecure_opener()` **按需构造**，禁止改回模块级常驻（import 即存在不校验的 SSLContext 是一次静默的全局降级面）。新增单次覆盖参数 `sync_req(..., ssl_verify=None)`：为 None 时跟随控制面全局开关（`_resolve_ssl_verify`），显式传值时以该次调用为准，且**必须同时透传 urllib 与 requests(代理) 两条路径**（曾只改一条即出现口径分叉）。事实基准（勿被旧审查结论误导）：`sync_req` 的 123 处调用点全部位于 `src/spider.py`，登录 / `msg_push.py` / Web 面板不经本模块；控制面开关 `http_config.ssl_verify` 在生产链路无 `set_ssl_verify(False)` 调用点、恒为 True，CERT_NONE 路径生产中不可达。
+
+- **抖音弹幕 `signature` 保持不编码，禁止"顺手加 `quote()`"（F-13，2026-09-14 定稿）**：XBogus 自定义字符表 `XBOGUS_ALPHABET` 含 `+` / `/`，静态审查据此建议 percent-encode。已对照上游 `xiaoyaocz/dart_simple_live` → `simple_live_core/lib/src/danmaku/douyin_danmaku.dart`（第 88 行附近 `var url = "$uri&signature=$sign";`）确认为**直接拼接、不 encodeComponent**，且服务端不按 form-urlencoded 语义把 `+` 解成空格（否则约四成签名系统性失败）+ WS 握手 URL 走标准 query 解析会做百分号解码。改编码只会让本端成为唯一异类指纹。回归锁：`tests/test_douyin_signature_encoding.py`。
+
+- **protobuf 升级必须先同代重新生成再放开版本上限（F-14）**：`src/proto/douyin_pb2.py` 为 protoc 25.x（gencode 4.25.3）产物、标注 DO NOT EDIT，本环境无 protoc/grpcio-tools。**禁止手改生成文件**；`requirements.txt` / `pyproject.toml` 的 `protobuf>=6.31.1,<8` **上限不可删除**。回归锁：`tests/test_proto_runtime_compat.py`（解析生成文件头 gencode 版本 + 声明区间，断言区间含上限、已安装 runtime 满足区间且不早于 gencode、`douyin_pb2` 可 import 且 `PushFrame` 往返编解码正常），runtime 升到 8.x 时该用例变红即是「先同代 protoc 重新生成」的强制提醒。
+
+- **`main.py`** **内引用模块全局量不得加 `main.` 前缀**：本文件模块级 `main` 是入口函数 `def main(...)` 而非模块对象，`main.recording_enabled` 这类写法在运行期必抛 `AttributeError`（mypy 同步报 `attr-defined`）。需强调「模块级可观察量」时直接写全局名并配注释说明其晚绑定语义即可（2026-09-14 修掉 `disable_record` + 推送检测分支的一处实例）。

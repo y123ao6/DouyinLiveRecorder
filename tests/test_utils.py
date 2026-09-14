@@ -18,7 +18,7 @@ from src.utils import (
     get_query_params,
     handle_proxy_addr,
     jsonp_to_json,
-    read_config_value,
+    read_ini_value,
     remove_duplicate_lines,
     remove_emojis,
     replace_url,
@@ -102,19 +102,19 @@ class TestRemoveDuplicateLines:
 
 
 class TestReadConfigValue:
-    # Test read_config_value.
+    # Test read_ini_value (F-16: 原 read_config_value，与 config_io 同名函数区分).
 
     # 存在的 section/key 须返回原始字符串值
     def test_read_existing_key(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.ini"
         config_file.write_text("[section1]\nkey1 = value1\n", encoding="utf-8-sig")
-        result = read_config_value(config_file, "section1", "key1")
+        result = read_ini_value(config_file, "section1", "key1")
         assert result == "value1"
 
     def test_read_missing_key(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config_file = tmp_path / "config.ini"
         config_file.write_text("[section1]\nkey1 = value1\n", encoding="utf-8-sig")
-        result = read_config_value(config_file, "section1", "missing_key")
+        result = read_ini_value(config_file, "section1", "missing_key")
         assert result is None
         captured = capsys.readouterr()
         assert "does not exist" in captured.out
@@ -123,22 +123,22 @@ class TestReadConfigValue:
     def test_read_missing_section(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         config_file = tmp_path / "config.ini"
         config_file.write_text("[section1]\nkey1 = value1\n", encoding="utf-8-sig")
-        result = read_config_value(config_file, "missing_section", "key1")
+        result = read_ini_value(config_file, "missing_section", "key1")
         assert result is None
         captured = capsys.readouterr()
         assert "does not exist" in captured.out
 
-    # read_config_value 关闭 BasicInterpolation：含 % 的值（cookie/URL 编码）不应抛异常（批次5修复）.
+    # read_ini_value 关闭 BasicInterpolation：含 % 的值（cookie/URL 编码）不应抛异常（批次5修复）.
     def test_percent_value_readable(self, tmp_path: Path) -> None:
         # % 在 ini 默认插值中是特殊字符（BasicInterpolation 会解析 %(x)s），关闭后含 % 的 cookie/URL 才能原样读出
         cfg = tmp_path / "c.ini"
         cfg.write_text("[s]\nk = 100%x\n", encoding="utf-8")
-        assert read_config_value(cfg, "s", "k") == "100%x"
+        assert read_ini_value(cfg, "s", "k") == "100%x"
 
     def test_missing_key_returns_none(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         cfg = tmp_path / "c.ini"
         cfg.write_text("[s]\nk = v\n", encoding="utf-8")
-        assert read_config_value(cfg, "s", "nope") is None
+        assert read_ini_value(cfg, "s", "nope") is None
         _ = capsys.readouterr()  # 吞掉提示输出
 
 
@@ -149,7 +149,7 @@ class TestUpdateConfig:
         config_file = tmp_path / "config.ini"
         config_file.write_text("[section1]\nkey1 = old_value\n", encoding="utf-8-sig")
         update_config(config_file, "section1", "key1", "new_value")
-        result = read_config_value(config_file, "section1", "key1")
+        result = read_ini_value(config_file, "section1", "key1")
         assert result == "new_value"
         captured = capsys.readouterr()
         assert "updated" in captured.out
@@ -358,14 +358,14 @@ class TestUnzipFile:
 
 
 class TestReadConfigValueErrors:
-    # Test read_config_value 异常兜底。
+    # Test read_ini_value 异常兜底。
 
     # ini 内容非法（缺 section 头）时 config.read 抛解析异常 → 必须返回 None 并打印原因，
     # 而非让解析异常击穿调用方（注意：目录路径等 OSError 会被 configparser.read 吞掉，走不到这里）
     def test_invalid_ini_returns_none(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         bad_file = tmp_path / "bad.ini"
         bad_file.write_text("no_section_header = oops\n", encoding="utf-8")
-        assert read_config_value(bad_file, "s", "k") is None
+        assert read_ini_value(bad_file, "s", "k") is None
         assert "Error occurred while reading" in capsys.readouterr().out
 
 

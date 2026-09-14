@@ -1,5 +1,6 @@
 # Tests for src/ttwid.py - ttwid module tests for coverage improvement.
 
+import asyncio
 import configparser
 import os
 import sys
@@ -208,33 +209,53 @@ class TestFetchTtwidException:
         ttwid_module._cached_ttwid = ""
 
 
-# get_ttwid 的锁竞争兜底分支：另一线程已持有锁时，本线程等待后兜底重试一次。
-# 该分支仅在高并发（多 room 独立线程）下可达，单测用假锁替换模块级 _ttwid_lock。
-class TestGetTtwidContention:
-    # get_ttwid 的锁竞争兜底分支：另一线程已持有锁时，本线程等待后兜底重试一次。
-    # 该分支仅在高并发（多 room 独立线程）下可达，单测用假锁替换模块级 _ttwid_lock，
-    # 令其 acquire(blocking=False) 恒返回 False 以模拟「锁已被其他线程持有」。
+# get_ttwid 的并发去重语义（2026-09-12 审查 H-2 后改写）
+#
+# 旧设计：_ttwid_lock 跨越 await 持有，用假锁（acquire 恒 False）模拟"锁被其他线程
+#   持有"来覆盖兜底分支。新设计改用 cookie_cache.singleflight（锁内零 await、
+#   等待者经 future 复用结果），"锁竞争"场景已不存在，该用例的旧断言随之失效。
+#
+# 新用例覆盖的才是新设计的核心不变量：并发 N 个 get_ttwid 只打一次 _fetch_ttwid，
+#   且所有调用方拿到同一份结果——这正是原实现用锁想保证（但会跨房间阻塞事件循环）
+#   的性质。若 singleflight 退化成各自拉取，fetch 次数会 >1，用例失败。
+class TestGetTtwidSingleflight:
     @pytest.mark.asyncio
-    # 用恒 False 的假锁模拟"锁被其他线程持有"：须进入兜底分支直接 fetch 而非死等
-    async def test_contention_fallback_to_fetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_concurrent_calls_fetch_once(self) -> None:
+        ttwid_module._cached_ttwid = ""
+        clear_cookie_cache()
+
+        calls = 0
+
+        async def _fake_fetch(proxy_addr: object = None) -> str:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.05)  # 制造窗口，让并发调用都能进入等待队列
+            return "ttwid=once"
+
+        with (
+            patch("src.ttwid._fetch_ttwid", new=_fake_fetch),
+            patch("src.ttwid._read_config_ttwid", return_value=""),
+        ):
+            results = await asyncio.gather(*[get_ttwid() for _ in range(5)])
+
+        assert calls == 1, f"singleflight 去重失效：_fetch_ttwid 被调用 {calls} 次"
+        assert all(r == "ttwid=once" for r in results)
         ttwid_module._cached_ttwid = ""
 
-        class _ContendedLock:
-            # acquire 恒返回 False → 进入 get_ttwid 的锁竞争兜底分支
-            def acquire(self, *args: object, **kwargs: object) -> bool:
-                return False
+    @pytest.mark.asyncio
+    async def test_config_ttwid_bypasses_network(self) -> None:
+        # 配置优先：用户手填 ttwid 时不进 singleflight，不发任何网络请求
+        ttwid_module._cached_ttwid = ""
+        clear_cookie_cache()
 
-            def release(self, *args: object, **kwargs: object) -> None:
-                pass
+        async def _boom(proxy_addr: object = None) -> str:
+            raise AssertionError("配置优先时不应发起网络请求")
 
-            def __enter__(self) -> "_ContendedLock":
-                return self
-
-            def __exit__(self, *args: object) -> None:
-                return None
-
-        monkeypatch.setattr(ttwid_module, "_ttwid_lock", _ContendedLock())
-        with patch("src.ttwid._fetch_ttwid", new_callable=AsyncMock, return_value="ttwid=contended"):
+        with (
+            patch("src.ttwid._fetch_ttwid", new=_boom),
+            patch("src.ttwid._read_config_ttwid", return_value="ttwid=from_config"),
+        ):
             result = await get_ttwid()
-            assert result == "ttwid=contended"
+
+        assert result == "ttwid=from_config"
         ttwid_module._cached_ttwid = ""

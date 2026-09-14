@@ -16,12 +16,14 @@ import pytest
 import main  # noqa: F401  先完整初始化 main，打破 stream_select<->main 的循环导入
 import src.stream_select as ss
 from src.stream_select import (
+    _hls_selection_config,
     _mark_probe_reject,
     _probe_backoff,
     _probe_backoff_key,
     _probe_backoff_lock,
     _probe_in_backoff,
     _recheck_delay,
+    _same_origin_flv,
     _throttle_probe,
     _validate_stream_url,
     get_record_headers,
@@ -45,9 +47,12 @@ _FLV_URL = "https://hw3.douyucdn2.cn/live/12828016rSWtjVdN.flv?wsAuth=abc&token=
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, content_type: str) -> None:
+    def __init__(self, status_code: int, content_type: str, text: str = "") -> None:
         self.status_code = status_code
         self.headers = {"content-type": content_type} if content_type else {}
+        # HLS 分片层探测需要读取播放列表正文（_probe_hls_segment 解析分片行）；
+        # 缺省空串使未显式给出正文的旧用例落回「解析不出分片→保守放行」语义。
+        self.text = text
 
 
 class _M3u8ProbeClient:
@@ -69,6 +74,11 @@ class _FakeHead405HtmlClient:
 
     def __exit__(self, *_args: object) -> Literal[False]:
         return False
+
+    # _validate_stream_url 的 finally 会对自建客户端调用 close()：假客户端必须提供，
+    # 否则每个用例都触发一次被吞掉的 AttributeError 调试日志（噪音，非断言失败）。
+    def close(self) -> None:
+        pass
 
     # headers 由生产代码逐请求传入（客户端在多候选间复用，不能再挂 client 级头）
     def head(self, url: str, headers: dict[str, str] | None = None, follow_redirects: bool = True) -> _FakeResponse:
@@ -132,6 +142,10 @@ def _m3u8_client_cls(get_statuses: list[int], get_types: list[str]) -> type[_M3u
         def __exit__(self, *_args: object) -> Literal[False]:
             return False
 
+        # 见 _FakeHead405HtmlClient.close 说明：避免 finally 关闭自建客户端时的噪音日志。
+        def close(self) -> None:
+            pass
+
         def head(self, url: str, headers: dict[str, str] | None = None, follow_redirects: bool = True) -> _FakeResponse:
             return _FakeResponse(405, "text/html")
 
@@ -152,7 +166,10 @@ def test_m3u8_range_get_retry_passes() -> None:
     cls = _m3u8_client_cls([403, 206], ["text/html", "application/vnd.apple.mpegurl"])
     with patch("src.stream_select.httpx.Client", cls), patch("src.stream_select.time"):
         assert _validate_stream_url(_M3U8_URL) is True
-    assert cls.get_calls == 2
+    # 3 次 GET = 2 次 Range-GET（403→206 重试）+ 1 次 HLS 分片层探测的播放列表 GET
+    # （2026-09-13 斗鱼 hw 事故修复：列表 200/206 后必须再探分片，见 _probe_hls_segment）。
+    # 本用例假客户端未给播放列表正文（_FakeResponse.text 为空），分片探测解析不出分片即保守放行。
+    assert cls.get_calls == 3
 
 
 def test_m3u8_range_get_still_403_rejected() -> None:
@@ -176,6 +193,228 @@ def test_m3u8_last_resort_released() -> None:
     cls = _m3u8_client_cls([403, 403], ["text/html", "text/html"])
     with patch("src.stream_select.httpx.Client", cls), patch("src.stream_select.time"):
         assert _validate_stream_url(_M3U8_URL, last_resort=True) is True
+
+
+# ---- HLS 分片层探测（2026-09-13 斗鱼 hw CDN 事故回归） ----
+# 事故：m3u8 列表层恒 200（CDN 动态合成，列表层无风控），但边缘 slice 节点上所有 .ts
+# 分片 404 —— 旧校验「列表 200 即可达」假绿放行 m3u8，ffmpeg 逐分片 404、零视频产出，
+# 而斗鱼弹幕走独立 WebSocket（只需 room_id）照常落 SRT，生产表现即「只出弹幕、无视频」。
+# 修复目标：分片层探到 404 时必须否掉 m3u8、回退同 token 的可用 FLV。
+
+_HLS_MASTER_BODY = (
+    "#EXTM3U\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\n"
+    "https://f19c.livehwc4.com/hw3a.douyucdn2.cn/live/x.m3u8?sub_m3u8=true\n"
+)
+_HLS_MEDIA_BODY = (
+    "#EXTM3U\n"
+    "#EXT-X-VERSION:3\n"
+    "#EXTINF:4.000,\n"
+    "x_dy_0.ts?vhost=a&edge_slice=true\n"
+    "#EXTINF:4.000,\n"
+    "x_dy_5.ts?vhost=a&edge_slice=true\n"
+)
+
+
+class _FakeStream:
+    # 仅实现 _confirm_get_ok 读取的 status_code（流式 GET 复核）
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+    def __enter__(self) -> "_FakeStream":
+        return self
+
+    def __exit__(self, *_args: object) -> Literal[False]:
+        return False
+
+
+def _hls_segment_client_cls(segment_status: int, media_body: str = _HLS_MEDIA_BODY) -> type:
+    # 假客户端：HEAD 恒 200+mpegurl（进 m3u8 分片探测分支），播放列表按 URL 返回
+    # master/媒体正文，媒体分片返回预设状态码（404=事故形态 / 200=健康）。
+    class _C:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "_C":
+            return self
+
+        def __exit__(self, *_args: object) -> Literal[False]:
+            return False
+
+        def close(self) -> None:
+            pass
+
+        def head(self, url: str, headers: dict[str, str] | None = None, follow_redirects: bool = True) -> _FakeResponse:
+            return _FakeResponse(200, "application/vnd.apple.mpegurl")
+
+        def get(self, url: str, headers: dict | None = None, follow_redirects: bool = True) -> _FakeResponse:
+            if url == _M3U8_URL:
+                return _FakeResponse(200, "application/vnd.apple.mpegurl", text=_HLS_MASTER_BODY)
+            if "sub_m3u8" in url:
+                return _FakeResponse(200, "application/vnd.apple.mpegurl", text=media_body)
+            return _FakeResponse(segment_status, "video/mp2t")
+
+    return _C
+
+
+def test_hls_segment_404_rejects_playlist() -> None:
+    # 事故形态：列表 200 + 分片 404 → 判列表假绿不可达（非末位候选交由上层回退 FLV）
+    cls = _hls_segment_client_cls(404)
+    with patch("src.stream_select.httpx.Client", cls):
+        assert _validate_stream_url(_M3U8_URL, last_resort=False) is False
+
+
+def test_hls_segment_200_stays_reachable() -> None:
+    # 对照：分片真可达（200）→ 维持列表可达结论
+    cls = _hls_segment_client_cls(200)
+    with patch("src.stream_select.httpx.Client", cls):
+        assert _validate_stream_url(_M3U8_URL, last_resort=False) is True
+
+
+def test_hls_segment_404_last_resort_released() -> None:
+    # 末位候选（无备选可回退）：分片 404 也仅告警放行给 ffmpeg（探针≠ffmpeg 客户端指纹）
+    cls = _hls_segment_client_cls(404)
+    with patch("src.stream_select.httpx.Client", cls):
+        assert _validate_stream_url(_M3U8_URL, last_resort=True) is True
+
+
+def test_hls_empty_media_playlist_conservative_pass() -> None:
+    # 保守原则：媒体列表为空（未推流/直播刚结束）解析不出分片 → 维持列表可达，不误杀可用源
+    cls = _hls_segment_client_cls(404, media_body="#EXTM3U\n#EXT-X-VERSION:3\n")
+    with patch("src.stream_select.httpx.Client", cls):
+        assert _validate_stream_url(_M3U8_URL, last_resort=False) is True
+
+
+class _HlsDeadFlvLiveClient:
+    # 端到端选源假客户端：m3u8 分片 404（事故形态），FLV 的 HEAD/GET 均 200（可用）
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def __enter__(self) -> "_HlsDeadFlvLiveClient":
+        return self
+
+    def __exit__(self, *_args: object) -> Literal[False]:
+        return False
+
+    def close(self) -> None:
+        pass
+
+    def head(self, url: str, headers: dict[str, str] | None = None, follow_redirects: bool = True) -> _FakeResponse:
+        if ".m3u8" in url.lower():
+            return _FakeResponse(200, "application/vnd.apple.mpegurl")
+        return _FakeResponse(200, "video/x-flv")
+
+    def get(self, url: str, headers: dict | None = None, follow_redirects: bool = True) -> _FakeResponse:
+        if url == _M3U8_URL:
+            return _FakeResponse(200, "application/vnd.apple.mpegurl", text=_HLS_MASTER_BODY)
+        if "sub_m3u8" in url:
+            return _FakeResponse(200, "application/vnd.apple.mpegurl", text=_HLS_MEDIA_BODY)
+        return _FakeResponse(404, "video/mp2t")
+
+    def stream(self, method: str, url: str, headers: dict | None = None, follow_redirects: bool = True) -> _FakeStream:
+        return _FakeStream(200)
+
+
+def test_select_source_url_falls_back_to_flv_when_hls_segments_dead() -> None:
+    # 端到端：斗鱼 m3u8 分片全 404 → select_source_url 否掉 m3u8、回退同 token 的可用 FLV。
+    # 这正是「只出弹幕 SRT、无视频」的修复目标：最终拿到能真正拉流的地址。
+    with (
+        patch.object(main, "hls_collection_enabled", True),
+        patch("src.stream_select.httpx.Client", _HlsDeadFlvLiveClient),
+    ):
+        result = select_source_url({"m3u8_url": _M3U8_URL, "flv_url": _FLV_URL, "record_url": _FLV_URL}, platform=None)
+    assert result == _FLV_URL
+
+
+# ---- 同源候选（HLS 由 FLV 按扩展名替换而来，共享 token） ----
+
+
+def test_same_origin_flv_matches_extension_swapped_candidate() -> None:
+    # 斗鱼形态：FLV 直链按 .flv→.m3u8 替换后下发，二者共享 wsAuth → 视为同源候选
+    assert _same_origin_flv(_M3U8_URL, [_FLV_URL]) == _FLV_URL
+
+
+def test_same_origin_flv_none_when_no_counterpart() -> None:
+    other = "https://hw3.douyucdn2.cn/live/other.flv?wsAuth=abc&token=web-h5"
+    assert _same_origin_flv(_M3U8_URL, [other]) is None
+    # 非 m3u8 入参不参与同源判定
+    assert _same_origin_flv(_FLV_URL, [_FLV_URL]) is None
+
+
+def test_same_origin_flv_ignores_query_difference() -> None:
+    # 同源判定只比对「?」之前的路径：token 等查询参数差异不影响同源识别
+    stale = "https://hw3.douyucdn2.cn/live/12828016rSWtjVdN.flv?wsAuth=old&token=old"
+    assert _same_origin_flv(_M3U8_URL, [stale]) == stale
+
+
+def test_select_source_url_logs_same_origin_flv_fallback() -> None:
+    # 端到端观测：HLS 分片假绿 → 记一条「回退同 token 的 FLV 源」，便于巡检确认已按预期回退
+    with (
+        patch.object(main, "hls_collection_enabled", True),
+        patch("src.stream_select.httpx.Client", _HlsDeadFlvLiveClient),
+        patch("src.stream_select.logger.warning") as warn,
+    ):
+        result = select_source_url({"m3u8_url": _M3U8_URL, "flv_url": _FLV_URL, "record_url": _FLV_URL}, platform=None)
+    assert result == _FLV_URL
+    assert any("同 token 的 FLV" in str(call.args[0]) for call in warn.call_args_list)
+
+
+# ---- 选源结论观测（观测增强） ----
+
+
+def test_select_source_url_logs_choice_on_pick() -> None:
+    # 选定源时记「选源结论」单行日志（platform/kind/url），一眼确认 ffmpeg 拉的是 HLS 还是 FLV
+    with (
+        patch.object(main, "hls_collection_enabled", True),
+        patch("src.stream_select.httpx.Client", _HlsDeadFlvLiveClient),
+        patch("src.stream_select.logger.debug") as dbg,
+    ):
+        result = select_source_url({"m3u8_url": _M3U8_URL, "flv_url": _FLV_URL, "record_url": _FLV_URL}, platform=None)
+    assert result == _FLV_URL
+    assert any("选源结论" in str(call.args[0]) for call in dbg.call_args_list)
+
+
+def test_select_source_url_logs_no_usable_source() -> None:
+    # 全部候选不可达且无 record_url 兜底 → 补一条可检索的收束结论
+    with (
+        patch.object(main, "hls_collection_enabled", True),
+        patch("src.stream_select._validate_stream_url", return_value=False),
+        patch("src.stream_select.logger.warning") as warn,
+    ):
+        result = select_source_url({"m3u8_url": "https://x/a.m3u8", "flv_url": "", "record_url": ""})
+    assert result is None
+    assert any("本轮无可用源" in str(call.args[0]) for call in warn.call_args_list)
+
+
+# ---- HLS 采集配置兜底（缺失 / 类型异常时回退安全默认） ----
+
+
+def test_hls_selection_config_defaults_on_missing_globals(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr(main, "hls_collection_enabled", raising=False)
+    monkeypatch.delattr(main, "hls_collection_exclude_platforms", raising=False)
+    assert _hls_selection_config() == (True, ())
+
+
+def test_hls_selection_config_normalizes_comma_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 兼容「逗号分隔字符串」形态（中英文逗号 + 空白），与 main() 的解析同语义
+    monkeypatch.setattr(main, "hls_collection_enabled", False)
+    monkeypatch.setattr(main, "hls_collection_exclude_platforms", "虎牙直播， 斗鱼 ,")
+    assert _hls_selection_config() == (False, ("虎牙直播", "斗鱼"))
+
+
+def test_hls_selection_config_ignores_invalid_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "hls_collection_enabled", True)
+    monkeypatch.setattr(main, "hls_collection_exclude_platforms", 12345)
+    assert _hls_selection_config() == (True, ())
+
+
+def test_select_source_url_survives_missing_hls_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 配置全局缺失时不再抛 AttributeError 中断选源，按安全默认（启用 HLS）正常完成选源
+    monkeypatch.delattr(main, "hls_collection_enabled", raising=False)
+    monkeypatch.delattr(main, "hls_collection_exclude_platforms", raising=False)
+    with patch("src.stream_select.httpx.Client", _HlsDeadFlvLiveClient):
+        result = select_source_url({"m3u8_url": _M3U8_URL, "flv_url": _FLV_URL, "record_url": _FLV_URL}, platform=None)
+    assert result == _FLV_URL
 
 
 # ---- select_source_url 的 HLS 末位判定 ----
@@ -492,7 +731,9 @@ def test_non_backoff_platform_keeps_retry_semantics(clear_probe_backoff: None) -
     cls2 = _m3u8_client_cls([206, 206], ["application/vnd.apple.mpegurl"] * 2)
     with patch("src.stream_select.httpx.Client", cls2), patch("src.stream_select.time"):
         assert _validate_stream_url(_M3U8_URL, platform="斗鱼直播", last_resort=False) is True
-    assert cls2.get_calls == 1
+    # 2 次 GET = 1 次 Range-GET（206 首次即通过）+ 1 次分片层探测的播放列表 GET
+    # （2026-09-13 斗鱼 hw 事故修复新增的一跳，见上方 test_m3u8_range_get_retry_passes）。
+    assert cls2.get_calls == 2
 
 
 def test_select_source_url_huya_backoff_round_straight_to_ffmpeg(clear_probe_backoff: None) -> None:

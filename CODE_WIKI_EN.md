@@ -1584,6 +1584,209 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 
 ## Changelog
 
+### v4.2.0-dev (2026-09-14) — Repository metadata / ignore-rule source-of-truth sync + four-language catalog consistency fix
+
+**Change summary**: A full consistency audit and sync of nine configuration/metadata files under the
+"single source of truth + shared-source maintenance" rule, plus a content fix in the British English
+catalog. **No functional code changed** this cycle — everything is configuration, documentation and
+localization resources. All gates stayed green after the change (pytest 974 passed / 2 skipped,
+black clean across all 134 files, isort clean, `check_annotations` fully passing,
+`scripts/check_version.py` PASS, `scripts/compile_po.py --check` byte-level in sync).
+
+#### 1. Module-classified
+
+- **pyproject.toml (exclude lists completed)**: `logs` was only present in black's exclude and missing from
+  isort / mypy / basedpyright / coverage; `backup_config` existed only in the two ignore files and in none of
+  the five tool exclude lists. Both are now aligned to one shared list:
+  - `[tool.black].exclude`: added `backup_config` (`logs` / `downloads` already present)
+  - `[tool.isort].extend_skip`: added `logs`, `backup_config`
+  - `[tool.mypy].exclude`: added `logs`, `backup_config`
+  - `[tool.basedpyright].exclude`: added `**/logs`, `**/backup_config`
+  - `[tool.coverage.run].omit`: added `*/downloads/*`, `*/logs/*`, `*/backup_config/*`
+  - Each of the five now carries a "runtime output dirs (maintained together with .gitignore/.dockerignore)" comment.
+
+- **.coveragerc-concurrency (aligned with pyproject coverage omit)**: `omit` gained `*/downloads/*`, `*/logs/*`,
+  `*/backup_config/*`. This file is the second copy of the same list and only covered `node` / `ffmpeg` before.
+
+- **.gitignore (stale entries cleaned)**: the "temporary / in-progress docs" section enumerated
+  `PERF_REVIEW_2026-08-28.md` (plus `CODE_CHANGES.md` / `TRAE_AGENT_CODE_WIKI.md`); none of these files exist in
+  the workspace any more, and per-file enumeration keeps rotting. Replaced with the `PERF_REVIEW_*.md` glob and a
+  comment stating that `CODE_WIKI*.md` / `CODE_REVIEW_FIX_1.md` / `DIAGNOSIS_*.md` are **formal docs shipped with
+  the repo** and must never be gitignored.
+
+- **.dockerignore (same cleanup + new docs covered)**: the docs section likewise dropped the non-existent
+  `bili_danmuku_proxy.md` / `danmaku_check.md` / `todo.md` / `PERF_REVIEW_2026-08-28.md` in favour of three globs
+  (`PERF_REVIEW_*.md`, `CODE_REVIEW_*.md`, `DIAGNOSIS_*.md`), so new root-level docs of the same kind are excluded
+  automatically; the temp-files section gained `*.jsonl` (`logs/danmaku_monitor.jsonl` and friends).
+
+- **Dockerfile**: the "not copied into the image" list above `COPY --chown=recorder:recorder . ./` was an
+  item-by-item enumeration that had drifted from the real .dockerignore. Rewritten as the four .dockerignore
+  groups (tests & tooling / docs / runtime output / platform binaries & local scripts) with a pointer that new
+  docs are covered by the .dockerignore globs, so the two files can no longer rot independently.
+
+- **docker-compose.yaml**: header comments gained two facts — (1) the repo ships no `.env` (it is gitignored),
+  so it must be created before first use; (2) the four host-side volume dirs (`config` / `downloads` / `logs` /
+  `backup_config`) are auto-created by Docker on the first `docker compose up`, all four are gitignored and
+  dockerignored, and the container-side counterparts are pre-created by the Dockerfile's
+  `mkdir -p logs downloads backup_config`. The `APP_VERSION=4.2.0` example already matches pyproject; unchanged.
+
+- **AGENTS.md**:
+  - *Project structure*: added `.gitignore` / `.dockerignore` entries; added the three runtime dirs — `logs/`
+    (`streamget.log` / `PlayURL.log` / `danmaku_monitor.jsonl` / `web_console.log`), `downloads/`, `backup_config/`;
+    added `CODE_REVIEW_FIX_1.md` to the root docs.
+  - *CI / workflow conventions → dockerignore / gitignore shared-source rule*: extended the must-sync list with
+    `downloads/` / `logs/` / `backup_config/`, recorded the four tool excludes completed this cycle, and noted that
+    review/analysis docs go through .dockerignore globs but must never be gitignored.
+
+- **requirements.txt**: **no change**. All 20 runtime dependencies verified identical to
+  `pyproject.toml [project.dependencies]`, including the F-14 `protobuf>=6.31.1,<8` upper bound and the
+  `websockets>=14.0` lower bound.
+
+- **config/config.ini**: **no change**. An AST scan of config keys read by the code versus the keys actually present
+  showed every difference to be either configparser `optionxform` case-insensitive matching
+  (`是否使用SMTP服务SSL加密` ↔ `是否使用smtp服务ssl加密`) or a merged legacy key
+  (`是否强制启用https录制`, `是否禁用SSL证书验证(是/否)`, `虎牙是否禁用SSL证书验证(是/否)`).
+  The F-10 `tiktok_guest_cookie` key is in place.
+
+#### 2. Localization (four-catalog consistency)
+
+- **i18n/en_GB.json (content bug fix, 21 entries)**: 21 entries had **Traditional Chinese values** — zh_TW
+  translations mistakenly written into the British English catalog. They covered danmaku parse-error messages
+  (`[弹幕]后台协程异常`, `[B站弹幕]帧解析异常`, `[抖音弹幕]弹幕解析异常`, `[斗鱼弹幕]帧解析异常`, `[虎牙弹幕]帧解析异常`, 7 total)
+  and the ffmpeg / Node.js installer SHA256 verification messages (14 total). Refilled with British English per the
+  standing rule "en_GB differs from en_US only in spelling" (none of these entries has an `-ize/-ization` variant).
+- **Audit result (catalogs now aligned)**: `zh_CN(.mo)` / `en_US.json` / `en_GB.json` / `zh_TW.yaml` all hold
+  **594 entries** with zero key-set differences pairwise; no Chinese left in `en_US` / `en_GB`; no untranslated
+  entries in `zh_TW` (the 5 entries identical to zh_CN contain no simplified-only glyphs, so they are correct).
+  `scripts/extract_i18n_strings.py` reports **0 missing runtime strings**.
+- **i18n/zh_CN/LC_MESSAGES/zh_CN.mo**: recompiled (595 entries including the header, 72,886 bytes);
+  `scripts/compile_po.py --check` passes byte-level.
+- The frontend `web/app.js` embedded catalogs (independent from the Python side) were checked too: 49 keys in each
+  of the four languages, consistent, unchanged.
+
+#### 3. Verification
+
+- `scripts/check_version.py`: PASS (pyproject 4.2.0 is the single source of truth; the Dockerfile receives it via
+  the `APP_VERSION` build arg; no hardcoded version).
+- `scripts/compile_po.py --check`: OK (595 entries in sync).
+- `scripts/extract_i18n_strings.py`: 0 missing runtime strings.
+- `black --check --line-length 120 --target-version py314 .`: 134 files clean; `isort --check-only`: clean.
+- `pytest`: 974 passed / 2 skipped / 0 failed; `mypy` clean for all touched files (3 remaining warnings are
+  pre-existing in files not touched).
+
+### v4.2.0-dev (2026-09-13) — Douyu "SRT-only, no video" root-cause + HLS segment-layer false-green probe + source-selection hardening (config fallback / observability / same-origin candidate)
+
+**Change summary**: Located and fixed the "danmaku SRT only, no video file" failure on Douyu and similar platforms. Root cause: the HLS playlist layer always returns 200, but the edge-node media segments (`.ts`) all return 404, so ffmpeg pulls zero media segments and produces zero bytes; the danmaku pipeline depends only on `room_id` and is decoupled from the video pipeline, so the SRT is still written — the symptom is "SRT only, no video". After the prior cycle added the segment-layer probe `_probe_hls_segment` in `src/stream_select.py`, this cycle closes its test-red and i18n gaps, and lands the three hardening directions from `DIAGNOSIS_DOUYU_NO_VIDEO_2026-09-13.md` (config fallback / observability / same-origin candidate), plus fixes one pre-existing `check_annotations` violation. Gate pytest **944 passed**.
+
+#### 1. Module-classified
+
+- **src/stream_select.py (segment-layer probe, from prior cycle, stabilized this cycle)**:
+  - `_probe_hls_segment()`: GET the playlist → follow the master variant → probe the **last segment** with `Range bytes=0-0`; an explicit 4xx/5xx at the segment layer means unreachable (false-green), 200/206 means reachable; when no segment can be parsed, **fail open conservatively** (only trust "segment probed and explicitly rejected with 4xx/5xx").
+  - Wired into `_validate_stream_url`: both the HEAD-non-2xx path and the Range-GET-200 path call the segment probe before declaring reachable, decoupling "playlist 200" from "recordable".
+
+- **src/stream_select.py (source-selection hardening, three new functions this cycle)**:
+  - `_hls_selection_config()` (config fallback): reads `main.hls_collection_enabled` / `main.hls_collection_exclude_platforms` via `getattr(..., default)`, default `enabled=True` / `exclude=()`; tolerates comma strings (`"a,b"`→`("a","b")`), ignores non-list/non-string types and reports a missing global, avoiding an `AttributeError` that would interrupt source selection.
+  - `_same_origin_flv(hls_url, flv_candidates)` (same-origin candidate): compares the `?`-stripped path and treats `.m3u8`↔`.flv` as interchangeable to find the FLV candidate sharing the HLS token, used as a fallback when all HLS segments are dead.
+  - `_log_source_choice(platform, kind, url)` (observability): a single-line log `选源结论: platform={platform} 采用 {kind} 源: {url}`, plus logs at three spots — "HLS segments all dead, falling back to same-token FLV", "pick hit", and "no usable source this round" — so the false-green→fallback path is observable.
+  - `select_source_url`: direct reads of `main.hls_collection_enabled` / `main.hls_collection_exclude_platforms` replaced by `_hls_selection_config()`; a warning log on same-origin FLV fallback, `_log_source_choice` on pick, and a "no usable source" conclusion log on total failure.
+
+- **tests/test_stream_select.py (tests)**:
+  - Fixed 2 pre-existing failures: the segment probe adds one GET, so `get_calls == 2/1` became `== 3/2`; fake responses gained `.text` and fake clients gained `close()`.
+  - Added 5 segment-probe tests: `test_hls_segment_404_rejects_playlist` / `test_hls_segment_200_stays_reachable` / `test_hls_segment_404_last_resort_released` / `test_hls_empty_media_playlist_conservative_pass` / `test_select_source_url_falls_back_to_flv_when_hls_segments_dead`.
+  - Added 10 hardening tests: `_same_origin_flv` match/None/ignore-query triples + `test_select_source_url_logs_same_origin_flv_fallback` / `test_select_source_url_logs_choice_on_pick` / `test_select_source_url_logs_no_usable_source` / `test_hls_selection_config_defaults_on_missing_globals` / `test_hls_selection_config_normalizes_comma_string` / `test_hls_selection_config_ignores_invalid_type` / `test_select_source_url_survives_missing_hls_config`. This file **52 passed**.
+
+- **tests/test_start_record_command_golden.py (annotation-convention fix)**:
+  - Fixed the 1 pre-existing `scripts/check_annotations.py` violation: the triple-quote docstring on `class _Cap:` became a `#` line comment above the class (semantics unchanged, complying with AGENTS.md "use `#` comments, no triple-quote docstrings"); `black --line-length 120 --target-version py314` also reformatted 1 hunk of this file.
+
+- **i18n four catalogs (+8 new strings)**:
+  - `i18n/zh_CN/LC_MESSAGES/zh_CN.po` appended two dated blocks (2026-09-13, 5 segment-probe + 3 hardening strings), then `python scripts/compile_po.py` recompiled `zh_CN.mo` (byte-level gate passed).
+  - `i18n/en_US.json` / `i18n/en_GB.json` each gained 8 keys (segment-probe + hardening); `i18n/zh_TW.yaml` gained the same 8 keys in Traditional Chinese. The four catalogs share one keyset (`tests/test_i18n::test_catalogs_share_same_keyset` passes).
+
+- **DIAGNOSIS_DOUYU_NO_VIDEO_2026-09-13.md (new diagnostic report)**: full record of problem overview, video/danmaku decoupling structure, investigation timeline and evidence, root cause, fix plan (source fix / tests / i18n / hardening / annotation violation), diagnostic approach, verification, lessons, and references.
+
+#### 2. Known / untouched black violations
+
+- `main.py` and `tests/test_start_record_command_golden.py` still report as non-compliant under `black --check --line-length 120 --target-version py314 .` (both pre-existing diffs, not introduced this cycle). This cycle formatted only `src/stream_select.py` (fault-repair lineage); `main.py` and the golden test were **deliberately left untouched** — blackening the golden test would explode the `_build_cases` table key-by-key, spiking the line count and possibly dropping comment density below the `check_annotations` 13.0% threshold. See report §5.4.
+
+#### 3. Verification
+
+- pytest **944 passed / 2 skipped / 0 failed** (up 10 from the prior 934); `scripts/check_annotations.py` exit code 0; `isort --check-only` clean; `src/stream_select.py` `black --check` passed.
+- Gate bar: pytest 0 warnings, black len120, isort black profile, mypy strict, basedpyright. End-to-end real-machine verification (re-record Douyu room with a fresh URL) pending.
+
+### v4.2.0-dev (2026-09-13) — CODE_REVIEW_FIX_1 leftover batch fix (22 landed + 3 deferred) + repository metadata sync
+
+**Change summary**: This cycle completed the second/third-batch remaining items of `CODE_REVIEW_FIX_1.md` (F-01~F-25) — 22 items landed, 1 clarified (F-08), 3 deferred (F-01/F-12/F-13) — with the gate at pytest **909 passed**. The repository metadata (AGENTS.md / docker-compose example version) was then aligned to the `pyproject.toml` single source of truth 4.2.0, and the `tiktok_guest_cookie` key was added to `config.ini` for the F-10 config-override path. The four-language i18n catalogs were recompiled to `zh_CN.mo` (587 entries) after the previous top-up.
+
+#### 1. Module-classified landed items (FIX_1)
+- **main.py**: F-02 removed dead imports `converts_m4a`/`segment_video` (functions kept in `src/video_postprocess.py`, still unit-tested); F-03 `direct_download_stream`'s `finally` now only cleans up zero-byte leftovers when `_downloaded == 0`, preserving any already-downloaded content (consistent with the ffmpeg path).
+- **gui.py** (F-04~F-07/F-09): session token `_session_id` auto-increment plus `_read_output`/`_wait_and_update_ui`/`_process_ended`/`_on_recording_stopped` validation closure, eliminating the "stop then immediately restart" stale-callback regression; quality table `_update_quality_display` now strips `_QUALITY_NON_DISPLAY_FIELDS` (`last_seen`/`recording`) before comparison to stop per-round rebuild flicker; crash sink `_install_crash_sink()` and everything before it must not `import src`; atomic write implemented locally in gui (never `import src.config_io` — that module does `import main` at module level, which would trigger main init inside the GUI process).
+- **msg_push.py** (F-24): the ntfy test call could fire a real push on an uncommented path — now guarded/commented per channel; SSE endpoint `/api/status/stream` kept (documented as a public contract in README) but now does `await request.is_disconnected()` + terminates after 5 consecutive failures.
+- **src/ffmpeg_install.py / scripts/node_install.py** (F-17/H-1): added `_sha256_of_file` + `_check_or_record_zip_sha256` (trust-on-first-use); LanZou supports the `FFMPEG_LANZOU_SHA256` forced comparison; zip validated with `zipfile.is_zipfile` (re-download on corruption); `check_ffmpeg_installed` carries `timeout=15`.
+- **src/web_api.py** (F-20): SSE endpoint footprint fixed (as above); list_files dangling/escape-root symlink crash and info leak re-verified.
+- **web/app.js** (F-21): the standalone inline four-language catalog (zh_CN/en_US/en_GB/zh_TW) must be updated in all four places; after changes run `node --test tests/frontend/*.mjs` (6 cases) and `node --check web/app.js`.
+- **web.py** (F-22): `/api/status/stream` kept and fixed (as above).
+- **src/web_config.py** (F-23): inline comment quote-priority (quote-wrapped values split after the closing quote; falls back to `" #"`/`" ;"` heuristics); added `_config_write_lock` atomic write (H-6).
+- **src/utils.py** (F-16/F-25): `read_ini_value(file_path, section, key) -> str|None` (no write-back), old name kept as a compat alias, distinct from the config_io homonym; zip-bomb protection (4GB per file, 8GB cumulative, 100x ratio); JS signature-script hash pinning `_JS_SHA256_EXPECTED` (7-script baseline) + `get_compiled_js` compares raw bytes, warns by default and `DLR_JS_STRICT_HASH=1` refuses execution.
+- **src/spider.py** (F-10/F-11/F-19): `_read_tiktok_guest_cookie` must be inserted above the `@trace_error_decorator` (inserting between "@decorator + def" hijacks the decorator — exposed by 2 TikTok test failures); multi-arg print→logger uses string concatenation (`"x " + str(e)`) to avoid tripping the i18n scanner; ab_sign random segment defaults to `random.random()`, `DLR_AB_SIGN_FIXED_RANDOM=1` falls back to a fixed value.
+- **src/sync_http.py** (F-12): SSL allow-list needs a platform domain list — deferred.
+- **requirements.txt / pyproject.toml** (F-14 actionable part): `protobuf` capped `<8` (douyin_pb2 is a protoc 25.x artifact; cross-major runtime upgrades risk breakage, and a same-generation protoc regen is required before upgrading — unavailable in this env).
+
+#### 2. Clarified & deferred items
+- **F-08 (AGENTS.md annotation convention clarified)**: the original "black-enforced" rationale was wrong — measured `except (ValueError, TypeError) as e:` still passes `black --check` unchanged, and all 9 existing parenthesized sites pass the gate. **black accepts both styles**; uniform no-parentheses is a style convention, not a formatting mandate. Written into AGENTS.md; external-review suggestions to add parentheses contradict the convention and are not adopted.
+- **F-01 completed (2026-09-13)**: start_record split (unify the 5 ffmpeg command-construction paths). Landed golden-snapshot test `tests/test_start_record_command_golden.py` (20 cases + `tests/golden/start_record_commands.json`) that freezes time/network/IO and compares the `ffmpeg_command` captured at `check_subprocess` byte-for-byte; then collapsed the 5 inline `command = [...]` blocks into module-level `_build_ffmpeg_output_args(save_file_path, record_save_type, split_video_by_time, split_time, is_audio=False)` (audio MP3/M4A + video TS/FLV/MKV/MP4). Input-level options and `save_file_path`/`now` construction stay in `start_record`. Re-running the golden test: 20/20 green, byte-identical to pre-refactor. See the "F-01 completed" subsection below and the matching AGENTS.md regression entry.
+- **F-12 deferred**: SSL allow-list needs a platform domain list.
+- **F-13 deferred**: Douyin signature not URL-encoded, consistent with upstream dart — must capture upstream behavior before changing, do not blind-fix.
+- **F-19 pending real-machine verification**: Douyin nonce de-dup check.
+
+#### 2b. F-01 completed — start_record recording-command construction split (2026-09-13)
+
+**Background**: `main.start_record` inlined a `command = [...]` ffmpeg output-arg list in each of five branches (audio MP3/M4A, FLV, MKV, MP4, TS). Those 5 copy-pasted lists were exactly the root cause of the historical "`-segment_format` literal mis-match" P0 silent mis-encapsulation (TS wrongly `ipod`, M4A wrongly `mpegts`) — change one, the other four drift.
+
+**Approach**:
+1. Land a golden-snapshot test first (no logic touched): `tests/test_start_record_command_golden.py` freezes time (`datetime`/`time` dual-mock, avoiding the `time.strftime` recursion trap), mocks network/IO/subprocess, captures the `ffmpeg_command` at `check_subprocess` and the direct-download args at `direct_download_stream`; `GOLDEN_REGEN=1` regenerates baseline `tests/golden/start_record_commands.json`, default compares byte-for-byte. 20 cases cover the 5 command paths + m3u8 dropping `-reconnect_at_eof` + header/proxy injection + overseas timeouts + FLV-h265→TS + shopee direct-download.
+2. Collapse the 5 inline lists into module-level `_build_ffmpeg_output_args(...)`. Container mapping always reads `SEGMENT_FORMAT_BY_SUFFIX` (zero literals); `is_audio` selects pure-audio (MP3→libmp3lame / else aac+ipod), video dispatches TS/FLV/MKV/MP4 by `record_save_type`, segmented mode fills `-segment_format`, non-segmented gives the container directly. Input-level options and `save_file_path`/`now` construction remain in `start_record`, keeping the builder a pure output-arg assembler that is independently testable and behavior-reversible.
+3. Re-run golden: 20/20 green, ffmpeg command byte-identical to pre-refactor; full `pytest` **929 passed / 2 skipped / 0 failed**.
+
+**Regression locks**: `tests/test_start_record_command_golden.py` (byte-level) + the matching AGENTS.md regression entry (no more inline `command = [...]`).
+
+#### 2c. Closing batch — F-01 finished / F-12 / F-13 / F-14 (2026-09-14)
+
+All 25 items of `CODE_REVIEW_FIX_1.md` are now closed (F-08 was a clarification). Gates: `pytest 974 passed / 2 skipped / 0 failed`; black(120) + isort(black) clean repo-wide; `check_annotations` fully passing (avg density 22.1%); basedpyright 0 errors on touched files; mypy 0 errors for `main.py`, `src/sync_http.py`, `src/platforms/douyin.py` and all new test files.
+
+- **F-01 stage 2 (single definition point for command construction)**: added `_build_ffmpeg_input_args()` (input-side `-reconnect*` / `-headers` / `-tls_verify` / `-http_proxy`, anchored on `-i`, no bare indices) and `_build_record_output_path()` (extension / split timestamp format / index placeholder collapsed into three lookup tables: `_EXTENSION_BY_SAVE_TYPE`, `_SEGMENT_NOW_FORMAT_BY_SAVE_TYPE`, plus the FLV non-split `_00` suffix). Four **identical** `_build_ffmpeg_output_args` calls in the audio branch (copy-paste residue) collapsed into one. Overseas timeout/buffer tuning extracted to `_ffmpeg_network_tuning()`.
+- **F-01 stage 3 (execution skeleton)**: `_run_ffmpeg_record()` unifies try/except OSError + `check_subprocess` + clearing the ghost `recording` entry on startup failure; `_convert_after_record()` unifies post-record MP4 conversion (returns immediately when conversion is off; segments matched by the `_<digits>.<ext>` regex, which also covers ffmpeg `%03d` overflowing to 4 digits past 999 segments). Five duplicated skeletons down to one.
+- **F-01 stage 4 (table-driven platform dispatch)**: `_resolve_platform_stream`'s 53-level `elif` chain replaced by `_PLATFORM_RESOLVERS` — a `(matcher, handler)` table with 52 per-platform `_resolve_<host>()` functions sharing a `_PlatformResolveContext`; `_match_host()` preserves the original `record_url.find(fragment) > -1` semantics and custom stream addresses use `_match_stream_suffix()` (lowercased `.m3u8` / `.flv`). Adding a platform is now one handler + one table row.
+  - **Equivalence check**: a 105-case dispatch snapshot (platform name / port_info keys / danmaku args / new_record_url / spider+stream call sequence, each in both no-proxy and proxied variants to cover conditional branches such as LiveMe) was captured before and after the refactor; 103 cases matched item-for-item, the only 2 diffs being the random `uuid4()` session id of custom-stream anchors. New `tests/test_platform_dispatch.py` (16 cases) locks table shape, priority head, custom-stream case-insensitivity, and the "a new platform only needs one table row" extension point.
+- **F-01 side fix (behaviour drift)**: non-segmented TS unconditionally spawned an MP4 conversion thread when the URL was commented out / recording stopped, ignoring the user's "convert to MP4 after recording" setting — the segmented-TS path and the natural-end path in `check_subprocess` both honour it; this fifth copy was the only one that did not. Now governed by `converts_to_mp4`.
+- **F-01 side fix (display)**: the "preparing to record" line for segmented recording used to print the *non-segmented* file name (FLV/MKV/MP4 with the old timestamp, TS with the new one — three mutually inconsistent shapes). It now prints the basename of the real output path.
+- **F-12 (sync_http SSL scoping)**: the CERT_NONE context and opener are now built **lazily** instead of at import time; `sync_req(..., ssl_verify=None)` adds a per-request override that is threaded through both the urllib and the requests (proxy) paths. **Also corrects the 2026-09-12 risk description**: all 123 `sync_req` call sites live in `src/spider.py`; login, `msg_push.py` notifications and the web panel never go through this module, and the control-plane switch `http_config.ssl_verify` has no `set_ssl_verify(False)` call site in production (it is always True) — the CERT_NONE path is unreachable in production, so the risk is a misuse surface rather than a live exposure. 6 new regression cases.
+- **F-13 (Douyin signature encoding) — conclusion: keep it unencoded**. Verified against upstream `xiaoyaocz/dart_simple_live`, `simple_live_core/lib/src/danmaku/douyin_danmaku.dart` (~line 88: `var url = "$uri&signature=$sign";`) — plain concatenation, no `encodeComponent`, byte-identical to this repo. The XBogus custom alphabet does contain `+` / `/`, but the server does not decode `+` as a space (otherwise ~40% of signatures would fail systematically) and a WebSocket handshake URL is parsed as a standard query with percent-decoding; adding `quote()` would only make this client the lone outlier fingerprint. Rationale recorded in `src/platforms/douyin.py` and locked by `tests/test_douyin_signature_encoding.py` (4 cases).
+- **F-14 (protobuf compatibility guard)**: protoc / grpcio-tools are still unavailable here, so `douyin_pb2.py` is not regenerated (it is DO NOT EDIT). Instead failure is moved into CI: `tests/test_proto_runtime_compat.py` parses the gencode version (4.25.3) from the generated file header and the declared range (`>=6.31.1,<8`) from `requirements.txt`, then asserts (1) the range **must have an upper bound**, (2) the installed runtime satisfies it, (3) the runtime is not older than gencode, and (4) `douyin_pb2` imports and round-trips a `PushFrame`. Current runtime 7.36.1 passes; an 8.x upgrade turns the test red with a "regenerate with a same-generation protoc first" hint.
+- **Side finding (outside the report)**: in `main.py`, the monitor-only (`disable_record`) + push-check branch used `main.recording_enabled` — but module-level `main` in this file is the entry-point *function*, not the module object, so that expression always raises `AttributeError`. The `main.` prefix was dropped so the module globals are read directly (exactly the late-binding semantics the comment intended); mypy's 3 `attr-defined` errors dropped to 0.
+
+#### 3. Repository metadata sync (Task 1/2)
+- `AGENTS.md` version `4.1.0` → `4.2.0`; `docker-compose.yaml` example `APP_VERSION=4.1.0` → `4.2.0`; `config/config.ini` gained `tiktok_guest_cookie = ` after `tiktok_cookie` in `[Cookie]` (F-10 config-override key slot).
+- The four-language catalogs (zh_CN.po / en_US.json / en_GB.json / zh_TW.yaml) were topped up in the prior cycle (587 entries, **0 missing**); this cycle recompiled `zh_CN.mo` via `scripts/compile_po.py` (587 entries / 71594 bytes), `--check` passed.
+
+#### 4. Verification
+- pytest **974 passed / 2 skipped / 0 failed** (includes 20 F-01 golden-snapshot cases); frontend `node --test tests/frontend/*.mjs` 6 passed; `black --check` / `isort --check-only` / `py_compile` all green; `check_annotations` 0 violations; `compile_po --check` rc=0.
+- Gate bar: pytest 0 warnings, black len120, isort black profile, mypy strict, basedpyright. End-to-end real-machine verification (F-19 Douyin nonce) pending.
+
+### v4.2.0-dev (2026-09-12) — Full code-review fix (P0+P1+P2 plus + network/platform/scripts gates + i18n top-up, ~120 items)
+
+**Summary**: Completed the P0/P1/P2 plus-items and the H-2/H-3/H-4/H-5/H-6 high-severity items from `CODE_REVIEW_2026-09-12.md` (~120 items: 3 critical + 6 high + ~40 medium + ~70 low), spanning security (SHA256 pinning, atomic writes, zip-bomb protection), robustness (concurrency locks, circuit breaking, proxy/SSL), deployment (Dockerfile no longer `curl|bash`), frontend (SSE, CSP), and test gates (five-script comparison gates). i18n migrated 10 f-string→`i18n.tr`, added 21 runtime templates to the four catalogs, recompiled `zh_CN.mo` to 566 entries.
+
+#### 1. Module-classified
+- **Security/deps**: H-1 SHA256 pinning (`scripts/ffmpeg_install.py`+`scripts/node_install.py` `_sha256_of_file`/`_check_or_record_zip_sha256`, LanZou `FFMPEG_LANZOU_SHA256`); C-1 blacklist bypass (web_api `req.key.strip()` + `_DANGEROUS_CONFIG_KEYS_FOLDED`); utils zip-bomb protection (4GB per file, 8GB cumulative, 100x ratio).
+- **Concurrency/network**: H-2 singleflight (`src/cookie_cache.py`) isolates lock-in-await + gui.py 6.2 full fix (SMTP header injection `_reject_smtp_newline`, session token, quality-table dedup); 6.3 network layer — URL scheme allow-list `is_safe_http_url` wired, JS/subprocess execution via `utils.run_js_async`/`run_node_script_async`, async_http second-check-before-write, sync_http `data is not None`, room.py three AsyncClient sites `verify=ssl_verify`; 6.4 platform layer — Huajiao config write-back only for confirmed failures, base.py `DanmakuBase._on_reconnect()`, ws_client poison-message isolation.
+- **Platform fixes**: C-2 Douyu sticky-packet (`offset += full_len + 4`); C-3 only_fans=False; H-4 Bilibili watchdog `spawn_danmaku_task(self._auth_watchdog(self._ws))`; H-5 Shopee clear path (finally `_not_record_prefix`); H-3 `websockets>=14.0`.
+- **Robustness**: H-6 atomic write (config_io `_atomic_write_text` + web_config `_config_write_lock`); stream.py `_pad_list` min_length=6 + Douyin downgrade m3u8 clamp; converts_mp4 `-n`; standalone two-stage terminate (terminate→wait(3s)→kill); +60s backoff else deleted; 6 ffmpeg paths gained `record_finished=True` to trigger the post-record 30s quick-check; 6 `except subprocess.CalledProcessError` → `except OSError` + `recording.discard`.
+
+#### 2. i18n & gates
+- i18n: 10 f-string logs → `i18n.tr`; 21 runtime templates added to zh_CN.po/en_US.json/en_GB.json/zh_TW.yaml (idempotent script `scripts/patch_i18n_2026_09_12.py`); `zh_CN.mo` recompiled 566 entries / 68306 bytes.
+- Gate scripts: sync_version.check_all "match-first-then-equal", check_coverage fuzzy match tightened, smoke_test utf-8-sig + `_NoRedirectHandler` + `_safe_print`; check_annotations `--snapshot` rmtree guard (never list `Path(os.sep)` as a system dir).
+- Verification: pytest 907 passed / 2 skipped; black/isort all green; check_annotations 0 violations; py_compile all green.
+
 ### v4.1.0-dev (2026-09-11) — Disable `-reconnect_at_eof` for HLS(m3u8) inputs: fixes live recording producing only subtitles and no video (P0, overturns previous open observation)
 
 **Change summary**: With `-reconnect_at_eof 1`, an HLS(m3u8) input makes ffmpeg reconnect infinitely at the playlist layer, keeping the child process alive while producing zero bytes of video — the real-world failure looked like "live recording saved only the danmaku SRT, no video file". The previous entry (`Fix recording startup failure (-22 EINVAL) caused by missing values on ffmpeg -reconnect* options`) ended with an open observation that "live playlists have no ENDLIST so it never triggers / intended semantics" — **that was disproven by measurement: the end of the HTTP response of the m3u8 playlist itself is an EOF**. The option makes the http layer reconnect forever right after the playlist is fully downloaded (backoff 1/3/7/15/31s, no retry cap), so the hls demuxer never leaves the "waiting for playlist" stage and never pulls a single media segment. Fix: strip the option pair when the input is m3u8, keep it for FLV inputs.
@@ -2488,6 +2691,36 @@ Since this repo is not a git checkout, there was no HEAD to diff against. Instea
 - `docs/web-recording-control-changelog.md`: feature change summary and follow-up-item closure record (review fixes detailed in section 3.4).
 - `docs/security-triage-2026-08-29.md`: gate-alert triage details and the two release paths.
 - v4.0.9.1-dev (2026-08-27) "Recording Result Feedback Scheduler" — stop-period error-sample isolation builds on its `record_error`/`record_success` semantics; the existing `check_subprocess` early-interrupt mechanism (flush danmaku before terminating ffmpeg) is pre-existing behavior; this feature only adds `recording_enabled` to its trigger condition.
+
+### v4.0.9.2-dev (2026-08-29) — GUI Parent-Process Log-Handle Isolation: Fixes streamget.log Rotation WinError 32 and Total Loss of Recording Logs
+
+**Problem**: In GUI mode the GUI process (`gui.py`, which initialises the file sink through the
+`src.web_config → src/__init__ → src.logger` import chain) and the recording child process (`main.py`)
+both held loguru file sinks on `logs/streamget.log`. Any process reaching the rotation threshold
+(`rotation="300 KB"`, loguru uses base-1000) renames the file with `os.rename` first; with the other
+side's handle still open this raises `PermissionError WinError 32`. Rotation then never succeeds and
+**that process silently loses all of its file logging from that point on**, while each log record emits
+`Logging error in Loguru Handler #N` to stderr and floods the GUI panel. Measured 2026-08-29:
+`streamget.log` stuck at 300,031 bytes, the recording child's logs lost entirely, file mtime frozen at
+the moment the rotation threshold was crossed.
+
+**Fix** (added in `src/logger.py` / `gui.py` / `tests/test_logger_gui_parent.py`):
+
+- `src/logger.py`: new `GUI_PARENT_ENV = "DLR_GUI_PARENT"` marker evaluated **at import time** — the GUI
+  process writes only its own exclusive `logs/gui.log` (same rotation / retention policy) and never creates
+  `streamget.log` / `PlayURL.log`.
+- `gui.py`: sets the marker **before importing any `src` module** (`src.logger` reads it during import, so the
+  assignment must precede the import); the env used to spawn the recording core (`main.py` / frozen CLI exe)
+  now goes through `child_process_env()`.
+- `tests/test_logger_gui_parent.py` (5 cases): the recording process holds streamget/PlayURL and produces no
+  `gui.log`; the GUI process produces only `gui.log`; "enable log file = no" applies to the GUI as well;
+  `child_process_env` strips the marker and pins UTF-8.
+- `src/stream.py`: completed the `HuyaGameLiveInfo` TypedDict with `bitRate: int` and removed the
+  `# type: ignore[arg-type]` (aligning with the repo's no-ignore convention) — an undeclared key degrades to
+  `object` via `.get()`, which newly failed under strict checking.
+
+**Note**: a second recording process started manually will also interlock with the GUI child; concurrent
+multi-instance recording remains a usage limitation.
 
 ### v4.0.9.2-dev (2026-08-28) — Performance Review Optimization Landed (P1~P5 + Probe-Client Reuse + Backoff-Window Self-Healing + Web Log-Sink Rebuild + Huya FLV-first)
 
