@@ -22,7 +22,10 @@ import json
 import os
 import sys
 import threading
+from collections.abc import Generator
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -63,7 +66,7 @@ _COOKIE_GLOBALS = [
 
 
 @pytest.fixture(scope="module")
-def main_mod():
+def main_mod() -> ModuleType:
     # 与 test_main_fixes 一致：导入前把 sys.argv[0] 钉到 main.py，否则 _app_root 解析错路径。
     old_argv = sys.argv[:]
     sys.argv = [str(_REPO_ROOT / "main.py")]
@@ -99,7 +102,7 @@ _CASE_DEFAULTS = {
 }
 
 
-def _case(case_id: str, **overrides) -> dict:
+def _case(case_id: str, **overrides: Any) -> dict[str, Any]:
     # 构造一条用例：defaults 覆盖顺序在后，case_id 作为黄金基准的键名
     case = dict(_CASE_DEFAULTS)
     case.update(overrides)
@@ -107,7 +110,7 @@ def _case(case_id: str, **overrides) -> dict:
     return case
 
 
-def _build_cases():
+def _build_cases() -> list[dict[str, Any]]:
     # 用例清单按「分支」分组，组间空行 + 注释标明该组要锁住的行为不变量
     cases = [
         # —— TS（else 分支）：非分段 / 分段 / m3u8（删 -reconnect_at_eof）——
@@ -177,7 +180,7 @@ _CASES = _build_cases()
 _GOLDEN_IDS = [c["id"] for c in _CASES]
 
 
-def _setup_case(main, monkeypatch, case):
+def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[str, Any]) -> _Cap:
     cap = _Cap()
 
     # —— 钉死所有录制状态 / 配置全局量 ——
@@ -253,12 +256,14 @@ def _setup_case(main, monkeypatch, case):
     monkeypatch.setattr(main.time, "time", lambda: 1_000_000.0)
 
     class _FrozenDateTime(datetime.datetime):
+        # 返回类型标 Any：typeshed 中 datetime.now/today 返回 Self，标具体类型会触发
+        # override 不兼容告警（测试内冻结类，无需精确覆写签名）
         @classmethod
-        def today(cls):
+        def today(cls) -> Any:
             return _FIXED
 
         @classmethod
-        def now(cls, tz=None):
+        def now(cls, tz: datetime.tzinfo | None = None) -> Any:
             return _FIXED
 
     # datetime.datetime 是 C 类型，不能 setattr 类方法；整体替换为冻结子类。
@@ -296,8 +301,14 @@ def _setup_case(main, monkeypatch, case):
     monkeypatch.setattr(main, "get_record_user_agent", lambda *a, **k: None)
 
     def _check(
-        record_name, record_url, ffmpeg_command, record_save_type, custom_script, platform=None, danmaku_args=None
-    ):
+        record_name: str,
+        record_url: str,
+        ffmpeg_command: list[str],
+        record_save_type: str,
+        custom_script: str,
+        platform: str | None = None,
+        danmaku_args: dict[str, Any] | None = None,
+    ) -> bool:
         cap.commands.append(list(ffmpeg_command))
         return True  # comment_end=True → 触发 if comment_end: return，干净退出
 
@@ -305,7 +316,14 @@ def _setup_case(main, monkeypatch, case):
     monkeypatch.setattr(main, "record_success", lambda *a, **k: None)
     monkeypatch.setattr(main, "record_error", lambda *a, **k: None)
 
-    def _dl(flv_url, save_file_path, record_name, record_url, platform, cookies=None):
+    def _dl(
+        flv_url: str,
+        save_file_path: str,
+        record_name: str,
+        record_url: str,
+        platform: str,
+        cookies: str | None = None,
+    ) -> bool:
         cap.downloads.append(
             {
                 "flv_url": flv_url,
@@ -315,7 +333,9 @@ def _setup_case(main, monkeypatch, case):
                 "platform": platform,
             }
         )
-        main.exit_recording = True  # 直下路径无 check_subprocess，靠退出标志干净退出
+        # 用 setattr 而非 main.exit_recording = ...：main 已标注为 ModuleType，
+        # 直接属性赋值会被 mypy 判 attr-defined（该全局量在 main() 中才绑定）
+        setattr(main, "exit_recording", True)  # 直下路径无 check_subprocess，靠退出标志干净退出
         return True
 
     monkeypatch.setattr(main, "direct_download_stream", _dl)
@@ -333,7 +353,7 @@ def _setup_case(main, monkeypatch, case):
 
     # logger.error 在 start_record 的 except 中被调用且 loguru 队列会卡死，
     # 这里同步落盘以便看到真实异常（排查循环根因用）。
-    def _sync_err(msg, *a, **k):
+    def _sync_err(msg: object, *a: Any, **k: Any) -> None:
         try:
             import traceback as _tb
 
@@ -352,14 +372,14 @@ def _setup_case(main, monkeypatch, case):
     return cap
 
 
-def _actual_of(case, cap):
+def _actual_of(case: dict[str, Any], cap: _Cap) -> dict[str, Any]:
     if case["platform"] in ("shopee", "花椒直播"):
         return {"download": cap.downloads[0]} if cap.downloads else {"download": None}
     return {"command": cap.commands[0]} if cap.commands else {"command": None}
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _write_golden(request):
+def _write_golden(request: pytest.FixtureRequest) -> Generator[None]:
     yield
     if _REGEN:
         _GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +390,9 @@ _REGEN_DICT: dict = {}
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_GOLDEN_IDS)
-def test_start_record_command_golden(main_mod, monkeypatch, case):
+def test_start_record_command_golden(
+    main_mod: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[str, Any]
+) -> None:
     cap = _setup_case(main_mod, monkeypatch, case)
     main_mod.start_record((case["quality"], case["record_url"], case["anchor_name"]))
     actual = _actual_of(case, cap)

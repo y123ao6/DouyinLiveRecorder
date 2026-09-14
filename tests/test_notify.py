@@ -10,6 +10,7 @@
 import io
 import sys
 import time
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ def short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def log_capture() -> io.StringIO:
+def log_capture() -> Generator[io.StringIO, None, None]:
     # 内存 sink：直接接管 loguru 消息（不依赖 caplog / stdlib logging 桥接），
     # 退出 fixture 时自动 remove 不污染全局 handler
     buf = io.StringIO()
