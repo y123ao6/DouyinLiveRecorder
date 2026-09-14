@@ -1588,6 +1588,66 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 
 ## 更新日志
 
+### v4.2.0-dev (2026-09-15) — mypy 门禁扩面：范围下沉到 pyproject `[tool.mypy].files`（src/ → 全量代码）+ 6 处类型缺陷修复
+
+**变更摘要**：起于 CI typecheck 报出的 3 个 mypy 错误（huya / async_http / spider）。修复时发现门禁只覆盖
+`src/`，根目录入口与测试从未被检查，于是把检查范围固化为配置里的单一事实源，并把 `tests/` 一并纳入、
+补齐 15 处已漂移的注解。本轮**无功能行为改动**（gui.py 的收尾路径除外：原本必抛异常，修复后才真正生效）。
+
+#### 一、类型错误修复（6 处，其中 4 处是运行时必然抛异常的缺陷）
+
+- **src/platforms/huya.py**：补 `import i18n`。原代码在 `except` 分支调用 `i18n.tr(...)` 却漏导入，
+  帧解析异常时会抛 `NameError` 掩盖真正的解析异常（弹幕排障「0 线索」的放大器）。
+- **src/async_http.py**（`_get_client`）：复用分支原先用 `loser is not None` 间接推断 `winner` 非空，
+  mypy 无法跨变量收窄；改为在临界区内直接保存 `reused` 实例，返回时收窄为 `httpx.AsyncClient`。
+- **src/spider.py**（liveme）：`lm_s_sign` 加 `str()`——`sign_data` 是 `dict[str, object]`，`pop()` 出来是 `object`。
+- **gui.py**（此前不在检查范围，3 处）：
+  - 补 `from src.logger import child_process_env, logger`：`_read_status_config` 的 except 分支用了未定义的 `logger`。
+  - `_schedule_log_flush` 里 `self._process_ended(session_id)` 的 `session_id` 未定义 —— **子进程自然结束后
+    的 UI 收尾路径必抛 `NameError`**。修复不是简单删参数（那会丢掉「丢弃旧会话迟到回调」的保护）：
+    日志队列的结束哨兵由裸 `None` 改为携带会话代号 `(session_id,)`，UI 线程取出后交 `_process_ended` 校验。
+  - `_has_unsaved_config_edits` 返回 `bool(current != ...)`，避免返回 `Any`。
+
+#### 二、门禁范围下沉（单一事实源）
+
+- **pyproject.toml `[tool.mypy].files`**：`src` + 根入口（main/gui/web/i18n/msg_push）+ `build_exe.py` + `scripts` + `tests`。
+- **ci.yml typecheck**：`mypy src/` → `mypy`（不带路径参数），范围完全由配置决定，本地与 CI 跑同一条命令。
+- **AGENTS.md**：格式化命令同步；并写明**显式传参（`mypy src/`）会覆盖 `files` 配置**，可排障收窄，
+  但门禁结论以无参数跑法为准。
+
+#### 三、tests/ 补齐 15 处漂移（门禁早已声明却只靠自觉执行）
+
+- `test_start_record_command_golden.py`：12 处缺类型注解（2026-09-13 新增用例时混入），
+  其中 `main_mod` 标注 `ModuleType` 后暴露出 `main.exit_recording = True` 的 `attr-defined`，改用 `setattr`。
+- `conftest.py` / `test_notify.py`：generator fixture 返回类型 `Iterator` → `Generator`
+  （mypy 要求 generator 函数的返回类型是 `Generator` 或其超类型）。
+- `test_danmaku_offloop.py`：type ignore 补 `[assignment]` —— mypy 报 `assignment`、basedpyright 报
+  `method-assign`，两种码需同时压制。
+
+**验证**：`mypy`（无参数）115 files 0 问题；`pytest -q` 974 passed / 2 skipped；black / isort /
+basedpyright 对改动文件均 0 问题。
+
+### v4.2.0-dev (2026-09-15) — 修复 Linux CI 用例 `test_read_config_value_missing_key_readonly_ok`（原子写与文件权限位）
+
+**变更摘要**：仅测试与文档改动，无功能代码改动。CI（Linux）跑出 1 failed / 975 passed，
+失败断言为「只读配置文件未被写入缺省键」。根因是用例用 `cfg.chmod(0o444)` 制造「不可写」，
+但 `read_config_value` 的写回已改为 `_atomic_write_text`（同目录临时文件 + `os.replace`）：
+`os.replace` 只校验目标**所在目录**的写权限，与目标文件权限位无关（root 还会整体绕过权限位），
+故 Linux 上写回照样成功；而 Windows 的目标文件只读属性会让 `replace` 直接失败，于是
+「本地 Windows 过、Linux CI 挂」。
+
+- **tests/test_config_io_readonly.py**：改为 `monkeypatch.setattr(config_io.os, "replace", _deny_replace)`，
+  仅对目标配置路径抛 `PermissionError`、其余调用透传真实 `os.replace`，跨平台稳定复现
+  「写回被拒 → 记 warning（原子写失败）+ 返回默认值 + 原文件不被写入」这条降级分支；
+  `cfg.chmod(0o444)` 保留为场景注释（不再是唯一手段）。
+- **AGENTS.md**：「测试编写强制约定」新增条目，写明「文件只读」用例不得只靠 `chmod`，并区分
+  `config_io`（原子写）与 `utils.update_config`（`open(...,"w")` 直写）两种写回路径的用例写法。
+
+**验证**：`pytest tests/test_config_io_readonly.py` 15 passed；全量 `pytest -q` 974 passed / 2 skipped
+（与 CI 的 976 collected 一致）；`black --check` / `isort --check-only` / `mypy` / `basedpyright`
+对改动文件均 0 问题。另用临时脚本（已删除）在不设只读属性的情况下验证打桩确实触发
+`_atomic_write_text` 的 `PermissionError` 分支：warning 已记、临时文件已清理、配置内容未变。
+
 ### v4.2.0-dev (2026-09-14) — 仓库元数据与忽略规则同源同步 + 四语本地化目录一致性修复
 
 **变更摘要**：按「单一事实源 + 同源维护」口径对九个配置/元数据文件做了一次全量体检与同步，并修复英式英语目录的内容错误。

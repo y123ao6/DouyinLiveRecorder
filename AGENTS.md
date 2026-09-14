@@ -331,6 +331,16 @@ asyncio_mode = "auto"
   `SAFE_DELETE_FAIL_CLOSED … windows-sandbox-recycle-bin-unavailable`。**均非代码回归**——
   用 shell `rm` 预清测试输出目录后重跑即可验证。
 
+- **「文件只读」用例不能只靠** **`chmod(0o444)`**：`src/config_io.py` 的写回已全部改为
+  `_atomic_write_text`（同目录临时文件 + `os.replace`），而 `os.replace` 只校验目标**所在目录**
+  的写权限，与目标文件自身权限位无关；以 root 运行时（部分镜像）权限位还会被整体绕过。
+  Windows 恰好相反——目标文件的只读属性会让 `replace` 直接失败，于是这类用例表现为
+  「本地 Windows 过、Linux CI 挂」（2026-09-15 `test_read_config_value_missing_key_readonly_ok`
+  即此坑）。正确做法：`monkeypatch.setattr(config_io.os, "replace", deny)` 对目标路径抛
+  `PermissionError`，其余路径透传真实 `os.replace`，跨平台稳定复现同一条降级分支。
+  （`utils.update_config` 仍是 `open(path,"w")` 直写，故 `tests/test_utils.py` 的只读用例
+  沿用 `chmod` 即可——两者不可互相套用。）
+
 - **改锁类型需同步改测试**：`tests/test_concurrency.py::test_ttwid_module_pattern` 断言了凭据锁的具体类型。
 
 ## 构建命令
@@ -406,8 +416,13 @@ docker compose up -d             # 使用 docker-compose.yaml（APP_VERSION 可�
 ```bash
 black .
 isort .
-mypy src/
+mypy
 ```
+
+- **`mypy` 不带路径参数**：检查范围由 `pyproject.toml [tool.mypy].files` 定义（src/ + 根入口 + build_exe.py + scripts/ + tests/），
+  本地与 CI 跑同一条命令、同一份定义。显式传参（如 `mypy src/`）会**覆盖**该配置而只查 src/，
+  排障时可以这样收窄，但**门禁结果以无参数跑法为准**（2026-09-15 定稿）。
+  早前只查 src/ 时，根目录入口的漏 import（gui.py 的 `logger` / `session_id` —— 均为运行时 NameError）长期逃逸。
 
 - **isort 收尾必须清理** **`.isorted`** **备份残留**：isort 在某些配置下会生成 `*.isorted` 备份文件，
   类型存根表现为 `*.pyi.isorted`（如 `typings/pystray/__init__.pyi.isorted`）。清理命令必须匹配

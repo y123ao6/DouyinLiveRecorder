@@ -1584,6 +1584,79 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 
 ## Changelog
 
+### v4.2.0-dev (2026-09-15) — mypy gate widened: scope moved into pyproject `[tool.mypy].files` (`src/` → whole repo) + 6 type defects fixed
+
+**Change summary**: Started from 3 mypy errors reported by the CI typecheck job (huya / async_http / spider).
+While fixing them we found the gate only ever covered `src/` — root-level entry points and tests were never
+checked — so the scope was pinned as a single source of truth in config and `tests/` was brought in, with
+15 drifted annotations repaired. **No functional behaviour change** (except the gui.py teardown path, which
+previously raised unconditionally and only works after the fix).
+
+#### 1. Type errors fixed (6, four of them guaranteed runtime failures)
+
+- **src/platforms/huya.py**: added `import i18n`. The `except` branch called `i18n.tr(...)` without the import,
+  so a frame-parse failure raised `NameError` and masked the real exception.
+- **src/async_http.py** (`_get_client`): the reuse branch inferred `winner is not None` indirectly from
+  `loser is not None`; mypy cannot narrow across variables. It now stores the `reused` client directly inside
+  the critical section, so the returned value narrows to `httpx.AsyncClient`.
+- **src/spider.py** (liveme): wrapped `lm_s_sign` in `str()` — `sign_data` is `dict[str, object]`.
+- **gui.py** (was outside the checked scope; 3 fixes):
+  - added `from src.logger import child_process_env, logger` — `_read_status_config` used an undefined `logger`.
+  - `self._process_ended(session_id)` inside `_schedule_log_flush` referenced an undefined `session_id`:
+    **the UI teardown path after a natural child-process exit always raised `NameError`**. Dropping the
+    argument would have discarded the "ignore late callbacks from a stale session" guard, so the log-queue
+    end-of-stream sentinel was changed from a bare `None` to `(session_id,)` — the UI thread now forwards the
+    captured session id to `_process_ended` for validation.
+  - `_has_unsaved_config_edits` returns `bool(current != ...)` instead of `Any`.
+
+#### 2. Gate scope pinned (single source of truth)
+
+- **pyproject.toml `[tool.mypy].files`**: `src` + root entry points (main/gui/web/i18n/msg_push) +
+  `build_exe.py` + `scripts` + `tests`.
+- **ci.yml typecheck**: `mypy src/` → `mypy` (no path argument); scope comes entirely from config, so local
+  runs and CI run the exact same command.
+- **AGENTS.md**: commands updated, plus a note that **explicit paths (`mypy src/`) override `files`** — fine
+  for narrowing during debugging, but the gate result is the no-argument run.
+
+#### 3. tests/: 15 drifted items repaired
+
+- `test_start_record_command_golden.py`: 12 missing annotations (introduced with the golden-snapshot test on
+  2026-09-13); annotating `main_mod` as `ModuleType` then surfaced `attr-defined` on
+  `main.exit_recording = True`, replaced with `setattr`.
+- `conftest.py` / `test_notify.py`: generator fixture return types `Iterator` → `Generator` (mypy requires a
+  generator function to be annotated as `Generator` or a supertype).
+- `test_danmaku_offloop.py`: ignore comment extended to `[assignment, method-assign]` — mypy reports
+  `assignment`, basedpyright reports `method-assign`; both codes must be silenced.
+
+**Verification**: `mypy` (no arguments) 115 files, 0 issues; `pytest -q` 974 passed / 2 skipped; black, isort
+and basedpyright clean on all touched files.
+
+### v4.2.0-dev (2026-09-15) — Fixed Linux CI test `test_read_config_value_missing_key_readonly_ok` (atomic write vs. file mode bits)
+
+**Change summary**: Test/documentation only, no functional code change. CI (Linux) reported 1 failed /
+975 passed on the assertion "the default key was not written into the read-only config file". Root cause:
+the test created an "unwritable" target with `cfg.chmod(0o444)`, but `read_config_value` writes back through
+`_atomic_write_text` (same-directory temp file + `os.replace`), and `os.replace` only checks write
+permission on the **containing directory** — the target file's own mode bits are irrelevant (and are
+bypassed entirely when running as root). Windows behaves the opposite way: the read-only attribute on the
+destination makes `replace` fail outright, which is why the test passed locally on Windows and failed on
+Linux CI.
+
+- **tests/test_config_io_readonly.py**: now uses `monkeypatch.setattr(config_io.os, "replace", _deny_replace)`,
+  raising `PermissionError` only for the target config path and delegating everything else to the real
+  `os.replace`. This reproduces the degraded branch deterministically on every platform: write-back rejected →
+  warning ("atomic write failed") + default value returned + original file untouched. `cfg.chmod(0o444)` is
+  kept as scene documentation, no longer the sole mechanism.
+- **AGENTS.md**: new entry under "测试编写强制约定" stating that read-only-file tests must not rely on
+  `chmod` alone, and distinguishing the two write-back paths — `config_io` (atomic) vs. `utils.update_config`
+  (direct `open(..., "w")`).
+
+**Verification**: `pytest tests/test_config_io_readonly.py` 15 passed; full `pytest -q` 974 passed / 2 skipped
+(same 976 collected as CI); `black --check` / `isort --check-only` / `mypy` / `basedpyright` clean on the
+changed file. A throwaway script (since deleted) confirmed with no read-only attribute set that the stub
+really triggers `_atomic_write_text`'s `PermissionError` branch: warning logged, temp file cleaned up, config
+content unchanged.
+
 ### v4.2.0-dev (2026-09-14) — Repository metadata / ignore-rule source-of-truth sync + four-language catalog consistency fix
 
 **Change summary**: A full consistency audit and sync of nine configuration/metadata files under the

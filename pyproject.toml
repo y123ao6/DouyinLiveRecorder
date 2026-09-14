@@ -187,6 +187,22 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
+# 检查范围（单一事实源）：CI 与本地均直接跑 `mypy`（不带路径参数）消费此列表，
+# 避免「CI 查 A、本地查 B」的覆盖面漂移。显式传参（如 mypy src/）仍优先生效。
+# 只收产品代码与本仓测试：src/ 包 + 根目录入口 + 打包脚本 + 维护脚本 + tests/。
+# tests/ 纳入的理由：AGENTS.md 早已把 `mypy tests/` 列为门禁，但只靠自觉执行会漂移
+# （2026-09-13 新增的黄金快照用例即带着 12 处缺注解混入，门禁实际已红未察）。
+files = [
+    "src",
+    "main.py",
+    "gui.py",
+    "web.py",
+    "i18n.py",
+    "msg_push.py",
+    "build_exe.py",
+    "scripts",
+    "tests",
+]
 # 排除目录（正则子串匹配；本地工具生成目录与 .gitignore/.dockerignore 同源维护）
 exclude = [
     "node",
