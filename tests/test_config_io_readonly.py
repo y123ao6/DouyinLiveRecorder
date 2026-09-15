@@ -1,7 +1,9 @@
 # 回归测试：read_config_value 写回失败时 best-effort（与 backup_file 一致），
 # 以及 main.py 兼容旧键「虎牙是否禁用SSL证书验证(是/否)」仅读取、绝不写回。
 
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from loguru import logger
@@ -15,10 +17,28 @@ def test_read_config_value_missing_key_readonly_ok(tmp_path: Path, monkeypatch: 
     # 关键回归：缺键时 read_config_value 会尝试写回 config.ini；当 config.ini 不可写
     # （只读 / 被占用）时，必须只记 warning 并返回默认值，而不是抛出 PermissionError
     # 导致整个 app 在 import main 阶段崩溃。
+    #
+    # 2026-09-15 CI 修正：不要只靠 cfg.chmod(0o444) 制造「写回被拒」——read_config_value
+    # 走的是 _atomic_write_text（同目录临时文件 + os.replace），而 os.replace 只校验目标
+    # 「所在目录」的写权限，与目标文件自身的权限位无关；以 root 运行时（部分镜像）权限位
+    # 还会被整体绕过。Windows 恰好相反：目标文件只读属性会让 replace 直接失败——所以这条
+    # 用例「本地 Windows 过、Linux CI 挂」。改为直接让 os.replace 对目标配置抛
+    # PermissionError，跨平台稳定复现同一条降级路径。
     cfg = tmp_path / "config.ini"
     cfg.write_text("[录制设置]\nlanguage=zh_cn\n", encoding="utf-8")
     # 设为只读，模拟「配置文件被占用 / 不可写」场景
     cfg.chmod(0o444)
+
+    target = os.path.abspath(str(cfg))
+    real_replace: Any = os.replace
+
+    # 只拒绝目标配置文件的替换：其余 os.replace 调用（pytest / coverage 内部）原样放行
+    def _deny_replace(src: str, dst: str, **kwargs: Any) -> None:
+        if os.path.abspath(str(dst)) == target:
+            raise PermissionError(13, " simulated read-only target", str(dst))
+        _ = real_replace(src, dst, **kwargs)
+
+    monkeypatch.setattr(config_io.os, "replace", _deny_replace)
 
     captured: list[str] = []
     handler_id = logger.add(lambda msg: captured.append(str(msg)), level="WARNING")

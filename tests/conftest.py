@@ -2,6 +2,7 @@
 
 import os
 import shutil
+from collections.abc import Generator
 from typing import Any
 
 import pytest
@@ -35,7 +36,7 @@ def _hermetic_danmaku_hub(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_credential_caches() -> None:
+def _clean_credential_caches() -> Generator[None]:
     # 凭据缓存进程级隔离：src/cookie_cache 的 _cookie_cache 与 _generic_cache 是模块级
     # 全局字典，跨用例残留会让「打桩后重新拉取」的断言命中上一条用例的值，表现为
     # 「单独跑通过、整包跑失败」。2026-09-12 审查 H-2 把快手 did / Twitch Client-Id /

@@ -87,21 +87,21 @@ async def _get_client(
         http2=http2,
         limits=_httpx_limits,
     )
+    reused: httpx.AsyncClient | None = None
     with _client_cache_lock:
         # 写前二次检查：并发首建时可能已有他协程写入同 key。
         # 落败者必须主动关闭自建实例，否则其连接池同样泄漏（与审查指出的同型问题）
         winner = _client_cache.get(key)
         if winner is not None and not winner[0].is_closed and winner[1] is current_loop:
-            loser = new_client
+            reused = winner[0]
         else:
             _client_cache[key] = (new_client, current_loop)
-            loser = None
-    if loser is not None:
+    if reused is not None:
         try:
-            await loser.aclose()
+            await new_client.aclose()
         except Exception as e:
             logger.debug(i18n.tr("关闭并发重复创建的 AsyncClient 失败: {e}", e=e))
-        return winner[0]
+        return reused
     return new_client
 
 

@@ -3735,7 +3735,7 @@ async def get_liveme_stream_url(
         dict[str, object],
         await utils.run_js_async(f"{JS_SCRIPT_PATH}/liveme.js", "sign", room_id, f"{JS_SCRIPT_PATH}/crypto-js.min.js"),
     )
-    lm_s_sign = sign_data.pop("lm_s_sign")
+    lm_s_sign = str(sign_data.pop("lm_s_sign"))
     tongdun_black_box = sign_data.pop("tongdun_black_box")
     platform = sign_data.pop("os")
     headers["lm-s-sign"] = lm_s_sign

@@ -14,7 +14,21 @@
 # =============================================================================
 
 [run]
+# source 固定为 src（与 pyproject 一致）——它既是覆盖率口径，也是隐私边界：
+# 放宽为 "." 会把 .codebuddy/ 等本地工具目录（含会话记忆 / 技能 / 本机绝对路径）
+# 扫进报告，而报告会随 CI artifact / Codecov 外发；下面的 omit 只是第二道兜底，
+# 不能被当作唯一防线。
 source = src
+# 并发用例的形态是「多线程各自 asyncio.run」，不涉及 multiprocessing / 子进程。
+# 显式写 thread 是钉死语义：留空时 coverage 走的是「concurrency 为空则隐式开启
+# 线程追踪」的内部分支（collector.py: if do_threading or not concurrency），
+# 一旦日后有人在此处或 pyproject 里加了别的并发项，线程内代码就会静默不计入覆盖率。
+# 若并发用例将来改用多进程，须改为 concurrency = multiprocessing 并同时打开
+# parallel = true 与 sigterm = true，否则子进程数据会整体丢失。
+concurrency = thread
+# 数据文件记相对路径：保证 .coverage 产物跨机器 / 容器可搬运，
+# 并与 scripts/check_coverage.py 的 "src/x.py" 相对路径匹配口径一致。
+relative_files = true
 # 与 pyproject.toml [tool.coverage.run].omit 保持一致（本地工具生成目录同源维护）
 omit =
     */tests/*
@@ -42,9 +56,16 @@ omit =
 
 [report]
 fail_under = 0
-exclude_lines =
+# 用 exclude_also（追加）而不是 exclude_lines（替换）：后者会把 coverage 的三条
+# 默认排除规则整体丢掉——① `#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)`
+# （大小写 / 空格变体的 pragma）、② `...` 省略号函数体、③ `if (typing\.)?TYPE_CHECKING:`
+# ——使覆盖率被系统性低估。改为追加后，上述默认规则全部保留：
+#   · `if TYPE_CHECKING:` 无需再声明（默认规则已含 typing. 前缀写法）
+#   · `...` 占位体（Protocol / overload / TypedDict 桩）不再被算作未覆盖
+# 注：pyproject.toml [tool.coverage.report].exclude_lines 存在同一问题，建议同步改为
+# exclude_also，否则两个 job 的覆盖率口径会不一致。
+exclude_also =
     pragma: no cover
     def __repr__
     raise NotImplementedError
     if __name__ == .__main__.:
-    if TYPE_CHECKING:

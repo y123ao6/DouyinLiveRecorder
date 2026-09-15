@@ -17,7 +17,7 @@
 # Job 拓扑（lint / type / test / build 六路并行，收尾串行汇总）：
 #
 #   setup ──┬── static             格式 / 导入序 / 版本一致性 / i18n po-mo 同步
-#           ├── typecheck          mypy（最低支持版本 3.14，结论对最老解释器成立）
+#           ├── typecheck          mypy（最低支持版本 3.14；范围取 pyproject [tool.mypy].files）
 #           ├── test               pytest 矩阵（3.14）+ 全局与逐模块覆盖率门禁
 #           ├── concurrency-test   线程安全 / 跨事件循环锁 / 速率限制专项
 #           ├── integration-verify ffmpeg / node 真实环境探测验证
@@ -231,6 +231,13 @@ jobs:
   # 保证类型结论对最老解释器成立。
   # ubuntu runner 默认即为 linux 平台，等价于本地双跑门禁中的
   # `mypy --platform linux src/`（AGENTS.md 平台符号门控约定）。
+  #
+  # 检查范围**不再写在命令行**：pyproject [tool.mypy].files 是唯一事实源
+  # （src/ + 根入口 main.py/gui.py/web.py/i18n.py/msg_push.py + build_exe.py +
+  # scripts/ + tests/），CI 与本地都直接跑 `mypy` 消费它，避免覆盖面漂移。
+  # 早前只跑 `mypy src/` 时，根目录入口的漏 import（如 gui.py 的 logger /
+  # session_id 未定义 —— 均为运行时 NameError）完全逃逸，故此处扩到全量代码；
+  # tests/ 同步纳入是因为「声明了 `mypy tests/` 门禁却只靠自觉执行」已被证明会漂移。
   typecheck:
     name: Type Check (mypy, py${{ needs.setup.outputs.python_min }})
     needs: setup
@@ -259,7 +266,8 @@ jobs:
             && pip install -r requirements.txt "mypy==${{ needs.setup.outputs.mypy_version }}"
 
       - name: Run mypy
-        run: mypy src/
+        # 不带路径参数：范围由 pyproject [tool.mypy].files 定义（本地同款命令）
+        run: mypy
 
   # ── 3. 单元测试 + 覆盖率门禁 ─────────────────────────────────────────────
   test:

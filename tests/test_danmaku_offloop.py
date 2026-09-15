@@ -155,7 +155,8 @@ def test_on_message_does_not_block_event_loop(tmp_path: Path) -> None:
         # 用原 write 落盘（其实 srt.write 本身已够快，这里只是演示 200ms 的「慢」）
         cast(Any, SrtWriter.write)(srt, user, msg, now=now)
 
-    srt.write = slow_write  # type: ignore[method-assign]
+    # mypy 报 assignment（写实例属性）、basedpyright 报 method-assign，两种码都要压制
+    srt.write = slow_write  # type: ignore[assignment, method-assign]
     t0 = time.monotonic()
     for i in range(10):
         collector._on_message(DanmakuMessage(type=DanmakuMessageType.CHAT, user_name=f"u{i}", message=f"m{i}"))

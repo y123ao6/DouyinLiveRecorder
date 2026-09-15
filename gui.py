@@ -131,7 +131,7 @@ os.environ["DLR_GUI_PARENT"] = "1"
 # 本进程后续 print/日志输出即时换语言）；config 写回经 web_config.update_config_line
 # （与 Web 面板同款行级更新，保留注释）。GUI 自身界面文案为静态中文，不随切换重绘。
 import i18n as i18n_module
-from src.logger import child_process_env
+from src.logger import child_process_env, logger
 from src.web_config import (
     find_room_url_by_anchor_name,
     parse_url_config,
@@ -807,7 +807,12 @@ class LiveRecorderGUI:
         self._status_cache: tuple[str, str] | None = None
 
         # 日志队列（用于线程间通信）
-        self._log_queue: queue.Queue[list[tuple[str, str]] | None] = queue.Queue()
+        # 队列元素二选一：日志批次 list[...] / 进程结束哨兵 (session_id,)
+        # 哨兵必须携带会话代号：_read_output 在子线程感知到 EOF，但收尾只能在 UI 线程做，
+        # 若停止后立即重启，旧会话的迟到 EOF 会把新会话的按钮/状态打回「未运行」，
+        # 故由 _process_ended 比对会话代号后丢弃（早期版本哨兵为裸 None，
+        # UI 线程拿不到 session_id，该分支实际会抛 NameError 而永远走不到）
+        self._log_queue: queue.Queue[list[tuple[str, str]] | tuple[int | None]] = queue.Queue()
         self._log_flush_job_id: str | None = None
         self._log_queue_has_data = False
         self._log_queue_lock = threading.Lock()  # 保护 _log_queue_has_data 跨线程访问
@@ -2465,7 +2470,7 @@ class LiveRecorderGUI:
                 batch = []
 
         if proc.stdout is None:
-            self._log_queue.put(None)
+            self._log_queue.put((session_id,))
             with self._log_queue_lock:
                 self._log_queue_has_data = True
             return
@@ -2477,7 +2482,7 @@ class LiveRecorderGUI:
                     if proc.poll() is not None:
                         flush_batch()
                         self.running = False
-                        self._log_queue.put(None)
+                        self._log_queue.put((session_id,))
                         with self._log_queue_lock:
                             self._log_queue_has_data = True
                         break
@@ -2496,7 +2501,7 @@ class LiveRecorderGUI:
                 error_msg = str(e)
                 flush_batch()
                 self._log_queue.put([(f"输出流已关闭: {error_msg}", "error")])
-                self._log_queue.put(None)
+                self._log_queue.put((session_id,))
                 with self._log_queue_lock:
                     self._log_queue_has_data = True
                 self.running = False
@@ -2505,7 +2510,7 @@ class LiveRecorderGUI:
                 error_msg = str(e)
                 flush_batch()
                 self._log_queue.put([(f"读取输出错误: {error_msg}", "error")])
-                self._log_queue.put(None)
+                self._log_queue.put((session_id,))
                 with self._log_queue_lock:
                     self._log_queue_has_data = True
                 self.running = False
@@ -2518,13 +2523,16 @@ class LiveRecorderGUI:
         # 定时从队列批量刷新日志到 UI
         messages: list[tuple[str, str]] = []
         process_ended = False
+        ended_session_id: int | None = None
         while True:
             try:
                 item = self._log_queue.get_nowait()
-                if item is None:
-                    process_ended = True
-                else:
+                if isinstance(item, list):
                     messages.extend(item)
+                else:
+                    # 进程结束哨兵 (session_id,)：取出会话代号交给 _process_ended 校验
+                    process_ended = True
+                    ended_session_id = item[0]
             except queue.Empty:
                 break
 
@@ -2557,7 +2565,7 @@ class LiveRecorderGUI:
                 self._log_queue_has_data = False
 
         if process_ended:
-            self._process_ended(session_id)
+            self._process_ended(ended_session_id)
 
         with self._log_queue_lock:
             has_data = self._log_queue_has_data
@@ -3063,7 +3071,8 @@ class LiveRecorderGUI:
             current = self.config_text.get("1.0", tk.END).rstrip("\n")
         except Exception:
             return False
-        return current != self._config_baseline_content
+        # config_text.get 在 customtkinter 存根中返回 Any，显式 bool() 避免返回 Any
+        return bool(current != self._config_baseline_content)
 
     # 记录当前编辑器内容为「已保存」基线（加载与保存后调用）。
     def _mark_config_saved(self) -> None:
