@@ -19,14 +19,15 @@
             <button class="tab" data-view="files" data-i18n="tab.files">文件</button>
         </nav>
         <div class="topbar-right">
-            <select id="language-select" title="Language / 语言"></select>
-            <button id="theme-toggle" title="切换主题">🌙</button>
+            <select id="language-select" data-i18n-title="language.select" title="语言"></select>
+            <button id="theme-toggle" data-i18n-title="theme.toggle" title="切换主题">🌙</button>
             <button id="logout-btn" class="hidden" data-i18n="logout">退出</button>
         </div>
     </header>
 
-    <!-- 登录页：#login-password 输入、#login-submit 触发 doLogin()、#login-error 显示后端报错；
-         初始靠 .hidden 隐藏，由 showLogin()/启动引导根据 /api/status 是否 401 显隐。 -->
+    <!-- 登录页：#login-password 输入、#login-submit 触发 doLogin()、#login-error 显示后端报错文案。
+         初始靠 .hidden 隐藏；启动引导拉 /api/status，任何失败（401 或网络/超时）都走 showLogin()，
+         成功才直接进仪表盘——判据是「取不到状态」而不是「只认 401」。 -->
     <main id="login-view" class="view hidden">
         <div class="login-card">
             <h2 data-i18n="login.title">登录</h2>
@@ -36,16 +37,22 @@
         </div>
     </main>
 
-    <!-- 仪表盘：进入即 startSSE() 每 2s 轮询 /api/status 并 loadLogs()。
+    <!-- 仪表盘：进入即 startSSE() 每 2s 轮询 /api/status 并 loadLogs()（日志另按 5s 轮询刷新）。
          #engine-warning 引擎死亡横幅由 renderStatus 按 engine_alive===false 显隐；
-         .recording-state 双 span 由 renderRecordingControl 按 recording_enabled 切换；
+         #status-warning 是更宽泛的状态告警（SEV-2221/SEV-2228）：后端不可达、快照陈旧
+         （stale / status_unavailable）都在这里提示，
+         文案由 renderStatus → updateStatusWarning 用 textContent 写入，故此处不留 data-i18n；
+         .recording-state 三 span（on/off/probe）由 renderRecordingControl 切换：probe 仅在
+         取证失败（error/stale）时显示，此时两个录制按钮一并禁用（SEV-2228 后半）；
          #stat-* 四个卡片、#recording-tbody 录制中列表均被 renderStatus 覆盖刷新。 -->
     <main id="dashboard-view" class="view">
         <div id="engine-warning" class="engine-warning hidden" data-i18n="dashboard.engineWarning">⚠️ 录制引擎已停止运行，请检查日志或重启服务</div>
+        <div id="status-warning" class="engine-warning hidden" role="status" aria-live="polite"></div>
         <div class="recording-control">
             <span class="recording-state">
                 <span class="state-on hidden" data-i18n="recording.state.on">录制运行中</span>
                 <span class="state-off" data-i18n="recording.state.off">录制已停止</span>
+                <span class="state-probe hidden" data-i18n="recording.state.probeFailed">状态取证失败</span>
             </span>
             <button id="recording-start-btn" data-i18n="recording.start">开始录制</button>
             <button id="recording-stop-btn" data-i18n="recording.stop">停止录制</button>
@@ -92,7 +99,9 @@
     </main>
 
     <!-- 直播间管理：#room-add-form 提交走 addRoom()；#rooms-tbody 由 loadRooms() 渲染，
-         行内开关(data-action=toggle)/删除(data-action=delete)经事件委托转发 toggleRoom/deleteRoom。 -->
+         行内开关(data-action=toggle)/删除(data-action=delete)/画质下拉(data-action=quality) 经 #rooms-tbody
+         上的事件委托转发 toggleRoom/deleteRoom/changeRoomQuality（故这三类控件不需要各自绑监听器）。
+         该表列宽与防错位规则见 style.css 末尾的 #rooms-view 段（新增列须同步补 th 定宽）。 -->
     <main id="rooms-view" class="view hidden">
         <section class="panel">
             <h3 data-i18n="rooms.add">添加直播间</h3>
@@ -121,18 +130,22 @@
         <section class="panel">
             <h3 data-i18n="rooms.list">直播间列表</h3>
             <table class="data-table">
-                <thead><tr><th data-i18n="col.url">地址</th><th data-i18n="col.qualitySet">画质</th><th data-i18n="col.name">名称</th><th data-i18n="col.enabled">启用</th><th data-i18n="col.recording">录制中</th><th data-i18n="col.actions">操作</th></tr></thead>
+                <thead><tr><th data-i18n="col.url">地址</th><th data-i18n="col.qualitySet">设置画质</th><th data-i18n="col.name">名称</th><th data-i18n="col.enabled">启用</th><th data-i18n="col.recording">录制中</th><th data-i18n="col.actions">操作</th></tr></thead>
                 <tbody id="rooms-tbody"><tr><td colspan="6" class="empty" data-i18n="loading">加载中...</td></tr></tbody>
             </table>
         </section>
     </main>
 
     <!-- 配置：#config-container 由 loadConfig() 按 /api/config 动态生成输入行（含 data-section/data-key）；
-         #config-save-btn 触发 saveConfig() 仅 PUT 有变更的键。HTTPS 开关输入会实时联动 #ssl-platform-hint。 -->
+         #config-save-btn 触发 saveConfig() 仅 PUT 有变更的键。HTTPS 开关输入会实时联动 #ssl-platform-hint。
+         #config-save-status（MIN-2239）在保存中途失败时常驻显示「已应用 n 项 / 第 m 项失败 / 其余未提交」，
+         失败行另加 .row-failed 标红——不能只靠 toast：toast 会被下一条覆盖且自动消失，
+         用户看到输入框仍是自己填的样子就会误以为已保存。 -->
     <main id="config-view" class="view hidden">
         <section class="panel">
             <h3 data-i18n="config.title">录制与推送配置</h3>
             <div id="config-container" data-i18n="loading">加载中...</div>
+            <div id="config-save-status" class="save-status hidden" role="status" aria-live="polite"></div>
             <button id="config-save-btn" class="primary" data-i18n="config.save">保存配置</button>
         </section>
     </main>

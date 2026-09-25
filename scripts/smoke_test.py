@@ -7,7 +7,10 @@
 #     请求头 / 请求体 / 响应应包含的文本 / 期望的 JSON 字段）
 #   - 基础 URL 前缀：config 里的 url 若不是完整 http(s) 地址，则拼接 base_url
 #   - 多种输出：控制台（带颜色）、JSON 报告、HTML 报告
-#   - 退出码：任一检查失败时返回非 0，方便接入 CI
+#   - 退出码：0 = 已执行的检查全通过；1 = 至少一条失败；2 = 配置读不出/格式非法/一条断言都没有
+#     （MIN-2260：**0 断言不等于通过**——旧实现在这里退 0，CI 查了个空气还报成功。
+#      消费方是 scripts/_ci_web_smoke.sh + scripts/smoke_web.json，它原样透传本退出码，
+#      所以「2（配置问题）」必须与「1（接口不符合预期）」分得开，否则会被读成接口故障。）
 #
 # 用法：
 #   python smoke_test.py --config smoke_targets.json
@@ -61,6 +64,7 @@ def _fail(s: str) -> str:
 # 不跟随重定向的 handler（2026-09-12 审查 6.7）：urlopen 默认自动跟随 3xx，
 # 使「期望 301/302」的断言永远拿不到 3xx 状态码。redirect_request 返回 None 即
 # 中止跟随，3xx 会以 urllib.error.HTTPError 抛出（带真实 code），从而可被断言。
+# 只在「期望 3xx」时挂上（见 run_check）：默认仍跟随，不破坏依赖短链跳转的既有检查。
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         return None
@@ -79,8 +83,14 @@ def load_config(path: str) -> tuple[list[CheckConfig], str | None]:
         return cast(list[CheckConfig], cfg), None
     if isinstance(cfg, dict):
         # 允许顶层写成 {"base_url": "...", "checks": [...]}
+        # MIN-2260：原写法 typed.get("checks", []) 把「键名拼错」（check / targets / 少引号）
+        # 与「checks 被清空」都变成合法的 0 检查，配合 main() 的「0 失败即退 0」，CI 的
+        # 「Web panel smoke test」步骤会在**一条断言都没执行**的情况下报成功。
+        # 故此处要求键必须存在（缺键即 ValueError → main 退 2），空列表另在 main() 里退 2。
         typed = cast(dict[str, object], cfg)
-        return cast(list[CheckConfig], typed.get("checks", [])), cast(str | None, typed.get("base_url"))
+        if "checks" not in typed:
+            raise ValueError(f'冒烟配置缺少 "checks" 键（拼错或漏写都会被当成 0 检查）: {path}')
+        return cast(list[CheckConfig], typed["checks"]), cast(str | None, typed.get("base_url"))
     # 既不是 list 也不是 dict：配置已损坏，必须让 CI 感知。原实现返回空 checks，
     # main 会 0 检查全"通过"并以退出码 0 结束——门禁形同虚设。
     raise ValueError(f"冒烟配置格式非法（顶层须为 list 或 {{'checks': [...]}}）: {path}")
@@ -99,13 +109,10 @@ def _resolve_url(check: CheckConfig, base_url: str | None) -> str:
 
 
 # ---------- 单个检查 ----------
-# 单条检查的入口：发请求并做状态码 / 文本 / JSON 字段校验。
+# 单条检查的入口：发一次请求，再按配置做状态码 / 文本包含 / JSON 字段三类断言。
 def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) -> CheckResult:
-    # 2026-09-12 审查 6.7：重定向策略按期望码决定——
-    # urllib.request.urlopen 默认自动跟随 3xx 重定向，导致「期望 301/302」的断言
-    # 永远不可能通过（拿到的是重定向后的最终 200），门禁自相矛盾。
-    # 期望 3xx 时改用不跟随重定向的 opener，让 3xx 以 HTTPError 形式暴露真实状态码；
-    # 其余情况保持默认跟随（避免破坏依赖短链跳转的既有检查）。
+    # 重定向策略按**期望码**二选一（机制与理由见 _NoRedirectHandler 的类注释）：
+    # 期望 3xx 才换用不跟随重定向的 opener，其余保持 urlopen 默认的自动跟随。
     _no_redirect_opener = urllib.request.build_opener(_NoRedirectHandler)
     method_raw = cast(str, check.get("method") or DEFAULT_METHOD)
     # 方法统一大写：配置里写 get/Get 都能匹配，urlopen 对方法大小写敏感。
@@ -182,7 +189,8 @@ def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) 
         errors.append(f"{type(e).__name__}: {e}")
         content = ""
 
-    # 文本包含校验
+    # 文本包含：expect_contains 是 AND 语义——每一条都必须命中，缺一条记一条错误，
+    # 不因先命中一条就放行（那是 OR，会让配置里少写/写错一项悄悄通过）。
     for token in expect_contains:
         if token in content:
             matched.append(token)
@@ -203,6 +211,8 @@ def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) 
                 if actual != val:
                     errors.append(f"JSON 字段 {key}={actual!r} != 期望 {val!r}")
 
+    # 三类断言（状态码 / 文本包含 / JSON 字段）共用同一个 errors 列表、全程不短路：
+    # 一次运行就把「这次响应错在哪」全部打出来，不必改一条配置再跑一次。
     result["passed"] = len(errors) == 0
     return result
 
@@ -348,6 +358,12 @@ def main() -> None:
         sys.exit(2)
     base_url = base_url_arg or cfg_base
 
+    # MIN-2260：合法但空的 checks 列表同样是「查了个空气」，必须与「配置损坏」同码退出。
+    # 放在 main 而非 load_config，是因为顶层直接写成 [] 的合法形态也要覆盖。
+    if not checks:
+        print(f"ERROR: 冒烟配置的 checks 为空（0 条断言不构成通过）: {config_path}", file=sys.stderr)
+        sys.exit(2)
+
     t0 = time.time()
     results = [run_check(c, base_url, timeout) for c in checks]
     elapsed = (time.time() - t0) * 1000
@@ -364,10 +380,12 @@ def main() -> None:
             write_json_report(results, summary, report_path)
         print(f"\n报告已写出: {report_path}")
 
-    # CI 以退出码判定成败：任一检查 failed 即返回 1 使流水线变红；全部通过（含 0 检查）返回 0。
-    # 与 load_config 的空配置静默通过呼应——零检查也会退出 0。
-    # （2026-09-10 修订：配置格式非法已改为在 load_config 抛 ValueError、由 main 退出 2，
-    #   故「零检查」现在只可能来自合法但空的 checks 列表，不再掩盖配置损坏。）
+    # CI 只看这里的退出码：任一检查失败 → 1，全部通过 → 0。
+    # 走到这一步时 checks 至少有一条断言：配置损坏与「0 条断言」都已在 load_config / 上方
+    # 以 rc=2 退出（2026-09-10 起格式非法走 ValueError，2026-09-23 MIN-2260 起空列表也退 2），
+    # 所以「一条都没跑」再也不可能被报告成通过。
+    # 不得把 2 并入 1：scripts/_ci_web_smoke.sh 原样透传退出码，混同就会让「配置写坏了」
+    # 看起来像「面板接口挂了」，排障方向整个错掉。
     failed = cast(int, summary["failed"])
     sys.exit(1 if failed else 0)
 

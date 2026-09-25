@@ -8,7 +8,7 @@
       "expected_status": 200
     },
     {
-      "name": "健康检查(按需补充真实接口)",
+      "name": "Web 管理面板健康检查",
       "path": "/health",
       "method": "GET",
       "expected_status": 200,

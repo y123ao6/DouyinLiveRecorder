@@ -6,6 +6,14 @@
 # 或 config dict）的重载，导致调用结果未使用时触发 reportUnusedCallResult。为消除此类告警，
 # 这里用 _CTkWidget 混入类在 MRO 中优先覆盖这些「副作用型」方法，统一返回 None；仅保留
 # get/index/create_*/winfo_children 等确实需要返回值的少数方法签名。
+#
+# 上述混入覆盖必然与 typeshed 里 tkinter 父类签名不兼容，mypy 会对每个 `class CTk*(_CTkWidget, tkinter.X)`
+# 行报一批「Definition of ... in base class ... is incompatible」的 [misc] 告警（本目录被 pyproject 的
+# mypy exclude 排除在 CLI 门禁外，故只在 IDE 单独打开本文件时暴露）。这类告警与 types-* 存根包安装
+# 状态无关（tkinter 的类型信息已由 typeshed 随 mypy 提供），装任何依赖都不会消失，只能就地关闭
+# 该错误码；只收窄到 [misc]，不用 `# mypy: ignore-errors` 整文件豁免，也不用行内 `# type: ignore[misc]`
+# （需逐类挂 9 处，且将来若开启 warn_unused_ignores 会反过来报 unused ignore）。
+# mypy: disable-error-code="misc"
 import tkinter
 from typing import Any
 

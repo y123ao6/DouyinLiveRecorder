@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 注释规范检查与「逻辑等价性」校验工具（CI 可调用）
+# 注释规范检查 + 逻辑等价性校验工具（CI 可调用，常驻门禁）
 #
-# 提供三种模式，覆盖两类不同需求：
+# 三种模式，对应两类互不相干的用途：
 #
-#   1) 规范检查（默认，无需基线）：扫描源码，检查本仓的注释约定是否被遵守
-#      - 禁止三引号 docstring（AGENTS.md 硬性约定：注释统一用 `#`）
-#      - 注释密度不得低于阈值（默认 13%）
-#      - 每个模块必须有模块头注释（前 30 行内）
-#      适合作为常驻 CI 门禁，随时可跑。
+#   1) 规范检查（默认，无需基线）：本仓注释约定的机检面——不得有 docstring、
+#      注释密度不低于阈值（默认 13%）、每个模块前 30 行内要有模块头注释。
+#      约定本体见 AGENTS.md「注释约定」，这里只负责「违规即红」。
 #
-#   2) 基线快照（--snapshot DIR）：把当前文件复制到 DIR 作为基线。
+#   2) 基线快照（--snapshot DIR）：把待比对文件原样复制进 DIR，供模式 3 当基线。
+#      DIR 必须是工作区子目录，防呆理由见 _reject_dangerous_baseline。
 #
-#   3) 等价性校验（--baseline DIR）：证明「只改了注释、没改逻辑」。
-#      Python 文件比对 ast.dump 全量序列化；JS/CSS/HTML 剥离注释后比对有效代码行。
-#      适合在大批量「只改注释/格式」的改动前后使用。
+#   3) 等价性校验（--baseline DIR）：证明「只改了注释、没动逻辑」。
+#      Python 比 ast.dump 全量序列化，JS/CSS/HTML 剥注释后比有效代码行；
+#      批量「只改注释/格式」的改动前后各跑一次（模式 2 → 改 → 模式 3）。
+#
+#   另含一项常驻结构检查（随模式一一起跑）：**符号可达性**。删除模块级函数/常量时只删
+#   定义、留下调用点，会让 mypy / basedpyright / pytest 三面同时转红；调用点落在 `and`
+#   右侧时短路还会遮住它，肉眼极易误判成「纯静态问题」。该检查把「引用了全仓都没有绑定
+#   的名字」变成门禁里的一条明确违规（细则见 check_dangling_symbols）。
 #
 # 为什么用 ast.dump 而不是逐行 diff：注释不进入抽象语法树，而三引号 docstring
 # 会作为 Expr 节点进入 AST。因此 AST 全等可同时证明两件事——
@@ -37,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import io
 import os
 import shutil
@@ -51,35 +56,68 @@ DEFAULT_MIN_DENSITY = 13.0
 # 模块头注释的判定范围：文件前 N 行内必须出现注释，否则视为缺模块头
 MODULE_HEADER_SCAN_LINES = 30
 
-# 不参与检查的目录（与 .gitignore / pyproject 各工具排除列表同源）
+# 不参与检查的目录：必须覆盖 .gitignore / pyproject 各工具（black exclude / isort extend_skip /
+# coverage omit）排除掉的每一个目录名。锁的方向只做「那边有、这里也得有」，比那边更严是保守侧。
+#
+# 为什么这份清单承重：它同时是 check_dangling_symbols() 经 iter_source_files 聚合「全仓绑定名」
+# 的扫描面。**任何一个未排除的第三方目录里出现同名绑定，就会让「被删符号的残留调用点」被判成
+# 「全仓有绑定」而漏报**——悬空符号门禁就此静默失效。
+# 跨文件回归锁见 tests/test_run_gates.py：
+#   ::test_check_annotations_exclude_dirs_cover_pyproject_excludes（逐名比对 pyproject 三处清单）
+#   ::test_check_annotations_scan_face_still_includes_tests_and_src（反向兜底：src/tests/scripts/web 不得被排掉）
+#   [历史注] 2026-09-23 MID-2256 补齐前本清单落后三处清单；当时那些目录恰好 0 个 .py，属潜伏缺陷。
 EXCLUDE_DIRS = (
     "__pycache__",
     ".git",
     ".venv",
     ".mypy_cache",
     ".pytest_cache",
+    ".ruff_cache",
     ".workbuddy",
     "node",
+    "node_modules",
+    "typings",
     "ffmpeg",
     "build",
     "dist",
+    # 运行期产物目录（录制文件 / 日志 / 配置备份；已在 .gitignore、.dockerignore 同源忽略）
     "downloads",
+    "recordings",
     "logs",
+    "backup_config",
+    # 第三方/工具生成目录（本地工具在仓库里留下的缓存与临时根，均非项目代码）
+    ".agents",
+    ".qoder",
+    ".qoder-credits",
+    ".codebuddy",
+    ".trae",
+    ".plugin-src",
+    ".dsh-validation",
+    ".ego-browser-test",
+    ".npm-cache",
+    ".pnpm-store",
+    ".mimosa",
+    ".tmp-dps-extract",
+    ".v2c",
 )
 
 # 不参与检查的文件：protoc 生成物（自带 docstring 且标注 DO NOT EDIT）、
-# 以及按项目决策跳过的历史遗留文件
+# 以及按项目决策跳过的历史遗留单文件版 standalone。
+# 加条目前先想清楚后果：这里排除掉的文件同样不在悬空符号检查的扫描面内
+#   （为什么这份清单承重，见上方 EXCLUDE_DIRS 的同名说明）。
+#   [历史注] 原第三项 gui_legacy.py 已随 v4.1.0-dev 于 2026-09-10 删除，
+#            2026-09-21 清掉该陈旧引用——留着会让后来者误以为它仍是入口之一。
 EXCLUDE_FILES = frozenset(
     {
         "douyin_pb2.py",
         "douyin_live_recorder_standalone.py",
-        "gui_legacy.py",
     }
 )
 
 
 def is_excluded(path: Path, root: Path) -> bool:
-    # 判断路径是否命中排除规则（目录名或文件名）
+    # 排除判定：任一**父目录**命中 EXCLUDE_DIRS、或文件名命中 EXCLUDE_FILES 即跳过；
+    # 不在 root 之下的路径（如绝对路径穿越到工作区外）同样跳过，不属本工具的检查面
     try:
         rel = path.relative_to(root)
     except ValueError:
@@ -91,7 +129,9 @@ def is_excluded(path: Path, root: Path) -> bool:
 
 
 def iter_source_files(root: Path) -> list[Path]:
-    # 收集待检查文件：Python 源码 + web/ 下的前端资源
+    # 收集待检查文件：全部 .py + **只限顶层 web/** 下的 .js/.css/.html（等价性比对要覆盖前端）。
+    # 前端限定顶层 web/ 是刻意的：src/javascript/ 下的签名脚本会整体随包分发、不参与本工具，
+    # 若一并收进来，模式 1 会拿 Python 的规则去判它们的注释密度。
     found: list[Path] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or is_excluded(path, root):
@@ -154,6 +194,92 @@ def find_docstrings(src: str) -> list[str]:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_docstring(node):
             violations.append(f"函数 {node.name} 的 docstring")
     return violations
+
+
+# —— 符号可达性检查（2026-09-22 增补）——
+# 起因（同一形态第二次复现，登记于 CODE_REVIEW_2026-09-21.md 补-N04）：删除模块级函数/常量
+# 时只删定义、留下调用点，mypy 报 name-defined、basedpyright 报 reportUndefinedVariable、
+# pytest 在触达该分支时抛 NameError；而调用点若在 `and` 右侧
+# （`(not os.path.isdir(...)) and (_deleted(proc))`），短路会在多数场景遮住它，于是「红着的
+# 门禁」被误读成纯静态噪音，新改动继续往上叠。mypy 本就能报，但它不是「删除动作」的回路：
+# 本检查在门禁里给出带文件路径与行号的明确违规，并把「删前先 grep 全部调用点」写进提示。
+# 判据刻意保守（宁漏勿噪）：只报「本文件内没有任何绑定」**且**「全仓其它文件也没有同名绑定」
+# 的 Load 名。后者用于放行 `from x import *`、monkeypatch 注入、globals() 动态写入等合法来源；
+# 漏报仍由 mypy / basedpyright 兜底，本检查只负责把「删了一半」挡在回路之外。
+DANGLING_HINT = (
+    "删除模块级函数/常量前必须先 `grep -n <符号名>` 收全调用点再删"
+    "（AGENTS.md「已知坑」同名条目；CODE_REVIEW_2026-09-21 补-N04：同一形态已第二次复现）"
+)
+
+
+def _collect_bound_names(tree: ast.Module) -> set[str]:
+    # 收集「该文件里出现过一次绑定」的全部名字（任意作用域）：赋值 / 参数 / 导入 / def / class /
+    # with-as / except-as / global / 类型参数 / 模式匹配绑定，用于证明某个 Load 名**有来源**。
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.alias):
+            bound.add(node.asname or node.name.split(".")[0])
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+        elif isinstance(node, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
+            bound.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bound.add(node.rest)
+        else:
+            # 3.14 起 except 的绑定不再是 ast.Name（改存 str），单独兜住；getattr 兼容后续改名
+            handler_name = getattr(node, "name", None)
+            if isinstance(node, ast.ExceptHandler) and isinstance(handler_name, str):
+                bound.add(handler_name)
+    return bound
+
+
+def _dangling_loads(tree: ast.Module, global_bound: set[str]) -> list[tuple[int, str]]:
+    # 返回 [(行号, 名字)]：本文件无绑定、全仓亦无同名绑定、且非 dunder / 内建的 Load 名
+    local_bound = _collect_bound_names(tree)
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+            continue
+        name = node.id
+        if name in local_bound or name in global_bound:
+            continue
+        # dunder（__name__ / __file__ …）由解释器注入，不属「模块级符号被删」的范畴
+        if name.startswith("__") and name.endswith("__"):
+            continue
+        if hasattr(builtins, name):
+            continue
+        hits.append((node.lineno, name))
+    return hits
+
+
+def check_dangling_symbols(root: Path) -> tuple[int, list[str]]:
+    # 扫全部 Python 文件：先汇总「全仓任一处绑定过的名字」，再逐文件找无来源的 Load 名。
+    # 返回 (已扫描文件数, 违规描述列表)。解析失败的文件跳过（语法问题由 pytest / compile 负责）。
+    trees: dict[Path, ast.Module] = {}
+    global_bound: set[str] = set()
+    for path in iter_source_files(root):
+        if path.suffix != ".py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError, ValueError:
+            continue
+        trees[path] = tree
+        global_bound |= _collect_bound_names(tree)
+    problems: list[str] = []
+    for path, tree in trees.items():
+        rel = path.relative_to(root).as_posix()
+        for lineno, name in _dangling_loads(tree, global_bound):
+            problems.append(f"{rel}:{lineno}: 引用了全仓都没有绑定的名字 `{name}`")
+    return len(trees), problems
 
 
 def strip_js_comments(src: str) -> list[str]:
@@ -236,10 +362,18 @@ def check_conventions(root: Path, min_density: float) -> int:
             if not has_module_header(src):
                 problems.append(f"[模块头] {rel}: 前 {MODULE_HEADER_SCAN_LINES} 行内无说明注释")
 
+    # 符号可达性（与注释规范同批输出，共用 problems 计数：命中即门禁变红）
+    scanned, dangling = check_dangling_symbols(root)
+    for item in dangling:
+        problems.append(f"[悬空符号] {item}")
+
     print("=" * 78)
     print(f"注释规范检查（阈值 {min_density:.1f}%）—— 共扫描 {len(stats)} 个 Python 文件")
+    print(f"符号可达性检查—— 共扫描 {scanned} 个 Python 文件，悬空引用 {len(dangling)} 处")
     print("=" * 78)
     if problems:
+        if dangling:
+            print(f"  提示：{DANGLING_HINT}")
         for item in problems:
             print(f"  {item}")
         print("-" * 78)
@@ -385,7 +519,7 @@ def check_equivalence(root: Path, baseline: Path) -> int:
 
 
 def main() -> int:
-    # 入口：解析参数并分派到三种模式
+    # 入口：按 --snapshot > --baseline > 规范检查 的优先级分派（三者互斥，同时给也只跑前者）
     parser = argparse.ArgumentParser(
         description="注释规范检查与逻辑等价性校验工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,

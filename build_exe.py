@@ -3,10 +3,8 @@
 #
 # DouyinLiveRecorder 可执行文件打包脚本（本地 / GitHub Actions 通用）
 #
-# 一次构建产出三个入口（共享同一发布目录的依赖与资源）：
-#     DouyinLiveRecorder(.exe)        CLI 录制核心（main.py，控制台）
-#     DouyinLiveRecorder-GUI(.exe)    图形界面（gui.py，无控制台窗口）
-#     DouyinLiveRecorder-Web(.exe)    Web 管理面板（web.py，控制台）
+# 一次构建产出三个入口（CLI / GUI / Web），共享同一发布目录的依赖与资源；
+#     三个 exe 与 main.py / gui.py / web.py 的对应关系见下方「打包策略」树。
 #
 # 用法：
 #     python build_exe.py             # 打包并生成 zip 产物
@@ -14,32 +12,28 @@
 #     python build_exe.py --no-zip    # 只打包不压缩
 #     python build_exe.py --no-runtime # 跳过 ffmpeg/node 打包（交由用户运行时自动下载，减小分发体积）
 #     python build_exe.py --dual      # 同时生成 lite（无运行时）与 full（下载并打包 ffmpeg+node）两个 zip
+#     python build_exe.py --require-pinned # 运行时二进制缺 SHA256 钉定即终止构建（CI 默认开启，SEV-10 fail-closed）
 #
-# 打包策略（onedir + contents_directory='_internal'）：
-#     目录组织规范（最终产物结构）：
-#         dist/DouyinLiveRecorder/
-#         ├── DouyinLiveRecorder(.exe)        CLI 录制核心（main.py，控制台）
-#         ├── DouyinLiveRecorder-GUI(.exe)    图形界面（gui.py，无控制台窗口）
-#         ├── DouyinLiveRecorder-Web(.exe)    Web 管理面板（web.py，控制台）
-#         ├── config/                         配置目录（exe 同级，运行时直接读写）
-#         ├── ffmpeg/                         FFmpeg 运行时（exe 同级）
-#         ├── node/                           Node.js 运行时（exe 同级）
-#         └── _internal/                      依赖包 + src/ 及打包资源（i18n/ web/ src/javascript）
-#     即：node/ffmpeg/config 三个目录与最终 exe 保持同级；src/ 与全部 Python 依赖包
-#     统一收入 _internal/ 管理。
-#     采用 contents_directory='_internal' 后，PyInstaller 把所有依赖与经 __file__ 定位的
-#     资源（i18n/ web/ src/javascript）收进 exe 同级的 _internal/；而经 sys.argv[0]/
-#     sys.executable 定位的运行时资源（config/ ffmpeg/ node）由本脚本在 COLLECT 之后
-#     复制到 exe 同级目录（见 copy_external_binaries / _prepare_url_config），
-#     二者通过 src/logger._app_root() 收敛到 exe 同级目录。
-#     多入口共享依赖必须使用 .spec 文件（命令行不支持多 Analysis），
-#     故本脚本动态生成 spec 后调用 PyInstaller。
+# 打包策略（onedir + contents_directory='_internal'）—— 最终产物结构：
+#     dist/DouyinLiveRecorder/
+#     ├── DouyinLiveRecorder(.exe)        CLI 录制核心（main.py，控制台）
+#     ├── DouyinLiveRecorder-GUI(.exe)    图形界面（gui.py，无控制台窗口）
+#     ├── DouyinLiveRecorder-Web(.exe)    Web 管理面板（web.py，控制台）
+#     ├── config/ · ffmpeg/ · node/       运行时资源，一律与 exe 同级（不进 _internal/）
+#     └── _internal/                      依赖包 + src/ 及打包资源（i18n/ web/ src/javascript）
+#     划分依据：经 __file__ 定位的资源（i18n/ web/ src/javascript）随 contents_directory 收进
+#     _internal/；经 sys.argv[0]/sys.executable 定位的（config/ ffmpeg/ node/）由本脚本在
+#     COLLECT 之后复制到 exe 同级（见 copy_external_binaries / _prepare_url_config），
+#     二者经 src/logger._app_root() 收敛到同一目录。
+#     多入口共享依赖必须用 .spec 文件（命令行不支持多 Analysis），故本脚本动态生成
+#     spec 后调用 PyInstaller。
 #
 # 产物：
 #     dist/DouyinLiveRecorder/                          发布目录（3 个 exe + 运行时目录 + _internal/ 依赖）
 #     dist/DouyinLiveRecorder-{ver}-{os}-{arch}.zip     压缩包
 #
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -66,6 +60,77 @@ CONTENTS_DIR = "_internal"
 IS_WIN = sys.platform == "win32"
 EXE_SUFFIX = ".exe" if IS_WIN else ""
 
+# 体积优化：运行期不可达模块的排除清单（每项体积为 2026-09-24 本机 Windows lite 构建实测值，
+# 基线发布目录 82.77MB）。进表判据只有一条：**能指出它在产物里、且运行期不可达**——
+# 靠「看着像没用」排除会在某个平台/某条分支上变成 ModuleNotFoundError（冻结产物里该错误只在
+# 运行时炸，测试覆盖不到）。新增项必须：① 用 scripts/report_bundle_size.py 复测体积；
+# ② 本地 `python build_exe.py --smoke --no-runtime` 三入口冒烟通过后才可提交。
+BLOAT_EXCLUDES: tuple[str, ...] = (
+    # pydantic v1 兼容层自带的 mypy 插件：pydantic/v1/mypy.py 顶层就是
+    # `from mypy.errorcodes import ErrorCode`，于是整个 mypy 包（0.71MB / 69 个文件，含 69 个
+    # .pyd）被拖进产物——这是基线里唯一一处「开发工具链泄漏」。pydantic/v1/__init__.py 自身
+    # 不 import mypy，故只排除该插件模块即可，pydantic.v1 其余部分不受影响。
+    "pydantic.v1.mypy",
+    # Pillow 插件：本仓对 PIL 的全部用法就是 Image.new + ImageDraw 画托盘图标
+    # （gui.py / src/web_tray.py），编解码与字体后端均不可达。容错依据（不是推测）：
+    # PIL/ImageFont.py 里 `from . import _imagingft as core` 包在 try/except ImportError →
+    # DeferredError，PIL/Image.py 的 init() 对每个插件同样是 try/except ImportError，
+    # 故缺失插件只在**真的调用**时才报错，不会在导入期炸。
+    "PIL._avif",  # 7.52MB：Pillow 12 自带 libavif，是产物内最大的单个非解释器文件
+    "PIL._imagingft",  # 2.07MB：FreeType；全仓无 ImageFont / truetype 调用点
+    "PIL._webp",  # 0.40MB
+    "PIL._imagingcms",  # 0.26MB
+    "PIL._imagingmath",  # 0.02MB
+    # uvicorn 的可选实现依赖：web.py 用 uvicorn.Server(uvicorn.Config(...))，http/loop/ws 三项
+    # 均为默认 "auto"，而三处 auto 实现内部就是「try 可选实现 except ImportError 回退」
+    # （httptools→h11、uvloop→asyncio、wsproto→websockets）。故排除只影响「显式指定该实现」
+    # 的用法，本仓没有；watchfiles 仅 --reload 路径使用，冻结产物从不 reload。
+    "httptools",  # 0.17MB
+    "watchfiles",  # 0.61MB
+    "uvloop",  # 仅 POSIX 安装；Windows 无此包，写明以免将来换平台构建时漏排
+    "zuvloop",
+    "wsproto",
+    # 开发 / 测试工具链：都不在 requirements.txt 里、运行期不会被导入，但一旦有人误加一个顶层
+    # import 就会被静默带进对外分发的 zip（mypy 正是这样进来的）。显式排除把「误收集」从
+    # 「事后在 report_bundle_size 里发现」变成「不可能发生」，与下面的测试同口径。
+    "pytest",
+    "_pytest",
+    "mypy",
+    "mypyc",
+    "mypy_extensions",
+    "basedpyright",
+    "black",
+    "blackd",
+    "blib2to3",
+    "isort",
+    "coverage",
+    "pip",
+    "pygments",
+    "nodejs_wheel",  # 114MB：本仓 venv 里有而 requirements.txt 没有，误收集即炸体积
+    "py",
+    "iniconfig",
+    "pluggy",
+)
+
+
+# i18n 资源清单（替代整目录拷贝）：运行时只消费 .mo / .json / .yaml（见 i18n.py 的加载优先级），
+# *.po 是翻译源文件、冻结产物里属死重量（0.12MB）。这里按文件逐个列出而非写 ('i18n','i18n')，
+# 因为目录形态会把 .po 一起带进分发包；新增语言只要把文件放进 i18n/ 就会被本函数自动纳入，
+# 不需要改 spec 模板（避免「加语言忘了改打包清单」这类漂移）。
+def i18n_datas_entries() -> list[tuple[str, str]]:
+    root = PROJECT_ROOT / "i18n"
+    if not root.is_dir():
+        return []
+    entries: list[tuple[str, str]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix == ".po":
+            continue
+        subdir = path.parent.relative_to(root).as_posix()
+        dest = "i18n" if subdir == "." else f"i18n/{subdir}"
+        entries.append((path.relative_to(PROJECT_ROOT).as_posix(), dest))
+    return entries
+
+
 # 动态生成的 PyInstaller spec 模板：
 # - 三个 Analysis / EXE，共用一个 COLLECT（依赖去重，体积约为独立打包的 1/3）
 # - 数据文件只挂在 CLI 的 Analysis 上即可（COLLECT 合并时统一落盘）
@@ -74,9 +139,12 @@ SPEC_TEMPLATE = """\
 # 本文件由 build_exe.py 自动生成，请勿手工编辑（修改请改 build_exe.py）
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
+# 体积优化排除项（清单与每项实测体积见 build_exe.py 的 BLOAT_EXCLUDES）
+excludes_bloat = {bloat_excludes}
+
 datas = [
     ('src/javascript', 'src/javascript'),   # JS 签名脚本（src/__init__.py 经 __file__ 定位 → _internal/src/javascript）
-    ('i18n', 'i18n'),                       # gettext 翻译文件（i18n.py 经 __file__ 定位 → _internal/i18n）
+    *{i18n_datas},   # 翻译目录（剔除 *.po 源文件；由 build_exe.i18n_datas_entries() 生成）
     ('web', 'web'),                         # Web 面板静态资源（src/web_api.py 经 __file__ 定位 → _internal/web）
 ]
 # 注意：config/ 不在此处（不进 _internal），由 copy_external_binaries 复制到 exe 同级目录，
@@ -94,14 +162,16 @@ hidden_common = [
 hidden_web = hidden_common + collect_submodules('uvicorn')
 
 # 注意：PyInstaller 6.x 已移除 cipher / zipped_data / zipfiles，spec 语法为 v6 风格
+# excludes 一律以 excludes_bloat 打头：三个入口共用同一个 _internal（COLLECT 合并去重），
+# 只在某一个 Analysis 上排除没有意义——只要 GUI 收了它，CLI 的产物里照样带着。
 a_cli = Analysis(['main.py'], pathex=[], datas=datas, hiddenimports=hidden_common,
-                 excludes=['tkinter', 'customtkinter', 'pystray', 'PIL',
+                 excludes=excludes_bloat + ['tkinter', 'customtkinter', 'pystray', 'PIL',
                            'fastapi', 'uvicorn', 'starlette', 'brotlicffi'],
                  noarchive=False)
 a_gui = Analysis(['gui.py'], pathex=[], datas=[], hiddenimports=hidden_common,
-                 excludes=['fastapi', 'uvicorn', 'starlette', 'brotlicffi'], noarchive=False)
+                 excludes=excludes_bloat + ['fastapi', 'uvicorn', 'starlette', 'brotlicffi'], noarchive=False)
 a_web = Analysis(['web.py'], pathex=[], datas=[], hiddenimports=hidden_web,
-                 excludes=['tkinter', 'customtkinter', 'pystray', 'brotlicffi'], noarchive=False)
+                 excludes=excludes_bloat + ['tkinter', 'customtkinter', 'pystray', 'brotlicffi'], noarchive=False)
 
 pyz_cli = PYZ(a_cli.pure)
 pyz_gui = PYZ(a_gui.pure)
@@ -123,9 +193,8 @@ coll = COLLECT(
 """
 
 
-# 解析 pyproject.toml 中的 version 字段，返回版本字符串（失败回退 "0.0.0"）
+# 解析 pyproject.toml 中的 version 字段（版本唯一事实源），返回版本字符串；解析失败回退 "0.0.0"
 def read_version() -> str:
-    # 从 pyproject.toml 中解析版本号（单一事实源），解析失败时回退到 0.0.0
     text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     m = re.search(r'^version\s*=\s*["\'](.+?)["\']', text, re.M)
     return m.group(1) if m else "0.0.0"
@@ -133,13 +202,9 @@ def read_version() -> str:
 
 # 打包前预编译所有入口脚本与 src/ 源码，提前以文件名+行号暴露语法错误
 def preflight_syntax_check() -> None:
-    # 预检：在启动 PyInstaller 之前先编译入口脚本与 src/ 全部源码。
-    #
-    #     背景：曾出现仓库中 gui.py 首行编码注释被破坏（丢失行首 '#'）导致
-    #     三平台 CI 全部在 PyInstaller Analysis 阶段报 IndentationError，
-    #     但 PyInstaller 的报错混在长日志里不易定位。此处提前编译可在几秒内
-    #     以明确的文件名+行号失败，避免浪费 CI 时间。
-    #
+    # 曾出现 gui.py 首行编码注释被破坏（丢失行首 '#'）导致三平台 CI 全部在 PyInstaller
+    # Analysis 阶段报 IndentationError，且报错混在长日志里不易定位；提前编译可在几秒内
+    # 以明确的文件名+行号失败，避免浪费 CI 时间。
     import py_compile
 
     targets = [PROJECT_ROOT / name for name in ("main.py", "gui.py", "web.py", "i18n.py", "msg_push.py")]
@@ -152,8 +217,8 @@ def preflight_syntax_check() -> None:
         except py_compile.PyCompileError as exc:
             print(f"[build] 预检失败：{path.relative_to(PROJECT_ROOT)} 存在语法错误：\n{exc.msg}")
             sys.exit(1)
-        # 额外守护：入口脚本首行若非注释/代码（如编码声明丢失 '#'），py_compile 已能捕获；
-        # 这里再检查 BOM 以外的不可见前缀，防止编辑器/网页端粘贴引入脏字节。
+        # 额外守护：首行以空白开头即文件头被破坏（py_compile 已能捕获丢 '#' 的情形，
+        # 这里再堵 BOM 以外的不可见前缀，防编辑器/网页端粘贴引入脏字节）。
         head = path.read_bytes()[:16]
         if head[:1] in (b" ", b"\t"):
             print(f"[build] 预检失败：{path.relative_to(PROJECT_ROOT)} 首行以空白开头（文件头可能被破坏）")
@@ -163,9 +228,11 @@ def preflight_syntax_check() -> None:
 
 # 生成 spec 模板并调用 PyInstaller 完成 CLI/GUI/Web 三入口 onedir 打包
 def run_pyinstaller() -> None:
-    # 生成 spec 并调用 PyInstaller 完成三入口 onedir 打包
     preflight_syntax_check()
-    _ = SPEC_PATH.write_text(SPEC_TEMPLATE.format(app=APP_NAME), encoding="utf-8")
+    _ = SPEC_PATH.write_text(
+        SPEC_TEMPLATE.format(app=APP_NAME, bloat_excludes=list(BLOAT_EXCLUDES), i18n_datas=i18n_datas_entries()),
+        encoding="utf-8",
+    )
     print(f"[build] 已生成 spec：{SPEC_PATH}")
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", str(SPEC_PATH)]
     print(f"[build] PyInstaller 命令：\n  {' '.join(cmd)}")
@@ -174,14 +241,9 @@ def run_pyinstaller() -> None:
 
 # 将仓库内 ffmpeg/node/config 复制到发布根目录（exe 同级），运行时可直接读写
 def copy_external_binaries(include_runtime: bool = True) -> None:
-    # 将仓库内已有的 ffmpeg / node / config 目录复制到发布根目录（exe 同级）。
-    #
-    #     这三者是运行时资源，必须与最终生成的 exe 保持同级（而非收进 _internal/），
-    #     以便程序在运行时直接读写配置、调用 FFmpeg / Node.js。
-    #     缺失时不报错：程序运行时会自动下载对应平台的 ffmpeg / node。
-    #     当 include_runtime=False（--no-runtime）时跳过 ffmpeg/node，
-    #     交由用户首次运行时自动下载，可减小分发体积。
-    #
+    # 三者是运行时资源，必须与最终 exe 同级（而非收进 _internal/），程序才能直接读写配置、
+    # 调用 FFmpeg / Node.js。仓库内缺失时不报错：运行时会下载对应平台的 ffmpeg / node；
+    # include_runtime=False（--no-runtime）时跳过 ffmpeg/node，交用户首跑自动下载。
     if include_runtime:
         for name in ("ffmpeg", "node"):
             src = PROJECT_ROOT / name
@@ -191,26 +253,525 @@ def copy_external_binaries(include_runtime: bool = True) -> None:
             if has_exe and not IS_WIN:
                 print(f"[build] 跳过 {name}/（Windows 二进制，与当前平台不符）")
                 continue
-            dst = RELEASE_DIR / name  # exe 同级目录
+            dst = RELEASE_DIR / name
             _ = shutil.copytree(src, dst, dirs_exist_ok=True)
             print(f"[build] 已复制 {name}/ -> {dst}")
     else:
         print("[build] --no-runtime：跳过 ffmpeg/ 与 node/（用户首次运行时自动下载）")
 
-    # config 配置目录：保持在 exe 同级，供程序运行时读取
+    # SEV-2213（2026-09-23）：**绝不能整目录原样复制**。仓库根的 config/config.ini 与
+    # config/URL_config.ini 含真实凭据（平台 Cookie / 代理账密 / Web 口令 / 内嵌 query token
+    # 的房间地址），而 make_zip 会把发布目录整棵树压成对外分发的 zip —— 继 .gitignore 与
+    # .dockerignore 之后的**第三条外发通道**，此前完全没有排除。改法：按「模板化」逐个写入
+    # （结构保留、凭据置空）+ make_zip 前另有一道 assert_no_credentials_in_release 兜底；
+    # 二者同源判据但不互相替代：这里是「不产生」，那里是「产生了就拦住」。
+    _prepare_config_dir()
+
+
+# 发布目录内**绝不允许**存在的凭据文件（SEV-2213）。与 .dockerignore 的 `config/config.ini` /
+# `config/URL_config.ini` 两条排除项同源——同一批文件、同一份敏感判定，只是作用在「外发 zip」通道上。
+CREDENTIAL_FILE_NAMES: tuple[str, ...] = ("config.ini", "URL_config.ini")
+
+
+def _sanitized_config_text(text: str, *, fallback_header: str = "") -> str:
+    # 把 config.ini 文本按「敏感键置空」重写为可分发模板，保留注释与节结构（产物仍是用户
+    # 可直接编辑的模板，而非空文件）。
+    # 敏感判定复用 src/web_config（is_sensitive_item + _looks_like_secret_value），不另写一份
+    #   正则：那会造出第二份「什么算敏感」的事实源，两侧迟早漂移。
+    # 用 configparser + 已知节名而非逐行正则：ini 的 section/key 认法（`=` 与 `:` 均可、
+    #   键名大小写不敏感）与运行时读取完全一致，不会出现「面板认为敏感、打包器不认为」的缝。
+    import configparser
+
+    from src import web_config
+
+    parser = configparser.ConfigParser(interpolation=None)
+    # 保留键名原样大小写，避免写回时把键名改成小写形态。
+    # 类型注记：ConfigParser 里 optionxform 是方法，实例赋值 str 会触发 mypy
+    #   [method-assign]/[assignment]；这是 configparser 的既知惯用法（CPython 文档亦如此
+    #   演示），故就地标注忽略，而不是绕开该赋值。
+    parser.optionxform = str  # type: ignore[method-assign,assignment]
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        # 解析不了（损坏/异构 ini）：**不得**退回「原样复制」——那正是本次要堵的形态。
+        # 返回只含表头的空模板，宁可让用户重新填，也不外发可能含凭据的原文。
+        return fallback_header or "# config.ini 解析失败，已置为空白模板（原文件未分发）\n"
+
+    lines: list[str] = []
+    for section in parser.sections():
+        lines.append(f"[{section}]")
+        for key, value in parser.items(section):
+            # 空值（未启用）本就不含凭据，原样保留；非空且命中敏感判定的一律置空。
+            # web_config.is_sensitive_item 覆盖节白名单（Cookie / 账号密码 / Authorization）+ 键名
+            #   模式（令牌/密码/授权码/token/secret/passwd/password/api_key/推送接口链接/推送地址/
+            #   代理地址）；_looks_like_secret_value 兜住「键名正常但值里嵌 token」（与面板脱敏同口径）。
+            if value.strip() and (
+                web_config.is_sensitive_item(section, key) or web_config._looks_like_secret_value(value)
+            ):
+                lines.append(f"{key} = ")
+            else:
+                lines.append(f"{key} = {value}")
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _sanitized_url_config_text() -> str:
+    # URL_config.ini 一律重写为**单行注释样例**：该文件通篇是房间地址，而地址的 query 里可能
+    # 内嵌平台 token（本仓在 _looks_like_secret_value 里已承认这一形态）。样例串与
+    # _prepare_url_config() 写入口径逐字同源，避免两处各自演化。
+    return "#https://live.douyin.com/000000000000\n"
+
+
+def _prepare_config_dir() -> None:
+    # 把发布目录的 config/ 写成**脱敏模板**（SEV-2213 的「不产生」一侧）。
+    # 只写这两个已知文件；源目录里的其它文件（用户自建、无凭据）才走复制。
+    cfg_dst = RELEASE_DIR / "config"
+    cfg_dst.mkdir(parents=True, exist_ok=True)
     cfg_src = PROJECT_ROOT / "config"
+
+    known = set(CREDENTIAL_FILE_NAMES)
+    # 1) 凭据文件：从仓库源读取后脱敏重写（源不存在时落空白模板，绝不跳过）
+    ini_src = cfg_src / "config.ini"
+    template = (
+        _sanitized_config_text(ini_src.read_text(encoding="utf-8-sig", errors="replace"))
+        if ini_src.is_file()
+        else "[录制设置]\n"
+    )
+    _ = (cfg_dst / "config.ini").write_text(template, encoding="utf-8")
+    _ = (cfg_dst / "URL_config.ini").write_text(_sanitized_url_config_text(), encoding="utf-8")
+    print(f"[build] 已生成脱敏配置模板 config/config.ini + config/URL_config.ini -> {cfg_dst}")
+
+    # 2) 其余非凭据文件照常复制（保留「模板之外的附属文件也能带过去」行为）
     if cfg_src.is_dir():
-        cfg_dst = RELEASE_DIR / "config"
-        _ = shutil.copytree(cfg_src, cfg_dst, dirs_exist_ok=True)
-        print(f"[build] 已复制 config/ -> {cfg_dst}")
+        for item in sorted(cfg_src.iterdir()):
+            if item.name in known or not item.is_file():
+                continue
+            _ = shutil.copy2(item, cfg_dst / item.name)
+            print(f"[build] 已复制 config/{item.name} -> {cfg_dst / item.name}")
+
+
+def assert_no_credentials_in_release() -> None:
+    # SEV-2213 的「产生了就拦住」一侧：make_zip **之前**校验发布目录里那两份文件确实不含任何
+    # 敏感键的真实值，命中即非零退出——与 .dockerignore 同源口径。
+    # 为什么在 make_zip 前：zip 一旦生成就可能已被 copy/上传，事后再删已无意义。
+    # 为什么不只看「文件存在」：文件**必须**存在（用户要能在 exe 同级编辑），真正要拦的是
+    #   「里面还有凭据」，故判据是逐键比对源值，不是存在性。
+    from src import web_config
+
+    assert RELEASE_DIR.is_dir(), f"{RELEASE_DIR} 不存在，无从校验"
+    cfg_dst = RELEASE_DIR / "config"
+
+    problems: list[str] = []
+
+    # ① URL_config.ini：必须是注释样例（既有的 _prepare_url_config 口径），不得含有效房间行
+    url_cfg = cfg_dst / "URL_config.ini"
+    if url_cfg.is_file():
+        for n, line in enumerate(url_cfg.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                problems.append(f"config/URL_config.ini:{n} 含未注释的有效行（可能内嵌房间/token）：{stripped[:80]!r}")
+
+    # ② config.ini：逐键比对**仓库源文件的真实值**——命中即说明脱敏漏了该键。用「源值出现在
+    #    发布文件里」作判据而不是「键名敏感」：前者是实际泄漏的事实、后者只是推断，且这样
+    #    也覆盖「键名不在敏感表里但值确实是凭据」的漏网情形。
+    src_ini = PROJECT_ROOT / "config" / "config.ini"
+    dst_ini = cfg_dst / "config.ini"
+    if src_ini.is_file() and dst_ini.is_file():
+        dst_text = dst_ini.read_text(encoding="utf-8-sig", errors="replace")
+        src_parser = _read_ini_pairs(src_ini)
+        for section, key, value in src_parser:
+            v = value.strip()
+            # 只拦「有实质内容且确实敏感」的值；空值/纯布尔运维参数不算凭据。
+            if len(v) < 4:
+                continue
+            if not (web_config.is_sensitive_item(section, key) or web_config._looks_like_secret_value(v)):
+                continue
+            if v in dst_text:
+                problems.append(f"config/config.ini 的 [{section}] {key} 真实值未被脱敏（长度 {len(v)}）")
+
+    if problems:
+        print("[build][FATAL] 发布目录内检出凭据（SEV-2213：外发 zip 不得包含配置凭据）：", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        raise SystemExit(1)
+    print("[build] 发布目录凭据校验通过：config/ 内无敏感键真实值")
+
+
+def _read_ini_pairs(path: Path) -> list[tuple[str, str, str]]:
+    # 读 ini 为 (节, 键, 值) 三元组列表；解析失败返回空（由 assert_no_credentials_in_release 的
+    # 「成品侧」检查兜底，此函数自身不参与放行判定）。
+    import configparser
+
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str  # type: ignore[method-assign,assignment]  # 同上：保留键名原样大小写
+    try:
+        parser.read(path, encoding="utf-8-sig")
+    except configparser.Error:
+        return []
+    return [(section, key, value) for section in parser.sections() for key, value in parser.items(section)]
 
 
 # ==================== 运行时二进制下载（--dual full 版本） ====================
 
+# 运行时二进制的「槽位」标识：与下载点一一对应，刻意**不**用下载文件名做键——ffmpeg 的临时文件名
+# 是通用的 _ffmpeg_temp.zip / _ffmpeg_temp.tar.xz（三平台共用的两支不同构建），node 的文件名又随
+# 「最新 LTS」每次构建都可能变化，按文件名钉定既无法分平台表达、也无法表达「这一份还没核实」。
+RUNTIME_SLOTS: tuple[str, ...] = ("ffmpeg", "node")
 
-# 用 urllib 下载文件到 dest 并打印进度（自动跟随重定向）
-def _download_file(url: str, dest: Path, desc: str) -> None:
-    # 下载文件到 dest（带简单进度输出）。urllib 默认跟随重定向。
+# 发布矩阵覆盖的运行时键（<os>-<arch>），与 .github/workflows/build-release.yml 的三平台矩阵同源；
+# scripts/check_runtime_pins.py 校验钉定表对它的覆盖完整性。
+RELEASE_RUNTIME_KEYS: tuple[str, ...] = ("windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64")
+
+# 尚未核实官方哈希的占位标记。判定「是否已钉定」只看形状（64 位十六进制），
+# 故任何非 hex 值（含本标记）都等价于「未钉定」，无需在别处复制本常量。
+UNVERIFIED_PIN = "UNVERIFIED-OFFICIAL-SHA256-FILL-ME"
+
+# 已钉定的运行时二进制 SHA256，按运行时键分列：{ "<os>-<arch>": { "<槽位>": "<sha256>" } }。
+# 发布路径为 **fail-closed**（SEV-10）：CI（GITHUB_ACTIONS）默认 --require-pinned，缺钉定/形状非法
+# 即在**下载之前** SystemExit（不浪费 300MB 带宽，也不落盘未校验产物）。
+# 维护方式（每次升级运行时版本都要走一遍）：
+#   1) 从官方渠道取该构建公布的 SHA256：nodejs.org 的 SHASUMS256.txt、johnvansickle 的
+#      ffmpeg-release-<arch>-static.tar.xz.sha56、gyan.dev / evermeet.ca 页面公布值；
+#   2) 把 64 位十六进制小写值替换下表中的 UNVERIFIED_PIN（**不得凭本地下载结果填写**——
+#      那只会把「构建机已中毒」的情形固化成基线）；
+#   3) 也可不改本表、由 CI 用环境变量 DLR_RUNTIME_SHA256（JSON）注入同一批值，把「发布密钥」
+#      与代码仓分离；两种来源都接受槽位名或下载文件名做键。
+# 表内仍是占位值时，`python scripts/check_runtime_pins.py --strict` 与 CI 发布链一律失败，直到
+# 维护者填入官方值——这是刻意设计，不得为了「让 CI 变绿」而回填自算哈希或放宽判定。
+#
+# [2026-09-22 回填进度] 只回填「取值可追溯到上游官方公布页」的槽位，判定形状未变：
+#   · node × 5 段已全部钉定：来源 https://nodejs.org/dist/v24.21.0/SHASUMS256.txt，并在同版本
+#     GPG 签名文档 SHASUMS256.txt.asc 的明文本体里逐条复核一致（仅做取值一致性复核，**未验签**）。
+#     v24.21.0 = 当日 dist/index.json 里第一条 lts 项（codename Krypton），即 _download_nodejs
+#     会选中的那一版；上游一发新 LTS 本段即失配并由 --strict 拦下发布——这正是 SEV-10 写明的
+#     人工闸口，不得改成「自动取本次实际哈希」。
+#   · windows-x64/ffmpeg 已钉定：来源 gyan.dev 官方 .sha256 文档，两个端点取值互相印证（滚动别名
+#     ffmpeg-release-essentials.zip.sha256 与重定向目标 packages/ffmpeg-9.0.2-essentials_build.zip
+#     .sha256），对应版本 ffmpeg 9.0.2。滚动别名意味着**每次上游发新版本都会失配**，需重新核对后回填。
+#   · macos-x64 / macos-arm64 / linux-x64 / linux-arm64 的 ffmpeg **保持占位**，原因不是「没来得及
+#     填」而是**这四个槽位对应的上游不公布 SHA256**（2026-09-22 实测）：evermeet（macOS 两槽同一份
+#     产物）页面只写「任意文件追加 /sig 取 GPG 签名」、无 sha256 文档，原 arm64 下载点
+#     getrelease-arm64/zip 在上游从不存在（恒 404），2026-09-22 已把两架构统一为 x86_64 构建（见
+#     _FFMPEG_DOWNLOAD_URLS 注释）；johnvansickle（Linux）只提供 *.md5（实测 200，内容为 md5 摘要）。
+#     按「不得凭本地下载结果填写」的硬约束，宁可让发布链继续红在这 4 个槽位上。可选处置（须由
+#     维护者决策）：改用「GPG 验签 + SHA256」双通道（macOS 两槽已登记验签，见 _RUNTIME_GPG_SIGNATURES）、
+#     或换用公布 SHA256 的上游、或为 md5-only 的上游另设一套显式降级的判定并写明理由。
+# [历史注] 2026-09-18 CR-11 只有校验框架、表为空且未钉定仅告警后继续（fail-open），
+#   2026-09-20 SEV-10 确认约 300MB 无校验二进制直接进分发包，改为上方 fail-closed 语义。
+_PINNED_RUNTIME_SHA256: dict[str, dict[str, str]] = {
+    # node 各段取值均来自 https://nodejs.org/dist/v24.21.0/SHASUMS256.txt（来源与复核方式见上方注释）
+    "windows-x64": {
+        # gyan.dev ffmpeg-release-essentials.zip.sha256（= ffmpeg 9.0.2 essentials_build，2026-09-22）
+        "ffmpeg": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+        # node-v24.21.0-win-x64.zip
+        "node": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+    },
+    "linux-x64": {
+        "ffmpeg": UNVERIFIED_PIN,  # johnvansickle amd64-static：官方只有 MD5，无 SHA256 可比对
+        # node-v24.21.0-linux-x64.tar.gz
+        "node": "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff",
+    },
+    "linux-arm64": {
+        "ffmpeg": UNVERIFIED_PIN,  # johnvansickle arm64-static：同上，官方只有 MD5
+        # node-v24.21.0-linux-arm64.tar.gz
+        "node": "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5",
+    },
+    "macos-x64": {
+        "ffmpeg": UNVERIFIED_PIN,  # evermeet getrelease/zip：官方只给 GPG 签名（追加 /sig），无 SHA256
+        # node-v24.21.0-darwin-x64.tar.gz
+        "node": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
+    },
+    "macos-arm64": {
+        # 与 macos-x64 同一份 evermeet 构建（上游不发布 arm64，见 _FFMPEG_DOWNLOAD_URLS 注释）：
+        # 无官方 SHA256 可比对，且因来源相同，两槽将来必须填**同一个值**
+        "ffmpeg": UNVERIFIED_PIN,
+        # node-v24.21.0-darwin-arm64.tar.gz
+        "node": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+    },
+}
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+# 命令行对「必须钉定」的显式覆盖：None = 沿用默认判定（CI 环境变量自动开启）。
+# 由 main() 在解析参数后写入，_download_file 通过 require_pinned_hashes() 读取。
+_REQUIRE_PINNED_OVERRIDE: bool | None = None
+
+# 平台 → node dist 目录命名 / 本机架构归一（_download_nodejs 与运行时键共用同一份映射，
+# 避免两处各自演化出「同一台机器两种键名」的漂移）
+_NODE_PLATFORM_MAP = {"win32": "win", "darwin": "darwin", "linux": "linux"}
+_NODE_ARCH_MAP = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
+
+
+# 当前机器对应的运行时键，如 "windows-x64"
+def runtime_slot_key() -> str:
+    os_tag = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    arch = _NODE_ARCH_MAP.get(platform.machine().lower(), "x64")
+    return f"{os_tag}-{arch}"
+
+
+# 解析 DLR_RUNTIME_SHA256（JSON）。接受三种形态并统一收敛为「槽位/文件名 → 哈希」：
+#   ① {"ffmpeg": "...", "node": "..."}                          —— 扁平（只作用于当前运行时键）
+#   ② {"windows-x64": {"ffmpeg": "..."}, "any": {...}}          —— 按运行时键分列（CI 主用法）
+#   ③ {"node-v24.1.0-win-x64.zip": "..."}                       —— 按下载文件名（历史兼容）
+def _env_pins() -> dict[str, str]:
+    raw = os.environ.get("DLR_RUNTIME_SHA256", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        print("[build][warn] DLR_RUNTIME_SHA256 不是合法 JSON，已忽略")
+        return {}
+    if not isinstance(data, dict):
+        print("[build][warn] DLR_RUNTIME_SHA256 应为 JSON 对象，已忽略")
+        return {}
+    current = runtime_slot_key()
+    merged: dict[str, str] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            # 分列形态：只取「本运行时键」与「any/*」两段，其它平台的钉定不参与判定
+            if str(key) == current or str(key).lower() in ("any", "*"):
+                merged.update({str(k): str(v) for k, v in value.items()})
+        elif value is not None:
+            merged[str(key)] = str(value)
+    return {str(k): str(v).strip().lower() for k, v in merged.items()}
+
+
+def _pinned_slots() -> dict[str, str]:
+    # 合并内置钉定表（当前运行时键那一段）与环境变量覆盖（环境变量优先，便于 CI 注入）
+    merged = {str(k): str(v).strip().lower() for k, v in _PINNED_RUNTIME_SHA256.get(runtime_slot_key(), {}).items()}
+    merged.update(_env_pins())
+    return merged
+
+
+def _is_pinned(value: str) -> bool:
+    # 「已钉定」的唯一判据是形状：64 位小写十六进制。占位标记、空串、截断值一律算未钉定，
+    # 因此新增占位写法不需要改判定逻辑（也不可能靠「填个非空字符串」蒙过门禁）。
+    return bool(_SHA256_PATTERN.fullmatch(value))
+
+
+# ==================== 第 4 类完整性口径：源码可复现构建（W1，2026-09-22 批准） ====================
+
+# 为什么需要第四类而不是「把 CI 自算哈希塞进 _PINNED_RUNTIME_SHA256」：CI 自源码构建的产物
+# **没有上游公布值**，而「把构建机算出的哈希当基线」正是 SEV-10 明令禁止的形态。本类把闸口从
+# 「产物哈希」换成「输入可钉定 + 过程可追溯」，三件证据齐备才算满足：source_sha256（上游官方
+# **源码 tarball** 的 SHA256，可人工核对）、recipe_sha256（构建配方即 configure 参数串的 SHA256，
+# 配方变即基线失效、逼后来的人重核）、provenance_ref（产出该二进制的 workflow/attestation 引用，
+# 空 = 无过程证据）。两条硬防绕过要求：① 标记本身**绝不构成放行**，证据缺任一条即算未满足；
+# ② 声明为第 4 类的槽位**不得再走下载路径**（它的产物是构建出来的，走下载等于「换个标记拿免检」）。
+SOURCE_BUILD_PROVENANCE = "SOURCE-BUILD-PROVENANCE"
+SOURCE_BUILD_EVIDENCE_FIELDS: tuple[str, ...] = ("source_sha256", "recipe_sha256", "provenance_ref")
+
+# {运行时键: {槽位: {证据字段: 值}}}。当前**为空**是刻意状态：本轮只落口径，路线 A 的构建步骤
+# （W2~W4）尚未获批实施，没有真实证据可登记。空表 = 第 4 类一个都不满足 = --strict 照旧拦。
+_SOURCE_BUILD_EVIDENCE: dict[str, dict[str, dict[str, str]]] = {}
+
+
+def _source_build_evidence(key: str, slot: str) -> dict[str, str]:
+    entry = _SOURCE_BUILD_EVIDENCE.get(key, {}).get(slot, {})
+    return {field: str(entry.get(field, "")).strip() for field in SOURCE_BUILD_EVIDENCE_FIELDS}
+
+
+def _is_source_build_marker(value: str) -> bool:
+    # 比较一律大小写无关：_pinned_slots() 会把内置表与环境变量的取值统一 .strip().lower()，
+    # 若按常量原样逐字比，注入进来的标记就永远认不出——等于第 4 类的拒下载判定形同虚设
+    # （这条正是 tests/test_build_exe.py::test_env_injected_marker_also_refuses_download 抓出来的）。
+    return value.strip().lower() == SOURCE_BUILD_PROVENANCE.lower()
+
+
+def _is_source_build_satisfied(value: str, key: str, slot: str) -> bool:
+    # 证据值同样要过形状关：「填个占位字符串凑数」与 CR-11 的「空表 + warn 后继续」是同一族失效。
+    if not _is_source_build_marker(value):
+        return False
+    evidence = _source_build_evidence(key, slot)
+    if not evidence["provenance_ref"]:
+        return False
+    return bool(
+        _SHA256_PATTERN.fullmatch(evidence["source_sha256"].lower())
+        and _SHA256_PATTERN.fullmatch(evidence["recipe_sha256"].lower())
+    )
+
+
+def _slot_is_gated(value: str, key: str, slot: str) -> bool:
+    # 「这个槽位今天算不算被管住了」的**唯一**口径 = 已钉定的官方哈希 ∨ 证据齐备的第 4 类。
+    # scripts/check_runtime_pins.py 必须调本函数而不是自己判 _is_pinned，否则会出现两份判定、
+    # 第 4 类在某一侧被漏认（AGENTS.md 禁止并行事实源的同一条）。
+    return _is_pinned(value) or _is_source_build_satisfied(value, key, slot)
+
+
+def _declares_source_build(value: str) -> bool:
+    # 只看标记、不看证据：用于下载路径的处置——声明走第 4 类的槽位根本不该下载。
+    return _is_source_build_marker(value)
+
+
+# 发布路径是否要求「必须有钉定」。CI 默认开启（GITHUB_ACTIONS=true），本地默认关闭但会告警；
+# 命令行 --require-pinned / --allow-unpinned 可显式覆盖两者。
+def require_pinned_hashes() -> bool:
+    if _REQUIRE_PINNED_OVERRIDE is not None:
+        return _REQUIRE_PINNED_OVERRIDE
+    return os.environ.get("GITHUB_ACTIONS", "").strip().lower() == "true"
+
+
+# 未钉定时的处置：发布路径终止构建，本地路径打印实际哈希供人工核对官方值后再钉定。
+def _unpinned_action(slot: str, dest: Path, desc: str, declared_source_build: bool = False) -> None:
+    # declared_source_build 由调用方传入**已合并环境变量后的实际取值**（而不是只查内置表），
+    # 否则「CI 用 DLR_RUNTIME_SHA256 注入第 4 类标记」这条通道会绕过下面的拒下载判定。
+    key = runtime_slot_key()
+    if declared_source_build:
+        # 声明为第 4 类却走到下载：说明产物应由构建步骤产出而非从上游拉取。放行就等于「换个标记拿免检」，
+        # 因此**两侧都终止**（不受 require_pinned_hashes 影响），并把证据要求原样打出来。
+        raise SystemExit(
+            f"[build][FATAL] {desc}（槽位 {key}/{slot}）声明为第 4 类 {SOURCE_BUILD_PROVENANCE}，"
+            f"不该走下载路径。该类的满足条件 = {SOURCE_BUILD_EVIDENCE_FIELDS} 三件证据齐备且过形状关"
+            f"（见 _SOURCE_BUILD_EVIDENCE）。已终止构建，未开始下载。"
+        )
+    msg = f"{desc}（槽位 {key}/{slot}）未钉定 SHA256"
+    if require_pinned_hashes():
+        raise SystemExit(
+            f"[build][FATAL] {msg}。发布路径为 fail-closed（--require-pinned / CI 默认开启）："
+            f"请先从官方渠道核对并填入 build_exe.py 的 _PINNED_RUNTIME_SHA256"
+            f"（当前为占位值 {UNVERIFIED_PIN!r} 视为未钉定），"
+            f"或由 CI 注入 DLR_RUNTIME_SHA256；"
+            f"上游确实不公布哈希时改走第 4 类（{SOURCE_BUILD_PROVENANCE} + 三件证据，见 W1）。已终止构建，未开始下载。"
+        )
+    print(f"[build][warn] {msg}——本地构建继续，但**该产物不得用于发布**")
+
+
+# ==================== 官方 GPG 签名核验（P-2，2026-09-22 批准引入 gnupg） ====================
+
+# {运行时键: {槽位: (签名 URL, 完整公钥指纹)}}。SHA256 钉定只回答「下到的是先头核过的那一份吗」，
+# 它**自身不带来源认证**——期望值与实际产物是从同一个 HTTPS 通道取回的，域名/CDN 被劫持时
+# 两者会被一起换掉；签名核验补的正是「这份产物确实由那把钥匙签出」，且公钥按**完整 40 位指纹**
+# 导入而不是 key id（key id 只有 16 位十六进制，可碰撞、可仿冒）。
+# 只登记**上游确实公布 detached 签名**的槽位，没公布的留空即跳过：evermeet（macOS 两架构）页面
+# 明示「任意文件追加 /sig 取其 GPG 签名」；gyan.dev / johnvansickle 实测不公布签名文件，
+# **不得**为了「看起来全都验了」伪造配置。
+# 指纹的信任来源要知情：它取自上游自己的页面/文档，属「同一通道带回来的钥匙」，强度等同
+# TOFU-of-key；要再上一格需从第二渠道（密钥服务器上的签名网络 / 与维护者当面核对指纹）确认。
+_RUNTIME_GPG_SIGNATURES: dict[str, dict[str, tuple[str, str]]] = {
+    "macos-x64": {
+        "ffmpeg": (
+            "https://evermeet.ca/ffmpeg/getrelease/zip/sig",
+            "20F6EA3E0CFD6B4C53447A73476C4B611A660874",
+        ),
+    },
+    "macos-arm64": {
+        # 与 macos-x64 同一份产物、同一把钥匙（见 _FFMPEG_DOWNLOAD_URLS 注释）
+        "ffmpeg": (
+            "https://evermeet.ca/ffmpeg/getrelease/zip/sig",
+            "20F6EA3E0CFD6B4C53447A73476C4B611A660874",
+        ),
+    },
+}
+
+
+def _run_gpg(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess[bytes] | None:
+    # 返回 None 表示「gpg 这个工具不可用」（未安装 / 超时 / 无法启动），调用方据此区分
+    # 「工具缺失」与「验签失败」——后者无论本地还是发布路径都必须终止构建，前者只在发布路径终止。
+    # 输出**一律按字节**返回且不开 text=True：--status-fd 的机器行是判定依据，而中文 Windows 上
+    # locale 解码会让 subprocess 的 reader 线程抛 UnicodeDecodeError、把 stdout 变成 None
+    # （AGENTS.md「探测子进程输出一律按字节比较」同源坑）。
+    try:
+        return subprocess.run(
+            ["gpg", *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return None
+
+
+def _verify_official_signature(dest: Path, slot: str, desc: str) -> None:
+    # 未登记签名的槽位（gyan.dev / johnvansickle 不公布签名）直接返回——**跳过是显式状态**，
+    # 不是「静默通过」：--strict 仍会因该槽位未钉定而拦下发布。
+    entry = _RUNTIME_GPG_SIGNATURES.get(runtime_slot_key(), {}).get(slot)
+    if entry is None:
+        return
+    sig_url, fingerprint = entry
+    print(f"[build] 核验 {desc} 的官方 GPG 签名（指纹 {fingerprint[-16:]}）")
+    # 签名文件只活在临时目录里：落到 target_dir 会被 make_zip 一起打进对外分发包。
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="dlr-gpg-") as tmp:
+        _verify_gpg_artifact(dest, Path(tmp) / "artifact.sig", sig_url, fingerprint, desc)
+
+
+def _verify_gpg_artifact(dest: Path, sig_path: Path, sig_url: str, fingerprint: str, desc: str) -> None:
+    # 判据一律来自 --status-fd 的机器行，而不是 gpg 的退出码：退出码 0 只说明「签名能被钥匙环里
+    # 某把钥匙验通」，不核对签名者身份时，任意一把可导入的钥匙签过的产物都能蒙过去。
+    try:
+        with urllib.request.urlopen(sig_url, timeout=60) as resp:
+            sig_path.write_bytes(resp.read())
+    except OSError as e:
+        msg = f"取不到 {sig_url} 的签名文件：{type(e).__name__}: {e}"
+        if require_pinned_hashes():
+            raise SystemExit(f"[build][FATAL] {desc} 签名核验失败——{msg}（发布路径 fail-closed，已终止构建）") from e
+        print(f"[build][warn] {desc} 签名核验跳过——{msg}")
+        return
+
+    if _run_gpg(["--batch", "--quiet", "--keyserver", "hkps://keys.openpgp.org", "--recv-keys", fingerprint]) is None:
+        msg = "gnupg 不可用（未安装或无法启动 gpg）"
+        if require_pinned_hashes():
+            raise SystemExit(f"[build][FATAL] {desc} 签名核验失败——{msg}；CI runner 需先装 gnupg")
+        print(f"[build][warn] {desc} 签名核验跳过——{msg}；本地构建继续，产物不得发布")
+        return
+
+    # 钉定的指纹必须是**导入成功的那把钥匙**的主钥指纹：用 --with-colons 的 fpr 记录核对，
+    # 顺带拿到主钥 + 全部子钥的指纹集合（下面判签名者用）。
+    listed = _run_gpg(["--batch", "--quiet", "--list-keys", "--with-colons", fingerprint])
+    key_fprs: set[bytes] = set()
+    if listed is not None:
+        key_fprs = {
+            line.split(b":")[9].strip().lower()
+            for line in (listed.stdout or b"").splitlines()
+            if line.startswith(b"fpr:") and len(line.split(b":")) > 9
+        }
+    if listed is None or fingerprint.lower().encode("ascii") not in key_fprs:
+        raise SystemExit(f"[build][FATAL] {desc} 无法在钥匙环中确认指纹 {fingerprint}，签名核验终止（不降级放行）")
+
+    checked = _run_gpg(["--batch", "--quiet", "--status-fd", "1", "--verify", str(sig_path), str(dest)])
+    if checked is None:
+        raise SystemExit(f"[build][FATAL] {desc} gpg --verify 无法执行，签名核验终止")
+    status = checked.stdout or b""
+    # 判据三条同时成立：GOODSIG + VALIDSIG（签名可被环内钥匙验通）、无 ERRSIG/BADSIG、
+    # 且**实际签名的那把钥匙属于钉定指纹那把钥匙的主钥/子钥集合**。
+    # 最后一条为什么要用集合而不是逐字比钉定值：GnuPG 的 VALIDSIG 首字段报的是**签名子钥**
+    # 指纹，若上游用子钥签名而这里硬比主钥指纹，就会把合法产物判成失败（假红比漏检更难排查）。
+    lines = status.splitlines()
+    good = any(line.startswith(b"[GNUPG:] GOODSIG ") for line in lines)
+    bad = any(line.startswith(b"[GNUPG:] ERRSIG") or line.startswith(b"[GNUPG:] BADSIG") for line in lines)
+    signer = {
+        line.split()[2].lower() for line in lines if line.startswith(b"[GNUPG:] VALIDSIG ") and len(line.split()) >= 3
+    }
+    if not good or bad or not signer or not signer <= key_fprs:
+        raise SystemExit(
+            f"[build][FATAL] {desc} 签名核验未通过（需 GOODSIG+VALIDSIG，且签名钥匙属于钉定指纹 {fingerprint}）:\n"
+            + status.decode("latin-1")  # 仅用于把状态行原文打进报错供人看，不参与判定
+        )
+    print(f"[build] {desc} GPG 签名核验通过（{fingerprint}）")
+
+
+# 下载文件到 dest 并打印进度（自动跟随重定向）；完成后按钉定值校验完整性，
+# 发布路径（CI / --require-pinned）缺钉定即在下载前终止。
+#
+# slot 为**必填关键字参数**（2026-09-21 收紧，SEV-10 的残留形态）：三个平台的 ffmpeg 临时文件名都是
+# _ffmpeg_temp.zip / _ffmpeg_temp.tar.xz，靠 dest.name 兜底查表既分不出平台、也永远命中不了按槽位
+# 分列的钉定表。原默认值 slot="" 让 macOS/Linux 两个分支漏传参数而**静默降级**——即便维护者已把
+# 官方哈希填进表，那两路依旧查不到 expected：本地路径退化成无校验下载，发布路径则永久红在一处
+# 误导人的报错上。去掉默认值后，同类遗漏变成 TypeError + mypy 报错。
+def _download_file(url: str, dest: Path, desc: str, *, slot: str) -> None:
+    # 先解析钉定值再决定是否下载：fail-closed 的意义包含「不要在未校验的 300MB 上浪费带宽」
+    pins = _pinned_slots()
+    expected = pins.get(slot, "") if slot else ""
+    if not expected:
+        expected = pins.get(dest.name, "")
+    if not _is_pinned(expected):
+        _unpinned_action(slot or dest.name, dest, desc, _declares_source_build(expected))
+
+    # 下载文件到 dest（带进度输出）；重定向由 urllib 自动跟随。
     print(f"[build] 下载 {desc}：{url}")
     with urllib.request.urlopen(url, timeout=180) as resp:
         total = int(resp.headers.get("Content-Length", 0))
@@ -227,11 +788,27 @@ def _download_file(url: str, dest: Path, desc: str) -> None:
                     print(f"\r[build] {desc}: {downloaded // 1024}KB / {total // 1024}KB ({pct}%)", end="", flush=True)
         print()
 
+    # CR-11：完整性校验。钉定值不匹配即终止构建，避免污染产物被分发。
+    h = hashlib.sha256()
+    with open(dest, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    actual = h.hexdigest()
+    if _is_pinned(expected):
+        if expected != actual:
+            raise SystemExit(f"[build][FATAL] {dest.name} SHA256 不匹配（期望 {expected}，实际 {actual}），已终止构建")
+        print(f"[build] {dest.name} SHA256 校验通过（{slot or dest.name}）")
+        # 签名核验只在**哈希已过**之后做：对一份连内容都没核过的产物验签没有意义。
+        _verify_official_signature(dest, slot, desc)
+    else:
+        # 仅本地路径可达（发布路径已在下载前终止）：打出实际哈希，供人工核对官方值后钉定
+        print(f"[build][warn] {desc} 未钉定 SHA256，请核对官方值后填入 _PINNED_RUNTIME_SHA256：{actual}")
+
 
 # 下载并解压匹配当前平台的 Node.js LTS 到 target_dir/node/，返回是否成功
 def _download_nodejs(target_dir: Path) -> bool:
-    # 下载并解压 Node.js 预构建二进制到 target_dir/node/。
-    # 使用官方 dist 源（https://nodejs.org/dist/），自动选取最新 LTS 与当前平台/架构匹配的包。
+    # 用官方 dist 源（https://nodejs.org/dist/）自动选取「最新 LTS」× 当前平台/架构的包并解压到
+    # target_dir/node/；LTS 随上游漂移正是钉定表的人工闸口（见 _PINNED_RUNTIME_SHA256 注释）。
     try:
         with urllib.request.urlopen("https://nodejs.org/dist/index.json", timeout=30) as resp:
             versions = json.loads(resp.read())
@@ -241,10 +818,9 @@ def _download_nodejs(target_dir: Path) -> bool:
             return False
         version = lts[0]["version"]  # 如 "v22.5.1"
 
-        plat_map = {"win32": "win", "darwin": "darwin", "linux": "linux"}
-        arch_map = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
-        node_plat = plat_map.get(sys.platform)
-        node_arch = arch_map.get(platform.machine().lower(), "x64")
+        # 平台/架构映射与运行时钉定键共用模块级常量（见 _NODE_PLATFORM_MAP 上方注释）
+        node_plat = _NODE_PLATFORM_MAP.get(sys.platform)
+        node_arch = _NODE_ARCH_MAP.get(platform.machine().lower(), "x64")
         if not node_plat:
             print(f"[build] 不支持的平台：{sys.platform}，跳过 node 下载")
             return False
@@ -253,7 +829,7 @@ def _download_nodejs(target_dir: Path) -> bool:
         filename = f"node-{version}-{node_plat}-{node_arch}.{ext}"
         url = f"https://nodejs.org/dist/{version}/{filename}"
         archive = target_dir / filename
-        _download_file(url, archive, f"Node.js {version}")
+        _download_file(url, archive, f"Node.js {version}", slot="node")
 
         extract_tmp = target_dir / "_node_extract"
         if extract_tmp.exists():
@@ -264,7 +840,9 @@ def _download_nodejs(target_dir: Path) -> bool:
                 zf.extractall(extract_tmp)
         else:
             with tarfile.open(archive, "r:gz") as tf:
-                tf.extractall(extract_tmp)
+                # MI-26：显式传 filter="data"，不依赖 Python 3.12+ 的默认值，
+                # 防止将来在更低版本解释器上构建时回归出路径穿越
+                tf.extractall(extract_tmp, filter="data")
 
         extracted = extract_tmp / f"node-{version}-{node_plat}-{node_arch}"
         node_dir = target_dir / "node"
@@ -281,66 +859,106 @@ def _download_nodejs(target_dir: Path) -> bool:
         return False
 
 
+# full zip 的 ffmpeg 来源表：**按运行时键（<os>-<arch>）一条**，与 _PINNED_RUNTIME_SHA256 的分列
+# 口径同构（同一份键，才能既查「有没有钉定」又查「钉的是哪一份」）。
+# 三个来源的可信度依据（2026-09-22 逐条实测，结论亦写进同日更新日志）：
+#   windows → gyan.dev：ffmpeg.org 官方 Windows 条目推荐的构建站，**公布 .sha256 文档**，滚动别名
+#             与版本化包两个端点取值互证，故 windows-x64/ffmpeg 已钉定。
+#   macos   → evermeet：ffmpeg.org 官方 macOS 条目「Static builds for macOS 64-bit」，自包含构建，
+#             **只有 x86_64**——实测 getrelease-arm64/zip 恒 404、页面亦无 arm64 产物，故 Apple
+#             Silicon 复用同一份 x86_64 构建、经 Rosetta 2 执行。旧实现按 arm64 拼出一条从不存在的
+#             URL，下载失败被 except 吞成一行 warning，于是 Apple Silicon 的 full zip **静默不含
+#             ffmpeg**——本次修的就是这个。不公布 SHA256，只给 `/sig` GPG 签名。
+#             刻意不用 Homebrew bottle 作 arm64 来源：其 ffmpeg bottle 的 11 个 runtime_deps（dav1d/
+#             lame/libvmaf/libvpx/openssl@3/opus/sdl2-compat/svt-av1/x264/x265/xz）的 dylib 位于
+#             Homebrew 前缀下的**其他 formulae**、不在 bottle tarball 内，直接打进分发包只会得到
+#             `dyld: Library not loaded` 的坏产物。
+#   linux   → johnvansickle：自包含 static 构建；只提供 *.md5，无 SHA256。
+_FFMPEG_DOWNLOAD_URLS: dict[str, str] = {
+    "windows-x64": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    "macos-x64": "https://evermeet.ca/ffmpeg/getrelease/zip",
+    "macos-arm64": "https://evermeet.ca/ffmpeg/getrelease/zip",
+    "linux-x64": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+    "linux-arm64": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
+}
+
+
+def _ffmpeg_source_url() -> str:
+    # 未登记的架构组合回落到同族 x64 构建（Windows ARM64 走 x64 仿真；macOS 本就只有 x86_64），
+    # 但**绝不静默回落**：连同族项都没有时抛 KeyError，由调用方按「组件下载失败」报告——
+    # 「拼出一条不存在的 URL 再被 except 吞掉」正是本次 arm64 缺陷的成因形态。
+    key = runtime_slot_key()
+    if key in _FFMPEG_DOWNLOAD_URLS:
+        return _FFMPEG_DOWNLOAD_URLS[key]
+    os_tag = key.partition("-")[0]
+    fallback = _FFMPEG_DOWNLOAD_URLS.get(f"{os_tag}-x64")
+    if fallback is None:
+        raise KeyError(f"ffmpeg 来源表既无 {key!r} 也无 {os_tag}-x64 回落项")
+    print(f"[build][warn] 运行时键 {key} 未登记 ffmpeg 来源，回落使用同族 x64 构建")
+    return fallback
+
+
 # 按平台下载并解压 ffmpeg/ffprobe 到 target_dir/ffmpeg/，返回是否成功
 def _download_ffmpeg(target_dir: Path) -> bool:
-    # 下载并解压 ffmpeg 二进制到 target_dir/ffmpeg/。
-    #   Windows: gyan.dev release-essentials（提取 bin/）
-    #   macOS:   evermeet.ca（arm64 / x64 分别提供）
-    #   Linux:   johnvansickle.com 静态构建（含 ffmpeg + ffprobe）
+    # URL 一律取自 _FFMPEG_DOWNLOAD_URLS（按运行时键查表；来源与可信度依据写在该表上方注释，
+    # 勿在此重复），本函数只按平台决定**解压与取用方式**。
     import tempfile
 
     ffmpeg_dir = target_dir / "ffmpeg"
     if ffmpeg_dir.exists():
         shutil.rmtree(ffmpeg_dir)
     ffmpeg_dir.mkdir(parents=True)
-    machine = platform.machine().lower()
+    url = _ffmpeg_source_url()
 
     try:
         if IS_WIN:
-            url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
             archive = target_dir / "_ffmpeg_temp.zip"
-            _download_file(url, archive, "ffmpeg")
+            _download_file(url, archive, "ffmpeg (gyan.dev release-essentials)", slot="ffmpeg")
             # gyan.dev zip 内结构：ffmpeg-release-essentials/bin/{ffmpeg,ffprobe}.exe
+            # CR-11：手工写成员绕过 zipfile.extractall 的路径净化（它会剥离 `..` 与盘符），
+            # 而 `name` 取自压缩包自述、可含 `../../`——配合无哈希校验可写到任意已存在目录。
+            # 逐成员做 realpath 前缀校验（与 src/utils.unzip_file 同判据），并限制为
+            # 期望的两个可执行文件名。
+            _ffmpeg_root = os.path.realpath(ffmpeg_dir)
+            _allowed_names = {"ffmpeg.exe", "ffprobe.exe", "ffmpeg", "ffprobe"}
             with zipfile.ZipFile(archive) as zf:
                 for member in zf.namelist():
-                    if "/bin/" in member and not member.endswith("/"):
-                        name = member.split("/bin/")[-1]
-                        if name:
-                            with zf.open(member) as src, open(ffmpeg_dir / name, "wb") as dst:
-                                shutil.copyfileobj(src, dst)
+                    if "/bin/" not in member or member.endswith("/"):
+                        continue
+                    name = member.split("/bin/")[-1]
+                    if not name or name not in _allowed_names:
+                        continue
+                    target_path = os.path.realpath(ffmpeg_dir / name)
+                    if not target_path.startswith(_ffmpeg_root + os.sep):
+                        raise SystemExit(f"[build][FATAL] 压缩包成员路径越界，已终止构建：{member}")
+                    with zf.open(member) as src, open(target_path, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
 
         elif sys.platform == "darwin":
-            url = (
-                "https://evermeet.ca/ffmpeg/getrelease-arm64/zip"
-                if machine == "arm64"
-                else "https://evermeet.ca/ffmpeg/getrelease/zip"
-            )
+            # 两架构共用 evermeet x86_64 构建（上游无 arm64 产物，依据见 _FFMPEG_DOWNLOAD_URLS 注释），
+            # Apple Silicon 经 Rosetta 2 执行。**不得**再按 machine 拼 arm64 专用 URL——恒 404 且会被
+            # 下面的 except 吞成一行 warning，让 full zip 静默缺 ffmpeg。
             archive = target_dir / "_ffmpeg_temp.zip"
-            _download_file(url, archive, "ffmpeg")
+            _download_file(url, archive, "ffmpeg (evermeet.ca release)", slot="ffmpeg")
             with zipfile.ZipFile(archive) as zf:
                 zf.extractall(ffmpeg_dir)
 
         else:  # Linux
-            url = (
-                "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz"
-                if machine in ("arm64", "aarch64")
-                else "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
-            )
             archive = target_dir / "_ffmpeg_temp.tar.xz"
-            _download_file(url, archive, "ffmpeg")
+            _download_file(url, archive, "ffmpeg (johnvansickle static)", slot="ffmpeg")
             with tempfile.TemporaryDirectory(dir=target_dir) as tmp:
                 with tarfile.open(archive, "r:xz") as tf:
-                    tf.extractall(tmp)
+                    # MI-26：同上，显式 filter 而非依赖解释器默认值
+                    tf.extractall(tmp, filter="data")
                 for item in Path(tmp).iterdir():
                     if item.is_dir() and item.name.startswith("ffmpeg-"):
                         for binary in ("ffmpeg", "ffprobe"):
                             bin_path = item / binary
                             if bin_path.is_file():
-                                # shutil.copy2 返回目标路径，此处未使用其结果，赋给 _ 消除 reportUnusedCallResult；
-                                # 参数直接用 Path（兼容 os.PathLike），省略冗余的 str() 转换。
+                                # 赋给 _ 只为消除 basedpyright reportUnusedCallResult，非功能所需
                                 _ = shutil.copy2(bin_path, ffmpeg_dir / binary)
-                    # 跳出外层目录遍历（tar 内仅一个 ffmpeg-* 目录），
-                    # 注意：必须位于内层 for 循环之外，否则只会复制 ffmpeg 而漏掉 ffprobe。
+                    # 跳出外层目录遍历（tar 内仅一个 ffmpeg-* 目录）；break 必须位于内层 for 之外，
+                    # 否则只会复制 ffmpeg 而漏掉 ffprobe。
                     break
 
         archive.unlink(missing_ok=True)
@@ -351,23 +969,180 @@ def _download_ffmpeg(target_dir: Path) -> bool:
         return False
 
 
-# 下载 ffmpeg + node 运行时（单组件失败不中断），用于 --dual 的 full 版本
+def _find_runtime_binary(root: Path, names: tuple[str, ...]) -> Path | None:
+    # 按名字**递归**找：各上游压缩包内部层级并不统一（Windows 平铺、node 的 tar.gz 带 bin/），
+    # 只查根目录会把「布局不同」误判成「组件缺失」。0 字节不算命中——下载被截断时文件是在的。
+    if not root.is_dir():
+        return None
+    for name in names:
+        for hit in sorted(root.rglob(name)):
+            if hit.is_file() and hit.stat().st_size > 0:
+                return hit
+    return None
+
+
+def _probe_runnable(binary: Path) -> str | None:
+    # 跑一次 `-version`：文件存在不等于能用。这一 probe 恰好覆盖两种「在包里但跑不动」的形态——
+    # macOS 上缺 dylib 闭包（dyld: Library not loaded）与 Apple Silicon 上没有 Rosetta。
+    # 输出按字节读、显式解码失败也不参与判定（AGENTS.md「探测子进程输出一律按字节比较」）。
+    try:
+        proc = subprocess.run(
+            [str(binary), "-version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        # 需要 e 时必须加括号：PEP 758 的无括号写法不支持 as 绑定（AGENTS.md 已记此坑）
+        return f"无法执行：{type(e).__name__}: {e}"
+    if proc.returncode != 0:
+        first = (proc.stderr or b"").splitlines()[:1]
+        detail = first[0].decode("latin-1", errors="replace") if first else f"退出码 {proc.returncode}"
+        return f"执行 `-version` 失败：{detail}"
+    return None
+
+
+def verify_runtime_binaries(target_dir: Path) -> list[str]:
+    # full 包出包前的产物自检；返回问题清单（空 = 就绪）。为什么必须查**产物**而不是下载函数的
+    # 返回值：download_runtime_binaries 刻意「单组件失败不中断」（两个组件各自 except 后只 return
+    # False），于是「缺 ffmpeg 的 full 包」能被静默做出来——macOS arm64 下载点 404 时就是那个形态。
+    problems: list[str] = []
+    ffmpeg_dir = target_dir / "ffmpeg"
+    node_dir = target_dir / "node"
+
+    ffmpeg_bin = _find_runtime_binary(ffmpeg_dir, ("ffmpeg.exe", "ffmpeg"))
+    if ffmpeg_bin is None:
+        problems.append(f"{ffmpeg_dir} 内找不到非空的 ffmpeg 可执行文件")
+    else:
+        why = _probe_runnable(ffmpeg_bin)
+        if why:
+            problems.append(f"ffmpeg ({ffmpeg_bin}) {why}")
+
+    ffprobe_bin = _find_runtime_binary(ffmpeg_dir, ("ffprobe.exe", "ffprobe"))
+    if ffprobe_bin is None:
+        problems.append(f"{ffmpeg_dir} 内找不到非空的 ffprobe 可执行文件")
+    else:
+        why_probe = _probe_runnable(ffprobe_bin)
+        if why_probe:
+            problems.append(f"ffprobe ({ffprobe_bin}) {why_probe}")
+
+    node_bin = _find_runtime_binary(node_dir, ("node.exe", "node"))
+    if node_bin is None:
+        problems.append(f"{node_dir} 内找不到非空的 node 可执行文件")
+    else:
+        why_node = _probe_runnable(node_bin)
+        if why_node:
+            problems.append(f"node ({node_bin}) {why_node}")
+    return problems
+
+
 def download_runtime_binaries(target_dir: Path) -> None:
-    # 下载 ffmpeg + node 到 target_dir（用于 --dual 的 full 版本）。
-    # 单个组件失败不中断，仅打印警告（full zip 仍可生成，只是缺该组件）。
+    # 下载 ffmpeg + node 到 target_dir（用于 --dual 的 full 版本）；单个组件失败不中断，仅打印
+    # 警告。SEV-10 例外：完整性判定抛的是 SystemExit（BaseException），不被下面两处
+    # `except Exception` 吞掉——「缺钉定 / 哈希不匹配」属于「不得进包」，不是「组件下载失败」。
+    # 但下载之后还有一道产物自检：「不中断」只在「有人查产物齐不齐」时才安全，否则它等于把
+    # 缺件静默送进分发链。
     print("[build] 开始下载运行时二进制（ffmpeg + Node.js）...")
     _ = _download_ffmpeg(target_dir)
     _ = _download_nodejs(target_dir)
+    problems = verify_runtime_binaries(target_dir)
+    for problem in problems:
+        print(f"[build][error] full 包产物自检：{problem}")
+    if problems:
+        if require_pinned_hashes():
+            raise SystemExit(
+                "[build][FATAL] full 包缺少可用运行时组件，已终止（发布路径不允许缺件）：\n  " + "\n  ".join(problems)
+            )
+        print("[build][warn] 上述缺件的 full 产物**不得用于发布**（本地路径仅告警继续）")
+    else:
+        print("[build] full 包产物自检通过：ffmpeg / ffprobe / node 均可执行")
 
 
-# 将发布目录压缩为带平台/架构标识的 zip（suffix 区分 lite/full），返回路径
+# 发布目录内**绝不允许**进包的开发/运行期产物（MID-2254）。与 .gitignore / .dockerignore
+# 对同名目录的排除同源，只是作用在「对外分发 zip」这条通道上。
+RUNTIME_ARTIFACT_DIR_NAMES: tuple[str, ...] = ("logs", "backup_config", "downloads")
+
+
+def _clean_runtime_artifacts_from_release() -> list[str]:
+    # 压缩前删除发布目录里的运行期产物，返回被删条目的相对路径（供日志打印）。
+    # 为什么必须删：冒烟以 cwd=RELEASE_DIR 连跑 CLI 25s / Web 90s / GUI 8s，src/logger.py 会在包根落下
+    # streamget.log / PlayURL.log / web_console.log（内容含 runner 绝对路径、用户名与告警堆栈），「缺键
+    # 补写」还会改写包内 config.ini；这些随包分发即信息外泄。主修法是「先压缩、后冒烟」（见 main()），
+    # 本函数是第二道：清掉上一次构建或本地手工跑过残留在 dist/ 里的同类产物（PyInstaller 的 --clean
+    # 只清它自己的缓存）。rmtree 用 ignore_errors=True：Windows 下偶发句柄占用（索引/杀软扫描）不应
+    # 让打包整体失败，leftovers 由 _assert_zip_has_no_runtime_artifacts 在实物上兜住。
+    removed: list[str] = []
+    for name in RUNTIME_ARTIFACT_DIR_NAMES:
+        victim = RELEASE_DIR / name
+        if victim.is_dir():
+            shutil.rmtree(victim, ignore_errors=True)
+            removed.append(f"{name}/")
+    # __pycache__ 可能出现在任意层级（源码复制、包内脚本被跑过），按目录名自顶向下剔除
+    for root, dirs, _files in os.walk(RELEASE_DIR):
+        if "__pycache__" in dirs:
+            victim = Path(root) / "__pycache__"
+            shutil.rmtree(victim, ignore_errors=True)
+            dirs.remove("__pycache__")
+            removed.append(f"{victim.relative_to(RELEASE_DIR)}/")
+    return removed
+
+
+def _zip_member_is_runtime_artifact(name: str) -> bool:
+    # 判定 zip 成员名（`unzip -l` 看到的那一列）是否为不得分发的运行期产物。
+    # shutil.make_archive(root_dir=DIST_DIR, base_dir=APP_NAME) 决定了每个成员都以 `DouyinLiveRecorder/`
+    # 打头，故先剥掉该前缀再按相对路径判定；zip 规范的分隔符恒为 '/'（不用 os.sep，否则 Windows 上
+    # 判不出、Linux CI 上又恰好能过——「本地绿 CI 绿但判据不同」）。
+    parts = [p for p in name.replace("\\", "/").split("/") if p and p != "."]
+    if parts and parts[0] == APP_NAME:
+        parts = parts[1:]
+    if not parts:
+        return False
+    return parts[0] in RUNTIME_ARTIFACT_DIR_NAMES or "__pycache__" in parts
+
+
+def _assert_zip_has_no_runtime_artifacts(zip_path: Path) -> None:
+    # 发布产物清单断言（MID-2254）：zip 内不得出现 logs/ backup_config/ downloads/ 或任意 __pycache__。
+    # 为什么清理之后还要在实物上再查一次：清理是 best-effort（ignore_errors），而真正分发出去的是
+    # zip——以实物为准才自证。本条等价于把「人工 unzip -l 看一眼」固化成机器断言，删掉它即重新
+    # 引入「日志随 full 包外发」这条失效路径（SEV-2213 只判凭据真实值，对不含凭据却泄露环境信息
+    # 的日志完全无感，两者互不替代）。
+    with zipfile.ZipFile(zip_path) as zf:
+        bad = sorted({name for name in zf.namelist() if _zip_member_is_runtime_artifact(name)})
+    if bad:
+        raise SystemExit(
+            "[build][FATAL] 发布 zip 含运行期产物，已终止（这些内容会随包外发给用户）：\n  " + "\n  ".join(bad[:20])
+        )
+
+
+# 把发布目录压成 zip；成员名一律 `<APP_NAME>/<相对路径>`（与旧实现 shutil.make_archive(
+# root_dir=DIST_DIR, base_dir=APP_NAME) 逐字同构 —— _assert_zip_has_no_runtime_artifacts 的
+# 判据就是按这个前缀剥的，改了前缀等于让那条断言永远绿）。
+# 为什么不再用 shutil.make_archive：它内部固定用 zipfile 的默认压缩级别，无法指定
+# compresslevel；实测同一发布目录 level=9 比默认再小 1.36%（lite 54.84MB → 54.09MB）。
+def _zip_release_dir(zip_path: Path) -> None:
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for path in sorted(RELEASE_DIR.rglob("*")):
+            if path.is_file():
+                zf.write(path, f"{APP_NAME}/{path.relative_to(RELEASE_DIR).as_posix()}")
+
+
+# 将发布目录压缩为带平台/架构标识的 zip（suffix 用于 --dual 区分 lite / full），返回路径
 def make_zip(version: str, suffix: str = "") -> Path:
-    # 把发布目录压缩为带平台与架构标识的 zip。
-    # suffix 用于 --dual 模式区分 lite / full（如 "-lite"、"-full"）。
+    # 压缩是**对外分发的最后一道口**，故两道检查都放在这里而不是调用方，使「--no-zip 跳过压缩」与
+    # 「压缩即校验」两条路径都不可能出「绕开校验的 zip」：SEV-2213 的凭据校验（敏感键真实值即
+    # SystemExit(1)）管「不得外发真实值」，MID-2254 的清理 + 实物断言管「不得外发环境信息」；
+    # 判据不同、互不替代。
+    removed = _clean_runtime_artifacts_from_release()
+    if removed:
+        print(f"[build] 压缩前已剔除发布目录内的运行期产物：{', '.join(removed)}")
+    assert_no_credentials_in_release()
     os_tag = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
     arch = platform.machine().lower()
     zip_base = DIST_DIR / f"{APP_NAME}-v{version}-{os_tag}-{arch}{suffix}"
-    zip_path = Path(shutil.make_archive(str(zip_base), "zip", DIST_DIR, APP_NAME))
+    zip_path = zip_base.with_suffix(".zip")
+    _zip_release_dir(zip_path)
+    _assert_zip_has_no_runtime_artifacts(zip_path)
     print(f"[build] 压缩包已生成：{zip_path}（{zip_path.stat().st_size / 1024 / 1024:.1f} MB）")
     return zip_path
 
@@ -378,27 +1153,23 @@ FATAL_MARKERS = ("Traceback (most recent call last)", "ModuleNotFoundError", "Im
 
 
 # 准备 URL 配置文件：若为空则写入一条注释示例 URL，避免 CLI 阻塞在 input()。
+# 配置在 exe 同级目录（而非 _internal），故写到 RELEASE_DIR/config；样例串与
+# _sanitized_url_config_text() 逐字同源，两处不得各自演化。
 def _prepare_url_config() -> None:
-    # 写入一条注释 URL，避免 URL 配置为空时 CLI 阻塞在 input()
-    #
-    #     配置保持在 exe 同级目录（而非 _internal），故写到 RELEASE_DIR/config。
-    #
     url_cfg = RELEASE_DIR / "config" / "URL_config.ini"
     url_cfg.parent.mkdir(parents=True, exist_ok=True)
     if not url_cfg.exists() or not url_cfg.read_text(encoding="utf-8-sig", errors="ignore").strip():
         _ = url_cfg.write_text("#https://live.douyin.com/000000000000\n", encoding="utf-8")
 
 
-# 以独立进程组/会话启动子进程，便于冒烟结束一次性杀掉整棵进程树
-# 以独立进程组/会话启动子进程，便于冒烟结束一次性杀掉整棵进程树
+# 以独立进程组/会话启动子进程，便于冒烟结束一次性杀掉整棵进程树（含应用 spawn 的 ffmpeg
+# 子进程），避免子进程孤儿化被 runner 清理时刷屏
 def _launch(exe: Path, extra_env: "dict[str, str] | None" = None) -> subprocess.Popen[str]:
-    # 让子进程自成进程组/会话：冒烟结束时能一次性杀掉整棵进程树
-    # （含应用 spawn 的 ffmpeg 子进程），避免子进程孤儿化被 runner 清理时刷屏。
-    #   - Unix:    start_new_session=True → 子进程成为新会话首领，PGID == 其 PID
-    #   - Windows: creationflags=CREATE_NEW_PROCESS_GROUP → 新进程组，配合 taskkill /T 递归终止
-    # 两个参数均显式传递（非本平台的分支取默认 0/False），既满足类型检查又保持跨平台语义。
-    # extra_env：向子进程注入的额外环境变量（合并到 os.environ，不覆盖其余变量）。
-    #   冒烟测试用它向 Web 面板传入 DOUYIN_WEB_ALLOW_INSECURE=1 以绕过「非回环地址需认证」护栏。
+    # Unix 用 start_new_session=True（子进程成为新会话首领，PGID == 其 PID），Windows 用
+    # creationflags=CREATE_NEW_PROCESS_GROUP（新进程组，配合 taskkill /T 递归终止）；两个参数均
+    # 显式传递（非本平台的分支取默认 0/False），既满足类型检查又保持跨平台语义。
+    # extra_env 合并到 os.environ 后注入子进程（不覆盖其余变量）；冒烟测试用它向 Web 面板传
+    #   DOUYIN_WEB_ALLOW_INSECURE=1 以绕过「非回环地址需认证」护栏。
     start_new_session = not IS_WIN
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if IS_WIN else 0
     launch_env = os.environ.copy()
@@ -421,7 +1192,6 @@ def _launch(exe: Path, extra_env: "dict[str, str] | None" = None) -> subprocess.
 
 # 杀掉整个进程树（应用本体及其 ffmpeg 子进程），跨平台处理 Windows/Unix。
 def _kill_tree(proc: subprocess.Popen[str]) -> None:  # pylint: disable=not-callable,no-member
-    # 杀掉整个进程树（应用本体 + 其 spawn 的 ffmpeg 等子进程）。
     # 仅杀父进程会留下孤儿化的 ffmpeg，最终被 runner 的 orphan-process 清理收尸，
     # 产生大量 "Terminate orphan process" 噪声；此处连根拔起避免之。
     pid = proc.pid
@@ -458,10 +1228,9 @@ def _finish(
     expect_alive: bool,
     ignore_patterns: "tuple[str, ...]" = (),
 ) -> None:
-    # 收尾：终止进程、检查输出中是否有崩溃堆栈。
-    # ignore_patterns：在 headless CI 等环境下，某些库会打印无害的堆栈（如 pystray 在
-    # 无系统托盘时记录 "Failed to dock icon" 并附带 Traceback），应用实际仍正常运行。
-    # 这类已知良性输出应从致命判定中排除；真正的崩溃（进程退出或真实堆栈）仍会被捕获。
+    # ignore_patterns：headless CI 等环境下某些库会打印无害堆栈（如 pystray 在无系统托盘时记录
+    # "Failed to dock icon" 并附带 Traceback）而应用实际仍正常运行，这类已知良性输出应从致命判定
+    # 中排除；真正的崩溃（进程退出或真实堆栈）仍会被捕获。
     still_running = proc.poll() is None
     if still_running:
         _kill_tree(proc)
@@ -472,12 +1241,10 @@ def _finish(
     tail = "\n".join(out.splitlines()[-20:])
     print(f"[smoke:{name}] 进程输出（末尾 20 行）：\n{tail}")
     benign = any(p in out for p in ignore_patterns)
-    # 仅当进程已自行退出时，才把 FATAL_MARKERS 视为真实崩溃信号。
-    # 若进程仍存活（still_running），输出中的 Traceback 多为应用捕获并记录的异常：
-    #   - asyncio 事件循环对未处理任务异常的默认处理会打印完整 Traceback，但 loop 继续运行
-    #   - 抖音 API 偶发网络错误触发重试时也可能记录异常堆栈
-    # 真正的崩溃（导入失败 / 未捕获异常）会导致进程退出，此时 still_running 必为 False，
-    # 下方 returncode 校验与本判定共同覆盖该情形。
+    # 仅当进程已自行退出时，才把 FATAL_MARKERS 视为真实崩溃信号：进程仍存活（still_running）时输出
+    # 里的 Traceback 多为应用捕获并记录的异常（asyncio 对未处理任务异常的默认处理会打印完整
+    # Traceback 但 loop 继续运行；API 偶发网络错误重试时也会记录堆栈）。真正的崩溃（导入失败 /
+    # 未捕获异常）会致进程退出，此时下方 returncode 校验与本判定共同覆盖该情形。
     if not still_running and any(m in out for m in FATAL_MARKERS) and not benign:
         raise RuntimeError(f"[smoke:{name}] 检测到导入错误 / 崩溃堆栈，冒烟测试失败")
     if expect_alive and not still_running and proc.returncode not in (0, None):
@@ -487,7 +1254,6 @@ def _finish(
 
 # 冒烟：运行 CLI 数秒确认进入监控循环且无崩溃堆栈
 def smoke_cli(timeout: int = 25) -> None:
-    # CLI：运行数秒确认进入监控循环且无崩溃
     exe = RELEASE_DIR / f"{APP_NAME}{EXE_SUFFIX}"
     print(f"[smoke:cli] 启动 {exe}（最长 {timeout}s）...")
     proc = _launch(exe)
@@ -499,20 +1265,17 @@ def smoke_cli(timeout: int = 25) -> None:
 
 # 冒烟：启动 Web 后 HTTP 探活首页（IPv4+localhost），能返回即视为面板可用
 def smoke_web(timeout: int = 90, port: int = 8000) -> None:
-    # Web：启动后 HTTP 探活首页，能返回即视为面板可用。
-    # 探测地址同时覆盖 IPv4(127.0.0.1) 与主机名(localhost)：
-    #   - config 默认 web_host=0.0.0.0 时两者均可达；
-    #   - 若 web_host 改为 localhost，macOS 会优先解析为 IPv6(::1)，
-    #     仅探 IPv4 会误判失败，故两地址都试。
-    # timeout 取较大值：macOS arm64 冷启动加载 fastapi/uvicorn/httpx 较重，
-    # 40s 易超时（与平台性能相关，非应用缺陷）。
-    # 关键：用 ProxyHandler({}) 构造「无代理」opener。macOS 上 urllib 默认会读取
-    # 系统代理配置（SystemConfiguration），CI runner 的 localhost 请求可能被路由到
-    # 不存在的代理而挂起超时——即便服务已正常监听。禁用代理后探测直连本机端口。
+    # 探测地址同时覆盖 IPv4(127.0.0.1) 与主机名(localhost)：config 默认 web_host=0.0.0.0 时两者均可
+    # 达；若 web_host 改为 localhost，macOS 会优先解析为 IPv6(::1)，仅探 IPv4 会误判失败。
+    # timeout 取较大值：macOS arm64 冷启动加载 fastapi/uvicorn/httpx 较重，40s 易超时（与平台性能
+    # 相关，非应用缺陷）。
+    # 关键：用 ProxyHandler({}) 构造「无代理」opener——macOS 上 urllib 默认读系统代理配置
+    # （SystemConfiguration），CI runner 的 localhost 请求可能被路由到不存在的代理而挂起超时，
+    # 即便服务已正常监听；禁用代理后探测直连本机端口。
     # 安全护栏（web.py C1）：未启用 Web 认证时拒绝监听非回环地址（config 默认 web_host=0.0.0.0）。
-    # 冒烟测试仅做本地 HTTP 探活，从不真正暴露到局域网，故注入 DOUYIN_WEB_ALLOW_INSECURE=1
-    # 放行——这正是该环境变量的设计用途（本地 CI/沙箱内临时暴露），不影响生产部署的默认安全行为；
-    # 同时保留了「真实绑定 0.0.0.0」的验证路径，比把 web_host 改成 127.0.0.1 更能暴露回归。
+    # 冒烟只做本地 HTTP 探活、从不真正暴露到局域网，故注入 DOUYIN_WEB_ALLOW_INSECURE=1 放行——这正是
+    # 该环境变量的设计用途（本地 CI/沙箱内临时暴露），不影响生产部署的默认安全行为；同时保留了
+    # 「真实绑定 0.0.0.0」的验证路径，比把 web_host 改成 127.0.0.1 更能暴露回归。
     exe = RELEASE_DIR / f"{APP_NAME}-Web{EXE_SUFFIX}"
     hosts = ("127.0.0.1", "localhost")
     print(f"[smoke:web] 启动 {exe}，探活 http://127.0.0.1:{port}/（最长 {timeout}s）...")
@@ -542,7 +1305,6 @@ def smoke_web(timeout: int = 90, port: int = 8000) -> None:
 
 # 冒烟：启动 GUI 数秒确认窗口存活，无显示环境自动跳过
 def smoke_gui(timeout: int = 8) -> None:
-    # GUI：启动数秒确认窗口进程存活且无崩溃；无显示环境自动跳过
     if sys.platform not in ("win32", "darwin") and not os.environ.get("DISPLAY"):
         print("[smoke:gui] 无显示环境（DISPLAY 未设置），跳过 GUI 冒烟测试")
         return
@@ -553,8 +1315,7 @@ def smoke_gui(timeout: int = 8) -> None:
     while time.time() - start < timeout and proc.poll() is None:
         time.sleep(0.5)
     # GUI 为 windowed 模式，stdout 通常为空；崩溃时进程会提前非零退出。
-    # 忽略 pystray 在 headless（无系统托盘）环境打印的良性 "Failed to dock icon" 堆栈：
-    # 此时 GUI 窗口仍正常运行，不应判为失败。
+    # 豁免 pystray 在 headless（无系统托盘）环境的良性 "Failed to dock icon" 堆栈（机理见 _finish）。
     _finish(proc, "gui", expect_alive=True, ignore_patterns=("Failed to dock icon",))
 
 
@@ -569,20 +1330,28 @@ def smoke_test() -> None:
 
 # 将 stdout/stderr 配置为 UTF-8，避免 Windows CI 下中文日志抛 UnicodeEncodeError
 def _ensure_utf8_streams() -> None:
-    # Windows CI 的 stdout/stderr 默认编码为 cp1252，无法输出中文日志会抛
-    # UnicodeEncodeError。重新配置为 UTF-8，并让后续派生的 Python 子进程也用 UTF-8。
+    # Windows CI 的 stdout/stderr 默认 cp1252，输出中文日志会抛 UnicodeEncodeError；重配置为 UTF-8，
+    # 并让后续派生的 Python 子进程也用 UTF-8。
+    # errors 必须显式给 "replace"：TextIOWrapper.reconfigure 在只传 encoding="utf-8" 时会把错误处理器
+    # **重置为 "strict"**（CPython 规定，见 io.TextIOWrapper.reconfigure）。本函数在 pytest 进程内被
+    # 调用时（tests/test_build_exe.py 三条用例经 main() 调用），sys.stdout/stderr 正是 pytest fd 捕获的
+    # EncodedFile（原 errors="replace"），裸调等于把框架资产就地改成 strict，此后任何非 UTF-8 字节
+    # 落进捕获文件都会在会话收尾读回时抛 UnicodeDecodeError，表现为「pytest 整轮无结论 + 无关用例
+    # 报 FAILED/ERROR」（2026-09-23 故障根因，见 DIAGNOSIS_2026-09-23_pytest-teardown-crash.md）。
+    # 与 scripts/run_gates.py 的同款实现同一口径，改一侧须同步另一侧（那里已是 replace）。
     os.environ["PYTHONUTF8"] = "1"
     for s in (sys.stdout, sys.stderr):
         reconfigure = getattr(s, "reconfigure", None)
         if callable(reconfigure):
             try:
-                _ = reconfigure(encoding="utf-8")
+                _ = reconfigure(encoding="utf-8", errors="replace")
             except ValueError, OSError:
                 pass
 
 
 # 解析命令行参数并驱动打包/可选冒烟/可选压缩的全流程
 def main() -> None:
+    global _REQUIRE_PINNED_OVERRIDE
     _ensure_utf8_streams()
     parser = argparse.ArgumentParser(description=f"{APP_NAME} 打包脚本")
     _ = parser.add_argument("--smoke", action="store_true", help="打包后运行冒烟测试")
@@ -591,38 +1360,67 @@ def main() -> None:
     _ = parser.add_argument(
         "--dual", action="store_true", help="同时生成 lite（无运行时）与 full（下载并打包 ffmpeg+node）两个 zip"
     )
+    # SEV-10：发布路径 fail-closed。CI 未显式传参时也自动开启（GITHUB_ACTIONS=true）；
+    # 这两个参数存在的意义是让「本地也要严格」与「临时放宽排障」两种意图都写在命令行里。
+    _ = parser.add_argument(
+        "--require-pinned",
+        action="store_true",
+        default=False,
+        help="运行时二进制缺钉定时终止构建（CI 默认已开启，本参数用于本地显式严格化）",
+    )
+    _ = parser.add_argument(
+        "--allow-unpinned",
+        action="store_true",
+        default=False,
+        help="仅本地排障：即使在 CI 环境下也对未钉定的运行时二进制只告警不终止（不得用于发布）",
+    )
     args = parser.parse_args()
     smoke = cast(bool, args.smoke)
     no_zip = cast(bool, args.no_zip)
     no_runtime = cast(bool, args.no_runtime)
     dual = cast(bool, args.dual)
+    if args.require_pinned and args.allow_unpinned:
+        raise SystemExit("[build][FATAL] --require-pinned 与 --allow-unpinned 互斥")
+    if args.require_pinned:
+        _REQUIRE_PINNED_OVERRIDE = True
+    elif args.allow_unpinned:
+        _REQUIRE_PINNED_OVERRIDE = False
 
     version = read_version()
     print(f"[build] 项目版本：v{version}，平台：{sys.platform}/{platform.machine()}")
+    strict = "是（缺钉定即终止构建）" if require_pinned_hashes() else "否（仅本地构建，产物不得发布）"
+    print(f"[build] 运行时二进制钉定：槽位 {runtime_slot_key()}，要求钉定={strict}")
 
     if dual:
-        # --dual：PyInstaller 只跑一次，先产 lite 再产 full，避免重复打包
+        # --dual：PyInstaller 只跑一次，先产 lite 再产 full，避免重复打包。
         run_pyinstaller()
+        # 顺序（MID-2254）：lite zip → 下载运行时 → full zip → 冒烟。冒烟必须排在**两个** zip 之后：
+        # 它以 cwd=RELEASE_DIR 连跑 CLI/Web/GUI 共约 120s，期间 src/logger.py 往包根写日志、应用还会
+        # 「缺键补写」改写包内 config.ini；旧顺序（lite → 冒烟 → full）让对外分发的 full 包带上
+        # runner 绝对路径/用户名/告警堆栈，属信息外泄；make_zip 内的清理+实物断言只是第二道，顺序才是第一道。
+        # 「先出包再冒烟」不削弱冒烟的意义：跑仍是 dist/<APP_NAME>/ 里那三个 exe 本体（与 zip 内容
+        # 逐文件同源），只是不再把运行期写入的产物压进包里。
         # 1) lite 版本：仅 config，不含运行时
         copy_external_binaries(include_runtime=False)
         _prepare_url_config()  # 确保配置就绪（冒烟测试也需要）
         _ = make_zip(version, suffix="-lite")
-        if smoke:
-            smoke_test()
-        # 2) full 版本：下载并打包 ffmpeg + node
+        # full 版本：下载并打包 ffmpeg + node
         download_runtime_binaries(RELEASE_DIR)
         _ = make_zip(version, suffix="-full")
+        if smoke:
+            smoke_test()
         print(f"[build] 完成。发布目录：{RELEASE_DIR}（已生成 lite + full 两个 zip）")
         return
 
     run_pyinstaller()
     copy_external_binaries(include_runtime=not no_runtime)
 
-    if smoke:
-        smoke_test()
-
+    # 同上（MID-2254）：先压缩、后冒烟，zip 内容永不含冒烟产物
     if not no_zip:
         _ = make_zip(version)
+
+    if smoke:
+        smoke_test()
 
     print(f"[build] 完成。发布目录：{RELEASE_DIR}")
 

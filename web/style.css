@@ -234,8 +234,27 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
 .config-hint { grid-column: 2; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .config-hint.hint-on { color: var(--success); }
 .config-hint.hint-off { color: var(--warning); }
+/* MID-37：掩码凭据行的说明提示。它与「废弃项」的 hint-off 同用 --warning 橙色——
+   区别只在语义，故文案必须自己讲清楚：该行值只是被 *** 遮蔽，提交空值会波及真实凭据，
+   需要在保存前被看见（真正的区分靠 input 的 data-masked 标记与提示文字，不靠颜色）。 */
+.config-hint.hint-masked { color: var(--warning); }
 .config-row.row-deprecated label, .config-row.row-deprecated input { opacity: 0.5; text-decoration: line-through; }
 .config-row.row-deprecated .config-hint { text-decoration: none; }
+/* MIN-2239：保存中途失败的行标红（输入框描边 + 左侧色条）。
+   与「废弃项」的灰置灰、「掩码项」的警示黄都不同色，避免三种状态被看混。 */
+.config-row.row-failed input { border-color: var(--danger); box-shadow: inset 3px 0 0 var(--danger); }
+/* MIN-2239：保存未全部成功时的常驻明细（比 toast 更持久；toast 会消失且被覆盖）。
+   传空串即隐藏，正常保存全程不出现。 */
+.save-status {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    border-left: 3px solid var(--danger);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+}
 
 .file-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .breadcrumb { color: var(--muted); font-size: 13px; }
@@ -386,12 +405,18 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
 .quality-hint { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.6; }
 
 /* ===== 直播间列表防错位（table-layout:fixed + 地址列省略号 + 窄屏面板内横向滚动）
-   窄视口下 6 列 auto 布局的最小内容宽（画质下拉 110px + 40px 开关 + 删除按钮 + 各列内边距）
-   会超出 .panel 容器：width:100% 失效，表格按 min-content 溢出渲染——表头「启用/录制中」被
-   压成一字宽竖排字、「删除」按钮溢出卡片右缘、长 URL（discover?modal_id= 等）与长名称行
-   折成多行导致行高参差。fixed 布局按表头宽度定列，地址列吃剩余宽并单行省略，全 URL 悬浮
-   可见（loadRooms 渲染的地址 td 自带 title）。作用域限 #rooms-view，仪表盘/弹幕/文件
-   表格不受影响。 */
+   窄视口（窗口缩窄 / Windows 高 DPI 缩放，有效宽度 ≈500px）下 6 列 auto 布局的最小内容宽
+   （画质下拉 110px + 40px 开关 + 删除按钮 + 各列内边距）会超出 .panel 容器：width:100% 失效，
+   表格按 min-content 溢出渲染——表头「启用/录制中」被压成一字宽竖排字、「删除」按钮溢出卡片右缘、
+   长 URL（discover?modal_id= 等）与长名称折成多行导致行高参差（2026-09-11 截图实锤）。
+   下面按表头定列宽、地址列吃剩余宽并单行省略，全 URL 靠悬浮 title 可见（loadRooms 渲染的地址 td
+   自带 title）。三条不可回退的约束：
+   ① 改回 auto 布局或删掉省略号即让上述错位回归：Chrome 会在 URL 的 / ? & = 处断行，
+      而 Safari 里单元格的 text-overflow:ellipsis 必须配 table-layout:fixed 才生效；
+   ② 新增列必须同步补一条对应的 th:nth-child(n) 定宽——fixed 布局下未定宽的新列会平分剩余空间、
+      反过来挤压地址列；
+   ③ 本段作用域必须保持 #rooms-view，勿"顺手统一"到仪表盘/弹幕/文件三张表：它们列数与内容形态
+      不同，fixed 定宽会破坏其布局。 */
 #rooms-view .data-table { table-layout: fixed; }
 #rooms-view .data-table th:nth-child(2) { width: 128px; }  /* 画质：容纳 max-width:110px 下拉 + 左右内边距 */
 #rooms-view .data-table th:nth-child(3) { width: 150px; }  /* 名称 */
@@ -409,4 +434,15 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
 @media (max-width: 768px) {
     #rooms-view .data-table { min-width: 640px; }
     #rooms-view .panel { overflow-x: auto; }
+}
+
+/* F-09 / WD-07：无认证风险横幅（前端仅在 web_auth_enable=false 时插入）。
+   与 .engine-warning 同色系但用警示黄以示区别：引擎死亡是故障，未认证是配置风险。 */
+.auth-warning {
+    background: #f5a623;
+    color: #1a1a1a;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.5;
 }

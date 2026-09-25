@@ -10,6 +10,13 @@
 # -----------------------------------------------------------------------------
 # * **零第三方依赖**：只使用 Python 标准库(urllib/math/subprocess/threading 等)，
 #   无需 pip install 任何包即可运行(录制本身仍需 ffmpeg 可执行文件)。
+# * **本文件是被整合模块的独立副本，不是薄封装**：src/scheduler.py 的并发实现、
+#   src/spider.py 的部分平台解析、src/stream_select.py 的探针/退避、src/ffmpeg_install.py
+#   的包内 ffmpeg 判据，以及 ffmpeg 命令构造(本文件有**两处**定义点，main.py 只有一处)都在
+#   此各有一份拷贝。副本的通病是「单边修改 → 语义漂移」，故改判据必须两处同改、两边注释
+#   互相点名；并发两份实现的**等价性并不完整**，逐条差异见 PlatformBreaker 类注释。
+#   核对漂移的机检面：tests/test_regression_2026_09_22_standalone.py、
+#   tests/test_ffmpeg_reconnect_args.py、tests/test_ffmpeg_path_preference.py。
 # * **语法基线 Python >= 3.14**：本仓统一使用 PEP 758 无括号多异常写法
 #   (except A, B:)，该语法 3.14 起才合法——请勿用 3.13 及以下版本运行本文件。
 # * **保留原工程的核心正确性约定**(这些是原工程踩坑后的结论，单文件版一律继承)：
@@ -57,6 +64,7 @@ import configparser
 import json
 import math
 import os
+import platform
 import random
 import re
 import shutil
@@ -68,6 +76,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -398,12 +407,23 @@ def record_headers(platform: str, cookies: str) -> dict[str, str]:
 
 
 class ResizableSemaphore:
-    # 可运行时调容的信号量(消除重建竞态)，支持上下文管理器协议。
-    # capacity 语义与 threading.Semaphore 一致(表示可用许可数)；
-    # set_value 可增可减：减少只降低上限(已持锁者不受影响)，增加时唤醒等待者。
+    # 可运行时调容的信号量(消除重建竞态)，支持上下文管理器协议。本类是
+    # src/scheduler.py::ResizableSemaphore 的**独立副本**(standalone 不 import src/)：
+    # 改并发语义必须两处同改，改动此处时同步改 src/scheduler.py::ResizableSemaphore。
+    # 内部严格分离两个量：_capacity = 并发上限(只由 set_value 改)、_used = 当前已持有
+    # 许可数(只由 acquire/release 改)。**不得合并成单一字段**：一旦共用，该字段实际表示
+    # 「剩余可用许可」而类注释与调用方都按「容量」理解它，于是任何「按目标容量绝对赋值」
+    # 的重算(以及 release 与 acquire 不配对)都会把可用数补满 → 并发上限实质失控。
+    # [历史注] 2026-09-20 修 src 侧该缺陷(SEV-01)时副本未跟，2026-09-21 同步回灌。
+    # 与 src 侧的行为等价性已实测一致：满员后第 4 次 acquire 失败；持有 3 个时
+    # set_value(3→10) 只新增 7 个可用；超额 release 后 value 恒 <= capacity；set_value(0) 为暂停态。
+    # 语义：set_value 增大唤醒相应数量等待者；减小仅降低上限、不强行回收已持有槽位；
+    # 容量允许为 0(暂停态，acquire 永久阻塞直到调容)。
     def __init__(self, value: int) -> None:
+        # 容量允许为 0(表示暂停/全部阻塞)，仅作下限保护避免负值。
         self._cond = threading.Condition()
         self._capacity = max(0, int(value))
+        self._used = 0
 
     def __enter__(self) -> ResizableSemaphore:
         self.acquire()
@@ -412,12 +432,20 @@ class ResizableSemaphore:
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
         self.release()
 
-    def acquire(self, timeout: float = -1) -> bool:
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        # 获取一个许可；blocking=False 时非阻塞；timeout>=0 时带超时(秒)。
+        # 判据是「已持有 + 1 是否超过上限」而非「剩余许可是否 > 0」：与 release 对称，
+        # 且不受「release 凭空造容量」影响。
         with self._cond:
+            if not blocking:
+                if self._used + 1 > self._capacity:
+                    return False
+                self._used += 1
+                return True
             endtime: float | None = None
             if timeout >= 0:
                 endtime = time.monotonic() + timeout
-            while self._capacity <= 0:
+            while self._used + 1 > self._capacity:
                 if endtime is not None:
                     remaining = endtime - time.monotonic()
                     if remaining <= 0:
@@ -425,25 +453,38 @@ class ResizableSemaphore:
                     self._cond.wait(remaining)
                 else:
                     self._cond.wait()
-            self._capacity -= 1
+            self._used += 1
             return True
 
     def release(self) -> None:
+        # 归还一个许可(只减 _used，绝不增 _capacity)并唤醒一个等待者。
+        # _used 下界钳制：release 与 acquire 不配对(异常路径重复释放)时不得凭空造出许可。
         with self._cond:
-            self._capacity += 1
+            if self._used > 0:
+                self._used -= 1
             self._cond.notify()
 
     def set_value(self, new_value: int) -> None:
+        # 调整容量：**只改上限**，_used 保持不变(故 decrease 天然不回收已持有槽位)；
+        # 唤醒数量取「新可用数 = 新容量 - 已持有」——Condition.notify(n) 至多唤醒 n 个，
+        # 等待者更少时全部唤醒、唤醒偏多也无害(acquire 的 while 会重新检查并继续等待)。
         new_value = max(0, int(new_value))
         with self._cond:
-            delta = new_value - self._capacity
             self._capacity = new_value
-            if delta > 0:
-                for _ in range(delta):
-                    self._cond.notify()
+            free = new_value - self._used
+            if free > 0:
+                self._cond.notify(free)
 
     @property
     def value(self) -> int:
+        # 剩余可用许可数(= 上限 - 已持有)。判定「还能不能再塞进一个请求」用它；
+        # 展示/比较并发上限一律用 capacity，二者在有持有者时必然不同。
+        with self._cond:
+            return max(0, self._capacity - self._used)
+
+    @property
+    def capacity(self) -> int:
+        # 并发上限本身(与当前持有数无关)：调度器重算容量时与之比较。
         with self._cond:
             return self._capacity
 
@@ -452,7 +493,31 @@ class PlatformBreaker:
     # 按 key(host) 的熔断器：closed(放行) → open(熔断) → half-open(放一个探针)。
     # 探针带租约：授予后超过 lease 秒仍未上报样本(如主播未开播的等待轮)时
     # 重新授予，否则 _probing 永不复位 → 该 key 永久熔断直到进程重启。
+    # half-open 的回报必须经 _probing/_probe_owner/_probe_seq 门控：只有「当前代探针的持有
+    # 线程」的回报才允许驱动状态迁移，其余回报只入窗口。缺门控时后果不是"统计略偏"而是
+    # 行为相反：一条在熔断前就已放行、此刻才收尾的普通轮次 record_success 会直接 clear()
+    # 样本窗口并置 closed → 坏 CDN 立刻重新拿到全部房间流量；租约重授予后那条陈旧探针的
+    # 回报同样能关掉新探针。
+    # [历史注] 2026-09-23 MID-2257 才把该门控自 src 回灌，此前副本的 half-open 分支无条件
+    #   把任何回报当探针结果(回归锁 tests/test_regression_2026_09_22_standalone.py)。
+    # 同源副本：src/scheduler.py::PlatformBreaker(本类按设计不 import src/)。
+    # **两份实现并不等价**，且方法集合会随单边改动漂移，故不在此抄快照 —— 要下结论就现场跑
+    #   grep -n "^    def " src/scheduler.py 与本源文件、逐方法 diff 后再显式决定同步方向。
+    # 已知的刻意保留差异(逐条显式决定，不是漏同步)：
+    #   1. 时间源用 time.monotonic() 而非 src 的 _now() 间接层——_now() 在 src 里只是
+    #      「可被测试 patch」的 seam(见 scheduler.py::_now 注释)，standalone 无该测试面，
+    #      且同文件 ResizableSemaphore 亦直接用 time.monotonic()，副本内保持一致更可读。
+    #   2. 探针归属比对用 threading.current_thread() 对象身份(与 src 同判据)，不用
+    #      get_ident()——ident 会被已死线程复用，对象身份不会。
+    #   3. min_samples 取 src 的默认值 8，但不做成构造参数：本副本的构造点只有一处
+    #      (Scheduler._breaker，全用默认值)，加参数只会多一个永不使用的旋钮。
+    #   4. 租约时长以类属性 LEASE_SECONDS 表达(src 是模块级 _PROBE_LEASE_SECONDS)，
+    #      数值同为 60.0；改任一侧须同步另一侧。
+    #   5. 仍缺 src 的两个诊断方法 error_rate / backoff_seconds(副本的退避由调用方固定
+    #      间隔实现，不读冷却剩余量)，且样本入队函数名为 _push 而非 src 的 _push_sample
+    #      —— 属**已登记**的行为无关差异，不是待回灌项。
     LEASE_SECONDS = 60.0
+    MIN_SAMPLES = 8  # 与 src/scheduler.py::PlatformBreaker 的 min_samples 默认值同值
 
     def __init__(self, name: str, window: int = 40, fail_rate: float = 0.5, cooldown: float = 45.0) -> None:
         self.name = name
@@ -460,29 +525,59 @@ class PlatformBreaker:
         self._fail_rate = fail_rate
         self._cooldown = cooldown
         self._lock = threading.Lock()
-        self._samples: list[int] = []
+        # deque(maxlen) + 增量计数：满员时 append 自行挤出最旧样本，扣掉它的贡献即 O(1)，
+        # 与 src::_push_sample 逐行同实现。禁止退回 sum(samples) 全量重算，也禁止退回
+        # 「list + 满员 pop(0)」——那是**持锁下**每条样本多一次 O(n) 元素搬移(窗口 40)。
+        # [历史注] pop(0) 形态于 2026-09-23 MID-2257 回灌时消除。
+        self._samples: deque[int] = deque(maxlen=self._window)
         self._fail_count = 0
         self._state = "closed"
         self._open_until = 0.0
         self._probing = False
         self._granted_at = 0.0
+        # 探针代数 + 当前探针持有线程(与 src 同结构)：_probing 只是布尔，租约重授予后
+        # 旧探针的回报仍会命中 half-open 分支、替新探针把状态机复位，故须记归属。
+        self._probe_seq = 0
+        self._probe_owner: threading.Thread | None = None
 
     def _push(self, failed: int) -> None:
-        # 增量维护失败计数(入队/挤出各 O(1))，禁止 sum(samples) 全量重算
-        if len(self._samples) >= self._window:
-            self._fail_count -= self._samples.pop(0)
+        # 入队一个样本并同步维护失败计数(挤出/入队各 O(1)，见上方 _samples 注释)；调用方须已持锁。
+        if len(self._samples) == self._window:
+            self._fail_count -= self._samples[0]
         self._samples.append(failed)
         self._fail_count += failed
+
+    def _grant_probe(self, now: float) -> None:
+        # 授予(或按租约重授予)探针：递增代数、登记持有线程与授予时刻。调用方须已持锁。
+        # 本副本的 allow()/record() 均在同一录制线程内调用(run_loop 的房间线程)，
+        # 故线程身份足以判定某条回报属于哪一代探针。
+        self._probing = True
+        self._probe_seq += 1
+        self._probe_owner = threading.current_thread()
+        self._granted_at = now
+
+    def _end_probe(self) -> None:
+        # 探针闭环：清除持有线程(_probe_seq 保留，代数只增不减、供后续比对)。
+        self._probing = False
+        self._probe_owner = None
 
     def record(self, success: bool) -> None:
         with self._lock:
             self._push(0 if success else 1)
             if self._state == "closed":
-                if len(self._samples) >= 8 and self._fail_count / len(self._samples) >= self._fail_rate:
+                if len(self._samples) >= self.MIN_SAMPLES and self._fail_count / len(self._samples) >= self._fail_rate:
                     self._state = "open"
                     self._open_until = time.monotonic() + self._cooldown
-                    self._probing = False
+                    self._end_probe()
             elif self._state == "half-open":
+                if not self._probing or self._probe_owner is not threading.current_thread():
+                    # 非探针回报：① 转入 half-open 前就已放行、此刻仍在途的普通轮次；
+                    # ② 已被租约重授予取代的**陈旧探针**(其持有线程不是当前持有者)。
+                    # 样本照常入窗口(供 closed 态复用阈值判定)，但不得驱动
+                    # half-open→closed/open 迁移——否则旧探针会替新探针清窗口、关熔断。
+                    return
+                self._end_probe()
+                # 当前探针结果决定：成功则恢复，失败则重新熔断(延长冷却)
                 if success:
                     self._state = "closed"
                     self._samples.clear()
@@ -490,7 +585,6 @@ class PlatformBreaker:
                 else:
                     self._state = "open"
                     self._open_until = time.monotonic() + self._cooldown
-                self._probing = False
 
     def allow(self) -> bool:
         with self._lock:
@@ -498,18 +592,19 @@ class PlatformBreaker:
                 return True
             now = time.monotonic()
             if self._state == "open":
-                if now >= self._open_until and not self._probing:
-                    self._probing = True
-                    self._granted_at = now
-                    self._state = "half-open"
-                    return True
+                if now >= self._open_until:
+                    if not self._probing:
+                        self._state = "half-open"
+                        self._grant_probe(now)
+                        return True
+                    return False
                 return False
+            # half-open
             if not self._probing:
-                self._probing = True
-                self._granted_at = now
+                self._grant_probe(now)
                 return True
             if now - self._granted_at >= self.LEASE_SECONDS:
-                self._granted_at = now  # 租约超时：自愈，重新授予
+                self._grant_probe(now)  # 租约超时：自愈，重新授予(代数递增、归属改记)
                 return True
             return False
 
@@ -625,11 +720,11 @@ def resolve_douyin(url: str, proxy: str | None = None, cookies: str = "") -> Str
         info_.error = f"抖音接口返回非 JSON: {type(e).__name__}: {e}"
         return info_
 
-    # 2026-09-12 审查 6.7：补第二道检测（对齐主工程 spider.py:446-449）。
-    # 抖音风控的第二形态是「HTTP 200 + 合法 JSON，但业务层 status_code 非零」
-    # （如 status_code=8 需登录、=4002 参数异常）。精简版原先只看 HTTP 状态与
-    # 空响应体，漏掉这一形态 → 风控被误报成"未开播"，用户得不到「去配 cookie」
-    # 的有效提示，只会反复重试。
+    # 第二道检测：抖音风控的第二形态是「HTTP 200 + 合法 JSON，但业务层 status_code 非零」
+    # （如 status_code=8 需登录、=4002 参数异常）。只看 HTTP 状态与空响应体会漏掉这一形态
+    # → 风控被误报成"未开播"，用户得不到「去配 cookie」的有效提示，只会反复重试。
+    # 与主工程 src/spider.py 同判据（该侧在 200+合法 JSON 后同样检 status_code 非零）。
+    # [历史注] 2026-09-12 审查 6.7 补齐此处。
     if isinstance(data, dict):
         try:
             api_status_code = int(cast(str, data.get("status_code"))) if data.get("status_code") is not None else 0
@@ -670,6 +765,8 @@ def resolve_douyin(url: str, proxy: str | None = None, cookies: str = "") -> Str
 # 虎牙页面中的 stream 数据：非贪婪匹配到 "iWebDefaultBitRate" 结束(与原工程一致)
 _HUYA_STREAM_RE = re.compile(r'stream: (\{"data".*?),"iWebDefaultBitRate"')
 # 房间别名(含字母)时从 HTML 提取数字房间号(与原工程 get_huya_app_stream_url 一致)
+# 孪生点(2026-09-23 MIN-2201)：主实现 src/spider.py::get_huya_app_stream_url 的正则现已与本
+# 副本**逐字同串**(键名起始引号作锚点)，且两侧都在取回后剥引号 + 判 isdigit。改此处须两处同改。
 _HUYA_PROFILE_ROOM_RE = re.compile(r'"ProfileRoom":(.*?),"sPrivateHost')
 
 
@@ -750,7 +847,10 @@ def resolve_huya(url: str, proxy: str | None = None, cookies: str = "") -> Strea
     if not room_id.isdigit() and html:
         m = _HUYA_PROFILE_ROOM_RE.search(html)
         if m:
-            room_id = m.group(1)
+            # 页面的 "ProfileRoom" 有数字(:6030242)与字符串(:"6030242")两种内联形态，
+            # 非贪婪捕获对后者会连引号一起收下 → 不剥引号则恒判非数字、白丢兜底接口
+            # (2026-09-23 与 src/spider.py 同步，见上方 _HUYA_PROFILE_ROOM_RE 的孪生点注释)。
+            room_id = m.group(1).strip().strip('"')
     if not room_id.isdigit():
         info_.error = f"{fetch_failed_reason}；未能解析 stream 数据，且未取得数字房间号，无法走兜底接口".strip("；")
         return info_
@@ -1024,11 +1124,10 @@ _probe_last_seen: dict[str, float] = {}
 
 def _throttle_probe(url: str) -> None:
     # 同 host 探针节流：锁内计算、锁外睡眠，不阻塞其它 host。
-    # 2026-09-12 审查（低危）：计时由 time.time()（墙上时钟）改 time.monotonic()。
-    # 墙上时钟会被 NTP 校时/手动改表/虚拟机时钟漂移回拨；一旦回拨，`now - last`
-    # 变成负数且绝对值很大 → `now - last < gap` 恒不成立倒是不会卡，
-    # 但向前跳变时会算出巨大的 wait，把探针线程冻结数十秒甚至更久
-    # （表现为「某房间突然长时间不检测」且无日志）。monotonic 不受系统时钟调整影响。
+    # 计时一律 time.monotonic()：墙上时钟会被 NTP 校时/手动改表/虚拟机漂移而**向前跳变**，
+    # 此时 gap-(now-last) 算出巨大的 wait，把探针线程冻结数十秒甚至更久(表现为「某房间
+    # 突然长时间不检测」且无任何日志)；向后回拨则让节流静默失效。
+    # [历史注] 2026-09-12 审查前用 time.time()。
     host = host_of(url)
     wait = 0.0
     with _throttle_lock:
@@ -1165,6 +1264,14 @@ def validate_stream_url(
         warn(f"流地址校验: {strip_query(url)} - CDN 探针退避中，跳过本轮探针、回退下一候选")
         return False
     _throttle_probe(url)
+    # 容器判定一律先看小写形态：本文件三处 .m3u8 判定(此处 + build_ffmpeg_cmd / run_ffmpeg
+    # 的两处命令构造)必须同口径。大写 .M3U8 若落进「非 m3u8」分支就会走 content-type 启发式
+    # + _confirm_get_ok，而 m3u8 在多家 CDN 上 HEAD 恒回 4xx → 正好命中「探针误杀可用源」
+    # (非末位候选被直接拒，整轮回退或放弃录制)，并连带漏掉 -reconnect_at_eof 的移除、
+    # 复现 HLS 挂起事故。主程序侧 main.py::_validate_stream_url / src/stream_select.py /
+    # src/async_http.py 同样 lower。
+    # [历史注] 2026-09-23 MIN-2259 补齐此处；命令构造两处早在 2026-09-12 审查时已 lower。
+    url_lower = url.lower()
     try:
         # 状态码与 content-type 必须取自同一次 HEAD(单次探针，省连接预算)。
         # 旧版在此后另发一次无代理的 HEAD 取 content-type，既是双倍探针又与代理配置不一致。
@@ -1174,7 +1281,7 @@ def validate_stream_url(
         if status in (401, 403):
             _mark_probe_reject(url, platform)
 
-        if ".m3u8" in url:
+        if ".m3u8" in url_lower:
             if status == 200 or any(k in ctype for k in _STREAM_MEDIA_TYPES):
                 return True
             # HEAD 不可靠 → Range GET 探测(200/206 判可达)，401/403 重试一次再定罪
@@ -1259,23 +1366,65 @@ def select_source_url(stream: StreamInfo, proxy: str | None = None) -> str | Non
 # =============================================================================
 
 
+# 包内 ffmpeg 是否优先于系统 PATH 上那份 —— 与 `src/ffmpeg_install.should_prepend_bundled_ffmpeg_dir()`
+# 是**刻意维护的孪生副本**（本文件按设计不 import src/，可独立单文件分发；同 src/scheduler.py 的
+# 副本先例：改判据必须两处同改，且两边注释互相点名）。
+# 判据与主程序逐条一致，任一不成立即维持「包内优先」的既有顺序：
+#   darwin ∧ arm64 ∧ 包内目录存在 ∧ 注入前 PATH 上另有 ffmpeg ∧ 那份 realpath 不在包内目录里。
+# 为什么 Apple Silicon 要让位：full 包/仓库自带的 macOS ffmpeg 是 evermeet 的 **x86_64** 静态构建
+#   （上游不发布 arm64 产物），无条件优先会让已装原生 ffmpeg 的用户白付 Rosetta 转译开销。
+# 为什么不复用主程序那份日志/i18n：本文件不依赖 src/，且 find_ffmpeg 只在启动时调一次，
+#   这里用一行 print 就够，不为一条日志引入 i18n 依赖。
+def should_prepend_bundled_ffmpeg_dir(bundled_dir: str, current_path: str) -> bool:
+    # 平台门控一律用 sys.platform 字面量（mypy 跨平台门禁要求）。非 darwin 恒 True = 行为逐字不变。
+    if sys.platform != "darwin":
+        return True
+    # 解释器自身被 Rosetta 转译时 machine() 报 x86_64 → 判据不成立、维持包内优先：
+    # 这是刻意选择的漏判方向（架构信息不可信时不改用系统那份）。
+    if platform.machine().lower() != "arm64":
+        return True
+    if not os.path.isdir(bundled_dir):
+        return True
+    # 必须用调用方传进来的 PATH 快照做探测（与主程序同一约束）；自读环境变量在
+    # 「用户已把包内目录写进 PATH」时会探到同一份，让位判断失去意义。
+    system_ffmpeg = shutil.which("ffmpeg", path=current_path) if current_path else None
+    if not system_ffmpeg:
+        return True
+    candidate_real = os.path.realpath(system_ffmpeg)
+    bundle_real = os.path.realpath(bundled_dir)
+    # 自我遮蔽（探到的其实就是包内那份）→ 不让位，否则日志会承诺「原生 arm64」而实际仍是 x86_64。
+    if candidate_real == bundle_real or candidate_real.startswith(bundle_real + os.sep):
+        return True
+    return False
+
+
 def find_ffmpeg(explicit: str = "") -> str:
     # 定位 ffmpeg：显式路径 > 脚本同级 ffmpeg/<exe> > 仓库根目录 ffmpeg/<exe> > PATH。
     # 找不到返回空串。注意必须校验**可执行文件**而非 ffmpeg/ 目录本身——目录存在
     # 但里面没有 ffmpeg.exe 时，把目录路径交给子进程只会得到难以理解的
     # FileNotFoundError。本文件位于 scripts/ 下，仓库自带的 ffmpeg/ 在其上一级；
     # 脚本被单独拷出使用时仍优先找其同目录 ffmpeg/。
+    # 唯一例外：Apple Silicon 上系统已装原生 ffmpeg 时让位（见
+    # should_prepend_bundled_ffmpeg_dir，与主程序 main.py 的 PATH 策略同源）。
     exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     if explicit:
         return explicit if os.path.isfile(explicit) else ""
     here = Path(__file__).resolve().parent
     for local in (here / "ffmpeg" / exe, here.parent / "ffmpeg" / exe):
         if local.is_file():
-            return str(local)
+            if should_prepend_bundled_ffmpeg_dir(str(local.parent), os.environ.get("PATH", "")):
+                return str(local)
+            system = shutil.which("ffmpeg", path=os.environ.get("PATH", "")) or ""
+            print(f"[ffmpeg] Apple Silicon：让位于系统原生构建 {system}（包内为 x86_64 转译构建）")
+            return system or str(local)
     return shutil.which("ffmpeg") or ""
 
 
-# 容器格式 → ffmpeg muxer 参数；录制文件格式仅支持这三种
+# 容器格式 → ffmpeg muxer 名；录制文件格式仅支持这三种。输出容器的取值**只能查这张表**，
+# 不得在任何分支写 -f 的裸字面量：原工程 2026-09-04 的 P0 就是 TS 分支误写 ipod、
+# M4A 分支误写 mpegts(两值互换)——H.264 灌进错封装器不报错、exit 0，只把 MP4 内容
+# 写进 .ts 文件名(魔数 ftyp 而非 0x47)，属静默损坏，只有语义断言拦得住(本副本无分段
+# 录制，故 -f 承担 main.py 里 -segment_format 的同一职责；键须与输出扩展名严格对应)。
 _RECORD_FORMATS: dict[str, str] = {"flv": "flv", "mp4": "mp4", "ts": "mpegts"}
 # 单次录制时长不限制时 -t 的等效上限(10 年)：使命令形状固定(便于与 Popen 内联
 # 参数列表逐一配对)，直播流自然结束(主播下线)时 ffmpeg 照常正常退出，语义不变。
@@ -1285,15 +1434,25 @@ _RECORD_UNLIMITED_CAP = "315360000"
 def build_ffmpeg_cmd(
     ffmpeg_bin: str, url: str, out_path: str, platform: str, cookies: str, duration: float, fmt: str = "flv"
 ) -> list[str]:
-    # 构造 ffmpeg 命令(标志集与原工程 main.py 一致)——命令参数的**唯一定义点**，
-    # 用于日志展示与自检断言。
+    # 构造 ffmpeg 命令(标志集与原工程 main.py 一致)，用于日志展示与自检断言。
     # -headers 必须用 \r\n 结尾(HTTP 头规范)，且必须与校验探针的 UA/Referer/Cookie
     # 完全一致(统一经 record_headers 构造)，否则出现「校验 200、ffmpeg 403」。
-    # 注意：run_ffmpeg 内实际拉起的进程使用与下述列表**逐一相同**的内联字面量参数
-    # (写入门禁要求参数列表内联在调用点、不能传拼接变量)，修改任一处必须同步另一处。
+    # 本命令在本副本有**两个定义点**：此处的规范列表 + run_ffmpeg 内 Popen 前的内联列表
+    # (写入门禁要求参数内联在调用点、不得传拼接变量)。两处必须逐字对齐，改任一处即同步
+    # 另一处；下面的 m3u8 移除 -reconnect_at_eof 守卫同样两处都要有
+    # (回归锁 tests/test_ffmpeg_reconnect_args.py 扫描本文件、按定义点逐一断言守卫存在)。
     headers = record_headers(platform, cookies)
     header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
     duration_cap = str(int(duration)) if duration > 0 else _RECORD_UNLIMITED_CAP
+    # 下面三个 -reconnect* 是**输入级(HTTP 协议)选项**：必须全部位于 -i 之前，且每个选项
+    # 紧跟自己的字面量取值。两条各对应一次真实事故：
+    #   · 写在 -i 之后会被划入输出组，而 ffmpeg 对已全局注册的选项名不报错——实测静默接受、
+    #     退出码 0、输入侧从未应用，重连完全失效却没有任何可见症状(2026-09-10)；
+    #   · 缺值时 ffmpeg 把下一个选项名当取值，报「Unable to parse "reconnect_streamed"
+    #     option value "-reconnect_at_eof" as boolean」→ Invalid argument，输入未打开即
+    #     退出 -22，真实录制 100% 复现(2026-09-11)。
+    # 故新增输入级选项时同样按「-i 之前 + 成对字面量」写，不得用裸下标插入。
+    # 回归锁 tests/test_ffmpeg_reconnect_args.py(两不变量 × main.py 与本文件双定义点)。
     cmd = [
         ffmpeg_bin,
         "-y",
@@ -1319,16 +1478,16 @@ def build_ffmpeg_cmd(
         duration_cap,
         out_path,
     ]
-    # HLS(m3u8) 输入禁用 -reconnect_at_eof（2026-09-11 事故沉淀，与原工程 main.py 同规则）：
-    # hls demuxer 依赖播放列表读到 EOF 才完成解析、开始拉取媒体段；开启该选项后 http 层在
-    # 播放列表 EOF 处无限重连（-report 实测特征：连续「Will reconnect at <size> in
-    # N second(s), error=End of file」，1/3/7/15/31/60s 指数退避、永不放弃）——媒体段一个
-    # 都拉不到、视频数据零字节产出、进程永不退出（-loglevel error 下零输出零报错）。
-    # FLV 输入保留该选项：CDN 掐断长连接时在 EOF 处重连续写同一文件（斗鱼游客态 FLV
-    # ~70s 被掐的既有缓解手段）。del 只按字面量标志对删除，不引入动态拼接。
-    # 2026-09-12 审查（低危）：大小写敏感致 HLS 挂起回归——平台/用户手填地址扩展名
-    # 为 .M3U8 等大写形态时本判定落空，-reconnect_at_eof 未被删除 → 复现 2026-09-11
-    # 的「播放列表 EOF 无限重连、零字节产出、进程永不退出」。统一按小写判定。
+    # HLS(m3u8) 输入禁用 -reconnect_at_eof（与原工程 main.py 同规则）：hls demuxer 依赖
+    # 播放列表读到 EOF 才完成解析、开始拉取媒体段，开启该选项后 http 层在「列表下载完」处
+    # 无限重连（-report 实测特征：连续「Will reconnect at <size> in N second(s),
+    # error=End of file」，1/3/7/15/31/60s 指数退避、永不放弃；-reconnect_delay_max 60 只限
+    # 单次延迟上限）——媒体段一个都拉不到、视频零字节产出、进程永不退出，且 -loglevel error
+    # 下零输出零报错，形态即「只录到字幕没录到视频」。
+    # FLV 输入保留该选项：CDN 掐断长连接时在 EOF 处重连续写同一文件(斗鱼游客态 FLV
+    # ~70s 被掐的既有缓解手段)。del 只按字面量标志对删除，不引入动态拼接。
+    # 判定必须走小写形态(大写 .M3U8 会漏判并复现上述挂起)。
+    # [历史注] 2026-09-11 事故沉淀；2026-09-12 审查把此处由大小写敏感改为 url.lower()。
     if ".m3u8" in url.lower():
         _eof_idx = cmd.index("-reconnect_at_eof")
         del cmd[_eof_idx : _eof_idx + 2]
@@ -1377,9 +1536,10 @@ def run_ffmpeg(
     # 执行 ffmpeg：stderr 落盘(便于定位 403/超时)，返回 (返回码, 错误摘要)。
     # 返回码语义：0 成功；非 0 失败。调用方须按 rc 回传调度器成功/失败，
     # 禁止无条件记成功(否则按 host 熔断永不触发，坏线路会被无限重撞)。
-    # 安全说明：下方进程调用采用**调用点内联参数列表**且显式 shell=False——
-    # 不经 shell 解释，URL/文件名中的元字符(&、|、> 等)不可能注入命令
-    # (文件名已在 clean_name 清洗)。内联列表须与 build_ffmpeg_cmd 逐一对应。
+    # 安全说明：下方 Popen 用**调用点内联字面量列表**(写入门禁要求，不得传拼接变量)且显式
+    # shell=False——不经 shell 解释，URL/文件名中的元字符(&、|、> 等)不可能被注入命令
+    # (文件名已在 clean_name 清洗)。该列表即 build_ffmpeg_cmd 规范列表之外的第二处定义点，
+    # 两处必须逐字对齐、改任一处即同步另一处，m3u8 移除 -reconnect_at_eof 的守卫同样两处都要。
     cmd_log = " ".join(build_ffmpeg_cmd(ffmpeg_bin, url, out_path, platform, cookies, duration, fmt))
     headers = record_headers(platform, cookies)
     header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
@@ -1391,9 +1551,8 @@ def run_ffmpeg(
     try:
         logf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{cmd_log}\n")
         logf.flush()
-        # 与 build_ffmpeg_cmd 逐一对应(见该函数注释)：唯一定义点在 build_ffmpeg_cmd，
-        # 此处因门禁要求必须内联字面量，改任一处必须同步另一处。列表仍为纯字面量构造
-        # (无拼接变量)，下方的 del 只按字面量标志对删除，不引入注入面，门禁语义不变。
+        # 形状与 build_ffmpeg_cmd 逐一对应(约束见该函数与本函数的注释)：列表仍为纯字面量
+        # 构造(无拼接变量)，下方的 del 只按字面量标志对删除，不引入注入面、门禁语义不变。
         proc_args: list[str] = [
             ffmpeg_bin,
             "-y",
@@ -1419,9 +1578,8 @@ def run_ffmpeg(
             duration_cap,
             out_path,
         ]
-        # HLS(m3u8) 输入禁用 -reconnect_at_eof：与 build_ffmpeg_cmd 同规则
-        # (该函数注释详述——播放列表 EOF 无限重连，段拉不到/无输出/不退出)。
-        # 同 build_ffmpeg_cmd：按小写判定（大写 .M3U8 会漏判并复现挂起事故）。
+        # 第二处守卫：m3u8 输入同样必须删掉 -reconnect_at_eof 参数对并按小写判定
+        # (规则与后果详述见 build_ffmpeg_cmd)——这里漏删即等于真实录制路径仍会挂起。
         if ".m3u8" in url.lower():
             _eof_idx = proc_args.index("-reconnect_at_eof")
             del proc_args[_eof_idx : _eof_idx + 2]
@@ -1506,10 +1664,10 @@ def load_settings(config_path: str) -> Settings:
 
     if get("是否启用代理").startswith("是"):
         st.proxy = get("代理地址").strip()
-        # 2026-09-12 审查（低危）：启用代理但地址为空 → 后续 `proxy or None` 判为
-        # falsy 而静默直连。用户以为流量走了代理（可能正是为了隐藏真实出口 IP
-        # 或绕过地域限制），实际全部裸连——既不达预期也无任何提示。
-        # 显式告警并要求补填，而不是悄悄降级。
+        # 启用代理但地址为空时，下游 `proxy or None` 会把空串判成 falsy → 静默直连：
+        # 用户以为流量走了代理（往往正是为了隐藏出口 IP / 绕过地域限制），实际全部裸连，
+        # 既不达预期又无任何提示。故显式告警要求补填，而不是悄悄降级为直连。
+        # [历史注] 2026-09-12 审查补此告警。
         if not st.proxy:
             warn("「是否启用代理 = 是」但「代理地址」为空，将按直连处理；请填写代理地址或关闭代理开关")
     st.save_dir = get("视频保存路径") or "downloads"
@@ -1869,7 +2027,83 @@ def selftest() -> int:
     br.record(True)
     check("探针成功后恢复", br.state == "closed", br.state)
 
-    # --- ffmpeg 命令构造(build_ffmpeg_cmd 是命令参数唯一定义点) ---
+    # --- 熔断器 half-open 探针归属门控(MID-2257 回灌项，失效后果见 PlatformBreaker 类注释) ---
+    # 两条用例分别覆盖两种非探针回报：另一线程收尾的在途普通轮次、租约重授予后的陈旧探针。
+    br_gate = PlatformBreaker("probe-gate", window=10, fail_rate=0.5, cooldown=0.0)
+    for _ in range(8):
+        br_gate.record(False)
+    check("归属门控前置：已熔断", br_gate.state == "open", br_gate.state)
+    check("归属门控前置：放行探针", br_gate.allow() is True)
+    check("归属门控前置：half-open", br_gate.state == "half-open", br_gate.state)
+    # 另一线程的普通轮次回报(在途请求收尾)：样本照常入窗口，但不得驱动状态迁移
+    outsider = threading.Thread(target=lambda: br_gate.record(True))
+    outsider.start()
+    outsider.join()
+    check("非探针线程回报不得关熔断", br_gate.state == "half-open", br_gate.state)
+    br_gate.record(True)  # 探针持有线程(本线程)回报 → 才允许闭环
+    check("探针持有线程回报后恢复 closed", br_gate.state == "closed", br_gate.state)
+
+    # 租约重授予后的**陈旧探针**：持有线程已被换掉，其回报同样不得关熔断。
+    # 直接把 _granted_at 往前推(不真等 60s)，避免自检用例挂在 sleeps 上。
+    br_lease = PlatformBreaker("probe-lease", window=10, fail_rate=0.5, cooldown=0.0)
+    for _ in range(8):
+        br_lease.record(False)
+    br_lease.allow()  # 本线程 = 第 1 代探针持有者
+    br_lease._granted_at -= PlatformBreaker.LEASE_SECONDS + 1.0
+    regrant: dict[str, object] = {}
+    new_holder = threading.Thread(target=lambda: regrant.__setitem__("granted", br_lease.allow()))
+    new_holder.start()
+    new_holder.join()
+    check("租约到期后重授予探针", regrant.get("granted") is True and br_lease.state == "half-open", str(regrant))
+    stale_probe = threading.Thread(target=lambda: br_lease.record(True))  # 第 1 代的陈旧回报
+    stale_probe.start()
+    stale_probe.join()
+    check("陈旧探针回报不得关熔断", br_lease.state == "half-open", br_lease.state)
+
+    # --- 流地址校验的容器判定大小写(MIN-2259，失效形态见 validate_stream_url 注释) ---
+    # 此处注入假探针(绝不发真实请求)，两种大小写必须同结果：Range-GET=206 救回即证明走的是
+    # HLS 分支。HEAD 用 405 —— 非 401/403，避免污染退避表(_mark_probe_reject 只认那两个码)。
+    saved_probe = http_probe
+    saved_throttle = _throttle_probe
+    try:
+        _probe_reject_until.clear()
+
+        def _fake_probe(
+            url: str,
+            *,
+            method: str = "HEAD",
+            headers: dict[str, str] | None = None,
+            timeout: float = 8.0,
+            proxy: str | None = None,
+        ) -> ProbeResult:
+            if method == "HEAD":
+                return ProbeResult(405, {"content-type": "text/html"})
+            return ProbeResult(206, {"content-type": "application/vnd.apple.mpegurl"})
+
+        def _no_throttle(url: str) -> None:
+            return None
+
+        # 经 globals() 换绑而非 global 声明：selftest() 前半段已按普通名读取过这两个名字，
+        # 同作用域内「先用后声明 global」是语法错误。validate_stream_url 在调用点查全局名，
+        # 故换绑即刻生效。
+        globals()["http_probe"] = _fake_probe
+        globals()["_throttle_probe"] = _no_throttle
+        check(
+            "小写 .m3u8 走 HLS 分支(Range-GET 救回)",
+            validate_stream_url("https://cdn.example/live/a/b.m3u8", platform="斗鱼直播") is True,
+        )
+        check(
+            "大写 .M3U8 同走 HLS 分支(大小写不敏感)",
+            validate_stream_url("https://cdn.example/live/a/b.M3U8", platform="斗鱼直播") is True,
+        )
+    finally:
+        globals()["http_probe"] = saved_probe
+        globals()["_throttle_probe"] = saved_throttle
+        _probe_reject_until.clear()
+
+    # --- ffmpeg 命令构造：自检只驱动 build_ffmpeg_cmd 这一处规范列表 ---
+    # run_ffmpeg 的内联列表不被自检执行(会真起进程)，两处的一致性由
+    # tests/test_ffmpeg_reconnect_args.py 的 AST 扫描把守，改动时以该锁为准。
     cmd = build_ffmpeg_cmd("ffmpeg", "http://x/y.flv", "out.flv", "B站直播", "sid=1", 0)
     blob = next(a for a in cmd if "\r\n" in a)
     check("ffmpeg headers 含 Referer", ("Referer: " + _BILI_REFERER) in blob)

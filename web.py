@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import cast
 
 import i18n
+from src.logger import logger
 
 # 确保项目根在 sys.path
 _script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -50,7 +51,13 @@ def _get_kernel32() -> ctypes.CDLL | None:
     global _KERNEL32
     if _KERNEL32 is not None:
         return _KERNEL32
-    # 使用 ctypes.WinDLL 而非 ctypes.windll（后者在 Python 3.13+ 已移除）。
+    # 平台专属符号必须先用 sys.platform 字面量早返回（AGENTS.md「平台专属符号条目」约定）：
+    # 否则 mypy --platform linux 会因 WinDLL 不存在于 Linux typeshed 而报 attr-defined，
+    # 与非 Windows 运行期「AttributeError 被 except 吞掉返回 None」的结果一致，故行为不变。
+    if sys.platform != "win32":
+        return None
+    # 用 ctypes.WinDLL 而非 ctypes.windll：后者在 3.14 仍可用但属遗留形态，AGENTS「Python 版本」条
+    # 要求新代码统一 WinDLL（对齐本文件与 gui.py 的惯例）。
     # 显式声明 argtypes/restype：GetConsoleWindow 返回 HWND（64 位指针，避免被截断），
     # SetConsole*CP 返回 BOOL（明确 restype 为 c_int）。
     try:
@@ -71,6 +78,9 @@ def _get_user32() -> ctypes.CDLL | None:
     global _USER32
     if _USER32 is not None:
         return _USER32
+    # 同 _get_kernel32：平台专属符号必须先 sys.platform 字面量早返回，行为不变（见该处注释）。
+    if sys.platform != "win32":
+        return None
     try:
         dll = ctypes.WinDLL("user32", use_last_error=True)
         dll.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -101,11 +111,9 @@ def _fix_encoding() -> None:
 _fix_encoding()
 
 
-# 进入后台模式：隐藏控制台窗口并将标准输出重定向到日志文件。
+# 进入后台模式：把 stdout/stderr 重定向到 logs/web_console.log，
+# Windows 下另隐藏控制台窗口（SW_HIDE）、其他平台仅重定向输出；程序可经 Web 面板或任务管理器管理。
 def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
-    # 进入后台运行模式：隐藏控制台窗口，将输出重定向到日志文件。
-    # Windows 下隐藏控制台窗口（SW_HIDE）；其他平台仅重定向输出。
-    # 日志写入 logs/web_console.log，可通过 Web 面板或任务管理器管理程序。
     log_path = os.path.join(logs_dir, "web_console.log")
 
     # 重定向前先向控制台输出提示（窗口即将隐藏）
@@ -124,6 +132,9 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
     # 当时的 sys.stderr 对象，不会因这里的重新赋值而跟着变。不重建 sink，DEBUG/WARNING
     # 日志会全部写往随后被 SW_HIDE 隐藏的控制台窗口，web_console.log 里只剩 print 输出，
     # 排障时会把「日志没进来」误判成「事件没发生」。
+    # 实测故障形态（2026-08 虎牙 403 排查）：因 web_console.log 无校验日志，「探针假绿」被误判成
+    # 「探针未执行」——排查 Web 模式问题一律先看 logs/streamget.log / PlayURL.log（文件 sink
+    # 不受此重定向影响、一直在正常写入）。
     try:
         from src.logger import rebind_console_sink
 
@@ -155,13 +166,17 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
 
 # 判断给定 host 是否为回环地址（仅本机可访问）。
 def _is_loopback_host(host: str) -> bool:
-    # 判断 host 是否为回环地址（仅本机可访问）。
-    return host.strip() in ("127.0.0.1", "localhost", "::1", "[::1]")
+    # SEV-04：实现下沉到 src.web_config.is_loopback_bind_host，与 web_api 中间件的
+    # 「每请求重跑非回环 + 无认证不变量」共用同一份判定口径。旧版是字符串精确比较，
+    # 只认 127.0.0.1/localhost/::1/[::1] 四种写法，127.0.0.53 这类整段 127/8 会被算成
+    # 「非回环」——两处口径一旦分叉，启动检查与运行期检查就会给出矛盾的结论。
+    from src.web_config import is_loopback_bind_host
+
+    return is_loopback_bind_host(host)
 
 
 # Web 管理面板入口：启动录制引擎守护线程与 uvicorn HTTP 服务。
 def main() -> None:
-    # 启动 Web 管理面板：录制引擎（守护线程）+ uvicorn HTTP 服务。
     # 导入 main 模块：触发模块级初始化（FFmpeg 检查、配置读取、备份线程等），
     # 但不进入主循环（因 main() 已被包装为函数）。
     import uvicorn
@@ -181,20 +196,18 @@ def main() -> None:
     host: str = cast(str, web_cfg["web_host"])
     port: int = cast(int, web_cfg["web_port"])
 
-    # 后台模式：隐藏控制台窗口并重定向日志到文件
     if not web_cfg["web_show_console"]:
         _enter_background_mode(logs_dir, host, port)
 
     # 不安全绑定防护（C1）：未启用认证时拒绝监听非回环地址，防止局域网内未授权访问
     # （文件下载/配置读写）。需显式设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 才放行。
-    #
-    # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-22）：本检查块**上移**到录制引擎线程与
-    # uvicorn 实例创建之前。原位置在 server 构造之后、serve() 之前——那时录制引擎
-    # 线程（配置热加载/调度器/日志归档线程）与托盘都已启动，检查一旦拒绝启动，
-    # 走的是 `sys.exit(1)`：daemon 线程虽随进程退出，但在此之前它们已经读取配置、
-    # 初始化调度器并可能改写日志，「拒绝启动」的语义并不干净（日志里会留下一次
-    # 完整的引擎启动痕迹，排障时容易误判成「启动成功过」）。
-    # 上移后：任何初始化之前就判定，拒绝即零副作用退出。
+    # F-22（2026-09-12）：本检查块必须保持在录制引擎线程与 uvicorn 创建**之前**——上移后
+    # 拒绝即零副作用退出；若放在 serve() 前，daemon 线程已读过配置、初始化过调度器，
+    # 日志里会留下一次「启动成功过」的假痕迹。
+    # SEV-04：本检查只在启动瞬间评估一次，而面板写接口可热改 web_auth_enable / web_host，
+    # 同款不变量现由 src/web_api.py 的鉴权中间件按**每个 /api/* 请求**重跑（判定口径与本处同源：
+    # web_config.is_loopback_bind_host + 同一枚 DOUYIN_WEB_ALLOW_INSECURE 逃生阀），
+    # 本处保留为「零副作用拒绝启动」的第一道。
     if not web_cfg["web_auth_enable"] and not _is_loopback_host(host):
         allow_insecure = os.environ.get("DOUYIN_WEB_ALLOW_INSECURE", "").strip().lower() in ("1", "true", "yes")
         if not allow_insecure:
@@ -203,8 +216,23 @@ def main() -> None:
             print("      2. 或设置 web_host = 127.0.0.1 仅限本机访问。")
             print("      如确需在无认证状态暴露到局域网，请设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 后重启（不推荐）。")
             sys.exit(1)
-        print("[web] ⚠️ 警告: Web 面板监听非回环地址且未启用认证，局域网内任何人均可访问。")
-        print("      建议在 config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password。")
+        # WD-07：破例路径把可被利用的具体能力列清楚并写入日志——用户照抄环境变量时至少知道
+        # 自己在开放什么，也便于事后审计「这台机器何时以无认证方式对局域网开放过」。
+        # [历史注] 2026-09-22 MIN-2247 前此处是未走 i18n 的裸多行字符串、直接作 logger.warning
+        # 首参（违反「首参须为 tr 模板或常量」不变量）；现为单行模板、取值全部走 i18n.tr。
+        _insecure_msg = i18n.tr(
+            "[web] ⚠️ 严重安全警告: Web 面板正以「无认证 + 非回环地址」运行，能访问该地址的任何人可执行：\n"
+            "① 读写全部配置（仅「自定义脚本执行命令」被禁止）；② 读取 logs 下的运行日志；"
+            "③ 遍历并下载 downloads 下全部录制文件；④ 增删改直播间并可提交任意地址"
+            "（存在被用作内网探测跳板的风险）；⑤ 启停录制。\n"
+            "建议立即在 config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password，"
+            "然后删除环境变量 DOUYIN_WEB_ALLOW_INSECURE 并重启。"
+        )
+        print(_insecure_msg)
+        try:
+            logger.warning(_insecure_msg)
+        except Exception:
+            pass
 
     # Web 模式默认不自动开启录制：录制引擎线程保持运行（配置热加载/调度器就绪），
     # 但不拉起任何房间线程，由面板「开始录制」按钮经 POST /api/recording/toggle 手动触发。
@@ -226,11 +254,27 @@ def main() -> None:
         url_config_file=url_config_file,
         downloads_root=downloads_root,
         logs_dir=logs_dir,
+        # SEV-N03 修复（2026-09-21，CODE_REVIEW_2026-09-21）：把**本进程实际要绑定的**地址与端口
+        # 交给应用，供「非回环 + 无认证」不变量与 Origin 同源判定使用。二者此前读 config.ini 的
+        # web_host/web_port，而这两个键本身可经 PUT /api/config 热改写（监听地址却要重启才变），
+        # 于是判定基准可由请求方伪造。这里就是那条接线的唯一入口，删除它会让两道防线退回旧形态。
+        bind_host=host,
+        bind_port=port,
     )
 
     # uvicorn Server 实例（而非 uvicorn.run）：便于托盘「退出程序」通过设置
     # server.should_exit 触发优雅关闭，而非强制结束进程（避免 ffmpeg 残留）。
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info"))
+    #
+    # MID-35：显式 proxy_headers=False。uvicorn 的默认值是 True 且
+    # forwarded_allow_ips 默认含 127.0.0.1，于是它的 ProxyHeaders 中间件会在**本仓鉴权
+    # 中间件之前**用请求头里 X-Forwarded-For 的**最左值**（完全由请求方自填）覆盖
+    # scope["client"] —— 把面板包成 HTTPS 的常见本机反代部署下，
+    # 「仅信任 web_trusted_proxy 的 XFF」这条防线直接失效：request.client.host 已是伪造值，
+    # 攻击者每请求换一个键即可绕过 5 次/300s 的登录限流。关掉后 scope["client"] 恒为原始
+    # socket 对端，XFF 的解释权收敛到 src/web_api.py::_get_client_ip 一处
+    # （直连对端确属可信代理时才从右往左剥）。真实反代部署请把反代地址写进
+    # config.ini [Web] web_trusted_proxy。
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info", proxy_headers=False))
 
     # 系统托盘：Windows 下将控制台窗口改为「最小化到托盘」而非任务栏。
     tray = None
@@ -241,7 +285,13 @@ def main() -> None:
         tray.start()
 
     print(i18n.tr("[web] Web 管理面板启动中: http://{host}:{port}", host=host, port=port))
-    print(i18n.tr("[web] 认证: {web_auth_enable}", web_auth_enable="开启" if web_cfg["web_auth_enable"] else "关闭"))
+    # MID-2253（2026-09-22）：tr() 的**值参**不得是中文常量——模板 "[web] 认证: {web_auth_enable}"
+    # 会被翻译，值不翻则 en_US 渲染成「Authentication: 开启」、中英混杂（中文下完全看不出）。
+    # 值先各自 tr 取本地化字面量（两个新词条已合并进 i18n/ 四目录；控制台播报文案不涉及
+    # 前端内嵌目录，无需同步 web/app.js）。也不能直接传裸布尔：{web_auth_enable} 会渲染成
+    # True/False，比中文更不可读。
+    _auth_text = i18n.tr("已启用") if web_cfg["web_auth_enable"] else i18n.tr("未启用")
+    print(i18n.tr("[web] 认证: {web_auth_enable}", web_auth_enable=_auth_text))
     # 不安全绑定检查已上移至引擎线程启动之前（见上方 F-22 注释）
 
     # 阻塞运行；托盘「退出程序」或 Ctrl+C 会将 should_exit 置真，serve() 优雅返回。
@@ -255,13 +305,16 @@ def main() -> None:
         try:
             main.cleanup_all_ffmpeg_processes()
         except Exception as e:
-            print(i18n.tr("[web] 清理 ffmpeg 进程失败: {e}", e=e))
+            # MID-2251 同族：清理失败只带 {e} 时，Windows 下 socket.timeout / TimeoutError
+            # 的 str() 为空串，日志里只剩「[web] 清理 ffmpeg 进程失败: 」一行空白尾巴，
+            # 分不清是进程已消失、权限不足还是挂在与 ffmpeg 的管道上。
+            print(i18n.tr("[web] 清理 ffmpeg 进程失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
         try:
             from src.async_http import close_all_clients_sync
 
             close_all_clients_sync()
         except Exception as e:
-            print(i18n.tr("[web] 清理 HTTP 连接池失败: {e}", e=e))
+            print(i18n.tr("[web] 清理 HTTP 连接池失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
         # serve() 已返回（优雅关闭），收起托盘图标，进程随后正常退出。
         if tray is not None:

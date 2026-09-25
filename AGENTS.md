@@ -1,32 +1,44 @@
 # AGENTS.md — DouyinLiveRecorder 核心约定
 
-> 本文件供编码代理（Copilot / Cursor / Qoder 等）快速消费，汇总项目关键约定。
+> 本文件是项目长期约定的**唯一事实源**：编码规范、架构决策、并发/线程模型、测试编写规则、构建与格式化流程、以及所有「已知坑」均已在此收敛。新增长期性约定请直接写回本文件对应章节。
 >
-> **本文件是项目长期约定的唯一事实源**：编码规范、架构决策、并发/线程模型、测试编写规则、
-> 构建与格式化流程、以及所有「已知坑（避免回归）」均已在此收敛。新增长期性约定请直接写入本文件
-> 对应章节，不要只留在临时笔记里。
+> **可达性约定**：纯参考性长段（项目结构目录树、一次性实测读数）已外迁到 `docs/agent-reference/` 并由本文件用链接指向；约定、门禁命令、风险控制、「已知坑」的约束句一律留在本文件内，不得出现第二份事实源。判定：「每次会话都必须遵守的约束」留根文件，「在哪找东西的清单 / 佐证读数」可外迁。
+>
+> **阅读顺序**：先读「风险控制（前置）」→ 需要跑门禁时读「格式化命令」→ 动手前读所在主题的「已知坑」条目。
 
 ## 项目概览
 
 - **名称**: DouyinLiveRecorder
-
-- **版本**: 4.2.0（唯一事实源：`pyproject.toml` 的 `version` 字段。`main.py` 与 `src/web_api.py` 运行时经 `importlib.metadata` 动态读取；`Dockerfile` 经 `APP_VERSION` 构建参数动态注入；`i18n/zh_CN/LC_MESSAGES/zh_CN.po` 不再携带版本号。`README.md` / `CODE_WIKI.md` 为文档，不再纳入版本同步/校验。）
-
+- **版本**: 4.3.0（唯一事实源：`pyproject.toml` 的 `version`；`main.py`/`src/web_api.py` 经 `importlib.metadata` 动态读取，`Dockerfile` 经 `APP_VERSION` 构建参数注入，`zh_CN.po` 不再携带版本号；详见「关键约定」第 1 条）
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具
-
 - **许可证**: MIT
+
+## 风险控制（前置）
+
+> 本节只做路由：把越权边界与凭据红线提到最前，细则仍以其指向的条目为唯一事实源。
+
+### 必须停下来交回用户的情形
+
+- **批量重装 venv 依赖**：必须由用户在普通终端执行 `pip install --ignore-installed --no-deps -r requirements.txt`——沙箱拦截发生在 pip 已开始卸载之后，会清空包目录。分级流程见「CI / workflow 约定」的「venv 依赖修复分级处置」。
+- **清理范围越界**：收尾清理只限本次任务自己产生的一次性脚本与 `tests/` 下用例生成的临时输出；`downloads/`/`logs/`/`backup_config/` 等运行期产物目录**不删**，`scripts/` 下正式维护脚本**不动**（见「测试收尾清理临时脚本」）。
+- **删除被 harness safe-delete 拦截**：记下路径、按同节口径逐文件重试；仍删不净时在回复里明确列出残留路径交回用户，**不得静默跳过**。
+- **治理式流程技能（vibe 等）需要 run 范围与 artifact root**：先由用户确认，不得把工具安装目录当产物根目录（见「流程编排技能的使用边界」）。
+
+### 凭据与敏感配置红线
+
+- **不得提交 / 外传运行时配置**：`config/config.ini` 与 `config/URL_config.ini` 含凭据、已被 `.gitignore` 忽略且经 `.dockerignore` 不入镜像；新增同类文件须同步确认忽略规则。
+- **写入配置或日志前必须脱敏**：URL / 代理地址一律经 `utils.mask_credentials()`；Web 面板敏感键判定走「节白名单 + 键名正则」双重口径，`'***'` 掩码跳过是写入侧唯一防线（见「已知坑」「凭据与敏感配置脱敏」）。
+- **文档与审查记录里不得出现真实凭据**：新增 `CODE_REVIEW_*.md` / `DIAGNOSIS_*.md` 类根目录文档时只写脱敏后的样例值。
 
 ## Python 版本
 
-- **最低要求**: Python >= 3.14
-
-- **目标版本**: py314
-
-- **mypy 检查版本**: 3.14
-
-- **3.14 破坏性变更基线**: `asyncio.get_event_loop()` 不再隐式创建事件循环（无当前循环时抛 RuntimeError）；`pkg_resources`、PEP 594 亡故电池模块（telnetlib/cgi/pipes 等）均已移除；`ctypes.windll` 虽仍可用但新代码统一走 `ctypes.WinDLL`（对齐 web.py 惯例）
+- **最低要求 / 目标 / mypy 检查版本**: Python >= 3.14（`requires-python = ">=3.14"`）。
+- **3.14 破坏性变更基线**: `asyncio.get_event_loop()` 不再隐式创建事件循环（无当前循环时抛 RuntimeError）；`pkg_resources`、PEP 594 亡故电池模块已移除；新代码统一走 `ctypes.WinDLL`（对齐 web.py 惯例，而非 `ctypes.windll`）。
+- 语法/编译检查一律使用项目 venv 的 Python 3.14（见「已知坑」PEP 758 条目）。
 
 ## 代码风格
+
+> 以下 Black / isort / mypy 三段 TOML 是 `pyproject.toml` 中 `[tool.*]` 的摘录；配置本体才是事实源。
 
 ### Black
 
@@ -38,22 +50,7 @@ include = '\.pyi?$'
 
 排除目录: `.git`, `.venv`, `build`, `dist`, `__pycache__`, `.pyc`, `node`, `ffmpeg`, `downloads`, `logs`
 
-- **except 多异常写法（PEP 758，2026-09-02 定稿）**: 本仓统一写 `except A, B:`（不带括号），
-  不写 `except (A, B):`——这不是风格偏好而是 black 26.x 稳定风格的强制要求：`black --check`
-  会把能放进一行的 `except (A, B):` 改写回无括号形式，加了括号反而过不了格式门禁。
-  该语法依赖 **PEP 758**（Python 3.14+），与 `requires-python = ">=3.14"` 下限一致；
-  **不要**为兼容 <3.14 而加括号——本仓不支持 3.13 及以下版本。
-- **2026-09-12 实测更正（保留上方约定，仅修正其理由）**：「black 会把 `except (A, B):`
-  改写回无括号」这一说法**与实测不符**——对 `except (ValueError, TypeError) as e:` 跑
-  `black --check` 返回 rc=0（unchanged），本仓现存的 9 处带括号写法同样全部通过门禁。
-  即：两种写法 black 均接受，统一写无括号是**本项目风格约定**（可读性与一致性），
-  而非格式工具强制。因此：
-  - 新增/修改代码仍应写无括号（约定不变）；
-  - 但**不要**以「black 会报错」为由批量改动既有带括号写法，那会造成无意义 diff，
-    且 AST 等价性校验发现不了这种改动（见下方「注释检查工具的两个盲点」第 1 条）；
-  - 历史遗留的带括号写法可随相关功能改动顺手统一，不必单独排期。
-  - 外部审查若建议「统一为 `except (A, B):`」，属与本约定相反，不予采纳
-    （CODE_REVIEW_FIX_1 的 F-08 即属此类，已澄清为非问题）。
+- **except 多异常写法**: 本仓统一写 `except A, B:`（不带括号，PEP 758，依赖 ≥3.14）。两种写法 black 均接受，统一无括号是**风格约定，不是门禁强制**；新增/修改代码写无括号，**存量带括号写法不要为对齐而批量改动**（会造成无意义 diff）。需要 `as` 绑定时必须回退加括号（`except (A, B) as e:`）。不要为兼容 <3.14 而加括号。
 
 ### isort
 
@@ -75,157 +72,51 @@ disallow_untyped_defs = true
 ignore_missing_imports = true
 ```
 
+- **不带路径参数**：检查范围由 `pyproject.toml [tool.mypy].files` 定义（src/ + 根入口 + build_exe.py + scripts/ + tests/）。显式传参（如 `mypy src/`）会**覆盖**该配置只查 src/；排障可收窄，但**门禁结果以无参数跑法为准**。早期只查 src/ 时根入口漏 import（gui.py 的 `logger`/`session_id` 运行时 NameError）长期逃逸。
+- **平台符号门控双跑同样不带路径**：见「已知坑」平台专属符号条目。
+
+#### typings/ 存根的「仅 IDE 暴露」告警处理（2026-09-24 定稿）
+
+`[tool.mypy].exclude` 含 `typings`，CLI 门禁不查；但 IDE 的 mypy 语言服务器仍实时检查单独打开的 `.pyi` 且不消费 `ignore_missing_imports = true`——出现「门禁全绿、IDE 单文件红」属 IDE 噪声，不得按门禁失败处理，也不得放任不管。
+
+- **唯一允许的修复方式**：文件级 `# mypy: disable-error-code="<code>"`，写在头部注释块内（先于任何 `import`），并紧跟「为什么不引入 `types-*` 依赖」的说明。
+- **不得**为此新增 `types-*` 开发依赖；**不得**在 `pyproject.toml` 加全局 `disable_error_code`；**不得**用行内 `# type: ignore[<code>]`（本项目配置下变 unused）或 `# mypy: ignore-errors` 整文件豁免。pyright/basedpyright 放宽走同目录既有的 `# pyright: ...` 指令。
+- **现存量两处**（新增第三处前先复跑枚举命令确认归因）：① `typings/execjs/*` 的 `import six` 报 `[import-untyped]`；② `typings/customtkinter/__init__.pyi` 的 `_CTkWidget` 混入覆盖报 `[misc]`（与类型依赖无关，装任何包都不消失）。
+- 改完存根后须确认：`mypy`（无参）exit 0、`black --check` 对被改文件 unchanged、`python scripts/check_annotations.py` 通过。
+
 ### 注释约定
 
-- **注释统一使用 `#` 行注释，不使用三引号 docstring**。这不是风格偏好而是可机检的约束：
-  docstring 会作为 `Expr` 节点进入抽象语法树，而 `#` 注释不会——因此「AST 等价性校验」
-  能借这一点同时证明「逻辑未改动」与「未误插 docstring」。
-- **注释内容写「为什么」而非「做什么」**。复述代码行为的注释是噪音；有价值的是边界条件、
-  平台差异、风控信号、降级路径、异常吞没的后果、并发与时序假设。
-- 三个层次：模块头总览（职责 / 核心机制 / 与其它模块关系 / 设计取舍）、函数级职责说明、
-  关键分支与边界的「为什么」。`src/stream_select.py`（约 35%）与 `src/scheduler.py`
-  （约 22%）是本仓注释质量的参照。
-- 修改注释时**只增不改**：不得删除或重写已有注释（避免丢失历史上下文），需要修正时在其
-  下方补充。若因此产生相邻重复注释，需合并。
+- **统一使用 `#` 行注释，不使用三引号 docstring**（可机检约束：docstring 进 AST，`#` 注释不进，AST 等价性校验借此证明「逻辑未改动、未误插 docstring」）。
+- **写「为什么」而非「做什么」**：边界条件、平台差异、风控信号、降级路径、异常吞没后果、并发与时序假设。
+- 三个层次：模块头总览 / 函数级职责 / 关键分支与边界的「为什么」。`src/stream_select.py`、`src/scheduler.py` 是参照。
+- **修改注释只增不改**：不得删除或重写已有解释性注释；需修正时在其下方补充。
+- **「只增不改」的例外**：不适用于已被证伪的事实性陈述——源码注释里的错误结论改正原文并压为一行带日期历史注；本文件自身被证伪的条目直接改正文。
+- **「更正考古」段可压缩**：多层叠加的修订段落允许压为「当前实测状态 + 一行 `[历史注]`」，但实测读数、主机名/URL、常量名、环境变量名、平台名、判据、并发与时序假设、错误码、真实存在的回归锁用例名一律逐字保留。
 
 ### 注释检查工具（scripts/check_annotations.py）
 
-三模式，CI 可调用：
+三模式：
 
 | 命令 | 用途 |
 | --- | --- |
-| `python scripts/check_annotations.py` | 规范检查（无需基线）：禁 docstring、密度阈值、模块头 |
+| `python scripts/check_annotations.py` | 规范检查（禁 docstring、密度阈值、模块头） |
 | `python scripts/check_annotations.py --snapshot DIR` | 建立基线快照 |
 | `python scripts/check_annotations.py --baseline DIR` | 与基线比对，证明「只改了注释、未改逻辑」 |
 | `python scripts/check_annotations.py --min-density N` | 自定义密度阈值（默认 13.0） |
 
-- 等价性校验原理：Python 比对 `ast.dump` 全量序列化，JS/CSS/HTML 剥离注释后比对有效代码行。
-  注释与空行不参与比对，故签名相同即代表可执行逻辑一致。
-- 密度检查只对 Python 生效——前端文件的注释需按各自语言惯例（`//`、`/* */`、`<!-- -->`），
-  且用 Python `tokenize` 统计 JS/CSS 密度不准确。
-- 排除项：`douyin_pb2.py`（protoc 生成，自带 docstring且标注 DO NOT EDIT）、
-  `douyin_live_recorder_standalone.py`（历史遗留），
-  以及 `__pycache__` / `node` / `ffmpeg` / `.venv` / `build` / `dist` 等目录。
-
-**该工具的两个盲点（工具发现不了，须另行检查）**：
-
-1. `except A, B:`（PEP 758）与 `except (A, B):` 的 AST **完全相同**，故「无括号写法被改写成
-   带括号」不会被等价性校验发现，需额外 grep 计数核对：
-   `grep -c 'except [A-Za-z_][A-Za-z0-9_.]*, [A-Za-z_]' <file>`
-2. 注释缩进错误不影响 AST，只有 `black --check` 能发现。故该工具必须与 black 配套使用。
+- 等价性校验：Python 比对 `ast.dump` 全量序列化；JS/CSS/HTML 剥离注释后比对有效代码行。注释与空行不参与。
+- 密度检查只对 Python 生效；前端注释按各自语言惯例。
+- 排除项：`douyin_pb2.py`（protoc 生成）、`douyin_live_recorder_standalone.py`（历史遗留），以及 `__pycache__/node/ffmpeg/.venv/build/dist` 等目录。
+- **三个盲点（工具发现不了，须另行检查）**：
+  1. `except A, B:` 与 `except (A, B):` AST 完全相同——无括号被改写成带括号不会被校验发现，`grep -c 'except [A-Za-z_][A-Za-z0-9_.]*, [A-Za-z_]' <file>` 核对。
+  2. 注释缩进错误不影响 AST，只有 `black --check` 能发现——必须与 black 配套。
+  3. **换行符形态变化对两者完全隐形**：`ast.parse` 把 `\r\n` 与 `\n` 视为同一行尾，black 按文件首个行尾为准。本仓 CRLF/LF 混存（`main.py`/`src/web_api.py`/`gui.py`/`i18n.py` 等纯 CRLF，部分 `tests/*.py` 纯 LF），整文件 `Path.write_text()` 重写会静默转 LF。判据（改任何文件前后各跑一次，两侧「原本为 0 的那项」必须仍为 0）：`python -c "import pathlib;b=pathlib.Path(f).read_bytes();print(b.count(b'\r\n'), b.count(b'\n')-b.count(b'\r\n'))"`。连带后果：按原文匹配 `\n\n` 的断言遇纯 CRLF 源文件恒不匹配（`tests/frontend/test_regression_2026_09_22_gates.mjs` 的 MIN-2241 曾因此长期红，锚点已改 `\r?\n\r?\n`）。
 
 ## 项目结构
 
-```
-项目根目录/
-├── main.py              # CLI 录制入口（douyin-recorder）
-├── gui.py               # GUI 入口（douyin-recorder-gui）
-├── web.py               # Web 管理面板入口（douyin-recorder-web）
-├── i18n.py              # 国际化模块
-├── msg_push.py          # 消息推送模块
-├── build_exe.py         # PyInstaller 打包脚本
-├── pyproject.toml       # 项目元数据 + 工具配置
-├── requirements.txt     # 运行时依赖（与 pyproject.toml 同步）
-├── uv.lock              # uv 锁文件（随仓库分发；镜像/CI 用 pip 走 requirements.txt，不消费它）
-├── .coveragerc-concurrency # 并发测试专用覆盖率配置（CI 经 COVERAGE_RCFILE 引用，fail_under = 0）
-├── Dockerfile           # Docker 镜像构建（python:3.14-slim 多阶段 + Node 24 LTS）
-├── docker-compose.yaml  # compose 编排（recorder / web / gui 三模式服务）
-├── .gitignore           # 版本库忽略规则（敏感配置 / 运行期产物 / 本地工具目录）
-├── .dockerignore        # 镜像构建上下文裁剪（与 .gitignore、pyproject 各工具排除列表同源维护）
-│
-├── src/                 # 核心源码包
-│   ├── __init__.py      # 包出口（含 get_danmaku_collector 工厂）
-│   ├── base.py          # 公共基类/常量
-│   ├── room.py          # 直播间管理（HEADERS / DESKTOP_UA）
-│   ├── spider.py        # 平台爬虫/流地址解析
-│   ├── stream.py        # 流录制逻辑
-│   ├── stream_select.py # 选源与流地址可达性校验（探针/节流/退避）
-│   ├── scheduler.py     # 并发调度中枢（自适应容量 + 按平台熔断）
-│   ├── notify.py        # 错误/成功计数与消息推送接线
-│   ├── collector.py     # 弹幕采集器 + DanmakuMonitorHub
-│   ├── danmaku_monitor.py # 弹幕监控数据面（Web/GUI 消费）
-│   ├── srt_writer.py    # 弹幕 SRT 分片写入
-│   ├── ws_client.py     # 弹幕 WebSocket 客户端（proxy=None）
-│   ├── async_http.py    # 异步 HTTP 客户端
-│   ├── sync_http.py     # 同步 HTTP 请求
-│   ├── http_config.py   # HTTP 配置（SSL 验证策略）
-│   ├── cookie_cache.py  # Cookie 缓存
-│   ├── config_io.py     # 配置读写
-│   ├── recorder_status.py # 录制状态
-│   ├── ffmpeg_proc.py   # FFmpeg 进程封装
-│   ├── video_postprocess.py # 录制后处理
-│   ├── logger.py        # 日志（loguru）
-│   ├── utils.py         # 工具函数
-│   ├── proxy.py         # 代理支持
-│   ├── ttwid.py         # 抖音 ttwid 获取
-│   ├── ab_sign.py       # AB 签名
-│   ├── web_api.py       # FastAPI Web API
-│   ├── web_config.py    # Web 配置
-│   ├── web_tray.py      # Web 托盘
-│   ├── log_archive.py   # 运行日志归档（停止录制流程收尾：四日志按时间戳改名）
-│   ├── weverse_auth.py  # Weverse 认证
-│   ├── ffmpeg_install.py # FFmpeg 自动安装
-│   ├── node_install.py  # Node.js 自动安装
-│   ├── platforms/       # 平台专属实现（douyin/douyu/huya/bilibili/twitch + _xbogus/_tars）
-│   ├── proto/           # protobuf（__init__.py + douyin.proto + douyin_pb2.py + douyin_pb2.pyi 存根）
-│   └── javascript/      # JS 签名脚本（各平台）
-│
-├── config/              # 运行时配置（exe 同级）
-│   ├── config.ini       # 主配置
-│   └── URL_config.ini   # 直播间 URL 配置
-│
-├── tests/               # 测试（pytest 用例 + 前端用例）
-│   ├── conftest.py      # 全局 fixture（禁日志归档 env、代理清理等）
-│   ├── test_*.py        # 后端 / 集成用例（与 src 模块一一对应）
-│   └── frontend/        # 前端用例（.mjs，Node 内置 node:test，零 npm 依赖）
-│
-├── web/                 # Web 面板前端静态资源
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
-│
-├── i18n/                # 翻译目录（多语言多格式）
-│   ├── zh_CN/LC_MESSAGES/  # 简体中文（gettext .po 源 + 编译 .mo）
-│   ├── en_US.json          # 英语（美国）目录（JSON 格式）
-│   ├── en_GB.json          # 英语（英国）目录（JSON 格式）
-│   └── zh_TW.yaml          # 繁体中文目录（YAML 格式）
-│
-├── ffmpeg/              # FFmpeg 运行时（自动下载；已忽略二进制）
-├── node/                # Node.js 运行时（自动下载；已忽略）
-├── logs/                # 运行日志（streamget.log / PlayURL.log / danmaku_monitor.jsonl / web_console.log）
-├── downloads/           # 录制产物（视频 .ts/.mp4/.flv 与弹幕 .srt）
-├── backup_config/       # 配置自动备份（*.ini_<时间戳>）
-├── typings/             # 第三方库类型存根
-│   ├── customtkinter/   # customtkinter 类型存根（__init__.pyi）
-│   ├── execjs/          # PyExecJS 类型存根（多个 .pyi）
-│   └── pystray/         # pystray 类型存根（__init__.pyi）
-│
-├── scripts/             # 维护脚本与独立工具（CI 门禁、i18n 工具、单文件整合版；运行时链路不引用）
-│   ├── check_coverage.py       # 逐模块覆盖率门禁（阈值见 MODULE_THRESHOLDS）
-│   ├── check_version.py        # 版本「动态化、未写死」状态校验
-│   ├── sync_version.py         # 从 pyproject.toml 同步版本号到遗留文件
-│   ├── compile_po.py           # 纯 Python po→mo 编译（CI --check 字节级门禁）
-│   ├── extract_i18n_strings.py # i18n 待翻译串提取（AST 扫描，与四语目录比对）
-│   ├── check_annotations.py   # 注释规范检查 + 逻辑等价性校验（三模式，见下方「注释约定」章节）
-│   ├── smoke_test.py           # Web/接口冒烟测试工具（JSON 配置驱动，纯标准库）
-│   ├── smoke_web.json          # 冒烟测试接口配置
-│   └── douyin_live_recorder_standalone.py # 单文件整合版录制脚本（抖音/虎牙/B站/斗鱼，零第三方依赖）
-│
-└── .github/
-    ├── actions/retry/   # 复合动作：网络安装重试包装（ci.yml / build-release.yml 共用）
-    ├── ISSUE_TEMPLATE/  # 议题模板（中英双语：bug / feature / question）
-    ├── PULL_REQUEST_TEMPLATE.md
-    └── workflows/       # CI/CD（ci.yml 门禁 + build-release.yml 构建发布 + issue-translator.yml）
+完整目录树已外迁为纯参考段：[项目结构目录树][struct-tree]；逐模块覆盖率阈值数值不在本文件维护（事实源 `scripts/check_coverage.py` 的 `MODULE_THRESHOLDS`）。
 
-# 根目录文档与分发脚本（不进镜像，见 .dockerignore）
-├── README.md / README_EN.md        # 用户说明（中英）
-├── CODE_WIKI.md / CODE_WIKI_EN.md  # 架构文档（中英）
-├── AGENTS.md                       # 编码代理约定（本文件）
-├── CODE_REVIEW_FIX_1.md            # 代码审查遗留项清单（2026-09-14 收官：25 项全部结项）
-├── LICENSE                         # MIT
-├── index.html                      # 独立 M3U8 播放器页面（Web 面板用 web/ 目录）
-└── StopRecording.vbs               # Windows 停止录制脚本（UTF-16 LE 带 BOM，见「已知坑」）
-```
+[struct-tree]: docs/agent-reference/project-structure.md
 
 ## 入口点
 
@@ -237,31 +128,13 @@ ignore_missing_imports = true
 
 ## 依赖管理
 
-- **运行时依赖**: `pyproject.toml` `[project.dependencies]` 与 `requirements.txt` 保持同步
-
-- **开发依赖**: `pip install .[dev]`（pytest, black, isort, mypy）
-
-- **构建依赖**: `pip install .[build]`（PyInstaller >= 6.10.0）
-
-- **GUI 依赖**: `pip install .[gui]`（customtkinter, pystray, Pillow）
-
-- **i18n 依赖**: PyYAML（zh\_TW\.yaml 目录加载；缺失时仅损失 YAML 格式，JSON/gettext 不受影响）
-
-- **开发依赖不在** **`requirements.txt`** **内**：pytest / pytest-asyncio / pytest-cov / black / isort / mypy 由
-  `pyproject.toml [project.optional-dependencies].dev` 声明（`pip install .[dev]`），打包用 `.[build]`，
-  GUI 用 `.[gui]`——三者均不进运行时清单，故 `requirements.txt` 只有 20 条运行时依赖（与
-  `[project.dependencies]` 一一对应，改一处须同步另一处）。
-
-- **前端测试零 Python/npm 依赖**: `tests/frontend/*.mjs` 用 Node 内置 `node:test`，只需系统安装 Node.js
-  （与 JS 签名脚本共用同一运行时，`src/node_install.py` 会自动下载），无需 `npm install`。
-
-- **版本下限（须与** **`requirements.txt`** **和** **`pyproject.toml [project.dependencies]`** **三处一致）**:
-  `pystray>=0.19.5`（macOS 改走 PNG 图标）、`Pillow>=12.3.0`、`customtkinter>=6.0.0`
-
-- **依赖缺失排查顺序**: venv 里缺 `brotli`/`protobuf` 等（requirements.txt 已列但未装）表现为
-  **测试收集期** **`ModuleNotFoundError`**，极易误判成代码 bug —— 先核对 `pip list` 与 `requirements.txt`
-  的差异，再怀疑代码。pip 走本地代理（如 `127.0.0.1:10808`）被拒时用
-  `HTTP_PROXY="" HTTPS_PROXY="" pip install --proxy "" <pkg>` 绕过。
+- **运行时依赖**: `pyproject.toml [project.dependencies]` 与 `requirements.txt` 保持同步（23 条，2026-09-26 复核：`h2`/`socksio` 于 2026-09-23 补入后由 21→23，两侧包名集合逐项相等）。
+- **开发 / 构建 / GUI 依赖**: `pip install .[dev]`（pytest/black/isort/mypy）/`.[build]`（PyInstaller>=6.10.0）/`.[gui]`（customtkinter/pystray/Pillow）；三者均不进运行时清单，故 `requirements.txt` 只有 23 条运行时依赖。
+- **i18n 依赖**: PyYAML（zh_TW.yaml 加载；缺失时仅损失 YAML 格式）。
+- **版本下限（须与 `requirements.txt` 和 `pyproject.toml [project.dependencies]` 三处一致）**: `pystray>=0.19.5`、`Pillow>=12.3.0`、`customtkinter>=6.0.0`。
+- **安全下限（清单只写下限）**: 「声明区间内仍含已知受影响版本」是真实风险，只能靠抬高下限消除：`starlette>=1.3.1`（CVE-2026-48710 受影响 <=1.0.0；PYSEC-2026-2280/2281 修复于 1.1.0；PYSEC-2026-248/249 修复于 1.3.0/1.3.1——旧下限 1.0.1 自身仍在受影响段内，2026-09-21 已二次抬升）、`urllib3>=2.7.0`（显式声明，因是 requests 传递依赖且运行期同步出站 HTTP 穿过它，CVE-2026-44431）。`python-multipart>=0.0.32`、`requests>=2.34.2` 均已高于修复版本。`pip-audit` 同属 CI 审计工具，**不得**进 `requirements.txt`/`[project.dependencies]`。新增/上调下限时跑一次 `deps-audit`。
+- **前端测试零 Python/npm 依赖**: `tests/frontend/*.mjs` 用 Node 内置 `node:test`，只需系统 Node.js（与 JS 签名脚本共用运行时）。
+- **依赖缺失排查**: venv 缺 `brotli`/`protobuf` 等表现为**测试收集期** `ModuleNotFoundError`，先核对 `pip list` 与 `requirements.txt` 差异再怀疑代码；pip 走本地代理被拒时用 `HTTP_PROXY="" HTTPS_PROXY="" pip install --proxy "" <pkg>` 绕过（装完出现「目录破损」按「CI / workflow 约定」分级处置，不要直接重试 pip）。
 
 ## 测试
 
@@ -273,502 +146,348 @@ python_functions = ["test_*"]
 asyncio_mode = "auto"
 ```
 
-- 测试目录: `tests/`
-
-- 运行测试: `pytest`
-
-- **tests/ 质量门禁（2026-08 起全绿，须保持）**: `pytest`（0 警告）、`black --check tests/`、`isort --check-only tests/`、`mypy tests/`、`basedpyright tests/`（0 error/0 warning）
-
-- **pytest「0 警告」口径（2026-09-04 定稿）**: 指全量运行后 **warnings summary 为空（0 条）**。项目自身代码（`src/`、`tests/`、根目录入口）不得产生任何告警；确属第三方库的告警（现基线两条：starlette testclient 模块 import 期的 `anyio.abc.BlockingPortal` 弃用提示、fastapi testclient 内部的 httpx 弃用提示）一律经 `pyproject.toml [tool.pytest.ini_options].filterwarnings` 显式 ignore 并附来源注释，故 summary 恒为 0。**新增 ignore 前必须先确认告警源自第三方 import 链而非本项目代码——禁止用 filterwarnings 掩盖项目自身告警**；同理禁止给用例加 `filterwarnings("ignore::RuntimeWarning")` 之类宽泛过滤（`tests/test_async_http_lock.py` 曾靠它压制协程告警，2026-09-04 已移除作回归守卫）。另注意：协程类 RuntimeWarning（`... was never awaited`）由 GC 延迟触发、可能逸出到任意后续用例（pytest 经 unraisableexception 捕获），ignore 拦不住——必须修根因（见「已知坑」跨循环关闭 AsyncClient 条目），不得靠过滤压制。
-
-- 覆盖率源码: `src/`
-
-- 覆盖率排除: `tests/`, `__pycache__/`, `node/`, `ffmpeg/`, `.mimosa/` 及其余本地工具生成目录（与 `.gitignore`/`.dockerignore`/pyproject 各工具排除列表同源，完整清单见 pyproject `[tool.coverage.run].omit`）
-
-- 逐模块覆盖率门禁: `python scripts/check_coverage.py`（CI 自动执行，阈值定义见脚本 `MODULE_THRESHOLDS`）
-
-- 并发测试专用覆盖率配置: `.coveragerc-concurrency`（随仓库分发，CI 经 `COVERAGE_RCFILE` 引用，`fail_under = 0`）
-
-- **前端用例（`tests/frontend/*.mjs`，2026-09-06 起）**: 用 Node 内置 `node:test` + `node:vm` 沙箱驱动
-  `web/app.js`（IIFE 加载期零副作用），DOM/fetch 桩手工触发事件、经真实事件委托链路断言，**零 npm 依赖**
-  （故 `requirements.txt` / `pyproject.toml` 均无新增项）。由同名的 Python 包装用例（如
-  `tests/test_frontend_quality_ui.py`）以子进程 `node --test` 调用，**Node 缺失时 skip**——属环境限制口径，
-  不是失败。新增前端用例沿用「`.mjs` 真用例 + `.py` 包装」双文件结构。
-
-- 创建/更新测试: 按「源码分析 → Mock 配置 → 验证执行」标准化流程编写；新建用例须与被测模块同名
-  （`src/x.py` ↔ `tests/test_x.py`），并用变异验证（临时改坏被测代码，确认测试变红）证明用例真能抓回归
+- **质量门禁（须保持）**: `pytest`（0 警告）+ black/isort/mypy 三条（路径换成 `tests/`）+ `basedpyright tests/`（0 error/0 warning；basedpyright 为本地补充门禁）。
+- **pytest「0 警告」口径**: warnings summary 为空（0 条）。第三方库告警一律经 `pyproject.toml [tool.pytest.ini_options].filterwarnings` 显式 ignore 并附来源注释；**禁止用 filterwarnings 掩盖项目自身告警**，禁止给用例加宽泛过滤。协程类 RuntimeWarning 由 GC 延迟触发、ignore 拦不住——必须修根因（见「已知坑」跨循环关闭 AsyncClient）。
+- 覆盖率源码 `src/`、排除 `tests/`/`__pycache__/`/`node/`/`ffmpeg/` 等（与 `.gitignore`/`.dockerignore`/pyproject 同源）；门禁：`python scripts/check_coverage.py`（阈值事实源 `MODULE_THRESHOLDS`）。
+- **前端用例（`tests/frontend/*.mjs`）**: Node 内置 `node:test` + `node:vm` 沙箱驱动 `web/app.js`，零 npm 依赖；由同名 Python 包装用例以子进程 `node --test` 调用，Node 缺失时 skip。新增前端用例沿用「`.mjs` 真用例 + `.py` 包装」双文件结构。
+- **创建/更新测试**: 按「源码分析 → Mock 配置 → 验证执行」编写；新建用例与被测模块同名（`src/x.py` ↔ `tests/test_x.py`），并用变异验证证明用例真能抓回归（删掉生产实现用例应变红）。**变异验证必做**：新增安全不变量类用例（黄金快照、`-reconnect*`/`-segment_format` 回归锁、节流/锁/退避）；**免做**：仅调整既有断言或新增已被完整覆盖的平凡用例。
 
 ### 测试编写强制约定
 
-- **环境变量一律用** **`monkeypatch.setenv/delenv`，禁用** **`patch.dict(os.environ)`**：`unittest.mock.patch.dict`
-  对 `os.environ` **无论** **`clear`** **取值**都会 `original = in_dict.copy()` 整体快照，退出时无条件
-  `_clear_dict()` + `update(original)` 整体写回。编码代理 harness 注入的 `CODEBUDDY_MCP_CONFIG`
-  会动态膨胀，一旦超 Windows 环境变量 32767 上限，写回即抛
-  `ValueError: the environment variable is longer than 32767 characters`；且该失败会随修复
-  「转移」到下一个 `patch.dict` 用例（根因共通、非单点）。`monkeypatch` 只动单个 key、不整体快照，
-  故必须使用。项目已有 `_clear_proxy_env(monkeypatch)` helper 统一清除代理变量。
+- **环境变量一律用 `monkeypatch.setenv/delenv`，禁用 `patch.dict(os.environ)`**: `patch.dict` 整体快照 `os.environ`，harness 注入的 `CODEBUDDY_MCP_CONFIG` 膨胀超 32767 上限写回即抛 `ValueError`。`monkeypatch` 只动单个 key。已有 `_clear_proxy_env(monkeypatch)` helper。
+- **patch `main.py` 的 subprocess 必须替换 main 的全局引用**: 禁 `monkeypatch.setattr(main.subprocess, "Popen", ...)`（会波及 harness 守护线程）。正确：`shim = types.SimpleNamespace(**vars(subprocess))` → `shim.Popen = FakePopen` → `monkeypatch.setattr(main, "subprocess", shim)`。
+- **FakePopen 必须是类且定义 `__class_getitem__`**: `check_subprocess` 内层 `proc: subprocess.Popen[bytes]` 在 `def` 时求值（`main.py` 未启用 `from __future__ import annotations`）。
+- **双模式测试脚本须带 `int(sys.argv)` 守卫**: `tests/test_*_live_collector.py`（bili/douyin/douyu/huya/twitch 共 5 个）既可独立运行也被 pytest 收集，顶层 `SECONDS = int(sys.argv[2]) if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else N`。
+- **harness safe-delete 护栏按轮次计删除配额**: 测试内 `os.remove` 可能被拦（`SAFE_DELETE_BULK_CONFIRM_REQUIRED` / `SAFE_DELETE_FAIL_CLOSED`）。**均非代码回归**——预清测试输出目录后重跑即可。清理范围只限 `tests/` 下由用例生成的临时输出（Windows：`Get-ChildItem tests -Recurse -Directory -Filter tmp* | Remove-Item -Recurse -Force`），**不要**删 `downloads/`/`logs/`/`backup_config/`。
+- **「文件只读」用例不能只靠 `chmod(0o444)`**: `config_io.py`/`utils.py` 写回均走 `_atomic_write_text`（同目录临时文件 + `os.replace`），而 `os.replace` 只校验目标**所在目录**写权限。正确做法：`monkeypatch.setattr(config_io.os, "replace", deny)` 对目标路径抛 `PermissionError`，其余透传真实 `os.replace`，跨平台稳定复现（`test_read_config_value_missing_key_readonly_ok` 即此坑）。
+- **改锁类型需同步改测试**: `tests/test_concurrency.py::test_ttwid_module_pattern` 断言凭据锁具体类型。
+- **测试产物一律走 `tmp_path`**: 不得写导入期 makedirs 的会话级共享目录（避免多 pytest 会话重叠竞态，全量红、单文件绿）。`tests/_out_live` 由 5 个 live_collector 手跑真机验证时写，但会被任意会话退出清掉，要留存得先复制出去。
 
-- **patch** **`main.py`** **的 subprocess 必须替换 main 的全局引用，不能改 stdlib 模块本体**：
-  禁止 `monkeypatch.setattr(main.subprocess, "Popen", ...)`——`main.subprocess` 就是 stdlib 模块对象，
-  改它会波及同进程 harness 守护线程（safe-delete 守卫线程的 `subprocess.run` 要求 Popen 支持上下文
-  管理协议，否则报 `SAFE_DELETE_BULK_GUARD_ERROR`）。正确做法：
-  `shim = types.SimpleNamespace(**vars(subprocess))` → `shim.Popen = FakePopen` →
-  `monkeypatch.setattr(main, "subprocess", shim)`。
+### 测试收尾清理临时脚本
 
-- **FakePopen 必须是类且定义** **`__class_getitem__`**：`check_subprocess` 内层函数注解
-  `proc: subprocess.Popen[bytes]` 在 `def` 时即求值（`main.py` 未启用
-  `from __future__ import annotations`），用 lambda / 未定义 `__class_getitem__` 的普通类分别报
-  `'function' object is not subscriptable` / `type 'X' is not subscriptable`。
+- **收尾必须删除任务中生成的一次性脚本与产物**：前缀分三类——`_tmp_`/`tmp_`（通用临时）、`mock_`（桩服务/模拟器）。残留会污染 `git status`、被 mypy 收编（`[tool.mypy].files` 含 `scripts/`/`tests/`）、误导协作者。**任务收尾一律删除**，不留「下次可能还用」。
+- **优先写在仓库之外**: 落 `%TEMP%`/`/tmp` 或 `tempfile.mkdtemp()`；确需写在仓库内者用完即删，统一前缀命名；需长期复用才进 `scripts/`。
+- **清理范围与禁区**: 只删本次任务产生的临时脚本与输出；**不要**删 `downloads/`/`logs/`/`backup_config/` 运行期产物目录、**不要**动 `scripts/` 下正式维护脚本。
+- 清理前 `git status --short` 列出未跟踪文件，对 `.workbuddy/` 等 gitignore 目录显式枚举后确认再删；被 safe-delete 拦截时逐文件重试或列出残留交回用户，**不得静默跳过**。
 
-- **双模式测试脚本须带** **`int(sys.argv)`** **守卫**：`tests/test_*_live_collector.py`（bili/douyin/douyu/huya/twitch
-  共 5 个）既可 `python file.py <URL> [秒数]` 独立运行，也被 pytest 收集。顶层
-  `SECONDS = int(sys.argv[2]) if len(sys.argv) > 2 else N` 在 pytest 下会拿到 `-q` 等参数导致
-  `int('-q')` 崩溃，必须附加 `and not sys.argv[2].startswith("-")` 守卫。新增同类脚本沿用此模式。
-  （同理：给 pytest 传 `-p no:cacheprovider` 等参数会被这些脚本的 argv 解析吞掉并报收集错误，属预期行为。）
+```powershell
+# Windows PowerShell（代理沙箱 Git Bash 有 coreutils，POSIX 段亦可执行）
+Get-ChildItem -Recurse -File -Include *_tmp_*.py,tmp_*.py,mock_*.py,*_tmp_*.txt,tmp_*.txt |
+  Where-Object { $_.FullName -notmatch '\\(\.venv|node_modules)\\' } | Remove-Item -Force
+```
 
-- **harness safe-delete 护栏按轮次计删除配额**（约 50 次/turn）：测试内 `os.remove` 可能在配额耗尽后被拦
-  （`OSError SAFE_DELETE_BULK_CONFIRM_REQUIRED`），沙箱回收站不可用时报
-  `SAFE_DELETE_FAIL_CLOSED … windows-sandbox-recycle-bin-unavailable`。**均非代码回归**——
-  用 shell `rm` 预清测试输出目录后重跑即可验证。
-
-- **「文件只读」用例不能只靠** **`chmod(0o444)`**：`src/config_io.py` 的写回已全部改为
-  `_atomic_write_text`（同目录临时文件 + `os.replace`），而 `os.replace` 只校验目标**所在目录**
-  的写权限，与目标文件自身权限位无关；以 root 运行时（部分镜像）权限位还会被整体绕过。
-  Windows 恰好相反——目标文件的只读属性会让 `replace` 直接失败，于是这类用例表现为
-  「本地 Windows 过、Linux CI 挂」（2026-09-15 `test_read_config_value_missing_key_readonly_ok`
-  即此坑）。正确做法：`monkeypatch.setattr(config_io.os, "replace", deny)` 对目标路径抛
-  `PermissionError`，其余路径透传真实 `os.replace`，跨平台稳定复现同一条降级分支。
-  （`utils.update_config` 仍是 `open(path,"w")` 直写，故 `tests/test_utils.py` 的只读用例
-  沿用 `chmod` 即可——两者不可互相套用。）
-
-- **改锁类型需同步改测试**：`tests/test_concurrency.py::test_ttwid_module_pattern` 断言了凭据锁的具体类型。
+```bash
+# POSIX / Linux CI
+find . -type f \( -name '*_tmp_*.py' -o -name 'tmp_*.py' -o -name 'mock_*.py' \
+  -o -name '*_tmp_*.txt' -o -name 'tmp_*.txt' \) -not -path '*/.venv/*' -delete
+```
 
 ## 构建命令
 
 ```bash
-# 安装依赖
 pip install -r requirements.txt
-
-# 打包可执行文件
 python build_exe.py              # 标准打包
 python build_exe.py --smoke      # 打包 + 冒烟测试
 python build_exe.py --no-zip     # 只打包不压缩
 python build_exe.py --no-runtime # 跳过 ffmpeg/node（减小体积）
 python build_exe.py --dual       # 同时生成 lite + full 两个 zip
-
-# Docker 构建（版本号经 --build-arg 从 pyproject.toml 动态注入）
 docker build --build-arg APP_VERSION="$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")" -t douyin-recorder .
-docker compose up -d             # 使用 docker-compose.yaml（APP_VERSION 可由 .env 提供）
+docker compose up -d
 ```
 
-### 打包与冒烟测试语义（`build_exe.py`）
+### 打包与冒烟测试语义（build_exe.py）
 
-- 打包入口 `build_exe.py` **一次产出 CLI / GUI / Web 三个 exe + 共享** **`_internal/`** **依赖**；
-  `.github/workflows/build-release.yml` 在 macOS / Windows / Linux 三平台跑 `--smoke` 冒烟测试。
+- 打包入口一次产出 CLI / GUI / Web 三个 exe + 共享 `_internal/`（`.github/workflows/build-release.yml` 三平台跑 `--smoke`）。
+- 冒烟判定：`FATAL_MARKERS = ("Traceback (most recent call last)", "ModuleNotFoundError", "ImportError")`；`_finish()` 仅当进程已退出且输出含 FATAL_MARKERS 才判失败（进程存活时 Traceback 视为良性）；GUI 冒烟用 `ignore_patterns=("Failed to dock icon",)` 忽略 headless 良性堆栈。
 
-- 冒烟判定规则（改动 `build_exe.py` 时须保持）：
+### 产物体积门禁（2026-09-24 定稿）
 
-  - `FATAL_MARKERS = ("Traceback (most recent call last)", "ModuleNotFoundError", "ImportError")`
+- **度量侧唯一入口**: `python scripts/report_bundle_size.py dist/DouyinLiveRecorder`（`--top N`/`--json F`/`--compare F`/`--strict`）。体积结论**只以本机实跑为准**，不估算。
+- **排除侧唯一入口**: `build_exe.py` 的 `BLOAT_EXCLUDES` 由 `SPEC_TEMPLATE` 生成 `excludes_bloat` 挂在**三个** Analysis 上（必须三处都挂，否则合并去重后等于没排）。新增排除项准入：① 指出运行期不可达；② 复测体积；③ 本地 `--smoke --no-runtime` 三入口通过。判据是「不可达」不是「看着没用」。
+- **已知体积大头（固定成本，不可删）**: `python314.dll` 6.47MB、`libcrypto/libssl` 7.22MB（HTTPS）、`pydantic_core` 4.93MB（FastAPI）、Tcl/Tk 5.28MB（GUI），合计约 24MB。
+- **已评估未采纳（勿重复提议）**: ① `strip=True`——Windows 无 strip 可执行文件；② `upx=True`——提高杀软误报率，本产物未签名。
 
-  - `_finish()` **仅当进程已退出且输出含 FATAL\_MARKERS 才判失败**；进程仍存活时输出里的 Traceback
-    视为良性（长驻程序运行期可能打印可恢复异常）。
+### CI / workflow 约定
 
-  - GUI 冒烟用 `ignore_patterns=("Failed to dock icon",)` 忽略 headless 环境下 pystray 的良性堆栈。
+- **网络安装重试统一走 `.github/actions/retry` 复合动作**（线性退避），禁止在 job 内重新内联 `for i in 1 2 3` 重试循环；核对 `grep -c 'uses: \./\.github/actions/retry' .github/workflows/<file>`。
+- **actions 大版本基线 v7**: `checkout`/`setup-python`/`setup-node`/`upload-artifact` 统一 v7；第三方非认证动作的 ref 口径见「已知坑」MIN-17。
+- **版本常量跨 workflow 同值**: `python_build`(3.14) 与 `node_version`(24) 在 ci.yml 与 build-release.yml 各自声明，改一处须同步另一处。
+- **触发与并发策略区分**: ci.yml 限 main 的 push/PR + `cancel-in-progress: true`；build-release.yml 由 `v*` tag 触发 + `cancel-in-progress: false`。
+- **dockerignore / gitignore 同源约定**: 本地工具生成目录（`.mimosa/`/`.qoder/`/`.agents/`/`.pnpm-store/`/`.npm-cache/`/`.dsh-validation/`/`.ego-browser-test/`/`.plugin-src/`/`.tmp-dps-extract/`/`.v2c/`/`pytest-cache-files-*/`）与运行期产物目录（`downloads/`/`logs/`/`backup_config/`）须在两份 ignore 文件与 pyproject 各工具排除列表（black/isort/mypy/basedpyright/coverage）同步维护，漏一处即「未跟踪目录 / 误入镜像 / 工具误扫描」。
+- **配置键审计须先归一化大小写**: 核对「代码读取的键」与 `config/config.ini` 实际键时先转小写再比对（configparser 大小写不敏感，代码常量大写、配置文件小写，精确比对会误报缺失键）。`config/config.ini` 被 `.gitignore` 忽略，故 README 配置块才是新用户默认值事实源，本地个性化取值不是文档漂移。
+- **venv 依赖修复分级处置**: 批量 `pip install --force-reinstall` 会被沙箱拦截且拦截在卸载之后，清空包目录（`ImportError: cannot import name 'x' from 'y' (unknown location)`，`pip check` 查不出）。三级：① **一级（代理自行）**单/少数包破损——wheel 直解绕开卸载：`pip download --no-deps -d <tmpdir> <pkg>` → `zipfile.ZipFile(wheel).extractall(<site-packages>)`；② **二级（代理可试）**常规补装单个小包 `HTTP_PROXY="" HTTPS_PROXY="" pip install --proxy "" <pkg>`，被拦立即转三级；③ **三级（交回用户）**批量重装 `pip install --ignore-installed --no-deps -r requirements.txt`。**破损检测三查法**：① 包目录递归数 `.py`/`.pyd` 为 0；② 目录整体消失逐个 import 实测；③ RECORD 对账只作辅助。
+- **覆盖率排除规则两 job 同源**: `pyproject [tool.coverage.report]` 与 `.coveragerc-concurrency` 排除条目必须一致且一律用 `exclude_also`（追加）而非 `exclude_lines`（替换，会丢三条默认排除规则）。
+- **镜像额外排除集**（仅 `.dockerignore`）：`uv.lock`/`scripts/`/`AGENTS.md`/`README_EN.md`/`CODE_WIKI_EN.md`/`.coveragerc-concurrency` 及审查记录通配 `CODE_REVIEW_*.md`/`DIAGNOSIS_*.md`/`PERF_REVIEW_*.md`/`PROPOSAL_*.md`（随仓库分发，不得加进 `.gitignore`；换用新前缀必须三处同改）。
+- **门禁环境变量 `PYTHONUTF8=1`**: 见「格式化命令」MID-63 条目。
+- **`deps-audit` job**: `ci.yml` 中 `pip-audit -r requirements.txt`（按 OSV 审镜像与 CI 实际消费清单），独立成 job 且是 `ci-summary.needs` 的一部分（required check 唯一暴露面）。出现新公告优先抬下限而非 `--ignore-vuln` 白名单。本地复现须自带 `PYTHONUTF8=1`（中文 Windows 下 pip-audit 读中文注释行会 `UnicodeDecodeError`）。
+- **发布链运行时钉定在 prepare 单点收敛（SEV-10）**: 钉定值事实源是 `build_exe.py`，不得把哈希副本写进 workflow（见「已知坑」发布钉定条目）。
 
-### CI / workflow 约定（2026-08-28 定稿）
+## 格式化命令（门禁唯一基准）
 
-- **网络安装重试统一走** **`.github/actions/retry`** **复合动作**（线性退避，`attempts` / `backoff` / `label`
-  可参数化）：`ci.yml`（9 处）与 `build-release.yml`（4 处）的 pip / apt / choco / brew 安装步骤全部经它
-  包装，**禁止在 job 内重新内联** **`for i in 1 2 3`** **重试循环**——重试策略调整只改 action.yml 一处。
-
-- **actions 大版本基线 v7**：`checkout` / `setup-python` / `setup-node` / `upload-artifact` 统一 v7，
-  两个 workflow 保持一致，避免行为漂移（`dorny/paths-filter@v4` 维持现状；
-  `codecov-action@v7`——2026-09-07 自 v5 升级，v6 唯一破坏性变更是迁移 node24 运行时，
-  ubuntu-latest 原生支持，`files` / `token` / `fail_ci_if_error` / `slug` 输入无变化）。
-
-- **版本常量跨 workflow 同值**：`python_build`（3.14）与 `node_version`（24）在 ci.yml 的 setup job 与
-  build-release.yml 的 prepare job 各自声明，**改一处须同步另一处**（保证「CI 验证的打包环境 ==
-  实际发布的打包环境」）。
-
-- **macOS brew 的 tap 信任是独立步骤**（`brew trust aws/tap || true`，幂等、不随重试重复执行）；
-  `HOMEBREW_*` 环境变量写在命令内 `export`（复合动作对调用方 step 级 env 的可见性无官方保证）。
-
-- **触发与并发策略有意区分**：ci.yml 限 main 的 push / PR + `cancel-in-progress: true`（快速反馈）；
-  build-release.yml 由 `v*` tag 触发 + `cancel-in-progress: false`（发布流不可半途取消）。
-
-- **dockerignore / gitignore 同源约定**：本地工具生成目录（`.mimosa/`、`.qoder/`、`.agents/`、
-  `.pnpm-store/`、`.npm-cache/`、`.dsh-validation/`、`.ego-browser-test/`、`.plugin-src/`、
-  `.tmp-dps-extract/`、`.v2c/`、`pytest-cache-files-*/`）与运行期产物目录（`downloads/`、
-  `logs/`、`backup_config/`）须在两份 ignore 文件与 pyproject 各工具排除列表
-  （black exclude / isort extend\_skip / mypy exclude / basedpyright exclude / coverage omit，
-  `.coveragerc-concurrency` 的 omit 与后者一致）中同步维护，漏一处即
-  出现「未跟踪目录 / 误入镜像 / 工具误扫描」。2026-09-14 已按此口径把 `logs/` 与
-  `backup_config/` 补齐到 isort / mypy / basedpyright（black 原先只有 `logs/`），
-  并把 `downloads/` / `logs/` / `backup_config/` 补齐到两处 coverage omit。
-  镜像额外排除 `uv.lock` / `scripts/` / `AGENTS.md` /
-  `README_EN.md` / `CODE_WIKI_EN.md` / `.coveragerc-concurrency` / `PERF_REVIEW_2026-08-28.md`
-  （运行时链路不消费）；审查与排查记录（`CODE_REVIEW_*.md` / `DIAGNOSIS_*.md` /
-  `PERF_REVIEW_*.md`）在 .dockerignore 中走通配模式，新增同类根目录文档无需再改该文件。
-  注意：这些审查记录属**正式文档并随仓库分发**，不得加进 .gitignore。
-
-## 格式化命令
+> 本节是全项目门禁命令唯一事实源。`ci.yml` 各 job 与之逐字一致；其它章节一律**引用本节**，不得另定一套。
 
 ```bash
-black .
-isort .
-mypy
+# PYTHONUTF8=1 是门禁语义的一部分，不得删（MID-63）：GBK locale 下 isort 会对含中文注释文件
+# 抛 'gbk' codec can't encode 并静默跳过、rc 仍 0——本地与 CI 都没查。
+PYTHONUTF8=1 python -m black --check --diff --line-length 120 --target-version py314 .
+PYTHONUTF8=1 python -m isort --check-only --diff --profile black --line-length 120 .
+mypy                      # 不带路径，范围取 pyproject [tool.mypy].files
+mypy --platform linux     # 涉及平台专属符号时增跑
+python scripts/check_annotations.py
+python scripts/compile_po.py --check
+python scripts/check_version.py
+python scripts/check_runtime_pins.py  # 只查结构；--strict（发布路径）见「CI / workflow 约定」
 ```
 
-- **`mypy` 不带路径参数**：检查范围由 `pyproject.toml [tool.mypy].files` 定义（src/ + 根入口 + build_exe.py + scripts/ + tests/），
-  本地与 CI 跑同一条命令、同一份定义。显式传参（如 `mypy src/`）会**覆盖**该配置而只查 src/，
-  排障时可以这样收窄，但**门禁结果以无参数跑法为准**（2026-09-15 定稿）。
-  早前只查 src/ 时，根目录入口的漏 import（gui.py 的 `logger` / `session_id` —— 均为运行时 NameError）长期逃逸。
+- **`check_annotations.py` 不止查注释**: 常驻符号可达性检查，报告「引用了全仓都没有绑定的名字」（删除模块级函数/常量却留调用点的形态）。该命令在上方清单内，CI 与 `run_gates.py` 两侧都跑。
+- **本地一次性触发点**: `python scripts/run_gates.py` 按原顺序跑完全部 `--check` 型门禁（含条件增跑的 `mypy --platform linux`），任一失败非 0 退出；`--list`/`--only`/`--keep-going` 用于排障。脚本运行时解析本节 bash 块，**本节仍是唯一事实源**，禁止另建并行清单。给门禁写行尾注释安全，写行首注释会被整行跳过。
+- **一律显式传参**（`--line-length 120 --target-version py314`/`--profile black`）：配置会继承，但显式参数避免本地配置漂移造成「本地过、CI 挂」，也与 CI 逐字对齐。排除目录不需传（由 pyproject 生效）。
+- **`PYTHONUTF8=1` + 「告警即失败」（MID-63）**: isort 读文件用平台默认编码，GBK locale 下遇中文注释只发 `UserWarning: Unable to parse file …` 就**跳过该文件**、rc 仍 0——本地全绿、CI 也全绿，两侧都没查。两条配套约束：① `run_gates.py` 把行首 `NAME=value` 转子进程环境变量并对 stderr 中 `Unable to parse file` 判失败；② `ci.yml` 用 step 级 `env: PYTHONUTF8: "1"` + 独立 silent-skip 兜底步骤。
+- **`PYTHONUTF8` 必须同时覆盖子进程和转发输出的父进程**: `run_gates.py` 逐行读子进程 stderr 再写自己 stdout，中文 Windows 下本进程 stdout 是 cp936，black 通过时 emoji 行会让转发语句抛 `UnicodeEncodeError` 炸掉门禁进程。现由 `run_gates.ensure_utf8_streams()`（`reconfigure(encoding="utf-8", errors="replace")`）修根因；`errors="replace"` 是兜底，**不得**用「只判断退出码」或「过滤 emoji」绕过。
+- **`reconfigure(encoding="utf-8")` 必须同时写 `errors="replace"`**: CPython 规定只传 `encoding` 未传 `errors` 时会把错误处理器重置为 `'strict'`。本仓「Windows 控制台 UTF-8 补丁」重复实现于 6 处，`build_exe._ensure_utf8_streams()` 曾漏写 `errors`，而 `tests/test_build_exe.py` 在 pytest 进程内调 `build_exe.main()`——pytest 的 fd 捕获包装器被就地翻成 strict，非 UTF-8 字节落进捕获文件会在会话收尾读回时抛 `UnicodeDecodeError`。三条约束：① 任何 `reconfigure` 显式给 `errors`；② `tests/conftest.py` 的 `_guard_stdio_encoding_policy` 逐用例校对 `(encoding, errors)`，宿主进程编码策略属框架资产、用例不得改；③ `gui._install_crash_sink()` 仅 `__name__ == "__main__"` 时装进程级钩子。
+- **门禁「告警即失败」推广口径**: 新增门禁若存在「跳过/降级只发 warning、退出码仍 0」形态（isort `Unable to parse file`/coverage「无数据」/pytest warnings summary），必须同回路判失败，否则写明该门禁不自证覆盖。
+- **`mypy` 不带路径参数**: 见「代码风格」mypy 条目。
 
-- **isort 收尾必须清理** **`.isorted`** **备份残留**：isort 在某些配置下会生成 `*.isorted` 备份文件，
-  类型存根表现为 `*.pyi.isorted`（如 `typings/pystray/__init__.pyi.isorted`）。清理命令必须匹配
-  `*.isorted`：`find . -name "*.isorted" -delete`。
-  ⚠️ 用 `*.py.isorted` **匹配不到** `.pyi.isorted`，会静默漏删并误提交。
+### basedpyright（本地补充门禁，CI 不跑）
+
+- 命令：`basedpyright`（不传路径，范围取 `pyproject [tool.basedpyright]`）；要求 0 error/0 warning。
+- 与 mypy 分工：mypy 是跨平台 CI 门禁（Linux runner）；basedpyright 是本地严格度补充，报错码不同，ignore 注释按各自 code 填写。
+- **裁决规则**: CI 只跑 mypy。只在 Linux 或只在 Windows 出现的基于 basedpyright 结论，以与 CI 一致的 Linux 一侧为准；不要为两侧静默而加 `# type: ignore`（会触发 `reportUnnecessaryTypeIgnoreComment`）。
+
+### isort 收尾清理 `.isorted` 备份残留
+
+清理命令必须匹配 `*.isorted`（`*.py.isorted` 匹配不到 `*.pyi.isorted`）：
+
+```powershell
+Get-ChildItem -Recurse -Filter *.isorted |
+  Where-Object { $_.FullName -notmatch '\\(\.venv|node_modules)\\' } | Remove-Item -Force
+```
+
+```bash
+find . -name "*.isorted" -delete
+```
+
+## 完成定义（Definition of Done）
+
+代码通过门禁 **不等于** 完成。改动落地后按序执行 1→6，任一条不满足即未完成：
+
+1. **门禁全绿**: `python scripts/run_gates.py` + `pytest`（0 警告）+ `scripts/check_coverage.py`；basedpyright 本地核一次。
+2. **端到端真机验证**: 涉及录制链路/选源/ffmpeg 参数/平台解析的改动必须用**真实 URL** 增量跑（至少一受影响平台）并写进回复——只有单测绿不算验证过。判定口径：回复含脚本名（`test_{bili,douyin,douyu,huya,twitch}_live_collector.py`）+ 脱敏 URL + 结果状态（PASS/WARN/FAIL）+ 可核对读数（消息数/SRT 字节数）。无法执行（无外网/无活房间）时记「未执行 + 原因 + 交回用户的动作」且**不得宣布完成**。验证结论同时写进 `CODE_WIKI.md`/`CODE_WIKI_EN.md` 更新日志。
+3. **回归锁**: 动到带「回归锁」标注的行为时确认对应用例存在且覆盖；缺则补。
+4. **文档同源**: `CODE_WIKI.md`/`CODE_WIKI_EN.md` 更新日志追加本次变更（中英双份）；新增长期约定写回本文件。
+5. **收尾清理**: 删除仓库内一次性脚本与产物（`*_tmp_*.py`/`tmp_*.py`/`mock_*.py`/`*_out.txt`），`git status --short` 核对无未跟踪残留；被 safe-delete 拦截须重试或列出残留交回用户。
+6. **日志**: 当日 `.workbuddy/memory/YYYY-MM-DD.md` 追加一条；值得后来会话取用的经验同时写进 `docs/agent-reference/session-learnings.md`。
+
+**豁免**: 纯文档/注释改动只做 1（门禁可只跑受影响部分）+4+6，第 5 步仅本次确实写过一次性脚本时执行；只改测试且不涉及生产行为时免 2。
+
+## 流程编排技能的使用边界
+
+- 本仓库日常改动（缺陷修复、性能优化、真机验证迭代、重构）**不进入**治理式运行时类技能（如 `vibe`）——其需求/计划冻结与阶段性硬停会打断「改一点→真机跑→看日志→再改」节奏。
+- 仅当次会话用户**显式**要求（`$vibe`/`/vibe`/「进 vibe」）才加载；确需治理式执行时先由用户确认 run 范围与 artifact root。
+- `brainstorming` 类「先出设计再动手」技能，对「方案已在 AGENTS.md/CODE_WIKI 钉死」或「用户已批准、正在连续推进」的改动不适用（含单文件缺陷修复）。
 
 ## 并发与线程模型
 
-> 本节是全项目并发相关改动的前置知识，涉及锁 / 事件循环 / 信号量的改动必须先读。
+> 涉及锁 / 事件循环 / 信号量的改动必须先读本节。
 
 ### 基础模型
 
-- **每房间一个独立线程 + 各自独立的** **`asyncio.run()`** **事件循环**：`main()` 为每个 URL 启一个
-  常驻 `threading.Thread`（`_room_thread_target` → `start_record`），线程内以
-  `asyncio.run(...)` 逐轮驱动异步请求（`main.py` 中上百处）。**不存在共享的全局事件循环。**
+- **每房间一个独立线程 + 各自独立的 `asyncio.run()` 事件循环**: `main()` 为每个 URL 启常驻 `threading.Thread`（`_room_thread_target` → `start_record`），线程内以 `asyncio.run(...)` 逐轮驱动异步请求。**不存在共享的全局事件循环。**
 
-### 调度中枢 `src/scheduler.py`（2026-08 定稿）
+### 调度中枢 src/scheduler.py
 
-- 取代旧的「单个全局 `threading.Semaphore(1)` + 只会单向压制的 `adjust_max_request`」模型
-  （旧模型下 80 房间共抢 3 个网络槽位，77 线程阻塞 → 严重延迟）。
-
+- 取代旧「单个全局 `Semaphore(1)` + 单向压制的 `adjust_max_request`」模型（80 房间共抢 3 槽位、严重延迟）。
 - `ConcurrencyScheduler` 为中枢：
+  - **并发模式由「最大同时录制数(0为不限制)」是否为 0 决定**：为 0 → 动态调速（默认 min=1/max=128，`max(下限, min(上限, ceil(活跃数/缩放因子)))`，错误率极高时温和降容但永不低于下限，杜绝死螺旋）；非 0 → 固定并发（忽略动态调速与背压，最小 1 槽）。
+  - `adjust_loop` 守护循环每 5s 重算容量，取代 `adjust_max_request`（固定模式下重算为幂等 no-op）。
+  - `main()` 首轮初始化 `scheduler = ConcurrencyScheduler(configured_limit=max_request)`，把全局 `semaphore`/`recording_semaphore` 两 `ResizableSemaphore` 指向其属性。
+- `ResizableSemaphore`: 支持运行时 `set_value` 调容（增大唤醒等待者；减小仅降上限、不强行回收已持槽位）；`__init__`/`set_value` **允许容量 0**（暂停态）。
+- `PlatformBreaker`（按 host 熔断，`closed→open→half-open`）: open 经冷却后放唯一探针，成功→closed、失败→重新 open；按 host 隔离。探针带租约（`_PROBE_LEASE_SECONDS=60s`）——探针轮可能以 `continue` 结束且不触发 `record`（主播未开播等待/`disable_record`/线程退出），`_probing` 无租约兜底将永不复位→永久熔断；租约超时后 `allow()` 重新授予探针自愈。回归测试 `test_platform_breaker_probe_lease_regrants_after_timeout`。
+- **接线点仅限固定几处**: `notify.record_error/record_success` 增 `key` 形参委托 `main.scheduler`；`start_record` 入口 `record_host = host_of(record_url)` 且**必须在 `while True` 外层 try 之前预置 `record_host = ""`**（否则 basedpyright 判 possibly unbound）；平台分派前 `scheduler.allow(record_host)` 预检、False 则退避后 `continue`；`check_subprocess` 录制循环受 `recording_semaphore` 管控。
+- 相关配置项「最大同时录制数(0为不限制)」兼作网络并发模式开关；「同一时间访问网络的线程数」在动态模式下为容量下限之一、固定模式下即固定并发值（最小 1）。键名禁止含 `=`/`:`（见「已知坑」configparser 分隔符）。
+- **调度模块测试**: `tests/test_scheduler.py`（16 用例）；改动后 `pytest tests/test_scheduler.py`。全量 pytest 中 `tests/test_twitch_live_collector.py` 会因 safe-delete 护栏失败，属环境限制非调度问题。
 
-  - **并发模式（2026-08-24 起）由「最大同时录制数(0为不限制)」是否为 0 决定**（`set_dynamic_mode` 接入，
-    `main()` 主循环每轮调用、内部幂等）：
+### 录制结果反馈约定（main.py / src/stream_select.py）
 
-    - **为 0 → 动态调速**（默认）：全局网络并发容量 = `max(配置下限, min(上限, ceil(活跃数 / 缩放因子)))`
-      （默认 min=8 / max=128）；错误率极高时**温和降容但永不低于下限**，
-      杜绝「错误 → 降容 → 更多超时 → 继续降容」的死螺旋；
-
-    - **非 0 → 固定并发**：忽略动态调速器与错误背压，网络容量恒为「同一时间访问网络的线程数」
-      （最小 1 个槽位，热更新即时生效）；同时录制上限（ffmpeg 数）语义不变，仍走 `set_recording_limit`。
-
-    - 模式与容量变化经 logger.debug 播报（`并发模式: 动态调速/固定 …`）；per-key 熔断与并发模式正交，
-      固定模式下仍生效。
-
-  - `adjust_loop` 守护循环每 5s 重算容量，**取代** **`adjust_max_request`**（固定模式下重算为幂等 no-op）。
-
-  - `main()` 首轮初始化 `scheduler = ConcurrencyScheduler(configured_limit=max_request)`，并把全局
-    `semaphore` / `recording_semaphore` 两个 `ResizableSemaphore` 指向其属性。
-
-- `ResizableSemaphore`：支持运行时 `set_value` 调容（增大则唤醒相应数量等待者；减小仅降低上限、
-  **不强行回收已持有的槽位**）；`__init__` / `set_value` **允许容量 0**（暂停态）。
-
-- `PlatformBreaker`（按 host 熔断，`closed → open → half-open`）：open 经冷却后放**唯一**探针，
-  探针成功 → closed、失败 → 重新 open。按 host 隔离，单平台故障不拖垮其他平台。
-  **探针带租约（`_PROBE_LEASE_SECONDS = 60s`）**：探针轮可能以 `continue` 结束且不触发 `record`
-  （主播未开播等待轮、`disable_record`、房间线程退出等路径），`_probing` 标志若无租约兜底将
-  永不复位 → 该 host 永久熔断直到进程重启；租约超时后 `allow()` 重新授予探针实现自愈，
-  删除该租约会重新引入永久熔断（回归测试 `test_platform_breaker_probe_lease_regrants_after_timeout`）。
-
-- **接线点仅限固定几处**（未改动 50+ 平台函数，改动时须维持此边界）：
-
-  - `notify.record_error/record_success` 增 `key` 形参，委托给 `main.scheduler`；
-
-  - `start_record` 入口 `record_host = host_of(record_url)`，且**必须在** **`while True`** **外层 try 之前
-    预置** **`record_host = ""`**，否则 basedpyright 判 possibly unbound（外层 except 可在赋值前被触达）；
-
-  - 平台分派前做 `scheduler.allow(record_host)` 预检，False 则退避后 `continue`；
-
-  - `check_subprocess` 的录制循环受 `recording_semaphore` 管控。
-
-- 相关配置项：`最大同时录制数(0为不限制)`（默认 0 = 不限制 → 高容量；键名禁止含 `=`/`:`，
-  见「已知坑」configparser 分隔符条目）**兼作网络并发模式开关**（0=动态调速 / 非 0=固定并发，见上）；
-  `同一时间访问网络的线程数` 在动态模式下为**容量下限之一**（不再是硬上限），
-  在固定模式下即**固定并发限制值本身**（最小 1）。
-
-- **调度模块测试与验证要点**：测试文件 `tests/test_scheduler.py`（共 16 用例，覆盖
-  `ConcurrencyScheduler` 容量自适应、动态/固定并发模式切换、`ResizableSemaphore` 调容、
-  `PlatformBreaker` 熔断状态机等）。
-  改动 scheduler 后须 `pytest tests/test_scheduler.py` 确认。
-  注意：全量 pytest 中 `tests/test_twitch_live_collector.py` 会因沙箱
-  `windows-sandbox-recycle-bin-unavailable` 安全删除护栏失败，**属既有环境限制，与调度改动无关**——
-  见「harness safe-delete 护栏」条目。
-
-### 录制结果反馈约定（2026-08-23 定稿，main.py / src/stream\_select.py）
-
-- **`check_subprocess`** **须按 ffmpeg 退出码上报调度样本**（`src/check_subprocess` 内 return\_code 分支）：
-
-  - `rc == 0`（流正常结束/主播下线）→ `record_success(host_of(record_url))`；
-
-  - `rc != 0`（录制出错）→ `record_error(host_of(record_url))`；
-
-  - **禁止轮末无条件** **`record_success(record_host)`**——失败轮次会记成成功样本，稀释按 host 的熔断统计，
-    多房间同 host 时熔断阈值永远到不了、坏线路被无限重撞（2026-08-23 实测虎牙房间秒级 403 死循环根因之一）。
-
-- **快速失败（输入打开被 CDN 拒绝）须记入探针退避**：`main.check_subprocess` 内
-  `time.time() - _proc_started_at <= _FFMPEG_FAST_FAIL_SECONDS`（模块常量 `20.0`）判为快速失败时，
-  从 `ffmpeg_command` 中解析 `-i` 后的实际拉流地址，调用 `stream_select.mark_ffmpeg_reject(url, platform)`
-  记入 `_probe_backoff` 退避窗口；下一轮 `select_source_url` 跳过该线路的探针、改试下一 CDN 候选。
-
-  - `mark_ffmpeg_reject` 是 `stream_select` 内的公开入口（委托 `_mark_probe_reject`），`platform` 不在退避
-    白名单（`_PROBE_BACKOFF_PLATFORMS = ("虎牙直播",)`）时静默无操作，勿扩大到斗鱼等其他平台。
-
-  - ffmpeg 命令缺 `-i`（异常入参）时以 `except ValueError` 捕获、跳过退避标记、仅记失败样本。
-
-  - 慢速失败（`-reconnect_delay_max 60` 耗尽，通常 >60s）：只记失败样本、不记探针退避——该线路
-    此前可正常拉流，标记退避会误伤下一轮的候选选择。
-
-- **直下路径（`direct_download_stream`）补成功样本**：成功路径末尾须 `record_success(record_host)`，
-  与 ffmpeg 路径语义对齐（失败已在 except 分支有 `record_error`）。
-
-- **录制成功须撤销该地址的探针退避（`clear_ffmpeg_reject`，与** **`mark_ffmpeg_reject`** **对称）**：
-  `main.py::check_subprocess` 的成功分支（rc==0 上报 `record_success` 处）解析 `ffmpeg_command` 的 `-i`
-  后实际拉流地址并调 `clear_ffmpeg_reject(url, platform)`，撤销该 host+路径 的退避记录——否则窗口内
-  已恢复的线路会被继续跳过、白白回退到次优线路。清除的是**实际录制成功的地址**（如 FLV），HLS 的退避
-  不会被顺带清掉（HLS 仍不可用时继续走 FLV 才是期望语义）。`clear_ffmpeg_reject` 与 `mark_ffmpeg_reject`
-  共用同一退避白名单（`_PROBE_BACKOFF_PLATFORMS = ("虎牙直播",)`）与退避键，勿把清除逻辑写成只删 mark 不删 clear。
-
-- **解析成功轮即上报成功样本（2026-08-27 定稿）**：`main.start_record` 解析成功分支
-  （`port_info["anchor_name"]` 非空）须 `record_success(record_host)`，与解析失败分支的
-  `record_error` 对称——此前成功样本仅在 ffmpeg 退出时上报，half-open 探针房间进入长时间录制
-  期间同 host 其余房间持续熔断饿死；主播未开播等正常轮次则完全无样本，探针标志永不复位。
-  这不是「轮末无条件 record\_success」（禁令所指的失败轮记成功样本），而是仅解析真正成功才上报。
-
-- **控制台并发容量显示调度器实时值**：`src/recorder_status._live_network_capacity()` 优先取
-  `scheduler.network_semaphore.value`，调度器未就绪时回退 `main.max_request`（旧显示固定打印配置值，
-  实测容量 12/20 却显示 3，误导用户认为并发优化未生效）。
-
-- 回归测试：`tests/test_record_failure_feedback.py`（5 用例，覆盖成功/快速失败/慢速失败/无 -i 入参/容量回退），
-  `tests/test_stream_select.py::test_mark_ffmpeg_reject_marks_backoff`（退避跨轮新 token 命中 + 非白名单无操作）。
+- **`check_subprocess` 须按 ffmpeg 退出码上报调度样本**: `rc==0` → `record_success(host_of(record_url))`；`rc!=0` → `record_error(...)`。**禁止轮末无条件 `record_success`**——失败轮记成成功会稀释按 host 熔断统计（虎牙房间秒级 403 死循环根因之一）。
+- **快速失败须记入探针退避**: `time.time() - _proc_started_at <= _FFMPEG_FAST_FAIL_SECONDS`(20.0) 判快速失败时，解析 `-i` 后实际拉流地址调 `stream_select.mark_ffmpeg_reject(url, platform)`；下一轮 `select_source_url` 跳过该线路。`platform` 不在退避白名单（`_PROBE_BACKOFF_PLATFORMS = ("虎牙直播",)`）时静默无操作，勿扩大到斗鱼。缺 `-i` 以 `except ValueError` 跳过退避标记。慢速失败只记失败样本不记退避。
+- **录制成功须撤销该地址探针退避（`clear_ffmpeg_reject`，与 `mark` 对称）**: 成功分支解析 `-i` 后实际拉流地址调 `clear_ffmpeg_reject(url, platform)`（只清实际成功的 FLV，HLS 退避不顺带清）；共用同一白名单与退避键。
+- **解析成功轮即上报成功样本**: `port_info["anchor_name"]` 非空须 `record_success(record_host)`，与解析失败分支 `record_error` 对称（此前成功样本仅在 ffmpeg 退出时上报，half-open 探针房间长时间录制期间同 host 其余房间持续熔断饿死）。
+- **直下路径（`direct_download_stream`）补成功样本**: 成功路径末尾 `record_success(record_host)`。
+- 回归测试：`tests/test_record_failure_feedback.py`（5 用例）、`tests/test_stream_select.py::test_mark_ffmpeg_reject_marks_backoff`。
 
 ### 锁的强制约定
 
-- **禁止模块级** **`asyncio.Lock()`** **单例**：它会惰性绑定到首个 `await` 它的事件循环，后续房间的新循环里
-  `await` 即抛 `RuntimeError: … is bound to a different event loop`。该异常曾被 `async_req` 的
-  `except` 整段吞掉并返回 `""`，进而被 `spider.get_douyin_web_stream_data` 误判成「空响应 → 疑似风控」，
-  级联导致 HTML 兜底也失败。正确做法见 `src/async_http.py` 的 `_get_client_lock()`：
-  **随当前事件循环缓存 / 重建**（内部 `asyncio.get_running_loop()` 比对后重建），与 `_client_cache`
-  的 `(client, loop)` 机制一致。仅单房间运行时锁只绑一个循环、不会报错，**必须并发多房间才能复现**。
-
-- **跨** **`await`** **持有的跨线程锁一律用** **`threading.RLock`，不得用** **`threading.Lock`**：凭据去重锁
-  （`_ttwid_lock` / `_kuaishou_did_lock` / `_twitch_client_id_lock`，位于 `src/spider.py`、`src/ttwid.py`）
-  跨越 `await` 持有；普通 `Lock` 下若同一事件循环出现第二个并发协程，会同线程自旋死锁
-  （持锁协程永无法恢复）。`RLock` 使同线程重入退化为一次幂等重复拉取，跨线程去重语义不变。
+- **禁止模块级 `asyncio.Lock()` 单例**: 惰性绑定首个 `await` 它的事件循环，后续新循环 `await` 即抛 `RuntimeError: … bound to a different event loop`。正确做法见 `src/async_http.py` 的 `_get_client_lock()`：**随当前事件循环缓存/重建**（比对 `asyncio.get_running_loop()`）。仅单房间不报错，**必须并发多房间才能复现**。
+- **跨 `await` 持有的跨线程锁一律用 `threading.RLock`，不得用 `threading.Lock`**: 凭据去重锁（`_ttwid_lock`/`_kuaishou_did_lock`/`_twitch_client_id_lock`）跨越 `await` 持有；普通 `Lock` 下同一循环第二个并发协程会自旋死锁。`RLock` 使同线程重入退化为幂等重复拉取，跨线程去重语义不变。
 
 ## 关键约定
 
-1. **版本号同步**: 版本唯一事实源是 `pyproject.toml`，各消费方均动态读取、不再写死。`main.py` 与 `src/web_api.py` 运行时经 `importlib.metadata` 读取（无需修改源码）；`Dockerfile` 通过 `APP_VERSION` 构建参数动态注入；`i18n/zh_CN/LC_MESSAGES/zh_CN.po` 不再写版本号。`README.md` / `CODE_WIKI.md` 为文档，不纳入版本同步/校验。`scripts/check_version.py` 校验上述“动态化”状态
-2. **行宽**: 120 字符（black + isort 统一）
-3. **导入排序**: isort 使用 `black` profile，`known_first_party = ["src", "i18n"]`
-4. **运行时资源**: `config/`, `ffmpeg/`, `node/` 与 exe 保持同级，不进入 `_internal/`
-5. **JS 签名脚本**: 位于 `src/javascript/`，通过 `__file__` 定位，打包时收入 `_internal/`
-6. **编码与注释风格**: 源文件统一 UTF-8，注释统一用中文
-
-   - **注释一律用** **`#`** **行注释，禁止** **`"""..."""`** **docstring**：模块/类/函数的说明也写成 `#` 注释置于定义上方。全仓已 100% 满足——`src/` 42 个模块（含 `src/platforms/`、`src/proto/`）、`main.py`/`gui.py`/`web.py`/`i18n.py`/`msg_push.py`、`scripts/`、`tests/` 均为 **0 处 docstring**，新增与重构代码须保持
-
-   - **例外**：多行字符串**字面量**不属 docstring，合法保留（如 `build_exe.py` 的 `SPEC_TEMPLATE = """\...` PyInstaller spec 模板）
-7. **排除目录**: `node/`, `ffmpeg/`, `downloads/`, `__pycache__/` 在所有工具中均排除
-8. **停止录制流程的日志归档（2026-08-30 定稿）**: 四个运行日志（`logs/streamget.log`、`logs/PlayURL.log`、
-   `logs/danmaku_monitor.jsonl`、`logs/web_console.log`）在停止录制时统一经 `src/log_archive.py::archive_runtime_logs`
-   按「原名\_YYYYMMDD\_HHMMSS.扩展名」改名归档（目标冲突追加 `_N`，文件缺失/改名失败仅告警跳过、绝不中断停止流程）。
-   触发点仅两处：Web 面板「停止录制」（`src/web_api.py::toggle_recording` enable=False，进程继续运行故
-   `reopen_streams=True` 重建 sink）；进程退出统一走 `main.py` 的 atexit（**必须先于两个 cleanup 注册**——
-   atexit 为 LIFO，归档要跑在 ffmpeg 清理之后、把收尾日志一并收进归档文件，且传 `reopen_streams=False`），
-   信号 `safe_exit` / 磁盘满 / 未捕获异常 / Web 托盘退出全部经此覆盖。硬约束：Windows 下句柄未关的文件
-   rename 必抛 PermissionError，改名前须先关句柄——loguru 文件 sink 经 `logger.remove()`（先 flush enqueue 队列）、
-   弹幕监控边车经 `DanmakuMonitorHub.close_file()`（下一条事件自动重开）、`web_console.log` 经
-   sys.stdout/stderr 自身 flush+close（仅 Web 后台模式绑定；改名后须立即重建句柄并 `rebind_console_sink()`，
-   遗留未绑定文件仅改名、绝不劫持当前 stdout）。GUI 父进程（`DLR_GUI_PARENT=1`）与测试进程
-   （`DOUYIN_DISABLE_LOG_ARCHIVE=1`，由 tests/conftest.py 设置——pytest 导入 main 会注册归档
-   atexit，但测试退出并非停止录制事件，不得改名开发者真实日志）一律早返回。
-   回归锁：`tests/test_log_archive.py` + `tests/test_web_api.py::TestRecordingToggle`。
+1. **版本号同步**: 唯一事实源 `pyproject.toml`，各消费方动态读取不写死。`main.py`/`src/web_api.py` 经 `importlib.metadata` 读取；`Dockerfile` 经 `APP_VERSION` 注入；`zh_CN.po` 不再写版本号。`scripts/check_version.py` 校验上述动态化状态。
+2. **行宽**: 120 字符（black + isort 统一）。
+3. **导入排序**: isort `black` profile，`known_first_party = ["src", "i18n"]`。
+4. **运行时资源**: `config/`/`ffmpeg/`/`node/` 与 exe 同级，不进入 `_internal/`。
+5. **JS 签名脚本**: 位于 `src/javascript/`，通过 `__file__` 定位，打包收入 `_internal/`。
+6. **编码与注释风格**: 源文件 UTF-8、注释中文；注释统一 `#`（见「注释约定」），禁止 docstring（多行字符串字面量如 `SPEC_TEMPLATE` 合法保留）。
+7. **排除目录**: `node/`/`ffmpeg/`/`downloads/`/`__pycache__/` 在所有工具均排除。
+8. **停止录制流程日志归档**: 四个运行日志（`logs/streamget.log`/`PlayURL.log`/`danmaku_monitor.jsonl`/`web_console.log`）在停止录制时经 `src/log_archive.py::archive_runtime_logs` 改名归档（冲突追加 `_N`，缺失/失败仅告警跳过）。触发点两处：Web「停止录制」（`reopen_streams=True`）、进程退出 atexit（须先于两个 cleanup 注册、`reopen_streams=False`）。硬约束：Windows 句柄未关 rename 必抛 PermissionError，改名前须先关句柄（loguru sink 经 `logger.remove()`、弹幕边车经 `DanmakuMonitorHub.close_file()`、`web_console.log` 经 flush+close+`rebind_console_sink()`）。`DLR_GUI_PARENT=1` 与测试（`DOUYIN_DISABLE_LOG_ARCHIVE=1`）一律早返回。回归锁：`tests/test_log_archive.py`+`tests/test_web_api.py::TestRecordingToggle`。
+9. **布尔配置项统一解析口径**: 禁止「字典查表+兜底实参」或「字符串相等比较」，一律走：纯解析函数 `src/config_bool.py::parse_config_bool(raw, default)`（零依赖，可被 `src/logger.py` 引用，不得放 `config_io.py`/`utils.py`）；配置层 `src/config_io.py::read_config_bool(parser, section, option, default)`（读取+缺键补写，main.py 全部布尔读取点用它）。识别集合：是/否、true/false、t/f、yes/no、y/n、on/off、1/0（strip+lower）；空值与未识别返回 default 且不覆写用户原文。另三处同源口径（`logger.py`/`web_config.read_web_config`/`gui._get_dynamic_status_info`）已改复用同一解析；`web/app.js` 按内嵌 `parseConfigBool`+`CONFIG_*_TOKENS` 保持同集合（改任一侧须同步）。**禁止**新增 `options.get(read_config_value(...), 兜底)`。回归锁：`tests/test_config_bool.py`+`tests/frontend/test_quality_ui.mjs`。
+10. **出站下载源必须登记进可机检白名单**: 任何新的出站二进制/脚本下载点必须同时登记进 `tests/test_ffmpeg_install.py` 的 `DOWNLOAD_SOURCES`（键=主机，值=(完整性方式, 为什么可接受)）与 `DOWNLOAD_MODULES`；两处缺一即锁红。完整性方式为 **TOFU 的源必须默认关闭**（如 `FFMPEG_MASTER_ALLOWED`，取值走 `config_bool`），开启与跳过两侧都落 warning。权威上游必须排在任何镜像之前。该锁自带反向见证（断言确实看到 `gyan.dev` 与镜像常量）。
+11. **camelCase 凭据键必须同步脱敏表**: `utils._SECRET_KEYS` 是「黑名单+左边界断言」，天然漏 camelCase（`accessToken`/`wsAuth`/`tk` 曾明文落轮转日志）。新接入平台若凭据参数是 camelCase，**必须**同步该表并在 `TestMaskCredentialsCoverage` 增加「**值确实消失**」断言——不得只断言「调用了 `mask_credentials`」。
+12. **修复类注释必须附可复核判据**: 注释写「已修 X」或「回归锁：`tests/…::test_xxx`」时该用例必须真实存在且能因该修复被破坏而变红；否则如实写「待办+为何未做」。判据 `grep -rn "回归锁：tests/" main.py src/ | 逐条 grep 用例名` 复核。
+13. **跨模块字符串契约不得靠自然语言子串**: 面板/GUI 解析录制端日志时 `if "没有正在录制" in msg` 在 `language=en_US/en_GB/zh_TW` 下恒假（正文经 `i18n.tr()`）。比较对象一律取 `i18n.tr(...)` 后形态，不得直接拿简中常量；结构化前缀（`#DLRQ|` 键值协议）属待批准长期方案。
+14. **i18n 扫描盲区清单**: `scripts/extract_i18n_strings.py` 扫不到 ①`color_obj.print_colored(...)` ②`messagebox.show*` ③**推送正文**（`msg_push.py` 裸字面量+`str.replace` 模板）——三类新增用户可见文案必须手工登记四语目录并重编 `.mo`；并行修复中间态落 `_i18n_pending*.json` 由中央合并脚本一次性落四目录。
 
 ## 已知坑（避免回归）
 
-- **弹幕 WS 连接必须显式** **`proxy=None`**：`src/ws_client.py` 的 `connect()` 必须传入 `proxy=None`，使弹幕 WebSocket 直连服务器、不跟随系统代理（macOS `urllib.request.getproxies()` / `ALL_PROXY` 等环境变量）。一旦改为跟随系统代理，B站/斗鱼等平台会报 `connecting through a SOCKS proxy requires python-socks` 并连接即断。该修复对所有复用 `WsClient` 的平台弹幕连接统一生效，改动此处须保留 `proxy=None`。
-
-- **录制链不得嵌套于** **`if headers:`** **内**：`main.py` 录制主链（约数百行）曾被整体包裹在 `if headers:` 条件中，导致无自定义请求头时抖音/斗鱼等平台静默不录制（状态显示"正在直播中"却无文件、无报错）。编辑录制流程时，录制链必须位于条件判断**之外**，仅把"是否附加自定义头"作为局部行为；绝不可用该条件包裹整个录制流程。
-
-- **流地址校验 GET 复核的容错语义不得简化**：斗鱼 hw/虎牙 al 等 CDN 对毫秒级连击探针（HEAD→GET）会**偶发** 403（实测同 URL 片刻后重试即 200，ffmpeg 单次 GET 正常）。`src/stream_select.py` 的 `_confirm_get_ok` 必须满足两点：401/403 先原样重试一次再定罪；候选已是末位（`select_source_url` 中无 record\_url 备选、或 record\_url 本身）时稳定拒绝也仅告警放行、交由 ffmpeg 实际拉流定夺（探针与 ffmpeg 客户端指纹不同）。删掉重试或末位放行会重新引入"探针误杀可用源"（校验假红导致整轮放弃录制）。同语义扩展至两处：m3u8 的 Range-GET 探针 401/403 同样先隔 `_GET_RECHECK_INTERVAL` 重试一次再定罪（斗鱼 hw CDN HEAD=405 后连击 Range-GET 偶发 403，重试即 206——救回 HLS 候选，免疫游客态 FLV 约 70 秒被掐断）；HLS 为唯一候选（无 FLV/record\_url 备选）或 FLV 为 h265 不可用时，HLS 即末位、校验须传 `last_resort=True`。
-
-- **斗鱼必须附带 FLV→m3u8 同 token HLS 候选**：斗鱼 H5 接口只返回 FLV，游客态 FLV 长连接约 70 秒被 CDN 掐断（反复分段、I/O error）；而 wsAuth token 对 FLV/HLS 通用，`get_douyu_stream_url` 把路径 `.flv` 改 `.m3u8` 即同 token 的 HLS 播放列表（实测 hw CDN 200 + mpegurl），HLS 逐段拉取免疫单连接超时。该候选由 `select_source_url` 校验 gating、不可达自动回退 FLV，须保留。
-
-- **`real_url`** **为空必须跳过录制链**：`select_source_url` 返回 None 时若不拦截，会让 None 流入录制执行链（ffmpeg 参数/scheme 转换处崩溃，或复用上一轮残留命令；斗鱼 hw CDN 全候选探针 405/403 时实测）。必须在选源后 `if not real_url: 告警+等待+continue`。该守卫之后 `now`/`title_in_name` 为无条件赋值（原恒真冗余的 `if real_url:` 包装已移除——嵌套条件包裹录制链属反模式，且曾致 basedpyright 判定 possibly unbound）。
-
-- **末位候选的 content-type 拒绝也须放行**：`_validate_stream_url` 的 text/html 启发式分支与尾部非 200 分支，对 `last_resort=True` 候选必须仅告警放行——斗鱼 hw CDN 对探针 HEAD 回 405+text/html（禁 HEAD 方法），ffmpeg 实际 GET 拉流正常；此前放行逻辑只存在于 `_confirm_get_ok`（401/403 GET 复核），content-type 路径漏放行导致斗鱼整轮放弃录制。
-
-- **B站弹幕 buvid 必须真实、AUTH\_REPLY 必须显式校验**：spi 官方端点是 `/x/frontend/finger/spi`（少写结尾 `i` 会 200+空 body，永远 JSONDecodeError）；spi 被风控时的兜底随机 UUID 未在 B站注册，弹幕服务器 AUTH 软拒绝（连接保持、不推弹幕、不断连，表现为"连接就绪"但 0 弹幕）。buvid 获取链按真实注册标识优先排序：进程缓存 → 登录 cookie `buvid3=` → spi → **`www.bilibili.com`** **首页 Set-Cookie**（经 cookie\_cache，与 spi 不同域名、风控独立）→ 随机 UUID 兜底（标记 is\_fallback）。`_decode_packet` 必须校验 operation=8 回应的 code：非 0 时经 `_reject_auth()` 告警+断开+调 `spider.invalidate_bili_buvid_cache()` 失效缓存（被拒 UUID 不可复用，下一轮重新获取，否则死循环）；另有 `_auth_watchdog` 兜底「服务器不回 AUTH\_REPLY 的静默拒绝」——进房包发出 8 秒无 code=0 回应按被拒处理，host 切换后旧看门狗作废。
-
-- **虎牙探针退避仅限** **`_PROBE_BACKOFF_PLATFORMS`** **名单**：虎牙 aldirect CDN 对同一路径短时间连续连接做限流，每轮「HLS 3 连探针 + FLV 2\~3 连探针 + ffmpeg 拉流」烧光连接预算——实测形态为校验 `GET 复核重试通过(200)` 后 ffmpeg 立即 403（返回码 3436169992），或拉流数百 KB 被 `Stream ends prematurely` 掐断，录制陷入秒级失败循环、弹幕采集器随录制反复起停（"连接就绪"却 0 条消息）。`src/stream_select.py` 的探针退避（`_mark_probe_reject`/`_probe_in_backoff`，键为 scheme://host/路径 去 query，窗口由 `_probe_backoff_window()` 动态计算）在观测到 401/403（含重试恢复的偶发）后跳过后续探针：非末位候选直接回退下一候选，末位候选零探针直接放行 ffmpeg 独享连接预算。**绝不可把斗鱼等平台加入名单**：斗鱼 hw 的偶发 403 由既有「重试一次再定罪」救回（重试即 206 保住 HLS-first），负缓存跳过会导致斗鱼回退 FLV（游客态约 70 秒被掐）回归。
-
-- **虎牙选源必须 FLV-first（`_FLV_FIRST_PLATFORMS`），斗鱼绝不加入**：`select_source_url` 的候选顺序对虎牙反转为 FLV → HLS → record\_url（统一候选序列实现，h265 候选构建时剔除、末位放行基于过滤后序列判定）。依据：2026-08-28/29 三轮真机两房间复现——虎牙 HLS 三条 CDN 线路（hs/tx/al）冷启动探针假绿（探针 200/206、ffmpeg 打开即 403，返回码 3436169992），TX/AL 次轮探针也稳定 403；FLV 每轮稳定可用（最长连录 6 分钟）。FLV-first 把冷启动假绿损失从约 2 分钟（一个退避周期）降为零；FLV 不可用时仍按序回退 HLS，链路保留。**斗鱼绝不可加入**：其游客态 FLV 长连接约 70 秒被 CDN 掐断，必须 HLS 优先。附带收益：旧实现「FLV 为 h265 → 立即重试整组 HLS」在默认顺序（HLS 已全败）下会把 HLS 探针白烧一遍，统一序列剔除 h265 后不再重复。注意退避中的末位放行随序列末位变化：FLV-first 下双候选均退避时放行的是 HLS（两者皆不可信，交由 ffmpeg 定夺，核心不变式是零探针）。
-
-- **探针退避窗口必须 ≥ 一个主循环周期（否则闭环恒不成立）**：退避窗口由 `_probe_backoff_window()` = `max(_PROBE_BACKOFF_SECONDS, main.delay_default + _PROBE_BACKOFF_INTERVAL_MARGIN)` 动态计算，**不可改回固定 60s 常量**。原实现固定 60s，而 `main.py` 的 `delay_default` 默认 **120s**——ffmpeg 快速失败记入退避后，下一轮在 T+124s 才到，早已超出窗口，于是又去撞同一条死线路。实测虎牙 880214（2026-08-28）：重试 7 轮仅 2 轮侥幸录上，两轮日志中「CDN 探针退避中」告警**一次都没出现**。margin 取 70s 是为覆盖最坏节奏「单轮等待 = delay\_default + 抖动(±5s)，且 `main.py:2413` 在错误窗口满 5 次时再 +60s」；退避偏长的代价很小（末位候选本就放行给 ffmpeg，且录制成功会立即清除退避），偏短的代价是假绿死循环，故宁长勿短。
-
-- **录制成功须撤销该地址的探针退避（`clear_ffmpeg_reject`）**：`main.py::check_subprocess` 的成功分支（与失败分支的 `mark_ffmpeg_reject` 配对）解析 `ffmpeg_command` 的 `-i` 后地址并调 `clear_ffmpeg_reject`，撤销该 host+路径 的退避记录——否则窗口内明明已恢复的线路会被继续跳过、白白回退到次优线路。注意清除的是**实际录制成功的地址**（如 FLV），HLS 的退避不会被顺带清掉，这正是期望语义（HLS 仍不可用时应继续走 FLV）。
-
-- **Web 后台模式必须重建 loguru 控制台 sink**：`web.py::_enter_background_mode` 在 `main()` 里 `import main`（触发 `src.logger` 导入、绑定控制台 sink）**之后**，才把 `sys.stdout/sys.stderr` 重定向到 `logs/web_console.log` 并 `SW_HIDE` 隐藏控制台窗口。loguru 的 sink 在 `add()` 时即绑定具体对象，**不会**因 `sys.stderr` 后续被重新赋值而跟着变——不调用 `rebind_console_sink()` 重建 sink，全部 DEBUG/WARNING 会写往被隐藏的控制台，`web_console.log` 里只剩 `print` 输出。实测后果：排查虎牙 403 时因 `web_console.log` 无校验日志，把「探针假绿（探针通过→ffmpeg 403）」误判成「探针未执行」，方向一度跑偏；真相在 `logs/streamget.log` 里（文件 sink 不受影响、一直在正常写入）。**排查 Web 模式问题一律先看** **`logs/streamget.log`** **/** **`PlayURL.log`，不要只看** **`web_console.log`。**
-
-- **GUI 父进程绝不持有录制日志文件句柄（`DLR_GUI_PARENT`** **标记）**：`gui.py` 必须在导入任何 `src` 模块**之前**设 `os.environ["DLR_GUI_PARENT"] = "1"`，拉起录制核心时 env 必须经 `src/logger.py::child_process_env()` 构建（剔除标记 + 固定 `PYTHONIOENCODING=utf-8`）。`src/logger.py` 在**导入期**读该标记决定文件 sink 归属：GUI 进程只写本进程独占的 `logs/gui.log`，绝不创建 `streamget.log` / `PlayURL.log`。否则 GUI（经 `src.web_config → src/__init__ → src.logger` 导入链也会初始化文件 sink）与录制子进程双开同一日志文件，任一方到达轮转阈值（`rotation="300 KB"`，loguru 按 1000 进制）写日志都要先 `os.rename` 改名，对方句柄未关即抛 `PermissionError WinError 32`——轮转永不成功、该进程的文件日志自此**全量静默丢失**且每条日志向 stderr 吐 `Logging error in Loguru Handler #N` 刷屏 GUI 面板（2026-08-29 实测：streamget.log 卡在 300031 字节，录制子进程日志全丢，文件 mtime 停在轮转阈值越过日）。改名标记须同步两处：`src/logger.py`（读）与 `gui.py`（设 + 子进程剔除）；`gui_legacy.py` 不导入 src、无互锁问题。同理，手动另起的第二个录制进程与 GUI 子进程并发也会互锁，多实例并发录制属使用限制。回归锁：`tests/test_logger_gui_parent.py`（含「标记先于 src 导入」静态断言）。
-
-- **弹幕监控房间须随录制线程退出而移除**：`DanmakuMonitorHub._rooms` 此前永不删除条目，URL 从 URL\_config.ini 移除/注释后房间线程退出，但 Web/GUI 监控页会一直残留"已失效直播间"及其旧弹幕数据。`main.py` 的 `start_record` 在 outer try 的 `finally` 中调 `get_hub().room_stopped(record_name)`（录制态/轮询态/解析失败态的 return 全覆盖），枢纽写 `conn/stopped` 事件、GUI `_danmaku_dispatch` 收到 `state=="stopped"` 后 pop 房间行；同房间重新录制时由 collector `room_started` 重新注册。删掉该清理会重新引入旧房间残留。
-
-- **「已被注释」检查必须在解析之前**：`main.py` 房间线程内层循环顶部（`exit_recording` 检查后）须先查 `record_url in url_comments` 再进入平台解析——原检查点位于解析成功之后，平台接口持续失败（如风控返回空）时永远走不到，线程滞留占用监控位，URL\_config.ini 的移除/注释变更迟迟不生效。
-
-- **UA 双端一字不差约定与全库统一基准**：录制拉流链的 UA 存在两组"必须一字不差"的配对——`main.py` ffmpeg 命令默认移动 UA ≡ `stream_select.MOBILE_UA`（校验探针与 ffmpeg 客户端指纹一致，否则校验假红/假绿）；`room.HEADERS` 的 UA 参与 X-Bogus 签名（签名以请求头同一 UA 计算、自洽，改字符串安全但四处须同步：`stream_select.MOBILE_UA`、`main.py` ffmpeg 默认 UA、`room.HEADERS`、B站 H5 接口 UA）。全库统一基准（2026-08）：桌面 Chrome/141（对齐 `room.DESKTOP_UA`）、Edg/141、Firefox/148（rv:148.0）、移动端 `Android 14; Pixel 8` Chrome/141——新增 UA 或升级版本时必须对齐该基准，禁止回落 Chrome≤138/Firefox≤127/SamsungBrowser 等过旧指纹（过旧 UA 是风控按指纹识别的特征之一）。
-
-- **探针节流/抖动语义不得移除**：`src/stream_select.py` 的同 host 探针节流（`_throttle_probe`，`_PROBE_MIN_HOST_INTERVAL=0.35s`+抖动，按 host 全局限速）与重试抖动（`_recheck_delay`，`0.8s+uniform(0,0.7s)`）用于消除两类机器人节奏指纹：多房间并发下同 CDN 的毫秒级连击探针、固定 0.8s 恒定重试间隔。把重试间隔改回固定值或移除节流会重新引入"按节奏识别→误触发 403"的风控误伤（实测虎牙/斗鱼 CDN 均有此行为）。测试侧依赖 autouse fixture 把 `_throttle_probe` 置 no-op（部分用例 patch 整个 time 模块，真实节流的时间差比较会炸）；节流专项测试经 from-import 的真实函数引用绕过 no-op。
-
-- **「禁用SSL证书验证的平台」仅在需要证书校验时生效（FFmpeg 9.0 语义）**：FFmpeg 9.0 起 TLS 证书验证默认开启。`http_config.get_effective_ssl_verify` 的平台覆盖仅在全局 `ssl_verify=True`（http 录制模式，即需要证书校验时）参与读取；https 录制模式全局已禁用、平台覆盖无意义。`main.py` 启动时经 `_sync_ssl_disable_platforms` 把证书异常平台（虎牙直播/B站直播，`SSL_DISABLE_REQUIRED_PLATFORMS`）自动追加至配置键并写回——只追加、绝不移除用户手填项。`update_config_line` 的键匹配为大小写不敏感（与 configparser optionxform 语义对齐），改回精确匹配会导致代码常量（大写 SSL/SMTP）与配置文件行（小写）无法互找。
-
-- **i18n 多格式目录与语言热切换**：`i18n.py` 按语言依次探测 gettext `.mo` → `<lang>.json` → `<lang>.yaml`（zh\_CN 用 .mo、en\_US/en\_GB 用 .json、zh\_TW 用 .yaml）；四种目录键集合必须一致（test\_i18n.py 强制）。`set_language()` 热替换 `_tr` 供 Web（PUT /api/language）/GUI（侧边栏语言菜单）/main 主循环（每轮重同步）即时切换；语言配置键为 `language`，统一经 `i18n.resolve_language` 解析——留空 → 系统语言（`detect_system_language`：环境变量 → Windows UI 语言 → POSIX locale），键值不可识别或语言目录文件缺失 → 回退 `FALLBACK_LANGUAGE`（en\_US）。值经 `normalize_language` 归一（别名表键统一为「小写+连字符」形态）。修改 zh\_CN.po 后必须 `python scripts/compile_po.py` 重编译 .mo（测试强制字节级同步）。新增待翻译串的提取用 `python scripts/extract_i18n_strings.py`（AST 扫描 print 常量串 + logger f-string 模板底稿并与四语目录比对；f-string 模板归一化约定：格式/转换符丢弃、表达式内双引号转单引号；纯占位符模板如 `{color}{text}` 无翻译价值、不收录）。
-
-- **migu.js 输出契约为完整签名 URL**：2026-08 重写后的 `src/javascript/migu.js` 适配 migu 播放器 v\_20260731+ 的 wasm 接口（导入函数 a..l 共 12 个、导出名整体重排：memory=m/malloc=p/CI1=t…CI14=F），并改为输出带 `ddCalcu`/`sv` 参数的**完整地址**（sv 由官网因子接口获取，失败回退播放器内置默认因子）；`spider.get_migu_stream_url` 直接使用该 URL，不再拼接固定 `sv=10010`（已过期）。
-
-- **Node 24 / FFmpeg 9.0 兼容基线（2026-08）**：Node 运行时以 24.19.0 实测为准（全部 JS 签名脚本 + migu.js 通过），Dockerfile 随之安装 Node 24 LTS；FFmpeg 以 9.0 为基线——9.0 移除的 CLI 参数（`-vsync`/`-top`/`-qphist`/`-filter_complex_script`/`-adrift_threshold`）禁止引入，录制命令中的冗余 `-v verbose` 已删除（被 `-loglevel error` 覆盖）。
-
-- **`asyncio.get_event_loop()`** **3.14 起不再隐式创建事件循环**：当前线程无循环时抛 `RuntimeError`（≤3.13 为隐式创建+DeprecationWarning）。`src/async_http.py` 的 `close_all_clients_sync`（atexit/信号钩子调用）已改为捕获 RuntimeError 后走引用清理兜底；协程内获取循环一律用 `get_running_loop()`，atexit 类同步清理如需复用已存在的循环，保持「try get\_event\_loop / except RuntimeError → 引用清理」结构，不要改回裸调用。
-
-- **跨事件循环禁止创建/调度旧 AsyncClient 的 aclose 协程（2026-09-04 定稿）**：`src/async_http.py::_get_client` 淘汰他循环创建的旧客户端时，一律**不创建** `aclose()` 协程（旧循环运行中/已停止/已关闭同样对待），释放引用交由 GC 兜底；进程级收尾仍由 atexit 的 `close_all_clients_sync` 负责。三个坑（勿回退）：① `run_coroutine_threadsafe` 只调度不等待——旧循环停止/关闭后排入的回调永不执行，协程从未被 await，GC 时报 `coroutine ... aclose was never awaited` 且 GC 时机随机致告警在 1~2 条间波动（经 unraisableexception 逸出到任意后续用例，`filterwarnings` 拦不住）；② 加 `is_running()` 门控并 `fut.result(timeout)` 等待也无法根治——`asyncio.run` 收尾窗口内循环还在运转（is\_running 为真）但随时停止，安排的任务可能永不执行（`Task was destroyed but it is pending`），future 永不完成还会把一次收尾竞态放大成整段超时时长的阻塞；③ 在当前循环直接 `await 旧client.aclose()` 会操作绑定旧循环的 transport（httpcore 连接池关闭触碰旧循环的 `call_soon`，循环已关时直接 RuntimeError）。外部线程无法可靠控制他线程循环的生命周期，唯一可靠做法就是不创建协程。回归锁：`tests/test_async_http_lock.py::test_cross_loop_running_old_loop_skips_close` / `test_cross_loop_stopped_old_loop_skips_close`；并发的 `test_concurrent_threads_no_cross_loop_error` 已移除 `ignore::RuntimeWarning` 过滤，告警回归会直接显现。
-
-- **异常日志必须带异常类型与上下文，禁止裸** **`logger.xxx(e)`**：Windows 下 `socket.timeout` / `TimeoutError` 的 `str()` **为空字符串**，`f"...: {e}"` 或 `logger.debug(e)` 会打出空白行，排查时完全失去线索。凡 `except Exception as e:` 的日志一律写成 `f"<动作>: {url} - {type(e).__name__}: {e}"`（`src/async_http.py` 的 `async_req` 已按此修正）。流地址校验失败还须额外输出 `status_code` 与 `content-type`，**禁止静默吞异常**。
-
-- **流地址可达性探测的方法基线**：抖音等 CDN 对 m3u8 的 `HEAD` 常回 4xx（**含 404**）而 `GET` 能正常拉流，故校验逻辑一律「HEAD 非 2xx → Range `GET bytes=0-0` 探测（200/206 判可达）」，**不要只覆盖 400/401/403/405**。同步校验器（`main.py` 的 `_validate_stream_url`）与异步校验器（`src/async_http.py` 的 `get_response_status`）的 **proxy / verify / UA 三者必须保持一致**，否则境外平台（TikTok）直连校验会误判不可达而回退或放弃录制。本条与前述「GET 复核容错语义」「末位候选放行」「探针节流/抖动」「虎牙探针退避」四条互补，不可相互简化。
-
-- **macOS GUI 双重主线程约束（`gui.py`）**：Tcl/Tk 只能跑在主线程（否则 `RuntimeError: Calling Tcl from different apartment`），而 pystray darwin 后端的 `icon.run()` 又会以 `NSApplication.run()` 接管主线程——两者互斥。**唯一正确方案**：主线程先 `tray.run_detached()`（darwin 后端仅 `_mark_ready()` 注册 NSStatusItem、不启事件循环，事件交由 Tk 的 Cocoa 循环分发），再 `root.mainloop()`；**绝不允许把 mainloop 放到子线程**。另有三条配套硬约束：① `run_detached()` 前必须在主线程调 `icon._assert_image()` 预热并置 `icon._icon_valid = True`——PIL 惰性编码器在 PyInstaller 冻结环境下从非主线程首次初始化会原生崩溃（Python 无法捕获），漏置 `_icon_valid` 会让 setup 线程 `visible=True` 触发 `_update_icon()` 清空缓存、重回后台线程 PNG 编码崩溃路径；② `_assert_image` 是 **darwin 后端专有方法**（`_win32`/`_xorg` 无），不要在通用路径调用，AttributeError 会被吞掉导致 Windows/Linux 托盘静默禁用；③ detached 模式退出时先 `icon.visible = False` 再 `icon.stop()`（`_run()` 的 finally 不会执行，状态栏项不会自动移除）。复现需 macOS 冻结构建，Windows 无法验证——改动后务必 `py_compile` 并通过 CI 确认。
-
-- **无控制台环境** **`sys.stderr is None`，`logger.add`** **前必须判空（`src/logger.py`）**：`pythonw.exe` 与冻结的 `console=False` exe 不分配控制台，`sys.stdin/stdout/stderr` **全为** **`None`**。控制台 sink 注册处若裸写 `logger.add(sink=sys.stderr, ...)`，会在模块导入期直接抛 `TypeError: Cannot log to objects of type 'NoneType'`，导致 `gui.py`（经 `src.web_config → src.__init__ → node_install → logger` 传导）在 import 期即静默死亡、窗口化运行无任何窗口也无报错。**这是 pythonw 跑 gui.py 失败的真正根因，与解释器是否一致无关。** 必须 `if sys.stderr is not None:` 才加控制台 sink，无控制台时跳过、由文件 sink 兜底。排查窗口化静默崩溃的标准套路：先在文件最顶部装 `sys.excepthook`/`threading.excepthook` 崩溃落盘+弹窗钩子（见 `gui.py` 的 `_install_crash_sink()`），再顺调用链逐层 grep `sink=sys.` / `print_exc` / `sys.stdout.write` 等 None 敏感点逐一判空。
-
-- **抖音接口风控信号是「HTTP 200 + 空响应体」，不是 4xx**：排查解析失败时**先看** **`len(response.text)`**，为 0 基本就是 UA/Cookie 被拒。三条配套事实：① **UA 敏感**——`src/room.py` 模块级 `HEADERS` 是 2020 年三星安卓 UA，`iesdouyin.com/web/api/v2/user/info/` 用它必被静默拒，此类接口一律用 `room.DESKTOP_UA`（桌面 Chrome，版本基准见前述 UA 条目）；② `iesdouyin.com/share/user/<sec_uid>` **已是 JS 反爬壳页**，页面内不再有 `unique_id`，基于该页 HTML 的正则全不可靠——主页 → 抖音号请走 `https://www.iesdouyin.com/web/api/v2/user/info/?sec_uid=<sec_uid>`（取 `unique_id`，空则退 `short_id`）；③ `webcast.amemv.com/webcast/room/reflow/info/` 用占位 `room_id=2` + `sec_user_id` 解析主页**行不通**（返回 `status_code=10011`）。
-
-- **PEP 758：`except A, B:`** **在 3.14 合法，禁止"还原括号"**：Python 3.14 经 PEP 758 原生支持无括号的多异常捕获，而 black 在 `target-version = ['py314']` 下会**主动去掉** `except (A, B):` 的括号——工作区里 15 个文件、24 处无括号写法是 black 门禁的规范输出，不是回归。用 Python 3.13 或更早做 `compileall` / `py_compile` 会把全树误报为 `SyntaxError: multiple exception types must be parenthesized`（实测：venv 3.14.7 两种写法都通过、3.13.14 只有加括号通过）。两条硬约束：① **语法/编译检查一律使用项目 venv 的 Python 3.14**，不要用其它版本；② 不要把无括号写法"修回"加括号，否则违反 black 门禁（black 会再次去括号，且 `black --check` 判违规）。附带一条：black 的 `line-length` **不会从** **`pyproject.toml`** **继承到命令行**，门禁必须显式传参——`python -m black --check --line-length 120 --target-version py314 <paths>` 与 `python -m isort --check-only --profile black --line-length 120 <paths>`；不传则按默认 88 列检查，会报出大量与本仓库风格无关的"待格式化"。
-
-- **`-reconnect*` 必须在** **`-i`** **之前且每个选项必须紧跟取值（2026-09-10/09-11 实测定稿）**：`-reconnect_delay_max` / `-reconnect_streamed` / `-reconnect_at_eof` 是 **input 级（HTTP 协议）选项**，只作用于「紧随其后的下一个输入文件」。写在 `-i real_url` **之后**会被划入输出组，而 ffmpeg 对**已被全局注册的选项名**不会报错——实测为**静默接受、无任何警告、退出码 0**，输入侧从未应用。后果是重连完全失效且**没有任何可见症状**，而 `_FFMPEG_FAST_FAIL_SECONDS` 的「慢速失败＝重连耗尽」判定、以及围绕它建立的失败归因全部落空。改动 ffmpeg 命令时，这三项必须保持在 `-i` 之前。**另一形态（2026-09-11 事故）**：09-10 把这三个选项移到 `-i` 之前时丢失了 `-reconnect_streamed` / `-reconnect_at_eof` 的布尔值 `1`，ffmpeg 把下一个选项名当作值——`Unable to parse "reconnect_streamed" option value "-reconnect_at_eof" as boolean` → Invalid argument，**输入未打开即退出（-22）**，真实录制 100% 复现；而 `-reconnect_delay_max 60` 因带着值幸免。回归锁已落地：`tests/test_ffmpeg_reconnect_args.py`（AST 断言同时锁定「每个 `-reconnect*` 紧跟字面量值」与「全部位于 `-i` 之前」两个不变量，扫描 main.py + standalone 双定义点）。**第三形态（2026-09-11 主事故 P0，推翻上面"语义边界"段的旧认知）**：`-reconnect_at_eof 1` 对 **HLS 直播流同样致命**——上面的旧认知"真直播 playlist 无 ENDLIST、不会 EOF"是错的：**m3u8 播放列表文件本身的 HTTP 响应结束就是 EOF**，该选项让 http 层在"列表下载完"处无限重连（`ffmpeg -report` 实测特征：连续 `Will reconnect at <size> in N second(s), error=End of file`，1/3/7/15/31s 指数退避、`-reconnect_delay_max 60` 只限单次延迟上限、重连无次数上限、永不放弃），hls demuxer 永远停在"待列表"阶段、**一个媒体段都拉不到**。生产事故形态（2026-09-11 凌晨实测）：抖音/斗鱼房间（HLS 优先选源）仅产出弹幕 SRT、视频零字节、ffmpeg 常驻不退出（`-loglevel error` 下零输出零报错，`check_subprocess` 只看到进程存活）——"只录到字幕没录到视频"即为该故障；虎牙（`_FLV_FIRST_PLATFORMS` + HLS 排除列表）不受影响。对照实验：同命令加 `-t 10` 限时，60s 仍不退出且零字节产物；仅去掉该选项后 10s 录制 9MB 正常退出。**修复（唯一正确做法）**：m3u8 输入在命令构造处移除该参数对（`if ".m3u8" in url: del` 该选项+取值，main.py 与 standalone 共三处定义点同步），FLV 输入保留（CDN 掐断长连接时在 EOF 处重连续写同一文件，斗鱼游客态 FLV ~70s 被掐的既有缓解）。回归锁：`tests/test_ffmpeg_reconnect_args.py` 新增第三个不变量类 `TestReconnectAtEofDroppedForHls`（AST 断言每个命令定义点都有「`.m3u8` in url 判定 + 函数体删除该参数对」守卫，main.py 1 处、standalone 2 处）。
-
-- **录制并发槽必须在** **`Popen`** **之前 acquire（`main.py::check_subprocess`）**：`recording_semaphore` 的语义是「限制同时进行的 ffmpeg 数」，若先起进程再 `acquire`，并发上限**根本不约束 ffmpeg 进程数**——N 个房间照样同时拉起 N 个 ffmpeg 拉流写盘（正是要防的资源耗尽），被阻塞的只是房间线程，且阻塞期间不检查注释/停止标志、无法及时退出。正确结构是「`acquire` → `try:`（`Popen` + 进程注册 + 弹幕启动 + 主循环）→ `finally: release`」：**启动段也必须落在 `try` 内**，该段抛错同样要归还槽位，否则泄漏累积到上限后所有后续录制永久饿死。
-
-- **`collector.stop()`** **与采集线程的握手顺序不可单独调整（`src/collector.py`）**：`stop()` 必须**先** `set(self._stop_event)` **再**读 `self._loop`；`_run()` 必须**先**发布 `self._loop` **再**检查 `self._stop_event`。两个**相反**的顺序保证信号必被一方接收（穷举时序可知不存在双方都错过的交错）。缺任何一半都会丢信号：`stop()` 若在采集线程建好 loop 之前到达，`self._loop is None` → `call_soon_threadsafe` 整段被跳过，信号永久丢失、`join(timeout=8)` 超时后线程与 SRT 句柄双泄漏。另：`_shutdown` 中 `await danmaku.stop()` 必须 `asyncio.wait_for` 限时（`_SHUTDOWN_TIMEOUT_SECONDS`），否则 SDK 因半开连接挂住时 `loop.stop()` 永不执行。
-
-- **弹幕文本写入 SRT 前必须转义（`src/srt_writer.py::_sanitize_srt_text`）**：`user_name`/`message` 均为外部可控输入。含 `\n` 会截断 SRT 块结构；含 `-->` 会被解析器当成**新的时间轴行**，可伪造任意字幕内容。替换（而非删除）为可见字符以保留可读性。回归锁：注入 `normal\n2\n00:00:99,000 --> 00:00:99,999\nFAKE\n` 后产物必须仍只有 1 个块、1 条时间轴。另：片内 `end` 须 `max(start, min(end, _seg_seconds))` 钳制，否则末条会与片边界及下一片首条时间轴重叠。
-
-- **敏感配置判定必须「节白名单 + 键名正则」双重（`src/web_config.py` / `web/app.js`）**：仅按节名（`SENSITIVE_SECTIONS`）判定会漏掉 **`[推送配置]`** 节内的 `tgapi令牌` / `发件人密码(授权码)` / `pushplus推送token`，以及各平台节内的 `popkontv_token` 等独立凭据——它们会被 `read_config_safe` 原样明文返回面板、并渲染成明文 `text` 输入框。新增配置键时须同时确认该键是否落入键名正则；反向例外表（`expiry|timeout|有效期|过期`）用于放行 `web_token_expiry` 这类数值型运维参数。前端 `saveConfig` 跳过 `'***'` 掩码的约定（`app.js:1049`）是写入侧的唯一防线，**不可移除**，否则掩码会被回写覆盖真实凭据。写日志同理：URL/代理地址一律经 `utils.mask_credentials()`（`logs/` 会轮转保留多份，凭据等于长期落盘）。
-
-- **测试不得自实现被测逻辑（假绿）**：`tests/` 中曾存在「在测试文件里重新实现一份锁与凭证缓存、再断言这份自实现」的用例——把 `src/` 的对应实现整个删掉仍全绿，等于没有覆盖。判据必须是「**删掉生产实现就会失败**」：只允许打桩网络层与时间常量，去重/限流/锁逻辑一律走真实代码。`tests/test_concurrency_rate_limit.py` 已按此重写（驱动 `src.ttwid.get_ttwid()` 与 `src.stream_select._throttle_probe()`）。另两条测试环境约束：① 不得 `monkeypatch.setattr(main.time, "sleep", ...)`——`main.time` 是 stdlib `time` **模块本体**，会替换**全进程** sleep，应浅拷贝成 `SimpleNamespace` 再覆盖单属性；② 覆盖率门禁 `scripts/check_coverage.py` 中「模块查不到」按**失败**处理（原实现只告警，会输出 `PASSED: All 0 module(s)` 的假绿）。
-
-
-- **`live.douyin.com`** **的** **`web_rid`** **同时接受数字房间号与抖音号**：`webcast/room/web/enter/` 两者皆可，且 `live.douyin.com/<抖音号>` **不发生重定向**。**不要再写「抖音号需先重定向解析成数字」的逻辑**——那是纯静态分析得出的错误结论，已被实测证伪并删除。另：`main.py` 以 `port_info["anchor_name"]` 为空作为「网址内容获取失败」的判据。
-
-- **弹幕链路接线点与分段命名约定**：`start_record` 各平台分支收集 `record_danmaku_args`（局部变量，**每轮重置为 None**）→ 6 处 `check_subprocess(..., platform=platform, danmaku_args=record_danmaku_args)` 全部接线 → `src/__init__.py` 的 `get_danmaku_collector(platform, args, base_filename, segment_seconds)` 创建采集器（实现在 `src/collector.py`）。三条硬约束：① `danmaku_collector.stop()` 必须在 `while process.poll() is None` **循环之外**（提前中断分支另有一次），`DanmakuCollector.stop()` 有 `_stop_called` 防重入、幂等；② 分段文件名——ffmpeg 视频分段模板统一 `_%03d`（FLV 已从 `_%02d` 对齐；音频仍 `_%02d` 但无弹幕），SRT 分片用 `{seg:03d}` 与之对应（`_000.srt` ↔ `_000.ts`），`check_subprocess` 需同时剥离 `_%02d` / `_%03d` 两种占位符；③ 抖音弹幕空 cookie 时在 `DouyinDanmaku.start()`（`src/platforms/douyin.py`）协程内 `await get_ttwid()` 动态获取（采集线程有独立事件循环，可直接 await；进程级缓存），**不再硬编码 ttwid**。配置项 `弹幕分片时长(秒)` 走 `_safe_float(..., 1800.0)`。
-
-- **protoc 生成模块需手写** **`.pyi`** **存根（`src/proto/`）**：`douyin_pb2.py` 由 protoc 生成（DO NOT EDIT），消息类经 `_builder.BuildMessageAndEnumDescriptors` 动态注入，mypy/basedpyright 看不到 `PushFrame`/`Response`/`ChatMessage` 等属性而报 `attr-defined`。已建 `src/proto/douyin_pb2.pyi` 存根声明被引用的 3 个消息类及字段（继承 `google.protobuf.message.Message` 以获得 `SerializeToString`/`ParseFromString`）。**新增字段引用时必须同步补存根。** 这是 `typings/`（第三方库存根）惯例向项目内生成模块的延伸。
-
-- **config.ini 键名禁止含** **`=`** **/** **`:`** **等 configparser 分隔符**：键名含 `=`（历史键「最大同时录制数(0=不限制)」曾致启动即崩溃）时，**读取侧** configparser 在首个分隔符处截断（`最大同时录制数(0=不限制) = 0` 被解析成键 `最大同时录制数(0` + 值 `不限制) = 0`，永远查不到目标键）；**写回侧** Python 3.14+ 的 `configparser.write()` 对含分隔符键抛 `InvalidWriteError`（实测 3.13 对含分隔符键静默写成功、不抛错，3.14 起才抛——本地 3.13 venv 会掩盖该路径，勿把仅 3.13 失败、3.14 通过的 `test_read_config_value_delimiter_key_no_crash` 误判为回归）。`read_config_value`（`src/config_io.py`）的缺键兜底已硬化为「内存 `StringIO` 完整序列化成功后才落盘 + 捕获 `(OSError, configparser.Error)` 降级 warning + 回滚内存 set」，坏键不再截断配置文件或崩溃——但键名本身必须避开分隔符（括号提示可写 `(0为不限制)` 这类无分隔符形式），`update_config_line`（Web 行级更新）的键名匹配同样依赖此约束。
-
-- **平台专属符号必须** **`sys.platform`** **字面量门控（mypy 跨平台 CI 检查）**：`ctypes.WinDLL` / `ctypes.windll` 等符号仅存在于 Windows typeshed，而 CI 的 `mypy src/`（mypy 2.3.0）跑在 linux runner 上，且会经 import 链把根目录 `main.py` / `i18n.py` 一并拉入检查（**不在 src/ 下的文件同样被查**）——函数体内裸引用平台专属符号必报 `attr-defined`（2026-08-24 `i18n._windows_ui_language` 的 `ctypes.WinDLL` 即此）。修复模式（仅函数体调用、注解不涉及时）：**函数体首行早返回** `if sys.platform != "win32": return`（对齐 `src/web_tray.py._patch_console_window` / `i18n._windows_ui_language` 惯例）；注解需引用平台符号时降级为 `object | None`（禁用 `sys.platform` 条件类型别名——basedpyright strict 报 `reportInvalidTypeForm`）。**禁用** **`# type: ignore`**：Linux CI 下必要、Windows 本地下多余，basedpyright 会再报 `reportUnnecessaryTypeIgnoreComment`，两头不讨好。验证必须双跑：`mypy src/` + `mypy --platform linux src/` 两次全绿才算过；门控条件写反（`==` / `!=` 打错）静态检查发现不了，须运行时用例锁定（见 `tests/test_i18n.py::TestWindowsUiLanguagePlatformGate`）。
-
-- **三参** **`getattr`** **不做字面量名解析，模块级已声明的属性一律直接访问（mypy Any 泄漏）**：`getattr(obj, "attr", default)` 经 mypy（含 2.3.0）reveal\_type 实测返回 `Any | None` 而非属性类型——`warn_return_any` 下返回处报 `no-any-return`，更糟的是后续属性链（如 `.network_semaphore.value`）的类型检查**全部静默失效**（2026-08-24 `src/recorder_status.py::_live_network_capacity` 即此）。凡目标属性有模块级声明（如 `main.scheduler: ConcurrencyScheduler | None`，import 完成即必然存在），直接 `main.scheduler` 访问；确需容错「属性可能不存在」时用 `cast` 显式收窄，勿写防御性三参 getattr。运行时等价性判据：测试只 `monkeypatch.setattr`（属性必存在）而非 `delattr` 时，替换为直接访问安全。
-
-- **httpx 请求级 headers 是「合并」不是「替换」，探针客户端复用后业务头必须逐请求下发**：`httpx.Client._merge_headers` 的实现是 `Headers(self.headers)` 打底再 `update(请求头)`，因此把 UA/Referer/Cookie 挂在 client 上时，只传 `{"Range": "bytes=0-0"}` 的请求**依然会带上**全部 client 级头——不要据此判定「丢了请求头」（2026-08 性能优化审查曾在此误判一次）。但反过来，**客户端一旦在多个候选间复用（`select_source_url`** **整轮共用一支），业务头就绝不能再挂 client 级**（否则候选间互相污染），必须逐请求显式传入 `head` / Range-`get` / `_confirm_get_ok` 的 `stream`。
-
-- **探针客户端复用作用域 = 单次选源，禁止升级为全局缓存**：`select_source_url` 内整轮候选共用一支 `httpx.Client`（`finally` 关闭），`_validate_stream_url` 新增可选 `client` 参数（不传时自建自管、`owns_client` 保证只关自己建的）。**刻意不做按** **`(proxy, verify)`** **的模块级全局缓存**：虎牙 CDN 按连接预算限流（见前述虎牙探针退避条目），常驻 keepalive 会让录制进程长期持有到 CDN 的空闲连接，与紧随其后的 ffmpeg 拉流争抢同一份预算——方向与优化目标相反。实测（本地 HTTP/1.1，60 次）：仅构造+关闭 Client **6.7 ms**、新建 Client+单次探针 15.9 ms、复用 Client+单次探针 0.77 ms，故「每轮一支」已拿到大部分收益。**并发连接峰值实测（4 条同 host 候选、每条 HEAD+Range-GET）**：原实现 4 条连接 / 峰值 1 / 70.88 ms，当前 P1 **1 条连接 / 峰值 1 / 12.78 ms**——候选是串行校验的，复用不会抬高瞬时连接数，反而净减少新建连接数；据此「P1 加重虎牙连接预算消耗」的疑虑已证伪。
-
-- **禁止为「保险」关掉探针客户端的 keepalive**：实测 `httpx.Limits(max_keepalive_connections=0)` 会让连接数从 1 涨到 **8**、耗时从 12.78 ms 退回 **72.99 ms**（等价于每次请求新建连接），把复用收益全部退掉。若排查虎牙 403 需要隔离变量，正确做法是临时改回「每候选一支 Client」，**不是**关 keepalive。另注意口径：原实现的 `with httpx.Client(...)` 内 HEAD 与 Range-GET **已经**复用同一条连接（每候选 1 条连接，不是每请求 1 条），故复用的真实提速约 **5.5×**（70.88→12.78 ms），而非「每请求新建」基准给出的 36× 上界。
-
-- **`requests.Session`** **必须线程级复用，禁止每次新建（`src/sync_http.py`）**：`_session()` 经 `threading.local()` 缓存 `requests.Session`（Session 非线程安全，**不可跨线程共享**，否则并发请求互相踩连接状态）。全仓约 125 处 `sync_req` 调用点（代理/直连的 get/post 分支）均走 `_session()`。`threading.local` 取不到时新建一次并写回，线程内复用。改回每次 `requests.get/post` 新建 Session 会让每个房间每轮多出一次 TCP+TLS 握手（实测 11.9 → 1.47 ms，约 8× 退化）；`tests/test_sync_http.py` 的代理替身 patch 目标须是 `src.sync_http._session`，**不是** `src.sync_http.requests`（改回后者会让测试绕过真实复用路径、失防）。
-
-- **`main.py`** **主循环去重容器必须为** **`set`，禁止退化成 list / O(N²)**：`url_comments` / `line_list` / `url_line_list` 均为 `set`，仅做成员检测（O(1)）；移除须用 `url_comments.discard(url)` 而非 `[i for i in url_comments if url not in i]` 整表重建，`text_no_repeat_url` 用 `dict.fromkeys` 保序去重。80+ 房间时 list 实现会退化成 O(N²)，且每秒每房间扫 `url_comments` 的 `check_subprocess` 随之恶化——回退到 list 是性能回归。注意 `need_update_line_list` 仍是 `list`（它要保序 append + `pop` 出队，属正常）。
-
-- **`src/scheduler.py`** **熔断计数必须增量、不得** **`sum(deque)`；`import time`** **提顶层**：`PlatformBreaker._fail_count` 与 `ConcurrencyScheduler._global_error_count` 在样本入队/挤出（`deque` 满时扣减被挤出的旧样本、`clear()` 时归零）时**增量维护（O(1)，缩短持锁时间）**，替代原先 `record()` 内 `sum(self._samples)`（O(40)，在持锁下遍历）。`_now`/`_allow_sleep` 所用的 `time` 已在模块顶层 `import time`（`allow()` 每个房间每轮都走，函数内 import 多一次属性查找）。改回 `sum(deque)` 会让每条熔断样本在持锁下遍历 40 项，高并发下加剧锁竞争。
-
-- **高频正则提模块级常量、按 key 缓存，禁止函数内** **`re.compile`**：`src/utils.py:_EMOJI_PATTERN`（\~400 字符表情模式，`remove_emojis` 每次调用）、`src/stream_select.py:_URL_PATTERN`（`contains_url`）、`src/spider.py:_BANDWIDTH_PATTERN` / `_DOUYIN_HEVC_FLV_PATTERN`（4 处 HLS 带宽 / 抖音 HEVC-FLV 解析）均提为模块级编译常量；`src/web_config.py:update_config_line` 按 `key` 编译的正则经 `functools.lru_cache(maxsize=128)` 缓存。函数内每次 `re.compile` 会把 O(1) 编译退化成每调用一次重复编译（\~400 字符模式尤甚），属性能回归。
-
-- **蓝光子档位（蓝光4M/8M/20M/30M）必须折叠到 BD 索引，不得塞进通用** **`QUALITY_MAPPING`**：`src/stream.py::get_quality_index` 把 `BD4`/`BD8`/`BD20`/`BD30` 统一折叠为 `BD`（索引 1），细粒度标识仅靠 `BD_SUB_TIERS = frozenset({"BD30","BD20","BD8","BD4"})` 承载。`QUALITY_MAPPING` 是抖音/通用排序的权威索引（`OD=0,BD=1,UHD=2,HD=3,SD=4,LD=5`），选画质时按索引定位——若把子档位当独立键塞进 `QUALITY_MAPPING`，会撑开排序位、让通用选档逻辑错位（抖音按名称选画质会偏移到错误档）。`QUALITY_MAPPING_BIT`/`QUALITY_LEVEL`/`QUALITY_CODE_TO_ZH` 是 `QUALITY_MAPPING` 的**超集**（额外含蓝光子档位，见 L203-229），测试须按「超集语义」断言（见 `tests/test_stream.py::TestQualityMapping`，其 `test_quality_mapping_keys_match_*` 已改为只校验基础 6 键一致、不再要求三表键全等）。中文映射全链路（`src/stream_select.py::get_quality_code`、`src/web_config.py::QUALITY_KEYWORDS`、`main.py` 画质白名单、`web/index.html` 下拉）均须含蓝光4M/8M/20M/30M，新增任一蓝光档须同步四处理。
-
-- **虎牙选档 ratio 按房间码率上限推导，exsphd 优先、bitRate 兜底，不可用时就近降级或回原画**：`src/stream.py::get_huya_stream_url` 的 `ratio_val` 由 `bitRate` 上限推导（`HUYA_FIXED_TIERS = (("BD30",30000),("BD20",20000),("BD8",8000),("BD4",4000))`），`exsphd` 档位表存在时优先取其中 ≤ 房间上限的 ratio、缺失时回退 bitRate 推导常量；ratio 直接拼在 FLV/HLS URL 的 query 上（流地址路径不变）。`available_qualities` 据此构造（仅列 ≤ 上限的可达档）。请求档位不可用（ratio 不在可用集合）时**就近向下降级**（取可用集合中 < 目标的最大 ratio，经 `HUYA_RATIO_TO_CODE` 映射中文档位名告警），无任何更低档时**不附加 ratio 按原画(OD) 拉流**——绝不可抛异常或返回空流地址，必须保持既有契约 `is_live=True`（交由上层告警重试）。实测 huya.com/chuhe（bitRate=30000）七档 ffmpeg 采样验证：原画 2560x1440\@60 / 蓝光30M\~8M 均 1920x1080\@60 / 蓝光4M 1920x1080\@30 / 超清 1280x720\@30 / 流畅 800x450\@24。
-
-- **斗鱼本地重试链只补强服务端 rate 钳制，不得替代 HLS 候选与全局退避**：`src/stream.py::get_douyu_stream_url` 按 `DOUYU_RATE_BY_CODE = {"OD":"0","BD":"0","BD30/20/8":"8200","BD4":"4000","UHD":"3","HD":"2","SD":"1","LD":"1"}` 映射 rate，请求档被服务端钳制（游客态原画/蓝光需登录被拒、或高码率档不存在被钳到更低档）时，经 `DOUYU_RATE_DESC = ("8200","4000","3","2","1")` 全序**本地最多回退 2 档重试**（复用同一 `get_douyu_stream_data`，不增加额外网络往返）；实际下发 rate 经 `DOUYU_RATE_TO_CODE`（多对一取最高档）回采为真实档位。该重试链**仅处理服务端就近钳制**，不替代「FLV→m3u8 同 token HLS 候选」（见前述斗鱼 HLS 条目）、也**不动** `src/stream_select.py` 的探针退避；全部尝试失败时须明确告警「已无更低档位」并保持 `is_live=True` 契约交由上层重试。实测 douyu.com/3168536：请求 rate=8200 被钳到下发 rate=4（蓝光4M `_4000.flv`），请求 rate=1 被钳到 rate=2。
-
-- **近期性能优化与修复的完整变更记录见** **`CODE_WIKI.md`** **/** **`CODE_WIKI_EN.md`** **的「更新日志 / Changelog」**：本文件只沉淀「可回归的硬约定」。2026-08-28/29 的 P1\~P5 性能优化（探针客户端复用 / `requests.Session` 线程级复用 / 主循环 set 去重 / 调度器增量计数 / 正则提常量）、探针退避窗口对齐主循环、录制成功清除退避、虎牙 FLV-first、Web 模式 loguru 控制台 sink 重建，均已逐条落地为上述约定与「录制结果反馈约定」「并发与线程模型」章节，对应行为不可在无充分理由下回退。
-
-- **分段录制的 `-segment_format` 必须与输出扩展名严格一致，且一律经 `SEGMENT_FORMAT_BY_SUFFIX` 查表（2026-09-04 P0 事故）**：映射表为 `main.py` 模块级常量，`.ts→mpegts`、`.flv→flv`、`.mkv→matroska`、`.mp4→mp4`、`.m4a→ipod`（音频分支扩展名是变量，用 `SEGMENT_FORMAT_BY_SUFFIX.get("." + extension, "ipod")` 兜底——`only_audio_record` 平台保存类型不含 m4a 时 extension 为 mp3 而编码仍走 aac，沿用 ipod 不得抛 KeyError）。**禁止在任何分支直接写 `-segment_format` 的字符串字面量**——事故正是 TS 分支误写 `ipod`、M4A 分支误写 `mpegts`（两值互换，连解释性注释也串到了错误分支上），而字面量取值能通过 black/isort/mypy/AST 等价性校验，只有语义断言能拦住。后果双向且都不好惹：`ipod` 是「iPod H.264 MP4」子集封装器（扩展名 m4v/m4a/m4b），codec tag 表**无 HEVC 条目**，HEVC 原画 `-c copy` 进去直接 `AVERROR(EINVAL)` 退出（Windows 退出码以无符号呈现为 **4294967274**，即 -22；已由 `_describe_return_code` 归一化并附 errno 提示），而 **H.264 不报错、exit 0，只是把 MP4 内容写进 `.ts` 文件名**（产物魔数为 `ftyp` 而非 `0x47`）——静默损坏，比报错更难排查，历史录像需按魔数复核。回归锁：`tests/test_record_container.py`（映射表内容 + AST 扫描断言「5 处取值全部来自查表、无裸字面量」+ 查表键已注册 + 音频兜底为 ipod）。
-
-- **`hevc_flv_url` 必须带 `codec=h265` 标记**：`spider.extract_douyin_hevc_flv_url()` 从直播间 HTML 正则抠出的 HEVC 地址，必须补 `&codec=h265`（已带 codec 参数时原样返回、不得重复拼接），对齐同文件给 ORIGIN 线路拼 `&codec=<VCodec>` 的既有做法。下游 `_is_h265()`（`src/stream_select.py`）与 `main.py` 的 h265 兜底判定**只认 URL 上的 codec 查询参数**，缺失会让 HEVC 源伪装成普通 FLV 通过全部校验、直接进 `-c copy`。注意 `utils.get_query_params` 返回 **list**（`spider.get_params` 返回 str，两者不可混用）。
-
-- **`StopRecording.vbs`** **必须保存为 UTF-16 LE（带 BOM），进程匹配不得回退为按通用映像名全系统击杀（2026-08 修订）**：该脚本由 wscript/cscript 消费，按系统 ANSI 代码页解释 `.vbs`，**UTF-8 保存会让全部中文提示乱码**，仅 UTF-16 LE（带 BOM）被自动识别——「源文件统一 UTF-8」约定**不适用于该文件**。修改流程：按 UTF-8 编辑后 `sed 's/\r*$/\r/' StopRecording.vbs | iconv -f UTF-8 -t UTF-16LE > tmp && printf '\xff\xfe' | cat - tmp > StopRecording.vbs` 转码回写（顺带保证 CRLF；注意 `iconv -t UTF-16` 输出**大端**，必须显式 `-t UTF-16LE` + 手动前置 `FF FE`）。进程匹配现为三层：① 程序专属 exe（`DouyinLiveRecorder.exe` / `-GUI` / `-Web`，对齐 `build_exe.py` 的三个 `name=`）按映像名命中；② python 须命令行含入口脚本（`main.py` / `gui.py` / `web.py`，前紧邻路径分隔符/空格/引号防 `test_main.py` 误匹配）或 pip 启动器名 `douyin-recorder`——**刻意不按项目目录匹配**：项目 venv 内的编辑器工具进程（实测 VSCode isort 语言服务器）路径同样指向项目目录，按目录匹配会误杀；③ ffmpeg 须「父进程为已识别录制主进程」或「路径/命令行锚定到程序目录或 `douyinliverecorder` 关键字」（孤儿 ffmpeg 兜底）。结束顺序为先录制主进程（`taskkill /f /t /pid` 连带子进程树，venv python 的「启动器→真实解释器→ffmpeg」三级链已实测整树杀净）后残留 ffmpeg——原版「先杀 ffmpeg → 等 10s → 再杀主进程」存在主进程存活期间重新拉起 ffmpeg 的竞态（WMI `Terminate()` 不杀子树，会留孤儿 ffmpeg），且强杀不走 atexit、四日志归档与 ffmpeg 收尾不会执行，本脚本仅作进程卡死时的最后手段。静默模式 `cscript //nologo StopRecording.vbs -y` 跳过确认框、状态走 stdout，供自动化调用（实弹验证可复现：ping.exe 副本伪装各进程名 + 快照对比）。
-
-- **「HLS 采集排除平台」是整组剔除，与「FLV-first 调序」是两种语义，不可互相实现（2026-09-05 定稿）**：配置项
-  `[录制设置] HLS采集排除平台(逗号分隔)` 命中的平台，在 `src/stream_select.py::select_source_url` 里计算
-  `hls_effective_enabled = main.hls_collection_enabled and not hls_excluded`，据此**不把 HLS 候选放入序列**
-  （HLS 探针一次都不发、FLV 校验失败也不回退 HLS、h265-FLV 也不切 HLS）；而 `_FLV_FIRST_PLATFORMS`
-  （虎牙）只是把 FLV 排到 HLS **之前**、HLS 仍留在序列里作回退。两者刻意不同，把前者实现成调序会让
-  「排除」失效（仍会去探 HLS），把后者实现成剔除会砍掉虎牙唯一的 HLS 回退。平台名须与 `platform` 字段
-  完全一致（如「斗鱼直播」），默认空 = 不排除。回归锁：`tests/test_stream_select.py` 的 5 个排除列用例（含
-  「HLS 探针零发出」与「列表外平台行为不变」断言）。
-
-- **GUI / WEB 画质切换写回 `URL_config.ini` 后必须同步「编辑器快照」与「显示源」（2026-09-06 定稿）**：三个已修缺陷
-  同源——① 反查表 `_anchor_url_map` 的键是 `URL_config.ini` 里的**纯主播名**，而画质监控菜单传的是带
-  `序号N ` 前缀的显示名，查表前必须 `re.sub(r"^序号\d+\s+", "", anchor_name)` 剥离，否则恒 miss 并误报
-  「未能在 URL_config.ini 中找到」；② 写回文件后必须调 `_load_config()` 同步 `config_text`，否则 URL 配置
-  编辑器仍持写回前的旧快照，用户点「保存」会用旧内容整文件覆盖、把刚写的画质段抹掉（原实现只同步 mtime）；
-  ③ 画质监控表格的「设置画质」列**必须以配置文件为准**（新增 `_anchor_quality_map`），不能取子进程日志值——
-  切换画质不重启录制子进程，日志里的恒为旧值，每轮重建表格会把菜单显示重置回旧画质。WEB 端
-  `PUT /api/rooms/quality` 与 GUI 共用 `src/web_config.py::update_room_quality`（同一份行级写回实现：保留
-  `#` 注释前缀、主播名字段与 URL 原文，空值/「原画」=移除画质段，`os.replace` 原子写，换行注入 ValueError），
-  两端改一处即同步。档位白名单只允许 `BUILTIN_QUALITIES`（与 `stream_select.get_quality_code` 对齐），
-  不接受任意自定义名。回归锁：`tests/test_web_config.py::TestUpdateRoomQuality` +
-  `tests/test_web_api.py::TestRoomQualityApi` + `tests/frontend/test_quality_ui.mjs`。
-
-
-- **形参日志必须走 `i18n.tr(模板, **kw)`，禁止再用 f-string**：`logger.*` / `print` 的
-  f-string 会在查翻译目录**之前**完成插值，于是目录里带占位符的 msgid（如 `[{record_name}] ...`）
-  永远匹配不上，翻译静默退化为原文——2026-09-10 前全仓 242 处形参日志因此「有翻译但用不上」。
-  三条硬约束：① 模板必须是**字面量常量串**（`tr("...{name}...", name=expr)`），模板内占位符只能
-  是**纯标识符**（`str.format` 会 KeyError 拒绝 `{a.b}`/`{f(x)}`）；② 格式说明符/转换符由调用方
-  预先求值后作实参传入（`_backoff=f"{_backoff:.0f}"`、`value=repr(value)`），不进模板——目录侧
-  提取器本就丢弃这些后缀，两者须一致；③ 占位符名由表达式**确定性派生**
-  （`type(e).__name__`→`type_name`、`utils.mask_credentials(url)`→`masked_url`、`self._cls_name`→`cls_name`、
-  `X.get('k')`→`k`、`len(X)`→`X_count`），同一模板内重名加 `_2/_3` 后缀——四语目录的键必须与之
-  逐字对齐，故**改模板名必须同步改 kwarg 名**（曾漏改一处致运行时 `KeyError`）。
-  回归锁：`tests/test_i18n_migration.py`（① 无遗留有价值 logger/print f-string；② 每个 `tr()` 的
-  模板占位符集合 == 关键字实参集合且均为标识符；③ 运行时模板集合 ⊆ `zh_CN.po` 键集合）。
-  `main.py` 的 `import i18n` 必须置于模块级 banner 打印**之前**（模块顺序执行，晚于此的 import 对已执行的 print 无效）。
-- **测试必须冻结翻译为恒等映射**：`i18n.tr()` 迁移后，日志文本随 `config.ini` 的 `language` 和宿主
-  系统语言变化（本机 `language` 为空时探测出 `en_US`，同一断言在不同机器上得到不同文本）；且
-  `zh_CN` 目录**并非恒等映射**（128 条英文源串译成中文），故不存在「选某个语言就能复现源文本」的方案。
-  `tests/conftest.py::_pin_identity_translation` 把 `i18n._tr` 固定为 `lambda t: t`，使
-  `tr(模板, **kw) == 模板.format(**kw) == 迁移前 f-string 输出`，断言与语言解耦；翻译机制本身由
-  `tests/test_i18n_tr.py` 与 `test_web_api.py` 的语言用例单独覆盖。**不可删除该 fixture**。
-
-- **Web 面板「直播间列表」表格必须维持** **`table-layout: fixed`** **布局（`web/style.css` 末尾段）**：
-  `#rooms-view .data-table` 曾用浏览器默认 auto 布局且无列宽/截断约束，窄视口（窗口缩窄 /
-  Windows 高 DPI 缩放，有效宽度 ≈500px）下 6 列 min-content 超出 `.panel` 容器——`width:100%`
-  失效，表格按 min-content 溢出渲染：表头「启用/录制中」被压成一字宽竖排字、「删除」按钮溢出
-  卡片右缘、长 URL（`discover?modal_id=` 等）折 2~3 行致行高参差（2026-09-11 截图实锤）。
-  修复后按表头定列宽（画质 128 / 名称 150 / 启用 72 / 录制中 72 / 操作 76，地址列吃剩余宽），
-  地址/名称 `td` 单行省略（地址 td 由 `loadRooms` 自带 `title` 悬浮全文），≤768px 走
-  `min-width:640px + .panel overflow-x:auto` 面板内横滚兜底。三条约束：**改回 auto 布局或删省略号
-  会让错位回归**（Chrome 在 `/?&=` 处断行、Safari 的单元格 ellipsis 必须配 fixed 布局）；**新增列必须
-  同步补对应 `th:nth-child(n)` 定宽**（fixed 布局下未定宽的新列会平分剩余空间、挤压地址列）；
-  **该段作用域必须保持 `#rooms-view`**，勿"顺手统一"扩大到仪表盘/弹幕/文件三张表（它们列数与
-  内容形态不同，fixed 定宽会破坏其布局）。
-
-- **ffmpeg「输出侧」参数构造已统一到 `_build_ffmpeg_output_args()`，禁止再在各平台分支手写 `command = [...]`（2026-09-13 定稿，F-01）**：`main.start_record` 原先在 音频(MP3/M4A) / FLV / MKV / MP4 / TS 五个分支各写一份 `command = [...]` 列表，正是 5 份复制粘贴导致「`-segment_format` 字面值错配」P0 事故的根因（改一处漏四处）。现全部收敛到 `start_record` 之前的模块级函数 `_build_ffmpeg_output_args(save_file_path, record_save_type, split_video_by_time, split_time, is_audio=False)`；输入级选项（-reconnect*/-headers/-tls_verify/-http_proxy）与 `save_file_path` / 时间戳 `now` 的构造仍留在 `start_record` 内，builder 只拼「输出参数」。新增录制格式/容器分支**必须**经此 builder 的 `record_save_type` / `is_audio` 分发，不得再内联列表；容器取值一律查 `SEGMENT_FORMAT_BY_SUFFIX`（见前述分段封装条目）。行为等价性由黄金快照锁死：回归锁 `tests/test_start_record_command_golden.py`（设 `GOLDEN_REGEN=1` 重生成 `tests/golden/start_record_commands.json`，默认比对字节级命令；20 个用例覆盖 5 条路径 + m3u8 丢弃 `-reconnect_at_eof` + 头/代理注入 + 海外超时 + FLV-h265→TS + shopee 直下）。
-
-- **F-01 收官：录制命令构造与平台分发的四个单一定义点（2026-09-14 定稿，禁止回退成内联复制粘贴）**：
-  ① **输入侧** `_build_ffmpeg_input_args(real_url, user_agent, tuning, headers, tls_verify, proxy_address)`——`-reconnect*` / `-headers` / `-tls_verify` / `-http_proxy` 全在此拼装，一律按 `-i` 锚点定位（`command.index("-i")`）或插到列表头，**禁止再用裸数字下标**（F-02 已修过一处静默插错位置的问题）；海外超时/缓冲参数由 `_ffmpeg_network_tuning(is_overseas)` 给出。
-  ② **输出路径** `_build_record_output_path(...)`——扩展名、分段时间戳格式（`_SEGMENT_NOW_FORMAT_BY_SAVE_TYPE`：FLV 沿用 `%y%m%d_%H%M%S`、其余 `%Y-%m-%d_%H-%M-%S`）、序号占位符（视频 `_%03d`、音频 `_%02d`/`_00`、FLV 非分段保留历史 `_00`）全部查表，禁止在分支里再拼文件名。
-  ③ **执行骨架** `_run_ffmpeg_record(...)`（try/except OSError + `check_subprocess` + 启动失败清幽灵 `recording` 条目）与录后转码 `_convert_after_record(...)`（受 `converts_to_mp4` 裁决；分段按 `_<数字序号>.<ext>` 正则精确匹配，兼容 ffmpeg `%03d` 超过 999 段输出 4 位）。五条保存类型分支**只允许**调用这三个函数，不得各自再写一份 try/except + `check_subprocess`。
-  ④ **平台分发** `_PLATFORM_RESOLVERS`（`(匹配器, 处理函数)` 表）+ `_PlatformResolveContext`：原 53 层 `elif` 链已拆成 52 个 `_resolve_<host>()`。**表项顺序即优先级**，新增平台 = 追加一个处理函数 + 一条表项，禁止往表里插 `elif`。回归锁：`tests/test_platform_dispatch.py`（表结构/优先级头部/自定义流大小写/新平台单表项接入）+ `tests/test_start_record_command_golden.py`（命令字节级）。
-  附带两条已修的行为漂移，改回即回归：**TS 非分段在「被注释/停止」结束时必须受 `converts_to_mp4` 裁决**（原实现无条件转 MP4，无视用户设置，与 TS 分段路径及 `check_subprocess` 自然结束路径口径不一致）；**分段录制的提示行打印实际输出路径 basename**（原打印非分段文件名，三种保存类型形态互不一致）。
-
-- **`sync_req` 的 SSL 降级路径必须保持惰性 + 单次覆盖（F-12，2026-09-14 定稿）**：`src/sync_http.py` 的 CERT_NONE 上下文与 opener 由 `_get_insecure_context()` / `_get_insecure_opener()` **按需构造**，禁止改回模块级常驻（import 即存在不校验的 SSLContext 是一次静默的全局降级面）。新增单次覆盖参数 `sync_req(..., ssl_verify=None)`：为 None 时跟随控制面全局开关（`_resolve_ssl_verify`），显式传值时以该次调用为准，且**必须同时透传 urllib 与 requests(代理) 两条路径**（曾只改一条即出现口径分叉）。事实基准（勿被旧审查结论误导）：`sync_req` 的 123 处调用点全部位于 `src/spider.py`，登录 / `msg_push.py` / Web 面板不经本模块；控制面开关 `http_config.ssl_verify` 在生产链路无 `set_ssl_verify(False)` 调用点、恒为 True，CERT_NONE 路径生产中不可达。
-
-- **抖音弹幕 `signature` 保持不编码，禁止"顺手加 `quote()`"（F-13，2026-09-14 定稿）**：XBogus 自定义字符表 `XBOGUS_ALPHABET` 含 `+` / `/`，静态审查据此建议 percent-encode。已对照上游 `xiaoyaocz/dart_simple_live` → `simple_live_core/lib/src/danmaku/douyin_danmaku.dart`（第 88 行附近 `var url = "$uri&signature=$sign";`）确认为**直接拼接、不 encodeComponent**，且服务端不按 form-urlencoded 语义把 `+` 解成空格（否则约四成签名系统性失败）+ WS 握手 URL 走标准 query 解析会做百分号解码。改编码只会让本端成为唯一异类指纹。回归锁：`tests/test_douyin_signature_encoding.py`。
-
-- **protobuf 升级必须先同代重新生成再放开版本上限（F-14）**：`src/proto/douyin_pb2.py` 为 protoc 25.x（gencode 4.25.3）产物、标注 DO NOT EDIT，本环境无 protoc/grpcio-tools。**禁止手改生成文件**；`requirements.txt` / `pyproject.toml` 的 `protobuf>=6.31.1,<8` **上限不可删除**。回归锁：`tests/test_proto_runtime_compat.py`（解析生成文件头 gencode 版本 + 声明区间，断言区间含上限、已安装 runtime 满足区间且不早于 gencode、`douyin_pb2` 可 import 且 `PushFrame` 往返编解码正常），runtime 升到 8.x 时该用例变红即是「先同代 protoc 重新生成」的强制提醒。
-
-- **`main.py`** **内引用模块全局量不得加 `main.` 前缀**：本文件模块级 `main` 是入口函数 `def main(...)` 而非模块对象，`main.recording_enabled` 这类写法在运行期必抛 `AttributeError`（mypy 同步报 `attr-defined`）。需强调「模块级可观察量」时直接写全局名并配注释说明其晚绑定语义即可（2026-09-14 修掉 `disable_record` + 推送检测分支的一处实例）。
+### 录制链与房间线程主循环
+
+- **录制链不得嵌套于 `if headers:` 内**: 录制主链必须位于条件判断**之外**，仅把「是否附加自定义头」作局部行为；用该条件包裹整条流程会导致无自定义头时静默不录制。
+- **`real_url` 为空必须跳过录制链**: `select_source_url` 返回 None 时 `if not real_url: 告警+等待+continue`，否则 None 流入录制执行链崩溃或复用残留命令。守卫之后 `now`/`title_in_name` 为无条件赋值（移除恒真 `if real_url:` 包装）。
+- **弹幕监控房间须随录制线程退出而移除**: `main.start_record` 在 outer try 的 `finally` 调 `get_hub().room_stopped(record_name)`（各 return 全覆盖），GUI `_danmaku_dispatch` 收到 `state=="stopped"` 后 pop 房间行；删掉该清理会残留失效直播间。
+- **「已被注释」检查必须在解析之前**: 房间线程内层循环顶部（`exit_recording` 检查后）先查 `record_url in url_comments` 再进平台解析——原检查点在解析成功后，平台持续失败（风控空响应）时永远走不到，线程滞留占用监控位。
+- **录制并发槽必须在 `Popen` 之前 acquire**（main.py::check_subprocess）: `recording_semaphore` 语义是限制同时进行 ffmpeg 数，先起进程再 acquire 则上限根本不约束 ffmpeg 进程数（资源耗尽）。结构：「`acquire` → `try:`（`Popen`+注册+弹幕启动+主循环）→ `finally: release`」，**启动段也必须落 `try` 内**，抛错同样归还槽位否则泄漏累积饿死所有后续录制。
+
+### 流地址探针与可达性校验
+
+- **GET 复核容错语义不得简化**（src/stream_select.py::_confirm_get_ok）: 401/403 先原样重试一次再定罪；候选已是末位（无 record_url 备选）时稳定拒绝也仅告警放行、交由 ffmpeg 定夺。删重试或末位放行会重引「探针误杀可用源」。同语义扩展：m3u8 Range-GET 探针 401/403 同样先隔 `_GET_RECHECK_INTERVAL` 重试；HLS 为唯一候选或 FLV 为 h265 不可用时传 `last_resort=True`。
+- **末位候选 content-type 拒绝也须放行**: `_validate_stream_url` 的 text/html 分支与尾部非 200 分支对 `last_resort=True` 必须仅告警放行（斗鱼 hw CDN HEAD 回 405+text/html，ffmpeg 实际 GET 正常）。
+- **虎牙探针退避仅限 `_PROBE_BACKOFF_PLATFORMS` 名单**: 虎牙 aldirect CDN 对同路径短时间连击限流，每轮探针+ffmpeg 拉流烧光连接预算→秒级失败循环。**绝不可把斗鱼等加入名单**（斗鱼 hw 偶发 403 由「重试一次」救回，负缓存回退会致斗鱼回退 FLV 游客态 ~70s 被掐）。
+- **虎牙选源必须 FLV-first（`_FLV_FIRST_PLATFORMS`），斗鱼绝不加入**: 候选序列 FLV→HLS→record_url，冷启动假绿损失归零；FLV 不可用仍回退 HLS。斗鱼游客态 FLV ~70s 被掐必须 HLS 优先。退避中末位放行随序列末位变化，核心不变式是零探针。
+- **探针退避窗口必须 ≥ 一个主循环周期**: `_probe_backoff_window() = max(_PROBE_BACKOFF_SECONDS, main.delay_default + _PROBE_BACKOFF_INTERVAL_MARGIN)`（delay_default 默认 120s），**不可改回固定 60s 常量**——否则快速失败记入退避后下一轮早已超出窗口又去撞死线路。margin 取 70s 覆盖最坏节奏。
+- **录制成功须撤销探针退避（`clear_ffmpeg_reject`）**: 细则见「录制结果反馈约定」同名条目（只清实际拉流成功地址、HLS 不顺带清；与 `mark` 共用白名单与退避键）。
+- **UA 双端一字不差约定**: `main.py` ffmpeg 默认移动 UA ≡ `stream_select.MOBILE_UA`（校验探针与 ffmpeg 指纹一致）；`room.HEADERS` 的 UA 参与 X-Bogus 签名（改字符串须同步四处：`MOBILE_UA`/`main.py ffmpeg 默认 UA`/`room.HEADERS`/B站 H5 UA）。全库基准（2026-08）：桌面 Chrome/141、Edg/141、Firefox/148、移动 `Android 14; Pixel 8` Chrome/141——禁止回落过旧指纹（风控特征之一）。
+- **探针节流/抖动语义不得移除**: 同 host 节流（`_throttle_probe`，`_PROBE_MIN_HOST_INTERVAL=0.35s`+抖动）与重试抖动（`_recheck_delay`，`0.8s+uniform(0,0.7s)`）消除机器人节奏指纹；改为固定值或移除会重引风控误伤。测试侧 autouse fixture 置 `_throttle_probe` 为 no-op；节流专项测试经 from-import 绕过。
+- **流地址可达性探测方法基线**: 抖音等 CDN 对 m3u8 的 `HEAD` 常回 4xx（含 404）而 `GET` 能拉流，故一律「HEAD 非 2xx → Range `GET bytes=0-0` 探测（200/206 判可达）」，**不要只覆盖 400/401/403/405**。同步/异步校验器的 proxy/verify/UA 三者必须一致（否则境外平台直连误判不可达）。本条与「GET 复核容错/末位放行/探针节流抖动/虎牙退避」四条互补。
+- **「HLS 采集排除平台」是整组剔除，与「FLV-first 调序」两种语义不可互实现**: `[录制设置] HLS采集排除平台(逗号分隔)` 命中的平台直接不把 HLS 候选放入序列（探针一次不发、FLV 失败也不回退 HLS）；`_FLV_FIRST_PLATFORMS` 只是把 FLV 排到 HLS 前、HLS 仍留作回退。平台名须与 `platform` 字段完全一致，默认空=不排除。回归锁：`tests/test_stream_select.py` 的 5 个排除列用例。
+
+### 弹幕采集与 SRT 写入
+
+- **弹幕 WS 连接必须显式 `proxy=None`**（src/ws_client.py::connect）: 使 WebSocket 直连不跟随系统代理，否则 B站/斗鱼等报 `connecting through a SOCKS proxy requires python-socks` 连接即断。改动须保留 `proxy=None`。
+- **B站弹幕 buvid 必须真实、AUTH_REPLY 必须显式校验**: spi 端点是 `/x/frontend/finger/spi`（少写结尾 `i` 会 200+空 body 永远 JSONDecodeError）；buvid 获取链按真实注册标识优先排序（进程缓存→cookie `buvid3=`→spi→`www.bilibili.com` 首页 Set-Cookie→随机 UUID 兜底标记 is_fallback）。`_decode_packet` 须校验 operation=8 回应的 code：非 0 经 `_reject_auth()` 告警+断开+`spider.invalidate_bili_buvid_cache()`；`_auth_watchdog` 兜底「服务器 8s 不回 AUTH_REPLY 的静默拒绝」。
+- **`collector.stop()` 与采集线程握手顺序不可单独调整**（src/collector.py）: `stop()` 必须先 `set(self._stop_event)` 再读 `self._loop`；`_run()` 必须先发布 `self._loop` 再检查 `self._stop_event`（两相反顺序保证信号必被一方接收）。缺一半会丢信号致 `join(timeout=8)` 超时、线程与 SRT 句柄双泄漏。另：`_shutdown` 中 `await danmaku.stop()` 必须 `asyncio.wait_for` 限时（`_SHUTDOWN_TIMEOUT_SECONDS`），否则 SDK 半开连接挂住 `loop.stop()` 永不执行。
+- **弹幕文本写入 SRT 前必须转义**（src/srt_writer.py::_sanitize_srt_text）: `user_name`/`message` 为外部可控输入，含 `\n` 截断 SRT 块、含 `-->` 被解析成新时间轴行可伪造字幕。替换（非删除）为可见字符。回归锁：注入 `normal\n2\n00:00:99,000 --> 00:00:99,999\nFAKE\n` 后产物必须仍只有 1 个块 1 条时间轴。片内 `end` 须 `max(start, min(end, _seg_seconds))` 钳制。
+- **弹幕链路接线点与分段命名约定**: `start_record` 各平台分支收集 `record_danmaku_args`（局部变量每轮重置为 None）→ 6 处 `check_subprocess(..., platform=platform, danmaku_args=record_danmaku_args)` → `src/__init__.py::get_danmaku_collector(platform, args, base_filename, segment_seconds)`（实现在 `src/collector.py`）。硬约束：① `danmaku_collector.stop()` 必须在 `while process.poll() is None` 循环之外（`DanmakuCollector.stop()` 有 `_stop_called` 防重入幂等）；② 分段文件名——视频 `_%03d`（FLV 已从 `_%02d` 对齐；音频仍 `_%02d`）、SRT `{seg:03d}` 与之对应，`check_subprocess` 需同时剥离两种占位符；③ 抖音弹幕空 cookie 时在 `DouyinDanmaku.start()` 协程内 `await get_ttwid()` 动态获取（不再硬编码 ttwid）。配置项 `弹幕分片时长(秒)` 走 `_safe_float(..., 1800.0)`。
+- **抖音弹幕 `signature` 保持不编码，禁止顺手加 `quote()`**（F-13）: XBogus 字符表含 `+`/`/`，但上游确认直接拼接不 encodeComponent、服务端不按 form-urlencoded 把 `+` 解成空格。改编码会让本端成为唯一异类指纹。回归锁：`tests/test_douyin_signature_encoding.py`。
+
+### 平台接口、签名与流地址解析
+
+- **斗鱼必须附带 FLV→m3u8 同 token HLS 候选**: 斗鱼 H5 只返 FLV，游客态 FLV 长连接 ~70s 被掐；wsAuth token 对 FLV/HLS 通用，把路径 `.flv` 改 `.m3u8` 即同 token HLS（hw CDN 200+mpegurl）。该候选由 `select_source_url` 校验 gating、不可达自动回退 FLV，须保留。
+- **migu.js 输出契约为完整签名 URL**: `src/javascript/migu.js` 适配 migu 播放器 v_20260731+ wasm 接口（12 个导入函数、导出名重排），输出带 `ddCalcu`/`sv` 参数的完整地址（`sv` 失败回退内置默认因子）；`spider.get_migu_stream_url` 直接使用，不再拼接过期 `sv=10010`。
+- **抖音接口风控信号是「HTTP 200 + 空响应体」不是 4xx**: 解析失败先看 `len(response.text)`，为 0 基本是 UA/Cookie 被拒。三条配套：① UA 敏感——`src/room.py` 模块级 `HEADERS` 是 2020 三星安卓 UA，`iesdouyin.com/web/api/v2/user/info/` 用它必被静默拒，此类接口一律用 `room.DESKTOP_UA`；② `iesdouyin.com/share/user/<sec_uid>` 已是 JS 反爬壳页，取 `unique_id` 请走 `https://www.iesdouyin.com/web/api/v2/user/info/?sec_uid=<sec_uid>`；③ `webcast.amemv.com/webcast/room/reflow/info/` 用占位 `room_id=2`+`sec_user_id` 解析主页行不通（status_code=10011）。
+- **`live.douyin.com` 的 `web_rid` 同时接受数字房间号与抖音号**: `webcast/room/web/enter/` 两者皆可，`live.douyin.com/<抖音号>` 不重定向。**不要写「抖音号需先重定向解析成数字」的逻辑**（已被实测证伪并删除）。`main.py` 以 `port_info["anchor_name"]` 为空作「网址内容获取失败」判据。
+- **`hevc_flv_url` 必须带 `codec=h265` 标记**（src/spider.py::extract_douyin_hevc_flv_url）: 正则抠出的 HEVC 地址必须补 `&codec=h265`（已带则原样返回）。下游 `_is_h265()`/`main.py` 的 h265 兜底**只认 URL 上的 codec 查询参数**。注意 `utils.get_query_params` 返回 **list**（`spider.get_params` 返回 str，不可混用）。
+
+### 画质档位与选源映射
+
+- **蓝光子档位（BD4/8/20/30）必须折叠到 BD 索引，不得塞进 `QUALITY_MAPPING`**（src/stream.py::get_quality_index）: 统一折叠为 `BD`（索引 1），细粒度靠 `BD_SUB_TIERS` 承载。`QUALITY_MAPPING` 是抖音/通用排序权威索引（OD=0,BD=1,UHD=2,HD=3,SD=4,LD=5）。`QUALITY_MAPPING_BIT`/`QUALITY_LEVEL`/`QUALITY_CODE_TO_ZH` 是其超集。中文映射（`get_quality_code`/`web_config.QUALITY_KEYWORDS`/`main.py` 白名单/`web/index.html`）均须含蓝光4M/8M/20M/30M，新增须同步四处理。测试按超集语义断言（`tests/test_stream.py::TestQualityMapping`）。
+- **虎牙选档 ratio 按房间码率上限推导，exsphd 优先、bitRate 兜底，不可用时就近降级或回原画**（src/stream.py::get_huya_stream_url）: `ratio_val` 由 `bitRate` 上限推导（`HUYA_FIXED_TIERS`），exsphd 档位表存在时优先取 ≤ 上限的 ratio。请求档不可用（ratio 不在可用集合）时就近向下降级，无任何更低档时不附加 ratio 按原画(OD) 拉流，**绝不可抛异常或返回空流地址**，保持 `is_live=True` 契约交由上层重试。
+- **斗鱼本地重试链只补强服务端 rate 钳制，不得替代 HLS 候选与全局退避**（src/stream.py::get_douyu_stream_url）: 按 `DOUYU_RATE_BY_CODE` 映射 rate，服务端钳制时经 `DOUYU_RATE_DESC` 全序本地最多回退 2 档重试（复用同一 `get_douyu_stream_data`）；全部失败时明确告警「已无更低档位」并保持 `is_live=True`。
+
+### HTTP 客户端复用与连接管理
+
+- **httpx 请求级 headers 是「合并」不是「替换」**: 把 UA/Referer/Cookie 挂 client 级时，只传 `{"Range": "bytes=0-0"}` 的请求仍带全部 client 级头——不要据此判「丢了请求头」。但客户端一旦在多个候选间复用（select_source_url 整轮共用一支），业务头绝不能再挂 client 级（候选间互相污染），必须逐请求显式传入。
+- **探针客户端复用作用域 = 单次选源，禁止升级为全局缓存**: `_validate_stream_url` 新增可选 `client` 参数（不传时自建自管）；刻意不做按 `(proxy, verify)` 模块级全局缓存（虎牙 CDN 按连接预算限流，常驻 keepalive 会与 ffmpeg 拉流争抢）。
+- **禁止为「保险」关掉探针客户端 keepalive**: 会把复用收益全部退掉；排查虎牙 403 应临时改回「每候选一支 Client」。
+- **`requests.Session` 必须线程级复用，禁止每次新建**（src/sync_http.py）: `_session()` 经 `threading.local()` 缓存（Session 非线程安全不可跨线程共享）。改回每次新建会让每次出站多一轮 TCP+TLS 握手（实测 11.9→1.47ms，约 8× 退化）。`tests/test_sync_http.py` 的代理替身 patch 目标须是 `src.sync_http._session` 不是 `src.sync_http.requests`。**注意**：该模块当前无生产 importer（sync_req 调用点现只剩 tests/），保留是因为 requests 仍在运行时清单且 8× 复用结论成立——任何「已经吃到这个收益」的表述不得再写。
+- **`sync_req` 的 SSL 降级路径必须保持惰性+单次覆盖**（F-12）: CERT_NONE 上下文与 opener 由 `_get_insecure_context()`/`_get_insecure_opener()` 按需构造，禁止改回模块级常驻。「无调用者」只是当下状态，不作为放宽惰性要求的理由。
+
+### 并发、事件循环与锁
+
+- **`asyncio.get_event_loop()` 3.14 起不再隐式创建事件循环**: 当前线程无循环时抛 RuntimeError。`src/async_http.py::close_all_clients_sync` 已改为捕获 RuntimeError 走引用清理兜底；协程内获取循环一律 `get_running_loop()`。
+- **跨事件循环禁止创建/调度旧 AsyncClient 的 aclose 协程**（src/async_http.py::_get_client）: 淘汰他循环创建的旧客户端时一律**不创建** `aclose()` 协程，释放引用交 GC 兜底（三个坑：run_coroutine_threadsafe 只调度不等待、加 is_running 门控 await 仍可能永不执行、当前循环直接 await 旧 client.aclose 会操作旧循环 transport）。回归锁：`tests/test_async_http_lock.py::test_cross_loop_running_old_loop_skips_close`/`test_cross_loop_stopped_old_loop_skips_close`。
+- **熔断计数必须增量、不得 `sum(deque)`；`import time` 提顶层**（src/scheduler.py）: `_fail_count`/`_global_error_count` 在样本入队/挤出时增量维护（O(1)），替代 `record()` 内 `sum(self._samples)`（O(40) 持锁遍历）；`_now`/`_allow_sleep` 用的 `time` 已在模块顶层 `import time`。
+- **「调用方持锁」改「内部自持锁」必须同步清调用点外层锁**: `web_api._purge_expired_tokens()` 改为内部 `with _tokens_lock:` 后，`login` 里原有 `with _tokens_lock: _purge_expired_tokens()` 未移除——`threading.Lock` 非重入，每个登录请求自死锁（征兆：接口不报错、永远不返回）。约定：函数要么只内部加锁、要么只由调用方加锁，二选一并在注释写明；改造其一必须 `grep` 全部调用点。
+- **可重入性判定一律以源码定义行为为准**: 不要把文档清单当推断依据（main.file_update_lock/`_cache_lock` 实为 `RLock`）。改动前必须 `grep` 定义行确认。
+
+### ffmpeg 命令构造与容器格式
+
+- **`-reconnect*` 必须在 `-i` 之前且每个选项紧跟取值**: `-reconnect_delay_max`/`-reconnect_streamed`/`-reconnect_at_eof` 是 input 级选项，写在 `-i` 之后被划入输出组且 ffmpeg 不报错（静默接受、退出码 0，输入侧从未应用）→ 重连完全失效且零可见症状。回归锁：`tests/test_ffmpeg_reconnect_args.py`（AST 锁「每 `-reconnect*` 紧跟字面量值」+「全在 `-i` 之前」）。**HLS 输入必须移除 `-reconnect_at_eof`**（`if ".m3u8" in url: del`，main.py 与 standalone 共三处定义点同步）——m3u8 播放列表 HTTP 响应结束即 EOF，该选项让 http 层无限重连，hls demuxer 永远停「待列表」一个媒体段都拉不到。回归锁：`tests/test_ffmpeg_reconnect_args.py::TestReconnectAtEofDroppedForHls`。
+- **`-thread_queue_size` 只能位于 `-i` 之后**（2026-09-23 事故）: 放错侧不再是静默不生效而是拒绝打开输入（实测 `Option thread_queue_size ... cannot be applied to input url` → 退出码 -22，录制 100% 失败）。输出侧是本项目支持面内唯一合法位置。推广口径：新增任何 per-file 选项前先用 `ffmpeg -h full` 分段标题确认归属。`tests/test_ffmpeg_reconnect_args.py::TestOutputOnlyOptionsFollowInputFlag`。
+- **`-segment_format` 必须与输出扩展名严格一致，且一律经 `SEGMENT_FORMAT_BY_SUFFIX` 查表**（2026-09-04 P0）: `.ts→mpegts`/`.flv→flv`/`.mkv→matroska`/`.mp4→mp4`/`.m4a→ipod`（音频分支 `SEGMENT_FORMAT_BY_SUFFIX.get("." + extension, "ipod")` 兜底）。**禁止任何分支直接写 `-segment_format` 字符串字面量**——TS 分支误写 `ipod`、M4A 误写 `mpegts` 的事故：HEVC `-c copy` 进 `ipod` 直接 `AVERROR(EINVAL)` 退出；H.264 不报错 exit 0 但把 MP4 内容写进 `.ts`（魔数 ftyp 非 0x47）静默损坏。回归锁：`tests/test_record_container.py`（映射表内容+AST 扫描「5 处取值全查表、无裸字面量」+ 查表键已注册 + 音频兜底 ipod）。
+- **ffmpeg「输出侧」参数构造已统一到 `_build_ffmpeg_output_args()`，禁止各平台分支手写 `command=[...]`**（F-01）: 原 5 份复制粘贴是 `-segment_format` 字面值错配 P0 根因。输入级选项（`-reconnect*`/`-headers`/`-tls_verify`/`-http_proxy`）与 `save_file_path`/时间戳仍留 `start_record` 内，builder 只拼输出参数。新增格式分支必须经此 builder 的 `record_save_type`/`is_audio` 分发。回归锁：`tests/test_start_record_command_golden.py`（GOLDEN_REGEN=1 重生成 `tests/golden/start_record_commands.json`，字节级比对；20 用例覆盖 5 路径+m3u8 丢弃 `-reconnect_at_eof`+头/代理注入+海外超时+FLV-h265→TS+shopee 直下）。
+- **F-01 收官：命令构造与平台分发的四个单一定义点**（禁止回退成内联复制粘贴）：① 输入侧 `_build_ffmpeg_input_args(real_url, user_agent, tuning, headers, tls_verify, proxy_address)`（全按 `-i` 锚点定位或插列表头，禁裸数字下标）；② 输出路径 `_build_record_output_path(...)`（扩展名/分段时间戳格式/`_%03d`/`_%02d` 全查表）；③ 执行骨架 `_run_ffmpeg_record(...)`+录后转码 `_convert_after_record(...)`（五条保存类型分支只调这三个函数，禁各自写 try/except+check_subprocess）；④ 平台分发 `_PLATFORM_RESOLVERS`（`(匹配器,处理函数)` 表）+ `_PlatformResolveContext`（原 53 层 elif 拆成 52 个 `_resolve_<host>()`，表项顺序即优先级，禁插 elif）。回归锁：`tests/test_platform_dispatch.py`+`tests/test_start_record_command_golden.py`。附带已修行为漂移（改回即回归）：TS 非分段结束时必须受 `converts_to_mp4` 裁决；分段提示行打印实际输出路径 basename。
+
+### 日志、控制台与 GUI / 后台模式
+
+- **Web 后台模式必须重建 loguru 控制台 sink**（web.py::_enter_background_mode）: 在 `import main` 之后才把 stdout/stderr 重定向到 `logs/web_console.log`。loguru sink 在 `add()` 时绑定具体对象，不调 `rebind_console_sink()` 重建则全部日志写往被隐藏控制台，`web_console.log` 只剩 print。**排查 Web 模式问题一律先看 `logs/streamget.log`/`PlayURL.log`，不要只看 `web_console.log`。**
+- **GUI 父进程绝不持有录制日志文件句柄（`DLR_GUI_PARENT` 标记）**: `gui.py` 必须在导入任何 `src` 模块**之前**设 `os.environ["DLR_GUI_PARENT"]="1"`，拉起录制核心时 env 经 `src/logger.py::child_process_env()` 构建（剔除标记+固定 `PYTHONIOENCODING=utf-8`）。`src/logger.py` 导入期读该标记决定文件 sink 归属：GUI 进程只写 `logs/gui.log`，绝不创建 streamget.log/PlayURL.log（否则与录制子进程双开同日志文件、轮转 rename 抛 WinError 32、文件日志静默丢失+stderr 刷屏）。回归锁：`tests/test_logger_gui_parent.py`。
+- **异常日志必须带异常类型与上下文，禁止裸 `logger.xxx(e)`**: Windows 下 `socket.timeout`/`TimeoutError` 的 `str()` 为空，只写 `{e}` 打出空白行。写法：`i18n.tr()` 模板+关键字实参（禁止 f-string）：`logger.debug(tr("<动作>: {masked_url} - {type_name}: {err}", masked_url=utils.mask_credentials(url), type_name=type(e).__name__, err=e))`。硬要求 `{type_name}`/`{masked_url}` 不可省；流地址校验失败还须额外输出 `status_code` 与 `content-type`，禁止静默吞异常。
+- **macOS GUI 双重主线程约束**（gui.py）: Tcl/Tk 只能跑主线程，而 pystray darwin 后端 `icon.run()` 接管主线程——两者互斥。唯一正确方案：主线程先 `tray.run_detached()`（darwin 后端仅注册 NSStatusItem 不启事件循环）再 `root.mainloop()`，绝不允许把 mainloop 放子线程。配套：① `run_detached()` 前主线程调 `icon._assert_image()` 预热并置 `_icon_valid=True`（PIL 惰性编码器在冻结环境非主线程首次初始化会原生崩溃）；② `_assert_image` 是 darwin 专有方法，通用路径调用会 AttributeError 被吞导致托盘静默禁用；③ detached 退出先 `icon.visible=False` 再 `icon.stop()`。改动后必须 `py_compile` 并通过 CI（复现需 macOS 冻结构建）。
+- **无控制台环境 `sys.stderr is None`，`logger.add` 前必须判空**（src/logger.py）: `pythonw.exe` 与冻结 `console=False` exe 不分配控制台，stderr 全为 None，裸写 `logger.add(sink=sys.stderr,...)` 在导入期抛 TypeError 致 gui.py 静默死亡（pythonw 跑 gui.py 失败真正根因）。必须 `if sys.stderr is not None:` 才加控制台 sink，无控制台时跳过由文件 sink 兜底。排查窗口化静默崩溃：先装 `sys.excepthook`/`threading.excepthook` 落盘+弹窗钩子，再顺调用链 grep `sink=sys.`/`print_exc`/`sys.stdout.write` 判空。
+- **多房间交织日志靠 `extra[room]` 列切出，不要靠 `[record_name]` 前缀**（src/logger.py::ROOM_FIELD）: 全局 patcher 写 `record["extra"]["room"]`（ContextVar 承载当前房间），两个录制文件 sink format 含 `{extra[room]}`。`start_record` 入口先绑 `序号{count}` 占位、解析出主播名后升级为完整 `record_name`。三条不要动：① `logger.configure(extra={ROOM_FIELD: ""})` 默认值不可删（缺则每一条日志 KeyError 被丢弃）；② `logs/gui.log` 行格式刻意不带该列；③ 本机制只加关联标识，不得顺手改日志级别/filter 分档/rotation/retention。已知边界：新起线程不继承 ContextVar（弹幕线程/push_message/转码线程池该列为空，仍靠关键字辅助）。回归锁：`tests/test_logger_room_context.py`。
+
+### i18n 文案、目录与占位符
+
+- **i18n 多格式目录与语言热切换**: `i18n.py` 按语言探测 gettext `.mo`→`<lang>.json`→`<lang>.yaml`（zh_CN 用 .mo、en_US/en_GB 用 .json、zh_TW 用 .yaml）；四目录键集合必须一致。修改 zh_CN.po 后必须 `python scripts/compile_po.py` 重编 .mo（测试强制字节级同步）。新增翻译串提取用 `python scripts/extract_i18n_strings.py`。**前端另行维护内嵌目录**：`web/app.js` 自带四套 UI 字串，**新增/修改翻译串须同步五处**（四份 i18n 目录+`web/app.js`），改完必跑 `node --check web/app.js`+`node --test tests/frontend/`。
+- **形参日志必须走 `i18n.tr(模板, **kw)`，禁止再用 f-string**: f-string 在查目录前完成插值，带占位符的 msgid 永远匹配不上、翻译静默退化为原文。三条硬约束：① 模板必须是字面量常量串，占位符只能是纯标识符；② 格式/转换符由调用方预先求值后作实参传入；③ 占位符名由表达式确定性派生（`type(e).__name__`→`type_name` 等），改模板名必须同步改 kwarg 名。回归锁：`tests/test_i18n_migration.py`。`main.py` 的 `import i18n` 必须置于模块级 banner 打印**之前**。
+- **测试必须冻结翻译为恒等映射**: `tests/conftest.py::_pin_identity_translation` 把 `i18n._tr` 固定为 `lambda t: t`，断言与语言解耦；不可删除该 fixture（翻译机制本身由 `tests/test_i18n_tr.py`/`test_web_api.py` 覆盖）。
+- **i18n 提取器扫不到「彩色输出 / 对话框」两条路径，新增文案必须手工同步四目录**: `color_obj.print_colored(...)` 与 `messagebox.show*` 不在扫描范围——新增/修改文案必须手工补进 zh_CN.po/en_US.json/en_GB.json/zh_TW.yaml 并重编 .mo，否则 `extract_i18n_strings.py` 报「0 缺失」假绿。
+- **`_2` 后缀占位符只在代码真传 `xxx_2=` 时才合法**: 目录里 `{message_2}`/`{msg_2}` 等来自调用方显式传入同名关键字（如 `msg_push.py` 传 `message=`/`msg=`/`errmsg=`）；历史上曾把只出现一次的占位符误写 `*_2` 致繁体 KeyError。新增带重复占位符的模板须确认调用方确实传了 `_2` 实参。
+- **四语目录条目数权威口径是 `.mo` 头部 N（含头部空 msgid，故 N == 键数+1），往文档写条数必须同时给「取数命令+读数时刻+两种口径」并实测，不要推算**: 读取 `struct.unpack('<6I', open(mo,'rb').read()[:24])[2]`；与 `scripts/compile_po.py --check` 自报数一致，否则 .po/.mo 不同步。孤儿 msgid 不会变红需人工核对（删源码功能时要手工回查目录侧）。
+- **形参日志门禁判据是「首参子树」不是「首参本身」（MID-68）**: `tests/test_i18n_migration.py` 不变量① 判据收紧为「首参子树中存在含 FormattedValue 的 JoinedStr」，唯一收敛处是 `tr()` 调用（只递归模板位）。`extract_i18n_strings.py` 仍只认常量串/单个 f-string 首参，看不见 `BinOp` 拼接——故新增形参日志一律写 `i18n.tr(常量模板, **kw)` 而非拼接式实参。
+- **i18n 三件套门禁必须在 UTF-8 环境跑（MID-63 同源）**: `compile_po.py --check`/`extract_i18n_strings.py`/`tests/test_i18n*.py` 一律带 `PYTHONUTF8=1`，细则见「格式化命令」。
+
+### 配置键名、布尔口径与 SSL 验证
+
+- **「禁用SSL证书验证的平台」仅在需要证书校验时生效（FFmpeg 9.0 语义）**: `http_config.get_effective_ssl_verify` 的平台覆盖仅在全局 `ssl_verify=True`（http 录制模式）参与读取；https 录制模式全局已禁用、平台覆盖无意义。`main.py` 启动时经 `_sync_ssl_disable_platforms` 把证书异常平台（虎牙/B站，`SSL_DISABLE_REQUIRED_PLATFORMS`）追加至配置键并写回——只追加绝不移除用户手填项。`update_config_line` 键匹配大小写不敏感，改回精确匹配会导致代码常量（大写）与配置文件行（小写）无法互找。
+- **config.ini 键名禁止含 `=`/`:` 等 configparser 分隔符**: 含 `=` 时读取侧在首个分隔符处截断、写回侧 Python 3.14+ `configparser.write()` 抛 `InvalidWriteError`（3.13 静默写成功，勿把仅 3.13 失败、3.14 通过的用例误判为回归）。括号提示可写 `(0为不限制)` 无分隔符形式。`read_config_value` 的缺键兜底已硬化为内存 StringIO 序列化成功才落盘+捕获 `(OSError, configparser.Error)` 降级，但键名本身须避开分隔符。
+- **布尔配置写入 `true/false` 曾被静默判成兜底值**（P0）: 旧实现 `options.get(read_config_value(...), 兜底)` 值不在字典里时静默返回硬编码兜底，导致系列配置生效值漂移。审计须比对「生效值」而非字符串（逐键算 `解析(现值,默认)` 与 `解析(旧值,默认)`）。现已统一到 `src/config_bool.py`（见「关键约定」第 9 条）。回归锁：`tests/test_config_bool.py`/`tests/frontend/test_quality_ui.mjs`。
+- **`config.ini` 键集审计三个陷阱**: ① `read_config_value` 的**键是第 3 个参数**——按首参字面量写正则会扫出 0 条；② `config/config.ini` **带 UTF-8 BOM**，审计脚本须用 `encoding="utf-8-sig"`；③ 扫出「缺失键」里有 3 个是有意不写回的旧键迁移读取（`是否强制启用https录制`/`是否禁用SSL证书验证(是/否)`/`虎牙是否禁用SSL证书验证(是/否)`），由 `config.has_option(...)` 守卫，不是缺口不要补。
+
+### 凭据与敏感配置脱敏
+
+- **敏感配置判定必须「节白名单 + 键名正则」双重**（src/web_config.py/web/app.js）: 仅按节名会漏掉 `[推送配置]` 内的 `tgapi令牌`/`发件人密码(授权码)`/`pushplus推送token` 及各平台节内 `popkontv_token` 等独立凭据。`expiry|timeout|有效期|过期` 反向例外放行数值型运维参数。前端 `saveConfig` 跳过 `'***'` 掩码的约定是写入侧唯一防线不可移除。写日志 URL/代理一律经 `utils.mask_credentials()`（logs 会轮转保留多份，凭据等于长期落盘）。
+
+### 类型检查、注释与静态门禁
+
+- **PEP 758 `except A, B:` 在 3.14 合法，语法/编译检查一律用项目 venv 的 Python 3.14**: 用 3.13 做 `compileall`/`py_compile` 会把全树误报 `SyntaxError: multiple exception types must be parenthesized`。新增/修改写无括号，但不要把现有无括号写法修回加括号（与约定相反）。
+- **protoc 生成模块需手写 `.pyi` 存根**（src/proto/douyin_pb2.py）: 消息类经动态注入，mypy 看不到 `PushFrame`/`Response`/`ChatMessage` 属性而报 `attr-defined`。已建 `src/proto/douyin_pb2.pyi` 声明 3 个消息类及字段（继承 `google.protobuf.message.Message`）。新增字段引用必须同步补存根。
+- **平台专属符号必须 `sys.platform` 字面量门控**（mypy 跨平台 CI 检查）: `ctypes.WinDLL`/`windll` 仅 Windows typeshed 有，CI 的 mypy 跑在 linux runner。修复模式：函数体首行早返回 `if sys.platform != "win32": return`；注解需引用平台符号时降级为 `object | None`（禁 `sys.platform` 条件类型别名）。**禁用 `# type: ignore`**（Linux 必要、Windows 多余，basedpyright 报 `reportUnnecessaryTypeIgnoreComment`）。验证双跑且均不带路径：`mypy`+`mypy --platform linux`。门控条件写反静态检查发现不了，须运行时用例锁定（`tests/test_i18n.py::TestWindowsUiLanguagePlatformGate`）。
+- **三参 `getattr` 不做字面量名解析，模块级已声明属性一律直接访问**（mypy Any 泄漏）: `getattr(obj, "attr", default)` 返回 `Any | None`，`warn_return_any` 下报 `no-any-return` 且后续属性链类型检查全部失效。凡目标属性有模块级声明（如 `main.scheduler: ConcurrencyScheduler | None`）直接 `main.scheduler` 访问；确需容错用 `cast`。
+- **protobuf 升级必须先同代重新生成再放开版本上限**（F-14）: `douyin_pb2.py` 为 protoc 25.x 产物、标注 DO NOT EDIT，本环境无 protoc。**禁止手改生成文件**；`protobuf>=6.31.1,<8` 上限不可删。回归锁：`tests/test_proto_runtime_compat.py`。
+- **`main.py` 内引用模块全局量不得加 `main.` 前缀**: 本文件模块级 `main` 是入口函数而非模块对象，`main.recording_enabled` 运行期必抛 `AttributeError`。
+- **PEP 758 的 `except A, B:` 不支持 `as` 绑定**: 有异常对象时必须 `except (A, B) as e:`（语法强制），与「不要为兼容 <3.14 加括号」不冲突（前者风格、此处语法）。批量替换时务必 grep `as` 用法。
+- **删除模块级函数/常量前必须 grep 全部调用点**: `main.py` 曾删 `_ffmpeg_reported_output_failure()` 但留调用点，mypy/basedpyright/tests 三面同时转红，且因调用点在 `and` 右侧短路、在 Linux CI 上恰不炸（典型「本地红、CI 绿」）。执行「删除符号」改动：① grep 收全调用点再删；② 删完立刻跑 mypy+完整 pytest；③ 用例输出路径必须用 `tempfile.gettempdir()`（旧 `"/tmp/out.ts"` 在 Windows 父目录不存在，两端语义相反）。`check_annotations.py` 已常驻符号可达性检查兜底。
+- **测试桩转发函数里 `*args`/`**kwargs` 一律注解 `Any`（写成 `object` 只有 basedpyright 报错）**: `monkeypatch.setattr(Path, "unlink", stub)` 类转发桩若 `*a: object, **k: object` 转发，basedpyright 会按声明类型逐个匹配形参报 `reportArgumentType`；mypy 不报故只跑 mypy 会漏。统一 `*args: Any, **kwargs: Any`（必要时 `cast` 收窄返回值）。
+
+### 热路径性能（数据结构 / 正则）
+
+- **`main.py` 主循环去重容器必须为 `set`，禁止退化成 list/O(N²)**: `url_comments`/`line_list`/`url_line_list` 均 `set` 做成员检测，移除用 `.discard()` 而非列表重建，`text_no_repeat_url` 用 `dict.fromkeys` 保序去重。80+ 房间时 list 实现退化 O(N²)。`need_update_line_list` 仍 `list`（要保序 append+pop）。
+- **高频正则提模块级常量、按 key 缓存，禁止函数内 `re.compile`**: `_EMOJI_PATTERN`/`_URL_PATTERN`/`_BANDWIDTH_PATTERN`/`_DOUYIN_HEVC_FLV_PATTERN` 提模块级编译；`update_config_line` 按 key 编译的正经 `functools.lru_cache(maxsize=128)` 缓存。
+
+### 构建产物、依赖与运行时基线
+
+- **Node 24 / FFmpeg 9.0 兼容基线**: 9.0 移除的 CLI 参数禁止引入。
+- **近期性能优化与修复完整变更记录见 `CODE_WIKI.md`/`CODE_WIKI_EN.md` 更新日志**: 本文件只沉淀可回归硬约定。
+- **`StopRecording.vbs` 必须保存为 UTF-16 LE（带 BOM）**: 由 wscript/cscript 消费，按系统 ANSI 解释 `.vbs`，UTF-8 保存会让中文乱码（源文件统一 UTF-8 约定不适用于该文件）。进程匹配现为三层：① 程序专属 exe 按映像名命中；② python 须命令行含入口脚本或 pip 启动器名 `douyin-recorder`（刻意不按项目目录匹配，避免误杀编辑器工具进程）；③ ffmpeg 须「父进程为已识别录制主进程」或「路径/命令行锚定程序目录」。结束顺序先录制主进程（`taskkill /f /t /pid` 连带子进程树）后残留 ffmpeg——原「先杀 ffmpeg→等 10s→再杀主进程」存在主进程重建 ffmpeg 竞态，且强杀不走 atexit 不执行日志归档（本脚本仅作最后手段）。
+- **包内 ffmpeg 的 PATH 前置在 Apple Silicon 上必须「让位」（W6）**: full 包内置 macOS ffmpeg 是 x86_64 静态构建，已装原生 arm64 用户会被遮蔽强制走 Rosetta。判据收敛到 `src/ffmpeg_install.should_prepend_bundled_ffmpeg_dir()`（唯一事实源，main.py 只保留「重复插入跳过」守卫）。五条判据：`darwin` ∧ `arm64` ∧ 包内目录存在 ∧ 注入前 PATH 快照另有 ffmpeg ∧ 那份 realpath 不在包内目录。三条不可回退：① 探测必须用调用点传进来的 pre-injection PATH 快照（直接读 `os.environ["PATH"]` 会探到自己刚前置的那份）；② 自我遮蔽形态（用户已把包内目录永久写进 PATH）须按 realpath 归一后排除；③ Windows/Linux/Intel Mac 行为逐字不变。`scripts/douyin_live_recorder_standalone.py` 有同名同语义判据（该文件不 import src），改判据必须两处同改、两边注释互相点名，行为等价性由 `tests/test_ffmpeg_path_preference.py::test_twin_agrees_on_every_criterion_combination`（9 格矩阵）锁住。
+- **`DouyinLiveRecorder.egg-info` 是构建产物但会长期腐化，改 `pyproject.toml` 后须重建**: `importlib.metadata`/`pip install -e .` 会读它。重建：`python -c "import sys; sys.argv=['setup.py','egg_info','--egg-base','.']; from setuptools import setup; setup()"`。改 `[project].dependencies`/`version`/`packages`/`package-data` 后应重跑。
+- **依赖对账必须先剥 `requirements.txt` 行内注释**: 注释紧贴版本号不带空格（如 `brotli>=1.2.0#b站弹幕解压`），整行比对会全量误报不一致；比对前 `line.split("#", 1)[0].strip()` 再归一化。egg-info 里 `protobuf` 规格被 setuptools 规范化成 `<8,>=6.31.1`（与 pyproject `>=6.31.1,<8` 顺序不同不是差异），应按「包名+规格集合」比对。
+- **排除目录归一化必须先剥 `**/` 再剥 `*/`**: basedpyright 用 `**/downloads`、coverage 用 `*/downloads/*`，若先剥 `*/` 会把 `**/downloads` 切成 `*downloads` 致「basedpyright 缺 7 个目录」假结论。
+- **发布链运行时二进制必须 fail-closed 钉定（SEV-10）**: full 版把 ffmpeg+node 打进对外分发 zip，以子进程执行，危害半径是所有下载用户。三层防线缺一不可：① `build_exe.py` 的 `_PINNED_RUNTIME_SHA256`（按 `<os>-<arch>` 分列，槽位 ffmpeg/node），「已钉定」唯一判据是 `_is_pinned()` 形状（64 位小写十六进制），占位/空串/截断一律未钉定，**不得为让 CI 绿回填本地自算哈希**（那是固化「构建机已中毒」）；② `--require-pinned`（CI 因 `GITHUB_ACTIONS=true` 自动开），缺钉定即在下载前 `SystemExit`（该异常继承 BaseException 吞不掉）；`slot` 已改为必填关键字参数（漏传会静默降级为无校验下载）；③ `scripts/check_runtime_pins.py`（--strict 由 build-release.yml prepare job 执行并 --emit-env 透传 `DLR_RUNTIME_SHA256`）。表为空/缺平台/缺槽位一律 rc=2。钉定进度：node×5 槽+windows-x64/ffmpeg 已按官方公布值钉定；macOS/Linux 四个 ffmpeg 槽位刻意保持占位（上游不公布 SHA256）。node 下载版本按最新 LTS 动态解析，上游发新 LTS 即钉定失效拦下发布——刻意人工闸口，不得改自动取哈希。
+- **三类「钉定/校验」互不覆盖，不得用其一冒充其二（SEV-10/MID-62 边界）**: ① 发布期运行时二进制 → `build_exe._PINNED_RUNTIME_SHA256`+`--require-pinned`，上游公布 detached 签名的槽位钉定后还须过官方 GPG 验签（带外钉完整 40 位主钥指纹，VALIDSIG 报子钥指纹逐字比主钥会假红）；② 运行期自动安装 ffmpeg/node → `src/ffmpeg_install.py`/`src/node_install.py` 的 ToFU 基线，首次安装先取上游官方公布哈希文档验（TOFU 退化为取不到时的显式降级并记 warning，不得反过来）；Windows 运行期只有 gyan.dev 一条自动路径，蓝奏云兜底源已整体删除；③ 签名脚本层 `src/javascript/*.js` 与远程 `mgprtcl.wasm` → `src/utils.py::_JS_SHA256_EXPECTED` 只钉得住胶水脚本、钉不住 wasm。任何新增「远程获取并在子进程/本进程内执行的代码」都必须落进上述三类之一并注明是哪类。第 4 类「源码可复现构建」`SOURCE_BUILD_PROVENANCE` 仅用于 CI 自源码构建、上游本无公布值的产物（声明该类槽位不得走下载路径），不是第四个「面」。
+- **`Dockerfile` 的 `ARG` 必须声明在使用它的指令之前，且门禁要断言行序（MIN-14）**: `LABEL version="${APP_VERSION}"` 写在 `ARG APP_VERSION` 之前会固化空串且构建期不报错。现 `check_version.py` 另断言「`ARG APP_VERSION` 声明行 < 使用点所在指令起始行」（多行续写须回溯指令头、跳过注释行）。新增 ARG/ENV 消费点同理。
+- **`scripts/check_coverage.py` 无数据即 rc=2 硬失败，不得退回 WARN（MIN-19）**: 「数据文件不存在」「JSON 读不出」「files 为空」三类都必须走 rc=2 并打印 `pytest --cov=src` 下一步命令（与「模块查不到按失败处理」同族防线，不可互替）。CI test job 顺序固定 `pytest --cov=src` → `check_coverage.py`。
+- **不可信输入不得跑浮动 ref 的第三方动作（MIN-17）**: `issue-translator.yml` 触发源是任意外部贡献者正文，已降级为仅 `workflow_dispatch`+降权。不得凭记忆填 SHA、不得为恢复便利加回触发器；其余第三方非认证动作（`trivy-action` 已 SHA 钉定等）按同判据区分。
+- **`docker-compose.yaml` 不得保留 `:latest` 拉取回退（MIN-18）**: 锚点内已设 `pull_policy: build`，直接 `up` 就地构建而非拉 registry 同名 `:latest`。
+
+### 装饰器与平台兜底契约
+
+- **装饰器与 `def` 之间的注释会让装饰器绑到下一个 `def`**: Python 允许 `@decorator` 与 `def` 间夹注释行，会把兜底套在返回 `str` 的同步辅助函数上而目标平台入口裸奔无兜底。约定：`@decorator` 必须紧贴 `def`，说明注释写在装饰器**上方**。排查 `grep -A3 '^@trace_error' src/spider.py`。
+- **平台解析函数返回契约必须匹配兜底装饰器**: `trace_error_decorator` 失败时回 `{"is_live": False}` 只适用于返回 dict 的函数；返回 str/tuple/None 的必须用 `trace_error_decorator_or_none`（回 None），否则调用方解包抛 ValueError 被自己装饰器二次吞没。调用点须显式判空再解包，新增平台先看返回注解再选装饰器。
+- **`_loads_dict` 与 `_safe_loads` 的分工**: `_loads_dict` 内部复用 `_safe_loads`——平台返回 HTML（WAF/302/Cloudflare/截断 JSON）时回 `{}` 并记 warning，**不再抛 JSONDecodeError**（约 40 处调用任一抛错都会被兜底装饰器吞成「未开播」）。`tests/test_spider.py::TestLoadsDict::test_invalid_json` 断言返回 `{}` 不要改回 `pytest.raises`。
+- **spider.py 平台解析一律走 `_loads_dict`+`_dig/_dig_str/_list`，裸 `json.loads` 由棘轮锁住不得回升（MID-48）**: 剩余唯一 1 处是 `get_twitchtv_room_info`（GQL 返回数组）。判据 `tests/test_spider_hardening.py::BARE_JSON_LOADS_CEILING = 1`（只降不升）+ 零裸 loads AST 扫描。配套：① 取不到字段不得静默变空（数值型字段走保留数值的 `_dig`+cast）；② 凭据不入日志（AID/BNO/visitor_st 等只按原值取用，归因日志只带 code/msg）；③ 未开播/已下播每 120s 一轮正常轮次刻意保持静默。
+- **兜底装饰器失败语义影响熔断样本**: 补上装饰器后异常不再穿透到 main.py 通用 except；反之移除装饰器会使该平台瞬时故障计入失败样本、达阈值可能把房间地址自动注释掉。
+
+### Web / GUI 面板与接口层
+
+- **GUI/WEB 画质切换写回 `URL_config.ini` 后必须同步「编辑器快照」与「显示源」**: ① 反查表 `_anchor_url_map` 键是纯主播名，画质菜单传带 `序号N ` 前缀显示名，查表前必须 `re.sub(r"^序号\d+\s+", "", anchor_name)` 剥离；② 写回后必须调 `_load_config()` 同步 `config_text`（否则编辑器持旧快照、用户保存覆盖刚写的画质段）；③ 画质监控表格「设置画质」列必须以配置文件为准（`_anchor_quality_map`），不能取子进程日志值（切换不重启子进程、日志恒为旧值）。WEB 端 `PUT /api/rooms/quality` 与 GUI 共用 `src/web_config.py::update_room_quality`（保留 `#` 注释前缀、os.replace 原子写、换行注入 ValueError），两端改一处即同步。档位白名单只允许 `BUILTIN_QUALITIES`。回归锁：`tests/test_web_config.py::TestUpdateRoomQuality`+`tests/test_web_api.py::TestRoomQualityApi`+`tests/frontend/test_quality_ui.mjs`。
+- **Web 面板「直播间列表」表格必须维持 `table-layout: fixed`**（`web/style.css` 末尾段）: 窄视口下默认 auto 布局 6 列 min-content 溢出。修复后按表头定列宽（画质 128/名称 150/启用 72/录制中 72/操作 76，地址列吃剩余宽），地址/名称 `td` 单行省略，≤768px 走 `min-width:640px + .panel overflow-x:auto`。约束：改回 auto 布局或删省略号会让错位回归；新增列必须补对应 `th:nth-child(n)` 定宽；该段作用域保持 `#rooms-view`，勿扩大到其它三张表。
+
+### 测试质量与审查协作流程
+
+- **测试不得自实现被测逻辑（假绿）**: 曾存在测试里重新实现锁/凭证缓存再断言自实现——删掉 `src/` 对应实现仍全绿等于没覆盖。判据「**删掉生产实现就会失败**」：只允许打桩网络层与时间常量，去重/限流/锁逻辑走真实代码。`tests/test_concurrency_rate_limit.py` 已重写。另：不得 `monkeypatch.setattr(main.time, "sleep", ...)`（`main.time` 是 stdlib 时间模块本体，会替换全进程 sleep，应浅拷贝成 `SimpleNamespace` 覆盖单属性）；覆盖率门禁「模块查不到」按失败处理（非告警）。
+- **探测子进程输出一律按字节比较，且这类用例必须能单文件独立运行**: 凡读子进程输出做判定的探测不得用 `text=True`/`encoding=`（Windows `tasklist`/`taskkill` 按控制台码页发本地化消息，UTF-8 模式下 reader 线程解码即抛 `UnicodeDecodeError`→`TypeError`+违背 0 警告）。判据写成字节包含（`str(pid).encode() in probe.stdout`）与码页/语言解耦。`main.py` 导入期 `SetConsoleOutputCP(65001)` 会把整个 pytest 进程控制台码页切 UTF-8，只要同会话有用例先 import main，GBK 分支永不显现→「全量绿、单文件跑红」。故任何驱动子进程并断言其输出/进程状态的测试文件必须保证 `pytest tests/<该文件>` 单独运行全绿且 0 警告。
+- **本机全量 pytest 偶发段错误（exit 139）**: 属环境噪声，不要据此认定代码回归。
+- **并行分组代码审查分工口径**: 子任务 prompt 必须写明本项目刻意约定白名单，避免子代理误报风格为问题。

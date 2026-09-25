@@ -1,0 +1,528 @@
+# 一次性本地门禁入口（CI 之外唯一需要记住的门禁调用点）。
+#
+# 职责：把 AGENTS.md「格式化命令（门禁唯一基准）」章节列出的全部 --check 型门禁命令
+#       按原顺序在本机一次性跑完，任一失败以非 0 退出——把「CI 变红才知道红」提前到本地。
+#
+# 核心机制：命令清单**不在本脚本内复制**，而是运行时从 AGENTS.md 对应章节的 bash 代码块
+#           逐字解析。该章节被全项目指定为门禁命令的唯一事实源；若在本脚本里另写一份
+#           清单，就制造了并行事实源，章节更新后门禁会静默漂移（这正是本入口要治理的问题）。
+#           解析以 ` ```bash ` 围栏为硬边界：围栏外的行（如「isort 收尾清理」小节的
+#           PowerShell `Get-ChildItem ... | Remove-Item`）即使含管道也绝不参与，避免误执行。
+#
+# 控制约定（对齐 AGENTS.md「格式化命令」章节）：
+#   - `black .` / `isort .`（不带 --check）是写操作，永远不进入本回路；解析时兜底拦截，
+#     这样即便章节代码块被误加入写型命令，本地门禁也不会改动手里的未提交文件。
+#   - `mypy` 不带路径参数，检查范围取 pyproject [tool.mypy].files（收窄仅用于排障）。
+#   - `mypy --platform linux` 属条件增跑（涉平台专属符号时），此处照单执行，不做智能判断。
+#   - 门禁块行首的 `NAME=value ` 前缀按 bash 语义解析为**子进程环境变量**后从命令行剥掉
+#     （cmd.exe 不认这种前缀，直送会被当成参数；剥掉后 --list 输出的仍是裸命令）。
+#     PYTHONUTF8=1 另有一份硬默认，见 GATE_CHILD_ENV（MID-63：缺它 isort 会静默跳文件）。
+#   - 子进程 stderr 命中 FATAL_STDERR_PATTERNS 即判失败，即使 rc=0——isort 的
+#     「Unable to parse file」走 UserWarning 通道、rc 恒 0，只认退出码就是门禁假绿。
+#   - **本进程自己的** stdout/stderr 也必须是 UTF-8：子进程的两路输出最终都落在本进程的 stdout
+#     上，中文 Windows（cp936）下 black 成功行的 `✨` 会让那次写入抛 UnicodeEncodeError
+#     而炸掉门禁进程本身。见 ensure_utf8_streams()。
+#
+# 用法：
+#   python scripts/run_gates.py                          # 全量门禁（在仓库根目录执行）
+#   python scripts/run_gates.py --list                   # 只列出解析到的命令，不执行
+#   python scripts/run_gates.py --only mypy --only black # 收窄排障：子串匹配，参数形式不变
+#   python scripts/run_gates.py --keep-going             # 失败后续跑剩余门禁，最后汇总
+#
+# 退出码：0 全部通过；1 至少一条门禁失败（门禁变红）；2 清单来源缺失/为空/含写型命令
+#         （属「没跑」而非「跑过」，与真失败区分，防止被误读成代码不合格）；
+#         3 门禁可执行文件缺失（属环境问题，与「代码不合格」区分开，便于 CI/本地排障）。
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# 项目根目录（scripts/ 的上一级），同时作为门禁命令的 cwd
+ROOT = Path(__file__).resolve().parent.parent
+
+# 门禁清单唯一事实源：AGENTS.md 的章节标题前缀 + 代码块围栏语言标记。
+# 用前缀匹配是因为标题带定稿日期后缀（「## 格式化命令（门禁唯一基准，2026-09-17 定稿）」）
+SECTION_PREFIX = "## 格式化命令"
+FENCE_LANG = "```bash"
+
+# 写型格式化命令兜底拦截（AGENTS.md 约定：black/isort 不带检查开关会改写文件，
+# 不得进入门禁回路）。按「模块词 + 缺检查开关」判定，而不是匹配整条命令字面量，
+# 避免将来给命令加公共参数（如 --extend-exclude）时判定失效。
+# 开关集合必须按各工具实际 CLI 写全：isort 的检查开关是 `--check-only`，没有 `--check`
+# （首版只写 --check 导致门禁自带的 isort 行被自己拦下，rc=2）。black 只认 `--check`：
+# --check-ast / --check-lines 不参与「是否写盘」判定，列入会抬高拦截阈值造成漏拦。
+WRITE_GUARD: dict[str, tuple[str, ...]] = {
+    "black": ("--check",),
+    "isort": ("--check-only",),
+}
+
+# 子进程环境的硬默认（MID-63，2026-09-20 定稿）。
+# isort 用**平台默认编码**读源文件：GBK locale 下含中文注释的文件会抛
+# UnicodeEncodeError → 只发一条 UserWarning「Unable to parse file」就跳过、rc 仍为 0，
+# 于是门禁在本地全绿却根本没查这些文件（被跳过的个数随仓库内容漂移，核对命令见 AGENTS.md）。
+# PYTHONUTF8=1 强制 UTF-8 读写，等价于 `-X utf8`，跨平台一致。
+# 与门禁块行首前缀的关系：前缀是**事实源里的声明**（ci.yml 逐字镜像），
+# 这里是**兜底**——即便有人在文档里删掉前缀，本地门禁也不会退回假绿形态。
+GATE_CHILD_ENV: dict[str, str] = {"PYTHONUTF8": "1"}
+
+# 「告警即失败」清单：这些子串出现在门禁子进程的 stderr 里，即代表该工具**跳过了文件**
+# 而非「检查通过」。新增同类形态直接加一行，不要改成「忽略告警」。
+# pytest 的 warnings summary 走 stdout，主回路的逐行 stderr 转发覆盖不到它，故由 ci.yml 的
+# "Gate pytest warnings summary" 步骤与下方 gate_pytest_warnings_summary() 单独承担；
+# 该兜底回路自己也接管 pytest 的 stderr 并按本清单判定（rc=0 命中即失败）。
+#   [历史注] 2026-09-23 SEV-2219 之前，本处写的是「pytest 兜底不并入本清单的扫描回路」。
+FATAL_STDERR_PATTERNS: tuple[str, ...] = (
+    "Unable to parse file",  # isort/black：编码或解析失败的静默跳过（UserWarning，rc=0）
+)
+
+# bash 风格的行首环境变量前缀：`NAME=value` 后必须跟空白，且值不含空格（门禁命令均为如此）
+_ENV_PREFIX_PATTERN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(\S*)\s+")
+
+
+def ensure_utf8_streams() -> None:
+    # 把**本进程**的 stdout/stderr 也换成 UTF-8：MID-63 那套语义的另一半，只钉子进程仍会失效。
+    #
+    # 为什么必须单独做（2026-09-21 实测崩溃）：GATE_CHILD_ENV 只管得到子进程，而两路输出最终都
+    # 落在**本进程的 stdout**上——run_command 逐行读子进程 stderr 再写 sys.stdout，black 成功时
+    # 那行 `All done! ✨ 🍰 ✨` 则走子进程 stdout 的直接继承写入。子进程侧按 UTF-8 解码
+    # （encoding="utf-8"）无碍，而本进程 stdout 在中文 Windows 上是 cp936，U+2728 无法用 GBK
+    # 编码 → `UnicodeEncodeError: 'gbk' codec can't encode character '\u2728'` 炸掉门禁自身，
+    # 表象是「run_gates.py rc=1 且只剩一段 Traceback」。触发它的那条门禁其实是**通过**的，于是
+    # 「工具在本地环境不可用」被读成「代码不合格」，比不跑门禁更糟。
+    #   [历史注] 2026-09-23 前本段只把成因归到 stderr 一路，漏了 emoji 来自 stdout 继承写入。
+    #
+    # errors="replace"：即便将来某条门禁输出更冷门的码点，也只能丢一个字符的显示，
+    # 绝不允许再演变成「门禁进程崩溃 → 整回路没有结论」。
+    # 与 build_exe._ensure_utf8_streams 同一手法（那里已因同样原因踩过一次）。
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except ValueError, OSError:
+            # 已被重定向到已关闭/非法句柄时静默放过：本函数只改善输出，不参与判定。
+            pass
+
+
+def split_env_prefix(line: str) -> tuple[dict[str, str], str]:
+    # 剥掉行首的 `NAME=value ` 前缀（可连续多个），返回 (环境变量, 裸命令)。
+    # 必须由 extract 侧剥掉而不是丢给 shell：本地门禁的默认 shell 可能是 cmd.exe，
+    # 它会把 `PYTHONUTF8=1` 当作命令的第一个参数而不是环境变量赋值。
+    env: dict[str, str] = {}
+    rest = line
+    while True:
+        m = _ENV_PREFIX_PATTERN.match(rest)
+        if not m:
+            return env, rest.strip()
+        env[m.group(1)] = m.group(2)
+        rest = rest[m.end() :]
+
+
+def extract_gate_env(agants_path: Path) -> dict[str, str]:
+    # 收集门禁块里声明的全部行首环境变量（多次声明以最后一次为准）。
+    # 与 extract_gate_commands 读同一份围栏，故不会引入第二份事实源。
+    if not agants_path.exists():
+        return {}
+    lines = agants_path.read_text(encoding="utf-8").splitlines()
+    span = _section_span(lines)
+    if span is None:
+        return {}
+    env: dict[str, str] = {}
+    for line in _first_fenced_block(lines[span[0] : span[1]]):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        prefix_env, _ = split_env_prefix(_strip_trailing_comment(stripped))
+        env.update(prefix_env)
+    return env
+
+
+def extract_gate_commands(agants_path: Path) -> list[str]:
+    # 从 AGENTS.md「格式化命令」章节的第一个 bash 代码块逐行提取门禁命令。
+    # 返回按原顺序排列的命令字符串列表；章节缺失时返回空列表，交调用方判定 rc=2。
+    if not agants_path.exists():
+        return []
+    lines = agants_path.read_text(encoding="utf-8").splitlines()
+
+    span = _section_span(lines)
+    if span is None:
+        return []
+    block = _first_fenced_block(lines[span[0] : span[1]])
+    out: list[str] = []
+    for line in block:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # 行尾注释必须先剥掉再执行：本地门禁的默认 shell 是 cmd.exe，不像 bash
+        # 那样原生识别 `#`，`mypy   # 不带路径参数…` 直送会把注释当参数报 unrecognized
+        _, command = split_env_prefix(_strip_trailing_comment(stripped))
+        if command:
+            out.append(command)
+    return out
+
+
+def _strip_trailing_comment(line: str) -> str:
+    # 剥行尾注释：只认「空白 + #」为注释起点（避免切碎 URL/含 # 的参数字面量）。
+    # 门禁命令均为简单命令行，不处理引号内的 #（shell=True 下双引号内的 # 本就不参与展开）。
+    cut = len(line)
+    for i in range(1, len(line)):
+        if line[i] == "#" and line[i - 1] in " \t":
+            cut = i
+            break
+    return line[:cut].strip()
+
+
+def _section_span(lines: list[str]) -> tuple[int, int] | None:
+    # 定位「格式化命令」章节正文区间 [start, end)。
+    # 章节到下一个**同级**二级标题前结束：startswith("## ") 对 "### " 为 False（第三字符
+    # 不是空格），故「basedpyright」/「isort 收尾清理」两个子小节会留在章节体内；但它们的
+    # 命令分在 ```powershell / ```bash 围栏里——「isort 收尾」那个也是 bash 围栏且含 rm 型
+    # 清理命令，靠「只取第一个 bash 块」拦截，不得改成「扫描全章节所有 bash 块」。
+    for i, line in enumerate(lines):
+        if line.startswith(SECTION_PREFIX):
+            start = i + 1
+            for j in range(start, len(lines)):
+                if lines[j].startswith("## ") and not lines[j].startswith("### "):
+                    return (start, j)
+            return (start, len(lines))
+    return None
+
+
+def _first_fenced_block(section: list[str]) -> list[str]:
+    # 取章节内第一个 ```bash 围栏块的内容行（不含围栏本身）。
+    # 围栏结束标记写 "```"（不加语言名）：结束行以 ``` 开头，开始行等于 ```bash，
+    # 靠「先匹配开始再匹配结束」的顺序自然区分。
+    collecting = False
+    out: list[str] = []
+    for line in section:
+        stripped = line.strip()
+        if not collecting:
+            if stripped.startswith(FENCE_LANG):
+                collecting = True
+            continue
+        if stripped.startswith("```"):
+            break
+        out.append(line)
+    return out
+
+
+def is_write_command(cmd: str) -> bool:
+    # 判定 black / isort 是否处于写模式（未显式传 --check / --check-only）。
+    # 模块名只从两种位置识别：`python -m <module>` 的 <module>，或脚本名（argv[0] 的 basename）。
+    # 不能扫描全部 token 判同名：isort 的门禁写法 `--profile black` 里的参数值 black
+    # 会被误判成「裸 black 调用」（首版实测即此坑），故只认结构位置，不认任意 token。
+    try:
+        argv = shlex.split(cmd.replace("\\", "/"))
+    except ValueError:
+        return False
+    targets = set(WRITE_GUARD)
+    module_pos: int | None = None
+    if argv:
+        script = Path(argv[0]).name
+        if script in ("python", "python3", "py") and len(argv) >= 2 and argv[1] == "-m":
+            module_pos = 2
+        elif script in targets:
+            module_pos = 0
+    if module_pos is None or module_pos >= len(argv) or argv[module_pos] not in targets:
+        return False
+    check_flags = WRITE_GUARD[argv[module_pos]]
+    rest = argv[module_pos + 1 :]
+    # 精确匹配：`--check` 或 `--check=...`（工具未来改带值开关时不至于漏判）
+    return not any(any(tok == f or tok.startswith(f + "=") for f in check_flags) for tok in rest)
+
+
+def run_command(cmd: str, extra_env: dict[str, str] | None = None) -> tuple[int, float, list[str]]:
+    # 执行单条门禁命令，返回 (退出码, 耗时秒, stderr 命中的致命告警子串列表)。
+    # 输出通道的**实际**分工：
+    #   stdout —— **不接管**（未传 stdout=，子进程直接继承本进程的 stdout 句柄），故这里既不读
+    #             也不扫。门禁工具的进度/结果行因此原样到达终端，代价是**本函数看不见 stdout**：
+    #             只走 stdout 的失效信号全在盲区。pytest 的 warnings summary 正是这种形态，所以
+    #             它不能靠本函数的 stderr 扫描覆盖，只能由 gate_pytest_warnings_summary() 显式
+    #             stdout=subprocess.PIPE 单独接管。可复核判据：
+    #             grep -n "stdout=" scripts/run_gates.py → run_command 内无、该函数内有。
+    #   stderr —— 逐行**边转发边扫描**（stdout=sys.stdout）：既不能吞掉（人要看），
+    #             也不能只看 rc——isort 跳过文件时 rc=0（MID-63，实测告警确实落在 stderr）。
+    # 退出码：rc != 0 一律判失败（由 main() 的 `if rc == 0 and not hits:` 收口），
+    #         --keep-going 只控制「是否继续跑后续命令」，不影响该判定。
+    # shell=True：清单是按人读格式维护的 bash 代码块，只含 `python -m ...` 这类简单命令行，
+    # 不存在需要二次解释的复杂结构。清单里的 `python` 统一换绑到当前解释器（见
+    # _rebind_interpreter）：Windows 上 python / py 启动器与 venv 可能混用，不换绑就会让门禁跑在
+    # 与 pytest 不同的解释器上——「本地绿、CI 红」的成因即此。
+    t0 = time.monotonic()
+    # stdin=DEVNULL：门禁子进程不得继承调用方的 stdin。管道/IDE harness 下父进程的 stdin
+    # 可能已关闭，子进程（含 site 初始化）碰它即抛 OSError WinError 6（本地实测：pytest 经
+    # 管道调用时偶发）；门禁命令均不需要交互输入，接空设备是唯一安全选择。
+    child_env = dict(os.environ)
+    child_env.update(GATE_CHILD_ENV)
+    if extra_env:
+        child_env.update(extra_env)
+    proc = subprocess.Popen(
+        _rebind_interpreter(cmd),
+        shell=True,
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=child_env,
+    )
+    hits: list[str] = []
+    if proc.stderr is not None:
+        for raw in proc.stderr:
+            sys.stdout.write(raw)
+            sys.stdout.flush()
+            for pattern in FATAL_STDERR_PATTERNS:
+                if pattern in raw and pattern not in hits:
+                    hits.append(pattern)
+    _ = proc.wait()
+    rc = proc.returncode if proc.returncode is not None else 1
+    return rc, time.monotonic() - t0, hits
+
+
+def _rebind_interpreter(cmd: str) -> str:
+    # 只替换行首的 `python `/`python3 `（含引号包裹的绝对路径形式），不动参数里的 python 字样
+    for name in ("python3", "python"):
+        if cmd.startswith(name + " "):
+            return f'"{sys.executable}" {cmd[len(name) + 1 :]}'
+    # 裸 console-script（如 `mypy`）不在 PATH 时退化为 `python -m mypy`：
+    # AGENTS.md 逐字规定的是 `mypy`（不带路径），Windows venv 未激活时 where 找不到
+    # 可执行文件属环境差异而非代码不合格，换用 -m 形式保持检查范围与参数完全不变。
+    head = cmd.split(" ", 1)[0]
+    if head and "\\" not in head and "/" not in head and shutil.which(head) is None:
+        return f'"{sys.executable}" -m {cmd}'
+    return cmd
+
+
+def check_executables(cmds: list[str]) -> list[str]:
+    # 预检命令解释器是否存在（python/mypy 等），返回缺失的可执行文件名。
+    # 门禁失败与「工具没装」必须区分：后者不该被报告成「代码不合格」。
+    # 裸 console-script 不在 PATH 时还要看能否 `python -m <name>`（当前解释器装了该包
+    # 但未生成/未暴露 scripts 目录的情形，如 venv 未激活的 Windows），与 _rebind_interpreter
+    # 的退化路径保持一致，否则会误报 rc=3。
+    missing: list[str] = []
+    for cmd in cmds:
+        try:
+            argv = shlex.split(cmd.replace("\\", "/"))
+        except ValueError:
+            continue
+        head = Path(argv[0]).name if argv else ""
+        if head in ("python", "python3", "py"):
+            # 行首解释器由 _rebind_interpreter 换绑到 sys.executable，必然可用
+            continue
+        if head and shutil.which(head) is None and _module_unavailable(head):
+            missing.append(head)
+    return sorted(set(missing))
+
+
+def _module_unavailable(name: str) -> bool:
+    # 当前解释器能否以 -m 方式加载该模块（不能→才算真缺失）；同 run_command，不继承 stdin
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import importlib.util, sys as s; s.exit(0 if importlib.util.find_spec({name!r}) else 1)",
+        ],
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode != 0
+
+
+# pytest 退出码 → 语义（SEV-2219：兜底门禁必须把 rc 说明白，否则「rc=4 用法错」与
+# 「rc=5 一条用例都没跑到」会被读成「跑过且无告警 = 通过」）。
+# 口径以 _pytest.exitcodes 为准：2 是**中断**、4 是**用法错**、5 是**未收集到用例**
+# （首轮实现把 2/4 写反了；此处按实测语义钉死，避免后来者再照抄错的映射）。
+PYTEST_RC_SEMANTICS: dict[int, str] = {
+    0: "全部用例通过",
+    1: "存在失败用例",
+    2: "执行被中断（KeyboardInterrupt / --exitfirst / 会话超时）",
+    3: "pytest 内部错误（常见于收集期 ImportError）",
+    4: "用法错误（命令行参数有误，根本没开始执行）",
+    5: "未收集到任何用例（testpaths 错位 / 用例文件全部收集失败）",
+}
+
+# 「跑到过用例」的最低见证：pytest 结尾汇总行的 `N passed`。
+# 只有 rc=0 不足以证明回路有效——收集到 0 条用例时 pytest 也会返回 0（旧形态），
+# 且 `-q --co` 之类的误用会让 stdout 里根本没有汇总行。
+# 锚定行首（可带 `-rA`/非 -q 模式的 `=+ ` 前缀），避免把日志正文里出现的
+# 「1 passed」字样当成「真跑到了用例」的凭据。
+_PYTEST_PASSED_PATTERN = re.compile(r"(?m)^(?:=+ )?(\d+) passed\b")
+
+
+def _pytest_passed_count(out: str) -> int:
+    # 从 pytest 输出里取「通过用例数」；取末次汇总行（-q 只在结尾打一次，
+    # 但 --reruns / -p xdist 等场景会先打中间行，故以最后一次读数为准）。
+    # 匹配不到即返回 0，由调用方判「门禁没跑到用例」。
+    counts = _PYTEST_PASSED_PATTERN.findall(out)
+    return int(counts[-1]) if counts else 0
+
+
+def gate_pytest_warnings_summary() -> tuple[bool, str]:
+    # pytest 的 warnings summary 兜底（与 ci.yml "Gate pytest warnings summary" 同一形态）。
+    # 它不进「格式化命令」清单、也不并入主回路的逐行 stderr 扫描——warnings summary 走 stdout，
+    # 而把 pytest 写进那一章会让「格式化命令唯一基准」变成隐式测试清单（另见 main() 末尾）。
+    # 返回 (通过, 诊断信息)：通过=True 表示「pytest 正常跑完且 warnings summary 为空」。
+    #
+    # SEV-2219（2026-09-23 定稿）三条 fail-closed 判据，缺一即门禁自我证明失效：
+    #   ① 取真实退出码。丢弃 rc（旧写法 `_ = proc.wait()`）时，pytest 以 rc=2/3/4/5 崩溃
+    #      （收集期 ImportError、参数写错、一条用例都没跑到）只要 stdout 里没有
+    #      `= warnings summary =` 就照样打印「为空 → PASS」，DoD 第 1 步的测试面从此不自证。
+    #   ② 接管 stderr 并扫同一份 FATAL_STDERR_PATTERNS：插件加载失败与编码错误只走 stderr，
+    #      旧写法 stderr=DEVNULL 会直接吞掉。用 subprocess.run 一次性读两路（= communicate()），
+    #      以免「stdout 读满前 stderr 塞满」的管道死锁——这也是不能退回 Popen+read() 的原因。
+    #   ③ 见证「真的跑到了用例」：输出里必须有 `N passed` 且 N > 0。
+    # 三条一律**不得**退回「没查到就当通过」：与 MID-63 / MIN-19 同口径，「没查到」一律非 0
+    # 退出并给出下一步命令。
+    t0 = time.monotonic()
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    dur = time.monotonic() - t0
+    out = str(proc.stdout or "")
+    err = str(proc.stderr or "")
+    rc = int(proc.returncode)
+
+    hits = [pattern for pattern in FATAL_STDERR_PATTERNS if pattern in err]
+    if rc != 0:
+        semantics = PYTEST_RC_SEMANTICS.get(rc, f"未登记的退出码 {rc}")
+        detail = ""
+        if hits:
+            detail += f"；stderr 命中致命告警 {hits}"
+        tail = " | ".join(line.strip() for line in err.strip().splitlines()[-5:] if line.strip())
+        if tail:
+            detail += f"；stderr 末尾: {tail}"
+        return False, f"pytest 以 rc={rc}（{semantics}）退出，warnings summary 无从判定{detail}（{dur:.1f}s）"
+    if hits:
+        return False, f"pytest rc=0 但 stderr 命中致命告警 {hits}（跳过/降级即门禁失效，{dur:.1f}s）"
+    passed = _pytest_passed_count(out)
+    if passed <= 0:
+        tail = " | ".join(line.strip() for line in out.strip().splitlines()[-5:] if line.strip())
+        return False, (
+            f"pytest rc=0 但输出里没有「N passed」汇总行（通过用例数=0）："
+            f"门禁根本没跑到用例，不得判通过（{dur:.1f}s）。末段输出: {tail}"
+        )
+    if "= warnings summary =" in out:
+        return False, f"pytest warnings summary 非空（{passed} passed，{dur:.1f}s）"
+    return True, f"pytest {passed} passed 且 warnings summary 为空 ({dur:.1f}s)"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ensure_utf8_streams()
+    parser = argparse.ArgumentParser(
+        prog="run_gates",
+        description="一次性运行 AGENTS.md「格式化命令」章节声明的全部本地门禁（只跑 --check 形式）",
+    )
+    parser.add_argument("--list", action="store_true", help="只打印解析到的门禁命令，不执行")
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help="只跑命令中含该子串的门禁（可重复），用于收窄排障；参数形式不变",
+    )
+    parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="任一失败也继续跑完剩余门禁，最后汇总（默认首个失败即停）",
+    )
+    args = parser.parse_args(argv)
+
+    cmds = extract_gate_commands(ROOT / "AGENTS.md")
+    if not cmds:
+        print("ERROR: 无法从 AGENTS.md「格式化命令」章节解析出门禁命令清单", file=sys.stderr)
+        print("       本地门禁是「没有跑」而不是「跑过了」，请勿宣布完成。", file=sys.stderr)
+        return 2
+
+    if args.only:
+        cmds = [c for c in cmds if any(p in c for p in args.only)]
+        if not cmds:
+            print(f"ERROR: --only {args.only} 未匹配到任何门禁命令", file=sys.stderr)
+            return 2
+
+    # 兜底拦截：写型格式化命令绝不允许进入回路，宁可拒绝执行也不改动工作区
+    unsafe = [c for c in cmds if is_write_command(c)]
+    if unsafe:
+        print("ERROR: 门禁清单中出现写型格式化命令（black/isort 未带 --check）:", file=sys.stderr)
+        for c in unsafe:
+            print(f"  {c}", file=sys.stderr)
+        return 2
+
+    if args.list:
+        for c in cmds:
+            print(c)
+        return 0
+
+    missing = check_executables(cmds)
+    if missing:
+        print(f"ERROR: 以下门禁工具不可用: {', '.join(missing)}", file=sys.stderr)
+        print("       先修环境（见 AGENTS.md「依赖缺失排查顺序」），这不是代码通过。", file=sys.stderr)
+        return 3
+
+    failed: list[str] = []
+    total_t0 = time.monotonic()
+    gate_env = extract_gate_env(ROOT / "AGENTS.md")
+    if gate_env:
+        print(f"门禁子进程环境变量（来自 AGENTS.md 门禁块行首前缀）：{gate_env}")
+    for i, cmd in enumerate(cmds, 1):
+        print(f"\n[{i}/{len(cmds)}] $ {cmd}", flush=True)
+        rc, dur, hits = run_command(cmd, gate_env)
+        if rc == 0 and not hits:
+            print(f"    -> [PASS] ({dur:.1f}s)")
+            continue
+        if rc != 0:
+            print(f"    -> [FAIL] rc={rc} ({dur:.1f}s)")
+        else:
+            # rc=0 但 stderr 命中致命告警：工具跳过了文件 = 这一条门禁根本没查完
+            print(f"    -> [FAIL] rc=0 但 stderr 命中致命告警 {hits}（跳过文件即门禁失效，{dur:.1f}s）")
+        failed.append(cmd)
+        if not args.keep_going:
+            break
+
+    total = time.monotonic() - total_t0
+    print("\n" + "=" * 72)
+    if failed:
+        print(f"门禁未通过：{len(failed)} 条失败（共 {len(cmds)} 条，耗时 {total:.1f}s）")
+        for c in failed:
+            print(f"  [FAIL] {c}")
+        print("按 AGENTS.md「完成定义」，此时不得宣布完成。")
+        print("=" * 72)
+        return 1
+    print(f"门禁全绿：{len(cmds)} 条全部通过（耗时 {total:.1f}s）")
+    print("=" * 72)
+    # DoD 第 1 步还包含 pytest（0 警告）+ check_coverage.py + basedpyright。
+    # warnings summary 兜底在此直接执行、但不进上方命令清单：那一章只声明格式化门禁，
+    # 把测试门禁写进去就又造出一处并行事实源。
+    print("\n[pytest warnings summary 兜底]")
+    ok, msg = gate_pytest_warnings_summary()
+    if ok:
+        print(f"  [PASS] {msg}")
+    else:
+        print(f"  [FAIL] {msg}")
+        print("  有告警被吞掉，请先修根因，不得加 filterwarnings 压制。")
+        print("=" * 72)
+        return 1
+    print("提醒：完成定义第 1 步还需 scripts/check_coverage.py + basedpyright。")
+    print("=" * 72)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

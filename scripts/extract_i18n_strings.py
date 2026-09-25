@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
-# i18n 待翻译串提取器：AST 扫描运行时代码（main/gui/web/msg_push/i18n/src），
-# 提取 print() 全部常量参数 + logger.*() 首参常量串与 f-string 模板底稿，
-# 与四语目录比对输出缺失清单。仅供维护期使用，不进运行时链路。
+# i18n 待翻译串提取器：AST 扫描运行时代码（main/gui/web/msg_push/i18n + src/ 全部 .py），
+# 提取 print() 的全部常量实参、logger.*() 与 i18n.tr() 的首参（常量串或 f-string 模板底稿），
+# 与四语目录（zh_CN.po / en_US.json / en_GB.json / zh_TW.yaml）比对并打印缺失清单。
+# 只读工具、仅供维护期使用：不进运行时链路，也不在 AGENTS.md 的门禁命令块里（缺失靠人工跟进）。
+#
+# 三个**扫不到的盲区**（AGENTS.md 第 14 条同源）——这三类新增用户可见文案时必须手工登记进
+# 四语目录并重编 .mo，否则本脚本会一直报「0 缺失」的假绿：
+#   ① color_obj.print_colored(...)（main.py 的彩色控制台输出；它不是 print 调用）；
+#   ② messagebox.show*（gui.py 的弹窗标题与正文）；
+#   ③ 推送正文（msg_push.py 的裸字面量 + str.replace 模板）。
+# 另两个边界：web/app.js 自带四套内嵌目录（与后端目录互不相干，不在扫描面内，须手工五处同改）；
+# 「疑似冗余」段只是参考级——孤儿 msgid（目录比代码多）不会变红，改源码删功能时要人工回查。
 #
 # f-string 模板还原约定（与既有目录一致）：
 #   1. 格式说明符（如 :.0f）丢弃——{_backoff:.0f} → {_backoff}
@@ -12,6 +21,8 @@
 #   5. i18n.tr(模板, **kw) 的首参常量串即模板（占位符已是标识符形态，
 #      如 {masked_url}/{type_name}）——扫描时同样收录，否则 tr 化后的调用点
 #      会从提取结果中消失，缺失检测退化为假绿（f-string 与 tr 双形态并存期必须都扫）
+#   注意 4/5 只递归**首参/常量实参**：形参日志一律写 i18n.tr(常量模板, **kw)，
+#   实参位的 f-string（`_backoff=f"{v:.0f}"`）发生在查表之后、不影响 msgid，故不收录。
 
 import ast
 import importlib.util
@@ -26,12 +37,15 @@ ROOT = Path(__file__).resolve().parent.parent
 SCAN_FILES = [
     ROOT / "main.py",
     ROOT / "gui.py",
-    ROOT / "gui_legacy.py",
+    # [历史注] 原第三条是 gui_legacy.py（2026-09-10 随 v4.1.0-dev 删除，2026-09-21 清掉引用）；
+    # 它此前恒被 main() 的 exists() 兜底跳过，留着只会让人误以为这里仍是扫描入口
     ROOT / "web.py",
     ROOT / "msg_push.py",
     ROOT / "i18n.py",
 ] + sorted((ROOT / "src").rglob("*.py"))
 
+# 只有这些 logger 方法名的首参被视为「可翻译串」。tests/test_i18n_migration.py 里另有一份
+# 同名集合并注明与之同口径——改这里必须同时改那里，否则门禁判的与提取的又是两套。
 LOGGER_METHODS = {
     "debug",
     "info",
@@ -47,6 +61,8 @@ LOGGER_METHODS = {
 
 
 def _load_compile_po() -> object:
+    # 按文件路径加载 scripts/compile_po.py 复用它的 parse_po()：.po 的多行 msgid 与转义还原
+    # 只有那一份实现是对的，本脚本再写一份解析就会与它漂移（键集合比对随之假红/假绿）
     spec = importlib.util.spec_from_file_location("compile_po_probe", ROOT / "scripts" / "compile_po.py")
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -82,6 +98,10 @@ TR_CALLER_IDS = {"i18n", "i18n_module"}
 
 
 def scan_file(path: Path) -> set[str]:
+    # 单文件扫描：print 的每个实参、logger.* 与 tr 的首参，各按规则 1~5 还原成模板形态。
+    # 已知局限（MID-68 同源）：只认「常量串 / 单个 f-string」两种首参，`f"A" + (f"B" if x else "")`
+    # 这种 ast.BinOp 形态这里看不见——所以「目录覆盖完整」对本脚本是盲区，只能由
+    # tests/test_i18n_migration.py 的收紧判据（首参**子树**）兜住；新增形参日志一律写 tr(常量模板)。
     source = path.read_text(encoding="utf-8-sig")
     tree = ast.parse(source, filename=str(path))
     found: set[str] = set()
@@ -156,6 +176,8 @@ def parse_keys(compile_po: object) -> dict[str, str]:
 
 
 def main() -> int:
+    # 恒退 0：本脚本是「报告器」而不是门禁判据（AGENTS.md 的门禁命令块里也没有它），
+    # 缺失条目由维护者跟进；真正会让 CI 变红的是 tests/test_i18n_migration.py 的三条不变量。
     runtime_strings: set[str] = set()
     for path in SCAN_FILES:
         if not path.exists():

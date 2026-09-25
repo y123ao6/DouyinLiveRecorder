@@ -3,11 +3,11 @@
 from collections import OrderedDict
 from typing import Any
 
-def register(name, runtime) -> None:
+def register(name: str, runtime: Any) -> None:
     # Register a JavaScript runtime.
     ...
 
-def get(name=...):
+def get(name: str | None = ...) -> Any:
     # Return a appropriate JavaScript runtime.
     # If name is specified, return the runtime.
     ...
@@ -21,4 +21,4 @@ def get_from_environment() -> None:
     # If EXECJS_RUNTIME environment variable is empty or invalid, return None.
     ...
 
-_runtimes = ...
+_runtimes: dict[str, Any]
