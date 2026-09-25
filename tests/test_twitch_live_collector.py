@@ -4,6 +4,7 @@
 # 用法:python tests/test_twitch_live_collector.py [频道名或URL] [秒数]
 # 代理:默认跟随系统代理(getproxies),可选第三个参数显式指定,如 http://127.0.0.1:7890
 
+import json
 import os
 import sys
 import time
@@ -24,6 +25,9 @@ PROXY = sys.argv[3] if len(sys.argv) > 3 else None
 channel = RAW.split("?")[0].rstrip("/").split("/")[-1].lower().lstrip("#")
 if not channel:
     print("[FAIL] 无法从参数提取频道名")
+    print(
+        f'VERIFICATION_RESULT: {json.dumps({"platform": "twitch", "script": "test_twitch_live_collector.py", "url": RAW, "status": "FAIL", "messages": 0})}'
+    )
     sys.exit(1)
 
 # 代理策略:默认 None 即跟随系统代理(getproxies 全局生效),仅显式传第三参才注入;
@@ -69,4 +73,11 @@ if os.path.isfile(srt_file):
         print("[WARN] 当前房间该时段无弹幕(连接可能正常)")
 else:
     print(f"[FAIL] SRT 未生成: {srt_file}")
+    print(
+        f'VERIFICATION_RESULT: {json.dumps({"platform": "twitch", "script": "test_twitch_live_collector.py", "url": f"twitch.tv/{channel}", "status": "FAIL", "messages": 0})}'
+    )
     sys.exit(1)
+_srt_sz = os.path.getsize(srt_file)
+print(
+    f'VERIFICATION_RESULT: {json.dumps({"platform": "twitch", "script": "test_twitch_live_collector.py", "url": f"twitch.tv/{channel}", "status": "PASS" if count > 0 else "WARN", "messages": count, "srt_bytes": _srt_sz})}'
+)

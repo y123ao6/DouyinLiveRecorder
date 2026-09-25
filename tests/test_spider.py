@@ -69,10 +69,14 @@ class TestLoadsDict:
         assert _loads_dict("[1,2,3]") == {}
 
     def test_invalid_json(self) -> None:
-        # 非法 JSON 必须上抛 JSONDecodeError 由调用方捕获——与"返回 {}"语义不同，
-        # 此处验证异常路径确实被抛出而非被静默吞成空 dict
-        with pytest.raises(json.JSONDecodeError):
-            _loads_dict("not json")
+        # CR-12 修复后语义：非法 JSON（WAF 拦截页 / 302 落地 HTML / 截断 JSON）返回 {}
+        # 而非上抛。旧测试断言「必须抛 JSONDecodeError」，锁定的正是导致「明明在播却
+        # 持续漏录」的错误前提——该函数注释承诺的就是「非 JSON 一律回 {}」，
+        # 且外围 @trace_error_decorator 会把抛出的异常吞成 {"is_live": False}，
+        # 与返回 {} 的最终表现一致、却丢掉了一切日志线索。此处对齐正确设计语义。
+        assert _loads_dict("not json") == {}
+        assert _loads_dict("<html><body>403</body></html>") == {}
+        assert _loads_dict('{"a": 1') == {}
 
 
 class TestExtractDouyinHevcFlvUrl:

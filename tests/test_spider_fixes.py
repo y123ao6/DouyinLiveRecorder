@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src import spider as sp
+from src import utils as u
 from src.cookie_cache import clear as clear_cookie_cache
 
 
@@ -21,6 +22,17 @@ def _unwrap(func: object) -> Any:
     # 取 trace_error_decorator 装饰后的原函数：装饰器经 functools.wraps 保留
     # __wrapped__，但静态类型不可见，统一经 getattr 取用（返回 Any 以便直接调用）
     return cast(Any, getattr(func, "__wrapped__"))
+
+
+def _subprocess_shim(run: Any) -> types.SimpleNamespace:
+    # SEV-2225 迁移：把 subprocess 替身装进 **src/utils** 的命名空间，不再改写 stdlib 模块本体。
+    # 旧写法 patch("subprocess.run") 的容器是全进程唯一的 stdlib 模块对象，with 窗口内同进程的
+    # harness safe-delete 守卫线程（其 subprocess.run 依赖真 Popen 的上下文管理协议，否则报
+    # SAFE_DELETE_BULK_GUARD_ERROR）、loguru enqueue 线程、coverage 全部拿到假实现。
+    # vars(subprocess) 浅拷贝保留 PIPE / STDOUT / TimeoutExpired / CalledProcessError 等常量，仅换 run。
+    shim = types.SimpleNamespace(**vars(subprocess))
+    shim.run = run
+    return shim
 
 
 # vvxqiu 解析：房间号缺失/播放列表空须判未直播，出现 m3u8 即判开播
@@ -91,7 +103,14 @@ class TestMigu:
         raw = _unwrap(sp.get_migu_stream_url)
         with (
             patch.object(sp, "async_req", new=AsyncMock(return_value=self._basic_json())),
-            patch.object(sp.subprocess, "run", side_effect=fake_run),
+            # MI-15 后 spider 不再 import subprocess（改走 utils.run_node_script_async），真正执行
+            # subprocess.run 的是 src/utils.py，故替身装在 utils 命名空间上。
+            # 末尾的 captured["timeout"] == 30 同时是「替身确实被走到」的见证：装错命名空间就会
+            # 去起真实 node 进程、captured 保持为空而变红，不会静默假绿。
+            # [2026-09-23 修订：此处旧注释论证「改打标准库模块本身……与原先打 sp.subprocess.run
+            # 语义等价」——对被测面成立、对影响面不成立（SEV-2225），且 sp 根本没有 subprocess
+            # 属性（实测 hasattr(sp, "subprocess") 为 False），该论证已就地删除。]
+            patch.object(u, "subprocess", _subprocess_shim(fake_run)),
         ):
             with pytest.raises(sp.ProgramError):
                 await raw("https://x/123")
@@ -107,10 +126,13 @@ class TestMigu:
 
         def fake_run(*args: object, **kwargs: object) -> types.SimpleNamespace:
             # migu.js（2026-08 重写版）输出带 ddCalcu/sv 参数的完整地址（而非仅 ddCalcu 值）
-            return types.SimpleNamespace(stdout="https://x.miguvideo.com/abc.m3u8&ddCalcu=dd&sv=119\n")
+            # 2026-09-20 随 MID-62 适配：utils.run_node_script_async 改为「脚本经 stdin 交给
+            # node -」且按字节捕获输出（无 text=True），桩须返回 bytes stdout 而非 str。
+            return types.SimpleNamespace(stdout=b"https://x.miguvideo.com/abc.m3u8&ddCalcu=dd&sv=119\n")
 
         raw = _unwrap(sp.get_migu_stream_url)
-        with patch.object(sp, "async_req", new=fake_req), patch.object(sp.subprocess, "run", new=fake_run):
+        # 替身装在 src/utils 上（见 _subprocess_shim），理由同 TestMigu 首条用例
+        with patch.object(sp, "async_req", new=fake_req), patch.object(u, "subprocess", _subprocess_shim(fake_run)):
             result = await raw("https://x/123")
         # 重定向解析失败（拿不到最终 m3u8 地址）→ 判未直播，不产出 record_url
         assert result["is_live"] is False
@@ -134,12 +156,19 @@ class TestMigu:
                 return "https://x/real.m3u8"
             return body_without_title
 
+        calls: list[str] = []
+
         def fake_run(*args: object, **kwargs: object) -> types.SimpleNamespace:
-            return types.SimpleNamespace(stdout="dd\n")
+            # 同 TestMigu 其它用例：run_node_script_async 现按字节捕获 stdout（MID-62 stdin 形态）
+            calls.append("run")
+            return types.SimpleNamespace(stdout=b"dd\n")
 
         raw = _unwrap(sp.get_migu_stream_url)
-        with patch.object(sp, "async_req", new=fake_req), patch.object(sp.subprocess, "run", new=fake_run):
+        # 替身装在 src/utils 上（见 _subprocess_shim）。calls 非空即「替身真被走到」的见证：
+        # 本条的 is_live/anchor_name 断言只依赖 fake_req，装错命名空间时会静默假绿，故补这条。
+        with patch.object(sp, "async_req", new=fake_req), patch.object(u, "subprocess", _subprocess_shim(fake_run)):
             result = await raw("https://x/123")
+        assert calls, "subprocess.run 替身未被调用：patch 目标命名空间错位（真正的执行点在 src/utils.py）"
         assert result["is_live"] is True
         assert result["anchor_name"] == ""  # title 为 None 时不再 TypeError
 
@@ -165,9 +194,11 @@ class TestFaceit:
 
 class TestShopee:
     # shopee 解析：重定向拼接须用完整 TLD 后缀，畸形/重定向失败 URL 须判未直播
-    # 重定向拼接必须用完整 TLD 后缀；否则会出现 live.shopee.shopee 这类非法域名
-    async def test_redirect_failure_uses_full_tld_suffix(self) -> None:
-        # shopee.co.id 重定向失败时仍应拼出 live.shopee.co.id 而非 live.shopee.shopee
+    # SEV-06 修复（2026-09-20）：本用例旧版传 https://shopee.co.id/live——该形态不含
+    # "live.shopee" 路由键（main.py 永不把这类地址分发到本函数），恰好绕开真实 bug：
+    # 剥 live. 前缀那一步曾缺失，可路由形态拼出 https://live.shopee.shopee.co.id
+    # （不存在的 host → 永远「未开播」）。断言改用真实会被路由的直链形态。
+    async def test_live_shopee_direct_url_uses_full_tld_suffix(self) -> None:
         seen_urls: list[str] = []
 
         async def fake_req(url: str, **kwargs: object) -> str:
@@ -180,10 +211,26 @@ class TestShopee:
 
         raw = _unwrap(sp.get_shopee_stream_url)
         with patch.object(sp, "async_req", new=fake_req):
-            result = await raw("https://shopee.co.id/live")
+            result = await raw("https://live.shopee.co.id/share?from=live&session=802458")
         assert result["is_live"] is False
         session_url = [u for u in seen_urls if "/session/" in u][0]
-        assert "live.shopee.co.id" in session_url
+        # 钉死完整 host：旧缺陷形态是 https://live.shopee.shopee.co.id/...（双 shopee）
+        assert session_url == "https://live.shopee.co.id/api/v1/session/802458"
+
+    # 以下三个纯函数用例覆盖全部真实 TLD 形态（SEV-06 报告要求的 sg / co.id / com.my）。
+    # split(".", 1) 保留「首段之后全部」才能正确得到 co.id / com.my 这类两段式后缀。
+    def test_host_suffix_sg(self) -> None:
+        assert sp._shopee_host_suffix("https://live.shopee.sg/share?from=live&session=802458") == "sg"
+
+    def test_host_suffix_co_id(self) -> None:
+        assert sp._shopee_host_suffix("https://live.shopee.co.id/live/123") == "co.id"
+
+    def test_host_suffix_com_my(self) -> None:
+        assert sp._shopee_host_suffix("https://live.shopee.com.my/foo") == "com.my"
+
+    def test_host_suffix_non_live_host_keeps_tld(self) -> None:
+        # 店铺主页/重定向落地地址（无 live. 前缀）：后缀语义不变，与上方直链同一实现
+        assert sp._shopee_host_suffix("https://shopee.co.id/live") == "co.id"
 
     async def test_malformed_url_returns_not_live(self) -> None:
         raw = _unwrap(sp.get_shopee_stream_url)

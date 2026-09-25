@@ -15,10 +15,14 @@ import pytest
 
 from src.web_config import (
     BUILTIN_QUALITIES,
+    clamp_pbkdf2_iterations,
     find_room_url_by_anchor_name,
     format_url_line,
     hash_web_password,
     is_hashed_web_password,
+    is_host_allowed,
+    is_loopback_bind_host,
+    is_origin_allowed,
     normalize_quality_options,
     read_quality_options,
     read_web_config,
@@ -62,6 +66,427 @@ class TestValidateTargets:
     def test_newline_url_rejected(self) -> None:
         with pytest.raises(ValueError):
             validate_room_target("https://live.douyin.com/1\n# x", None)
+
+
+class TestFormatUrlLineCarriesValidation:
+    # SEV-02：房间校验已**下沉**到 format_url_line（URL_config.ini 唯一写入口）。
+    # 判据：把 web_api 里那些显式的 validate_room_target 调用全删掉，下面三条仍须抛错。
+
+    def test_internal_target_rejected_by_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_offline_dns(monkeypatch)
+        with pytest.raises(ValueError):
+            format_url_line("http://127.0.0.1:8000/x?a=.flv")
+
+    def test_arbitrary_scheme_rejected_by_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_offline_dns(monkeypatch)
+        with pytest.raises(ValueError):
+            format_url_line("file:///etc/passwd?a=.flv")
+
+    def test_unknown_quality_rejected_by_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_offline_dns(monkeypatch)
+        with pytest.raises(ValueError):
+            format_url_line("https://live.douyin.com/1", quality="8K无敌")
+
+    def test_default_and_empty_quality_allowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 「原画」与空值是「移除画质段」的合法写法，不得被白名单误伤
+        _stub_offline_dns(monkeypatch)
+        assert format_url_line("https://live.douyin.com/1", "原画") == "https://live.douyin.com/1"
+        assert format_url_line("https://live.douyin.com/1", "") == "https://live.douyin.com/1"
+
+
+def _stub_offline_dns(monkeypatch: pytest.MonkeyPatch, table: dict[str, list[str] | OSError] | None = None) -> None:
+    # SEV-03 之后房间地址要过 socket.getaddrinfo。这里只替换「解析」这一步（网络层桩），
+    # 回环/私网/保留/CGNAT 的分类与「任一结果内部即拒绝」的裁决全部走真实代码。
+    # 表外域名默认解析到一个公网地址；需要构造「解析失败」的用例把值写成 OSError 实例。
+    from src import web_config as wc
+
+    mapping: dict[str, list[str] | OSError] = {"__default__": ["114.114.114.114"]}
+    mapping.update(table or {})
+
+    def _fake_resolve(host: str) -> list[str]:
+        outcome = mapping.get(host, mapping["__default__"])
+        if isinstance(outcome, OSError):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(wc, "_resolve_host_ips", _fake_resolve)
+
+
+class TestRoomTargetInternalBlocklist:
+    # SEV-03：内网拦截旧实现是「字符串前缀黑名单」，报告实测 7 条载荷中 5 条放行
+    # （十进制 2130706433、八进制 0177.0.0.1、带端口 IPv6 [fe80::1]:8080、
+    # CGNAT 100.64.0.1、阿里云元数据 100.100.100.200）。
+    # 现改为 ipaddress 语义 + DNS 解析双道判定。载荷均带 ?x=.m3u8 / ?a=.flv 尾巴，
+    # 与报告一致（那正是命中 main.py 自定义流分支、把原地址送进 ffmpeg -i 的形态）。
+
+    # 报告表格 + 等价形态扩展：以下全部必须 REJECTED
+    BLOCKED_PAYLOADS: list[str] = [
+        "http://127.0.0.1:8080/manager/x?a=.flv",
+        "http://169.254.169.254/latest/meta-data/?x=.m3u8",
+        "http://2130706433/x?a=.flv",
+        "http://0177.0.0.1/x?a=.flv",
+        "http://0x7f.0.0.1/x?a=.flv",
+        "http://127.1/x?a=.flv",
+        "http://[fe80::1]:8080/x?a=.flv",
+        "http://[fd12::34]/x?a=.flv",
+        "http://[::1]/x?a=.flv",
+        "http://[::ffff:127.0.0.1]/x?a=.flv",
+        "http://100.64.0.1/x?a=.flv",
+        "http://100.100.100.200/latest/meta-data/?x=.m3u8",
+        "http://10.1.2.3/x?a=.flv",
+        "http://192.168.1.1:554/x?a=.flv",
+        "http://172.16.5.4/x?a=.flv",
+        "http://172.31.255.255/x?a=.flv",
+        "http://0.0.0.0/x?a=.flv",
+        "http://localhost:8000/x?a=.flv",
+        "http://224.0.0.1/x?a=.flv",
+        "http://metadata.google.internal/y?x=.m3u8",
+        "http://my-room.local/x?a=.flv",
+        "http://svc.cluster.internal/x?a=.flv",
+        "http://box.svc.home.arpa/x?a=.flv",
+        "http://attacker.localhost/x?a=.flv",
+        "http://127-0-0-1.sslip.io/x?a=.flv",  # IP 编码进域名：靠解析结果识别
+        "http://dual-stack.example.com/x?a=.flv",  # 公网 + 回环同时返回：任一内部即拒绝
+        "http://intranet-only.example.com/x?a=.flv",  # 解析到 10.0.0.5 的域名
+        "http://nowhere.example.com/x?a=.flv",  # 解析失败一律拒绝
+        "file:///etc/passwd?a=.flv",
+        "rtp://127.0.0.1/x?a=.flv",
+    ]
+
+    # 真实平台地址（回归护栏：收紧判定不许把可用房间一起砍掉）
+    ALLOWED_PAYLOADS: list[str] = [
+        "https://live.douyin.com/745964462470",
+        "https://live.bilibili.com/123456",
+        "https://www.huya.com/dank1ng",
+        "https://www.douyu.com/36252",
+        "https://www.twitch.tv/theshy",
+        "https://www.youtube.com/@test/streams",
+        "https://live.kuaishou.com/u/testuser",
+        "https://91.popkon.tv/en/live/1234",
+        "https://live.cctv.com/channel/sports",
+        "http://121.229.0.10/live/a.m3u8",
+        "http://[2408:8000:0:1::abcd]/live/a.m3u8",  # 公网 IPv6 直连地址（须按 RFC 带方括号）
+    ]
+
+    # 三个「靠解析才定罪/才放行」的域名解析桩（其余域名走默认公网地址）
+    _DNS_TABLE: dict[str, list[str] | OSError] = {
+        "127-0-0-1.sslip.io": ["127.0.0.1"],
+        "dual-stack.example.com": ["8.8.8.8", "::1"],
+        "intranet-only.example.com": ["10.0.0.5"],
+        "nowhere.example.com": OSError("getaddrinfo failed"),
+    }
+
+    @pytest.mark.parametrize("url", BLOCKED_PAYLOADS)
+    def test_internal_targets_rejected(self, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_offline_dns(monkeypatch, self._DNS_TABLE)
+        with pytest.raises(ValueError):
+            validate_room_target(url, None, None)
+
+    @pytest.mark.parametrize("url", ALLOWED_PAYLOADS)
+    def test_public_platform_targets_allowed(self, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 判点是「不得因收紧内网名单而误伤真实平台」：解析结果固定为可路由公网地址，
+        # 各平台此刻实际解析到什么 IP 不属于被测契约（那会让用例随 DNS 漂移）。
+        _stub_offline_dns(monkeypatch, self._DNS_TABLE)
+        validate_room_target(url, None, None)
+
+    def test_cgnat_blocklist_is_explicit_because_3_14_drops_it(self) -> None:
+        # 3.14 起 ipaddress 按 IANA 特别用途注册表判定：100.64.0.0/10 不算私网。
+        # 本用例锁「显式网段名单」这一前提，将来若依赖 is_private 覆盖 CGNAT 即变红。
+        import ipaddress
+
+        assert not ipaddress.ip_address("100.64.0.1").is_private
+        # 直接调分类函数：入参已是字面量地址，本就不需要 DNS
+        from src.web_config import _internal_ip_reason
+
+        assert _internal_ip_reason(ipaddress.ip_address("100.64.0.1")) is not None
+        assert _internal_ip_reason(ipaddress.ip_address("100.100.100.200")) is not None
+
+    def test_ipv4_aton_forms_normalized_to_loopback(self) -> None:
+        # 缩写/非十进制形态必须在本层还原（不能「看起来不像 IP 就交给 DNS」）
+        from src.web_config import _parse_ip_literal
+
+        for text in ("2130706433", "0177.0.0.1", "0x7f000001", "127.1", "127.0.1"):
+            addr = _parse_ip_literal(text)
+            assert addr is not None and addr.is_loopback, f"{text} 未还原成回环地址: {addr}"
+
+    def test_partial_or_namey_strings_are_not_ip_literals(self) -> None:
+        from ipaddress import IPv4Address
+
+        from src.web_config import _parse_ip_literal
+
+        # a.b.c 是 inet_aton 的合法形态（末段独占剩余两字节），刻意保持同款语义：
+        # 只拦「看起来像但越界/含非数字」的串，不做「少一段就当主机名」的宽松处理
+        assert _parse_ip_literal("1.2.3") == IPv4Address("1.2.0.3")
+        assert _parse_ip_literal("999.1.1.1") is None
+        assert _parse_ip_literal("example.com") is None
+        assert _parse_ip_literal("1.2.3.4.5") is None
+        assert _parse_ip_literal("live.douyin.com") is None
+
+
+class TestDnsRebindingBoundary:
+    # SEV-03 的边界：本层只能校验「写入那一刻」的解析结果。
+    # 该用例锁住这个事实（而不是假装能挡重绑定），提醒后续改动不要把它当完整防线。
+
+    def test_ttl_zero_rebinding_passes_write_time_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from src import web_config as wc
+
+        answers: dict[str, list[str]] = {"host": ["114.114.114.114"]}
+        monkeypatch.setattr(wc, "_resolve_host_ips", lambda host: list(answers["host"]))
+        # 写入时公网 → 放行（无法预知录制时 ffmpeg 重新解析到什么）
+        validate_room_target("http://evil.example.com/room?a=.flv")
+        # 之后记录被改成回环：本层无从拦截，只能在出站网络层（egress 防火墙/代理）收口
+        answers["host"] = ["127.0.0.1"]
+        with pytest.raises(ValueError):
+            validate_room_target("http://evil.example.com/room?a=.flv")
+
+
+class TestHostAndLoopbackPolicy:
+    # MID-36 / SEV-04 的服务端名单口径（Host 头不再自证可信）。
+
+    def test_loopback_forms(self) -> None:
+        for host in ("127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.53", "localhost:8000"):
+            assert is_loopback_bind_host(host), host
+        for host in ("0.0.0.0", "::", "192.168.1.10", "10.0.0.1", "", " panel.example.com "):
+            assert not is_loopback_bind_host(host), host
+
+    def test_allowed_hosts_and_public_ip_escape(self) -> None:
+        cfg = {"web_host": "127.0.0.1", "web_allowed_hosts": ""}
+        assert is_host_allowed("127.0.0.1:8000", cfg)
+        assert is_host_allowed("localhost", cfg)
+        assert is_host_allowed("testserver", cfg)  # 无点单标签名（内网 netbios / 测试桩）
+        assert not is_host_allowed("attacker.tld:8000", cfg)
+        assert not is_host_allowed("attacker.tld", cfg)
+        # 绑到 0.0.0.0 的部署：以局域网 IP 访问仍放行（IP 字面量无法被 DNS 重绑定）
+        wild = {"web_host": "0.0.0.0", "web_allowed_hosts": ""}
+        assert is_host_allowed("192.168.1.20:8000", wild)
+        assert not is_host_allowed("panel.attacker.example", wild)
+        # 显式登记后放行（含 *. 后缀形态）
+        named = {"web_host": "0.0.0.0", "web_allowed_hosts": "recorder.lan, *.home.example"}
+        assert is_host_allowed("recorder.lan:8000", named)
+        assert is_host_allowed("nas.home.example", named)
+        assert not is_host_allowed("evil.home.example.other", named)
+
+
+class TestOriginAllowedPolicy:
+    # MID-N42 修复（2026-09-21，CODE_REVIEW_2026-09-21）纯函数侧：Origin 与 Host 从此是两套名单。
+    # HTTP 侧（谁被 403）见 tests/test_web_api.py::TestOriginSameHostAndPort；本类锁的是
+    # 「期望集合如何由服务端状态推导」，并反向锁住 Host 那套规则没被顺带改掉
+    # （合并成一套必然有一侧退化：Host 松了就丢 MID-36 的重绑定防线，Origin 紧了就砍掉反代入口）。
+
+    # 显式注解：dict[str, object] 与判定函数的 Mapping[str, str | int | bool] 不兼容（mypy arg-type）
+    _WILD: dict[str, str | int | bool] = {"web_host": "0.0.0.0", "web_port": 8000, "web_allowed_hosts": ""}
+    _LOCAL: dict[str, str | int | bool] = {"web_host": "127.0.0.1", "web_port": 8000, "web_allowed_hosts": ""}
+
+    def test_ip_and_dotless_escape_hatches_are_host_only(self) -> None:
+        # 同一份 cfg（绑 0.0.0.0）：Host 侧放行 IP 字面量与无点单标签名，Origin 侧都不放行。
+        assert is_host_allowed("192.168.1.47:8000", self._WILD)
+        assert is_host_allowed("nas", self._WILD)
+        assert not is_origin_allowed("http://192.168.1.47:8000", self._WILD, bind_host="0.0.0.0", bind_port=8000)
+        assert not is_origin_allowed("http://nas:8000", self._WILD, bind_host="0.0.0.0", bind_port=8000)
+        # 通配登记同样只对 Host 生效：同源是按「那一台主机」成立的，*.home.example 可被签发
+        wildcard: dict[str, str | int | bool] = {
+            "web_host": "0.0.0.0",
+            "web_port": 8000,
+            "web_allowed_hosts": "*.home.example",
+        }
+        assert is_host_allowed("nas.home.example", wildcard)
+        assert not is_origin_allowed("http://nas.home.example:8000", wildcard, bind_host="0.0.0.0", bind_port=8000)
+
+    def test_expected_pair_is_bind_host_and_bind_port(self) -> None:
+        # 实际绑定 192.168.1.47:9000 时：该 host:port 同源；配置的 web_port=8000 不算；
+        # 且 web_host 里写着什么都与判定无关（它可被 PUT /api/config 改写）。
+        cfg: dict[str, str | int | bool] = {"web_host": "127.0.0.1", "web_port": 8000, "web_allowed_hosts": ""}
+        assert is_origin_allowed("http://192.168.1.47:9000", cfg, bind_host="192.168.1.47", bind_port=9000)
+        assert not is_origin_allowed("http://192.168.1.47:8000", cfg, bind_host="192.168.1.47", bind_port=9000)
+        assert not is_origin_allowed("http://127.0.0.1:8000", cfg, bind_host="192.168.1.47", bind_port=9000)
+
+    def test_loopback_family_requires_the_bound_port(self) -> None:
+        # 回环族恒可（面板出厂入口就是 localhost/127.0.0.1/::1），但端口必须命中：
+        # http://localhost:3000/ 是本机另一个 dev server，正是本条要拦的形态。
+        for origin in ("http://localhost:8000", "http://127.0.0.1:8000", "http://[::1]:8000", "http://127.0.0.53:8000"):
+            assert is_origin_allowed(origin, self._LOCAL, bind_host="127.0.0.1", bind_port=8000), origin
+        for origin in ("http://localhost:3000", "http://127.0.0.1:80", "https://127.0.0.1", "http://localhost"):
+            assert not is_origin_allowed(origin, self._LOCAL, bind_host="127.0.0.1", bind_port=8000), origin
+
+    def test_registered_host_may_pin_its_own_port(self) -> None:
+        named: dict[str, str | int | bool] = {
+            "web_host": "0.0.0.0",
+            "web_port": 8000,
+            "web_allowed_hosts": "recorder.lan, nas.home.example:9443",
+        }
+        # 未写端口的登记项 → 仍要求等于实际绑定端口
+        assert is_origin_allowed("http://recorder.lan:8000", named, bind_host="0.0.0.0", bind_port=8000)
+        assert not is_origin_allowed("http://recorder.lan:9999", named, bind_host="0.0.0.0", bind_port=8000)
+        # 写了端口的登记项 → 按登记端口判（反代入口端口与应用端口不同的合法部署）
+        assert is_origin_allowed("https://nas.home.example:9443", named, bind_host="0.0.0.0", bind_port=8000)
+        assert not is_origin_allowed("https://nas.home.example:8000", named, bind_host="0.0.0.0", bind_port=8000)
+        # 全角逗号分隔同样生效（与 get_allowed_hosts / 推送侧的拆分口径同源）
+        wide: dict[str, str | int | bool] = {
+            "web_host": "0.0.0.0",
+            "web_port": 8000,
+            "web_allowed_hosts": "a.lan，b.lan:9443",
+        }
+        assert is_origin_allowed("http://a.lan:8000", wide, bind_host="0.0.0.0", bind_port=8000)
+        assert is_origin_allowed("http://b.lan:9443", wide, bind_host="0.0.0.0", bind_port=8000)
+
+    def test_testserver_sentinel_exemption_has_a_narrow_boundary(self) -> None:
+        # 豁免只为 Starlette TestClient 的固定哨兵存在：仅「该名字 + 无显式端口」这一种组合。
+        assert is_origin_allowed("http://testserver", self._LOCAL, bind_host="127.0.0.1", bind_port=8000)
+        assert not is_origin_allowed("http://testserver:9999", self._LOCAL, bind_host="127.0.0.1", bind_port=8000)
+        # 另一个无点单标签名不得搭车（否则等价于把 is_host_allowed 的第③条重新引进来）
+        assert not is_origin_allowed("http://nas", self._LOCAL, bind_host="127.0.0.1", bind_port=8000)
+        assert not is_origin_allowed("http://192.168.1.47", self._LOCAL, bind_host="127.0.0.1", bind_port=8000)
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "",
+            "127.0.0.1:8000",  # 无 scheme
+            "ftp://127.0.0.1:8000",  # 非 http(s)
+            "http://127.0.0.1:0",  # 端口 0 非法
+            "http://127.0.0.1:99999",  # 端口越界
+            "http://127.0.0.1:notaport",  # 端口非数字
+            "http:///127.0.0.1:8000",  # 空 authority
+            "http://u:p@127.0.0.1:8000",  # Origin 不含 userinfo
+            "http://127.0.0.1:8000/path",  # Origin 不含 path
+        ],
+    )
+    def test_malformed_origin_is_denied(self, origin: str) -> None:
+        # 畸形值一律判否（不给「解析器差异」留可利用空间）：判定结果不得依赖 urlparse 的宽容度。
+        assert not is_origin_allowed(origin, self._LOCAL, bind_host="127.0.0.1", bind_port=8000)
+        # 「http://127.0.0.1:8000/path」这种带 path 的形态：主机与端口都对，但浏览器不会这么发
+        # → 按 Origin 契约判否（放行它等于接受任意以本站开头的字符串）
+        # 注：本用例的 path 形态同时证明「拒绝来自 authority 严格解析」，与上一条的端口越界互不遮蔽。
+
+
+class TestOutboundTargetConfigKeys:
+    # MID-N45 修复（2026-09-21，CODE_REVIEW_2026-09-21）纯函数侧：校验挂在
+    # validate_config_target（config.ini 写侧唯一入口）上，故「端点忘了调」这一类失效不可能出现
+    # ——这也是本类只经 validate_config_target 而不直接调私有实现的原因。
+
+    def test_push_url_uses_room_url_judgement_core(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_offline_dns(monkeypatch)
+        with pytest.raises(ValueError) as excinfo:
+            validate_config_target("推送配置", "ntfy推送地址", "http://127.0.0.1:6379/")
+        assert "回环地址" in str(excinfo.value)
+        # 缩写/映射形态同样要拦（与房间侧同一份判定内核，不是又一份前缀黑名单）
+        for value in ("http://2130706433/", "http://[::ffff:127.0.0.1]/", "http://10.1.2.3/x"):
+            with pytest.raises(ValueError):
+                validate_config_target("推送配置", "钉钉推送接口链接", value)
+
+    def test_every_comma_segment_is_judged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_offline_dns(monkeypatch)
+        ok = "https://oapi.dingtalk.com/robot/send"
+        bad = "http://169.254.169.254/"
+        for value in (f"{ok},{bad}", f"{bad},{ok}", f"{ok}，{bad}"):  # 含全角逗号形态
+            with pytest.raises(ValueError):
+                validate_config_target("推送配置", "bark推送接口链接", value)
+        validate_config_target("推送配置", "bark推送接口链接", f"{ok},{ok}")
+
+    def test_proxy_allows_local_forms_and_blocks_reserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 代理地址是本机/内网常态（127.0.0.1:7890 是文档写法），故收口点在协议与保留类别：
+        _stub_offline_dns(monkeypatch)
+        for value in (
+            "127.0.0.1:7890",
+            "http://127.0.0.1:7890",
+            "socks5://192.168.1.10:1080",
+            "localhost:7890",
+            "proxy:8080",  # 裸主机名:端口（compose 服务名写法）：归一后按 host 判定，不得误杀
+            "http://user:pass@proxy.example.com:8080",  # 带凭据的公网代理
+        ):
+            validate_config_target("录制设置", "代理地址", value)
+        for value in (
+            "http://169.254.169.254:80/",
+            "socks5://[fe80::1]:1080",
+            "gopher://127.0.0.1:9876",
+            "http://0.0.0.0:80",
+        ):
+            with pytest.raises(ValueError):
+                validate_config_target("录制设置", "代理地址", value)
+
+    def test_smtp_judged_by_hostname_not_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _stub_offline_dns(monkeypatch)
+        validate_config_target("推送配置", "smtp邮件服务器", "10.0.0.5")  # 内网邮件中继合法
+        validate_config_target("推送配置", "smtp邮件服务器", "smtp.lan.example")
+        for value in ("metadata", "169.254.169.254", "metadata.google.internal"):
+            with pytest.raises(ValueError):
+                validate_config_target("推送配置", "smtp邮件服务器", value)
+        # 入参形态必须先钉住再判主机：URL 形态经 _strip_host_port 会变成一根认不出、
+        # 也不是 IP 的怪串（冒号不止一个 → 端口不剥），从而蒙过全部网段判定。
+        # 首尾空白不在此列——configparser 读值时本就会剥，写进去的已经是干净串。
+        for value in ("http://127.0.0.1:6379/", "smtp a.example.com"):
+            with pytest.raises(ValueError):
+                validate_config_target("推送配置", "smtp邮件服务器", value)
+
+    def test_key_matching_is_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # configparser 的 option 本就 casefold（AGENTS.md「配置键审计须先归一化大小写」）：
+        # 只认规范写法等于给拉丁前缀的键留一条绕过路径（SEV-04 的同一形态）。
+        _stub_offline_dns(monkeypatch)
+        for key, value in (
+            ("NTFY推送地址", "http://127.0.0.1:6379/"),
+            ("BARK推送接口链接", "http://127.0.0.1:6379/"),
+            ("微信推送接口链接", "http://169.254.169.254/"),
+            ("SMTP邮件服务器", "metadata"),
+        ):
+            with pytest.raises(ValueError):
+                validate_config_target("推送配置", key, value)
+
+    def test_ordinary_keys_are_out_of_scope(self) -> None:
+        # 反向护栏：白名单式按键判定，普通键的值长得像内网 URL 也必须能写
+        # （否则这条防线会扩成「配置文件不能写某些字符串」的功能回归）。
+        validate_config_target("录制设置", "HLS采集排除平台(逗号分隔)", "http://127.0.0.1:6379/")
+        validate_config_target("录制设置", "自定义画质选项(逗号分隔)", "超清,高清")
+        validate_config_target("推送配置", "ntfy推送地址", "")  # 空值 = 未配置，交由敏感键守卫处理
+
+    def test_internal_target_switch_does_not_relax_metadata(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 破例通道是「放开本机/内网自建服务」，不是「关掉整条校验」：
+        # 云元数据端点、链路本地、0.0.0.0 在开关打开后仍必须拒绝。
+        monkeypatch.setenv("DOUYIN_WEB_ALLOW_INTERNAL_TARGET", "1")
+        validate_config_target("推送配置", "ntfy推送地址", "http://127.0.0.1:8080/topic")
+        for value in ("http://169.254.169.254/", "http://[fe80::1]/x", "http://0.0.0.0/x", "http://100.64.0.1/x"):
+            with pytest.raises(ValueError):
+                validate_config_target("推送配置", "ntfy推送地址", value)
+
+
+class TestPbkdf2IterationsClamp:
+    # MID-35：迭代次数取自 config.ini（用户可编辑的存储串），旧实现原值喂给
+    # hashlib.pbkdf2_hmac → 把 200k 改成 2e7 即让每次登录烧掉十几秒 CPU。
+
+    def test_upper_bound(self) -> None:
+        assert clamp_pbkdf2_iterations("999999999") == 1_000_000
+
+    def test_lower_bound_is_module_default(self) -> None:
+        # 低于默认值的哈希一律判失败：不给「把迭代数降级以放大爆破吞吐」留门
+        assert clamp_pbkdf2_iterations("1") == 200_000
+        assert clamp_pbkdf2_iterations("199999") == 200_000
+
+    def test_normal_value_unchanged(self) -> None:
+        assert clamp_pbkdf2_iterations("300000") == 300_000
+
+    def test_garbage_returns_default(self) -> None:
+        assert clamp_pbkdf2_iterations("not-a-number") == 200_000
+        assert clamp_pbkdf2_iterations("") == 200_000
+        assert clamp_pbkdf2_iterations(None) == 200_000
+
+    def test_verify_does_not_amplify_cost(self) -> None:
+        # 端到端：手工把存储串迭代数写成天文数字，校验须在上界内完成并判失败（不抛异常）
+        assert verify_web_password("x", "pbkdf2_sha256$999999999999$c2FsdA==$aGFzaA==") is False
+
+    def test_hash_roundtrip_still_verifies(self) -> None:
+        # 归一不能把正常哈希一起判死：hash_web_password 走默认 200k
+        hashed = hash_web_password("pw-123")
+        assert is_hashed_web_password(hashed)
+        assert verify_web_password("pw-123", hashed)
+        assert not verify_web_password("pw-124", hashed)
+
+
+class TestReadWebConfigAllowedHosts:
+    def test_default_includes_allowed_hosts_key(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.ini"
+        cfg.write_text("", encoding="utf-8-sig")
+        assert read_web_config(cfg)["web_allowed_hosts"] == ""
 
 
 class TestUpdateConfigLine:
