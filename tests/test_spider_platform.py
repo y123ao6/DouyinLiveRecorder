@@ -75,12 +75,12 @@ from src.spider import (
 
 
 class TestGenerateTwitchPlaySessionId:
-    # 守护 _generate_twitch_play_session_id 的会话 ID 格式契约：固定 32 位小写十六进制串
-    # （Twitch playSessionId 长度与大小写受服务端鉴权约束，不符会被拒签）。
+    # 守护 _generate_twitch_play_session_id 的会话 ID 格式契约：恰 32 位、整体小写的字母数字串
+    # （实现为 generate_random_string(32).lower()，字符集 A-Z0-9 转小写 → 含 g-z，**不是**十六进制）。
 
     def test_returns_32_char_string(self) -> None:
         # Twitch playSessionId 的长度与大小写受服务端鉴权约束，不符会被拒签；
-        # 锁住 32 位小写十六进制格式契约，防截断/大小写回归。
+        # 本用例只锁「32 位 + 全小写」两条，不得读成十六进制断言（字符集依据见上方类注释）。
         result = _generate_twitch_play_session_id()
         assert len(result) == 32
         assert result == result.lower()  # should be lowercase
@@ -93,12 +93,15 @@ class TestGenerateTwitchPlaySessionId:
 
 
 class TestEnsureTwitchClientId:
-    # Test _ensure_twitch_client_id.
+    # Twitch Web 端公开 Client-Id 的三态：主页 HTML 提取 / 进程内缓存命中 / 拉取失败回空串。
+    # 它是网页公共标识、非用户私人凭据（AGENTS 凭据红线不适用于本值，见 src/spider.py 函数头）。
 
     @pytest.mark.asyncio
     async def test_fetches_from_html(self) -> None:
-        # Client-ID 从播放页内联脚本提取（无公开 API）；
-        # 锁住 JSON 解析出的 24 位 ID 契约。
+        # Client-ID 无公开 API，只能对 https://www.twitch.tv/ 的 HTML 跑正则
+        # "Client-ID" 后接 [a-z0-9]{20,}（不是 JSON 解析；桩载荷写成 <script> 内嵌形态只为复刻页面）；
+        # 锁住「抠到的串原样回传」——桩值 28 位，真实约束是长度下限 20 而非固定位数。
+        # 缓存非空时函数直接早退，故这里必须先把 _cached_twitch_client_id 置空并在 finally 还原。
         html = '<script>var config = {"Client-ID": "abcdef12345678901234567890ab"};</script>'
         with (
             patch("src.spider.async_req", new_callable=AsyncMock, return_value=html),
@@ -182,9 +185,10 @@ class TestTiktokStreamData:
 
 
 class TestYYStreamData:
-    # Test get_yy_stream_data.
-    # 守护 YY 解析：页面含 nick 即视为可解析出主播名；缺字段经装饰器转 {is_live:False}，
-    # 锁住「非标准结构也返回 dict」契约。
+    # YY 的 get_yy_stream_data 不读标准 JSON，返回页面拼装出的非标准结构。本类锁两件事：
+    # 缺 nick 时经兜底装饰器转 {is_live: False}（不抛错、不中断主循环），含 nick 时返回 dict。
+    # 注意：anchor_name / is_live 的**具体取值本文件并未断言**（下方用例只判 isinstance），
+    # 昵称提取的精确断言属待补项，不要把它读成已覆盖——待确认服务端真实页面形态后再补。
 
     @pytest.mark.asyncio
     async def test_no_anchor_name_returns_empty(self) -> None:
@@ -195,8 +199,8 @@ class TestYYStreamData:
 
     @pytest.mark.asyncio
     async def test_successful_parse(self) -> None:
-        # 页面含 nick 字段即视为可解析出主播名；锁住「非字典结构也返回 dict 且 is_live 推断」契约，
-        # 防正则/字段提取失败时把在播房间误判离线。
+        # 桩载荷 'nick: "YY主播",\n  logo' 走的是 nick 正则分支；断言仅到 isinstance(result, dict)，
+        # 即锁住「非标准结构也返回 dict、不抛错」这一类型契约（昵称/开播取值见类注释的待补说明）。
         html = 'nick: "YY主播",\n  logo'
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=html):
             result = await get_yy_stream_data("https://www.yy.com/12345")
@@ -445,27 +449,29 @@ class TestShowroomStreamData:
 
 
 class TestLookliveSecretData:
-    # Test get_looklive_secret_data - RSA/AES encryption.
-    # 守护look直播登录加密：返回 (密文, 256位 RSA 加密密钥) 元组且含随机填充，不同明文输出不同，
-    # 供上层拼装登录凭据。
+    # 守护 look 直播登录侧的 weapi 加密封装（与网易云音乐同款：AES-128-CBC 双层 + RSA 模幂）。
+    # modulus / nonce / public_key("010001") 是服务端硬编码约定，改任一常量即 200+空响应；
+    # 返回 (密文, RSA 加密后的随机 sec_key) 元组，sec_key 每请求独立生成故输出不重复，供上层拼凭据。
 
     def test_returns_tuple_of_strings(self) -> None:
-        # 加密函数须返回 (密文, 加密密钥) 两元组且均为 str；RSA-2048 加密密钥固定 256 个
-        # 十六进制字符，锁住加密封装契约供上层登录拼装。
+        # 加密函数须返回 (密文, 加密 sec_key) 两元组且均为 str；sec_key 经模幂后
+        # format(..., "x").zfill(256) → 恒 256 个十六进制字符（weapi 模数即 1024 位/256 hex 宽度），
+        # 锁住加密封装契约供上层登录拼装。
         result = get_looklive_secret_data({"key": "value"})
         assert isinstance(result, tuple)
         assert len(result) == 2
         enc_text, enc_sec_key = result
         assert isinstance(enc_text, str)
         assert isinstance(enc_sec_key, str)
-        assert len(enc_sec_key) == 256  # RSA 2048-bit → 256 hex chars
+        assert len(enc_sec_key) == 256  # weapi 1024-bit 模数 → zfill(256) 十六进制
 
     def test_different_inputs_different_outputs(self) -> None:
-        # 不同明文须产生不同密文（加密含随机填充）；锁住加密非确定性输出，
+        # 不同明文须产生不同密文（AES 密钥每次重新随机生成）；锁住加密非确定性输出，
         # 防实现退化为确定性编码导致登录凭据可被重放。
         r1 = get_looklive_secret_data({"a": "1"})
         r2 = get_looklive_secret_data({"b": "2"})
-        # enc_text differs (different plaintext); enc_sec_key may differ due to random key
+        # 只比 enc_text（r1[0] != r2[0]）：enc_sec_key 本就随随机 sec_key 变化，
+        # 断它「必不相等」会把正常的随机波动写成自红用例。
         assert r1[0] != r2[0]
 
 
@@ -1304,9 +1310,12 @@ class TestAcfunSignParams:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
+        # CR-12 修复后语义：返回三元组的函数失败时回 None，而不是 {"is_live": False}。
+        # 旧断言锁定的 dict 兜底会让调用方元组解包抛 ValueError，二次吞没后 AcFun
+        # 整条链路静默失效；此处对齐正确设计语义（None = 取不到签名三件套）。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_acfun_sign_params()
-            assert result == {"is_live": False}
+            assert result is None
 
 
 class TestDouyuStreamData:

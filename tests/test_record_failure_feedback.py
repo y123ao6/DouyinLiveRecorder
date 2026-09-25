@@ -14,12 +14,23 @@
 
 import subprocess
 import sys
+import tempfile
+import time
 import types
 from collections.abc import Generator
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
+import httpx
 import pytest
+
+# ffmpeg 输出路径必须落在**真实存在**的目录里：check_subprocess 的失败分支以「输出父目录不存在」
+# 判定输出侧本地 IO 失败并据此豁免探针退避（MID-02 引入、MID-N01 于 2026-09-22 收敛为单判据）。
+# 旧写法 "/tmp/out.ts" 在 Linux 上父目录存在、在 Windows 上不存在——同一条用例在两侧语义相反，
+# 「快速失败必须记退避」的断言会在 Windows 被豁免分支静默吞掉。取 tempfile.gettempdir() 后
+# 两侧都是「健康可写目录」，断言语义与平台无关。
+_OUT_TS = str(Path(tempfile.gettempdir()) / "dvr_probe_out.ts")
 
 
 @pytest.fixture(scope="module")
@@ -34,6 +45,15 @@ def main_mod() -> Generator[Any, None, None]:
         yield main
     finally:
         sys.argv = old_argv
+
+
+def _module_shim(module: ModuleType) -> types.SimpleNamespace:
+    # MID-66：把 stdlib / 第三方模块浅拷贝成替身，只替换 **main 命名空间里的全局名**，
+    # 绝不 setattr 到模块本体——time/os/httpx 是全进程唯一对象，loguru 的 enqueue 线程、
+    # harness 守护线程、coverage 都在同一进程里跑，会被假实现波及（本文件原先的
+    # monkeypatch.setattr(main.time, "sleep", ...) 即属此类）。
+    # 与同文件 _make_subprocess_shim 的 subprocess 写法同源，也是 AGENTS.md 规定的模式。
+    return types.SimpleNamespace(**vars(module))
 
 
 def _make_subprocess_shim(returncode: int) -> types.SimpleNamespace:
@@ -78,7 +98,10 @@ def _setup_common(
     monkeypatch.setattr(main, "url_comments", set())
     monkeypatch.setattr(main, "register_ffmpeg_process", lambda proc: None)
     monkeypatch.setattr(main, "unregister_ffmpeg_process", lambda proc: None)
-    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+    # 只把 sleep 变成 no-op；time.time / time.strftime 保持真实实现（快速失败判定要用）
+    _time_shim = _module_shim(time)
+    _time_shim.sleep = lambda seconds: None
+    monkeypatch.setattr(main, "time", _time_shim)
     monkeypatch.setattr(main, "subprocess", _make_subprocess_shim(returncode))
 
     successes: list[tuple[str, str | None]] = []
@@ -98,7 +121,7 @@ def test_check_subprocess_success_records_success_sample(main_mod: Any, monkeypa
     result = main.check_subprocess(
         "主播名",
         "https://www.huya.com/16028551",
-        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", "/tmp/out.ts"],
+        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", _OUT_TS],
         "TS",
         None,
         platform="虎牙直播",
@@ -119,7 +142,7 @@ def test_check_subprocess_fast_failure_records_error_and_backoff(
     result = main.check_subprocess(
         "主播名",
         "https://www.huya.com/16028551",
-        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", "/tmp/out.ts"],
+        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", _OUT_TS],
         "TS",
         None,
         platform="虎牙直播",
@@ -169,7 +192,7 @@ def test_check_subprocess_interrupts_when_recording_disabled(main_mod: Any, monk
     result = main.check_subprocess(
         "主播名",
         "https://www.huya.com/16028551",
-        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", "/tmp/out.ts"],
+        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", _OUT_TS],
         "TS",
         None,
         platform="虎牙直播",
@@ -194,7 +217,7 @@ def test_check_subprocess_slow_failure_skips_backoff_mark(main_mod: Any, monkeyp
     result = main.check_subprocess(
         "主播名",
         "https://www.huya.com/16028551",
-        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", "/tmp/out.ts"],
+        ["ffmpeg", "-i", "http://hs.hls.huya.com/src/x.m3u8", _OUT_TS],
         "TS",
         None,
         platform="虎牙直播",
@@ -214,7 +237,7 @@ def test_check_subprocess_failure_without_input_flag_is_safe(main_mod: Any, monk
     result = main.check_subprocess(
         "主播名",
         "https://live.douyin.com/123456",
-        ["ffmpeg", "-y", "/tmp/out.ts"],
+        ["ffmpeg", "-y", _OUT_TS],
         "TS",
         None,
         platform="抖音直播",
@@ -236,7 +259,8 @@ def test_live_network_capacity_fallback_and_scheduler_value(main_mod: Any, monke
     monkeypatch.setattr(main, "scheduler", None)
     assert _live_network_capacity() == 3
 
-    fake_scheduler = types.SimpleNamespace(network_semaphore=types.SimpleNamespace(value=12))
+    # SEV-01：控制台显示的并发容量取调度器的 capacity（上限），不再是 value（剩余许可）
+    fake_scheduler = types.SimpleNamespace(network_semaphore=types.SimpleNamespace(value=12, capacity=12))
     monkeypatch.setattr(main, "scheduler", fake_scheduler)
     assert _live_network_capacity() == 12
 
@@ -280,7 +304,10 @@ def test_direct_download_stream_rejects_non_200_as_failure(
     main = main_mod
     monkeypatch.setattr(main, "get_record_headers", lambda *a, **k: {})
     monkeypatch.setattr(main, "get_record_user_agent", lambda *a, **k: "")
-    monkeypatch.setattr(main.httpx, "Client", lambda **kw: _FakeHttpClient(_FakeStreamResponse(403, [])))
+    # MID-66：httpx 同样是全进程共享的三方模块本体，改走浅拷贝替身
+    _httpx_shim = _module_shim(httpx)
+    _httpx_shim.Client = lambda **kw: _FakeHttpClient(_FakeStreamResponse(403, []))
+    monkeypatch.setattr(main, "httpx", _httpx_shim)
     save_path = tmp_path / "out.flv"
 
     assert (
@@ -298,8 +325,13 @@ def test_direct_download_stream_writes_chunks_on_success(
     main = main_mod
     monkeypatch.setattr(main, "get_record_headers", lambda *a, **k: {})
     monkeypatch.setattr(main, "get_record_user_agent", lambda *a, **k: "")
-    payload = [b"flv-header", b"chunk", b"tail"]
-    monkeypatch.setattr(main.httpx, "Client", lambda **kw: _FakeHttpClient(_FakeStreamResponse(200, payload)))
+    # MID-06 后「200 + 零/极小响应体」不再算成功，替身体量必须过 `_MIN_VALID_RECORD_BYTES`
+    # 门槛，否则失败原因与断言不符（门槛本身由 tests/test_record_watchdog.py 逐条锁定）。
+    payload = [b"flv-header", b"chunk" * 500, b"tail"]
+    assert sum(len(c) for c in payload) > main._MIN_VALID_RECORD_BYTES, "替身须大于直下成功门槛"
+    _httpx_shim = _module_shim(httpx)
+    _httpx_shim.Client = lambda **kw: _FakeHttpClient(_FakeStreamResponse(200, payload))
+    monkeypatch.setattr(main, "httpx", _httpx_shim)
     save_path = tmp_path / "out.flv"
 
     assert (

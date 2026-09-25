@@ -10,6 +10,10 @@
 # - 时间冻结：datetime.today()/now() 与 time.strftime/localtime/sleep 全部替换为固定值，
 #   使文件名中的时间戳确定，从而命令可逐字节比对。
 # - 捕获点在 check_subprocess（5 条 ffmpeg 路径）与 direct_download_stream（直下 FLV 路径）。
+# - 用例清单见 _build_cases()：5 条保存类型路径（TS / FLV / MKV / MP4 / 音频 MP3+M4A）的分段与
+#   非分段组合，另加 m3u8 丢 -reconnect_at_eof、请求头注入、代理注入、海外超时 + https 关校验、
+#   FLV h265→强制 TS、shopee 直下；共 20 条（2026-09-23 实测：_build_cases() 与基准 JSON 键数
+#   均为 20，二者一致性由 test_golden_snapshot_shape_is_sane 机检，改清单以收集结果为准）。
 #
 # 用法：
 #   GOLDEN_REGEN=1 python -m pytest tests/test_start_record_command_golden.py -q   # 重新生成基准
@@ -17,11 +21,15 @@
 #
 # 重构 F-01 后，重跑普通模式，若任一命令与基准不符即说明行为被改动——必须回到「等价重构」。
 
+import copy
 import datetime
 import json
 import os
 import sys
 import threading
+import time
+import traceback
+import types
 from collections.abc import Generator
 from pathlib import Path
 from types import ModuleType
@@ -32,7 +40,21 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _GOLDEN_PATH = Path(__file__).resolve().parent / "golden" / "start_record_commands.json"
-_REGEN = bool(os.environ.get("GOLDEN_REGEN"))
+
+
+def _regen_enabled(raw: str | None) -> bool:
+    # MIN-2265（2026-09-23）：原写法 `bool(os.environ.get("GOLDEN_REGEN"))` 把**非空字符串**
+    # 一律当真——环境里留着 `GOLDEN_REGEN=0` / `=false` 时，20 条比对全部走 `return` 判通过，
+    # 并在 session 结束时**用当前实现覆盖基准 JSON**。此后任何命令行错位（例如 `-segment_format`
+    # 两值再被互换，正是 09-04 的 P0 形态）都会被固化成「新基准」，黄金快照从此自证。
+    # 布尔口径一律复用 src/config_bool（AGENTS.md「布尔配置项统一解析口径」第 9 条），
+    # 不在测试里另造第二套真值集合；未设置/空串/无法识别 → False（即「默认比对、不生成」）。
+    from src.config_bool import parse_config_bool
+
+    return parse_config_bool(raw if raw is not None else "", False)
+
+
+_REGEN = _regen_enabled(os.environ.get("GOLDEN_REGEN"))
 
 # 冻结时间：所有时间戳统一为这一刻（真实 strftime 保证确定性，且各分支格式差异被如实保留）。
 _FIXED = datetime.datetime(2026, 9, 13, 12, 0, 0)
@@ -79,17 +101,43 @@ def main_mod() -> ModuleType:
 
 
 # 收集 start_record 在某次调用中产出的 ffmpeg 命令 / 直下下载参数
-# （原为类 docstring，与 AGENTS.md「注释统一 # 行注释、禁三引号 docstring」冲突，
-# scripts/check_annotations.py 会判违规；改为行注释，语义不变）
+#   [历史注] 2026-09-23 前这段是类 docstring，与「注释统一 # 行注释、禁三引号 docstring」冲突
+#   （scripts/check_annotations.py 判违规），改为行注释、语义不变。
 class _Cap:
     def __init__(self) -> None:
-        self.commands: list[list[str]] = []
+        # SEV-2224：命令快照必须连带记录 check_subprocess 收到的 platform / danmaku_args。
+        # 原先只 append 命令列表，于是「保存类型分支漏传弹幕参数」不改变任何快照内容，
+        # 弹幕链路（get_danmaku_collector(platform, args, ...)）的接线断一条都没人能拦。
+        self.commands: list[dict[str, Any]] = []
         self.downloads: list[dict] = []
+        # start_record 的 except 分支会吞掉真实异常：日志收进本用例内对象、失败时随断言消息输出，
+        # 不落盘到仓库（来龙去脉见 _setup_case 里 _capture 的注释）
+        self.errors: list[str] = []
+
+
+def _module_shim(module: ModuleType) -> types.SimpleNamespace:
+    # MID-66：把 stdlib 模块浅拷贝成替身，只替换 main 命名空间里的全局名。
+    # 直接 setattr(main.time, ...) / setattr(main.os, ...) 改的是全进程唯一的模块本体：
+    # 同进程的 loguru 线程、harness 守护线程、coverage 会一起吃到假 time.time/假 makedirs。
+    # 同 tests/test_record_failure_feedback.py 里 subprocess 替身（_make_subprocess_shim）的
+    # 写法同源，也是 AGENTS.md「测试编写强制约定」规定的模式。
+    return types.SimpleNamespace(**vars(module))
 
 
 # 用例默认值：20 个用例里大多数字段相同，用「默认 + 覆盖」构造，避免 20 份复制粘贴的
 # 字面量（也顺带满足 black 的行宽/换行规则，无需把每个字典逐键展开）。
 # 新增用例只需列出与默认值不同的字段；默认值本身不得随意改动——改动等于改动基准语义。
+#
+# danmaku_args 刻意取**非空**且与真实抖音分支同形（room_id/user_id/cookie 三键，见 main.py
+# 的抖音解析）：SEV-2224 要求快照记录 check_subprocess 收到的 platform / danmaku_args，
+# 而「所有用例都传 None」会把这条锁变成空锁——漏传关键字参数的分支只会把一个 None
+# 换成另一个 None，快照毫无变化。无弹幕的平台（TikTok / 猫耳FM / shopee 直下）显式覆盖为 None。
+_DOUYIN_DANMAKU_ARGS = {
+    "room_id": "7412345678901234567",
+    "user_id": "123456789012",
+    "cookie": "",
+}
+
 _CASE_DEFAULTS = {
     "anchor_name": "测试主播",
     "quality": "原画",
@@ -99,12 +147,16 @@ _CASE_DEFAULTS = {
     "flv_url": "http://other.flv",
     "save_type": "TS",
     "split": False,
+    "danmaku_args": _DOUYIN_DANMAKU_ARGS,
 }
 
 
 def _case(case_id: str, **overrides: Any) -> dict[str, Any]:
-    # 构造一条用例：defaults 覆盖顺序在后，case_id 作为黄金基准的键名
-    case = dict(_CASE_DEFAULTS)
+    # 构造一条用例：defaults 覆盖顺序在后，case_id 作为黄金基准的键名。
+    # 用 deepcopy 而不是 dict()：defaults 里的 danmaku_args 是嵌套 dict，浅拷贝会让 20 条
+    # 用例共用同一份对象——main.py 若在某条路径上就地改它，跨用例污染会以「快照串味」
+    # 的形式出现，且只在部分用例被单跑时才显现。
+    case = copy.deepcopy(_CASE_DEFAULTS)
     case.update(overrides)
     case["id"] = case_id
     return case
@@ -126,6 +178,7 @@ def _build_cases() -> list[dict[str, Any]]:
             real_url="https://pull.tiktok.com/stream.m3u8",
             overseas=["tiktok.com"],
             ssl_off=True,
+            danmaku_args=None,  # TikTok 无弹幕采集器
         ),
         # —— FLV（ffmpeg 分支，非直下）：非分段 / 分段 ——
         _case("flv_ffmpeg", save_type="FLV"),
@@ -147,6 +200,7 @@ def _build_cases() -> list[dict[str, Any]]:
             platform="猫耳FM直播",
             record_url="https://fm.missevan.com/live/1",
             real_url="http://pull.missevan.com/1.flv",
+            danmaku_args=None,  # 纯音频平台不采集弹幕
         ),
         # —— 代理：注入 -http_proxy ——
         _case(
@@ -171,6 +225,7 @@ def _build_cases() -> list[dict[str, Any]]:
             real_url="http://pull.shopee.com/1.flv",
             flv_url="http://pull.shopee.com/1.flv",
             save_type="FLV",
+            danmaku_args=None,  # 直下路径不经 check_subprocess，弹幕参数恒为 None
         ),
     ]
     return cases
@@ -233,13 +288,18 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
     for ck in _COOKIE_GLOBALS:
         monkeypatch.setattr(main, ck, "", raising=False)
 
-        # ssl 校验裁决：main.py 在 get_effective_ssl_verify 返回 False（校验关闭）时才插入
-        # -tls_verify 0。故 ssl_off=True 应让该接口返回 False。
-        monkeypatch.setattr(
-            main._http_config,
-            "get_effective_ssl_verify",
-            lambda platform: not bool(case.get("ssl_off", False)),
-        )
+    # ssl 校验裁决：main.py 仅当 get_effective_ssl_verify 返回 False（校验关闭）时才插入
+    # -tls_verify 0，故 ssl_off=True 要让该接口返回 False。
+    # 这条 setattr 必须留在上面的 for 循环**之外**：挂进循环体时 monkeypatch 只记最后一次还原点
+    # （看着能跑只是因为反复覆盖同一函数的同一属性），且一旦 _COOKIE_GLOBALS 变空（新增平台忘了
+    # 补 cookie 全局量）裁决就静默消失，ts_overseas_https 会以「没有 -tls_verify 0」的形态与基准
+    # 不符而看不出成因。
+    #   [历史注] 2026-09-23 SEV-2224 附带修正前正是那种循环内写法。
+    monkeypatch.setattr(
+        main._http_config,
+        "get_effective_ssl_verify",
+        lambda platform: not bool(case.get("ssl_off", False)),
+    )
 
     # —— 冻结时间 ——
     # 注意：真实 datetime.strftime 内部会回调 time.strftime；若把 time.strftime 直接转发给
@@ -250,10 +310,13 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
 
     _orig_strftime = _time.strftime  # 必须在 Patch 之前捕获原始实现
     _fixed_tt = _FIXED.timetuple()
-    monkeypatch.setattr(main.time, "strftime", lambda fmt, t=None: _orig_strftime(fmt, _fixed_tt))
-    monkeypatch.setattr(main.time, "localtime", lambda t=None: _fixed_tt)
-    monkeypatch.setattr(main.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(main.time, "time", lambda: 1_000_000.0)
+    # MID-66：以下四项全部经浅拷贝替身挂到 main 命名空间，不再触碰 stdlib time 本体
+    _time_shim = _module_shim(_time)
+    _time_shim.strftime = lambda fmt, t=None: _orig_strftime(fmt, _fixed_tt)
+    _time_shim.localtime = lambda t=None: _fixed_tt
+    _time_shim.sleep = lambda *a, **k: None
+    _time_shim.time = lambda: 1_000_000.0
+    monkeypatch.setattr(main, "time", _time_shim)
 
     class _FrozenDateTime(datetime.datetime):
         # 返回类型标 Any：typeshed 中 datetime.now/today 返回 Self，标具体类型会触发
@@ -266,11 +329,18 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
         def now(cls, tz: datetime.tzinfo | None = None) -> Any:
             return _FIXED
 
-    # datetime.datetime 是 C 类型，不能 setattr 类方法；整体替换为冻结子类。
-    monkeypatch.setattr(main.datetime, "datetime", _FrozenDateTime)
+    # datetime.datetime 是 C 类型，不能 setattr 类方法；替换 main 命名空间里的 datetime 模块引用。
+    # MID-66：原写法 setattr(main.datetime, "datetime", ...) 会把**真** datetime 模块的类换掉，
+    # 同进程任何线程（loguru 记录时间戳、coverage）此刻都在用冻结子类。
+    _datetime_shim = _module_shim(datetime)
+    _datetime_shim.datetime = _FrozenDateTime
+    monkeypatch.setattr(main, "datetime", _datetime_shim)
 
     # 所有文件系统副作用：makedirs 变 no-op，full_path 仅为确定字符串
-    monkeypatch.setattr(main.os, "makedirs", lambda *a, **k: None)
+    # MID-66：同上，os 走替身（其余 os.* 属性全部转发真实实现）
+    _os_shim = _module_shim(os)
+    _os_shim.makedirs = lambda *a, **k: None
+    monkeypatch.setattr(main, "os", _os_shim)
 
     # —— mock 网络 / IO ——
     port_info = {
@@ -282,10 +352,13 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
         "actual_quality": None,
     }
 
+    # 返回四元组 (platform, port_info, record_danmaku_args, new_record_url)（见 main.py 的
+    # _resolve_platform_stream）。第 3 项以前恒为 None，SEV-2224 之后改为按用例取值，
+    # 这样「保存类型分支漏传 danmaku_args」才会体现在快照里。
     monkeypatch.setattr(
         main,
         "_resolve_platform_stream",
-        lambda *a, **k: (case["platform"], port_info, None, ""),
+        lambda *a, **k: (case["platform"], port_info, case["danmaku_args"], ""),
     )
     monkeypatch.setattr(
         main,
@@ -309,7 +382,13 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
         platform: str | None = None,
         danmaku_args: dict[str, Any] | None = None,
     ) -> bool:
-        cap.commands.append(list(ffmpeg_command))
+        cap.commands.append(
+            {
+                "command": list(ffmpeg_command),
+                "platform": platform,
+                "danmaku_args": danmaku_args,
+            }
+        )
         return True  # comment_end=True → 触发 if comment_end: return，干净退出
 
     monkeypatch.setattr(main, "check_subprocess", _check)
@@ -351,22 +430,18 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
     if hasattr(_dm, "_hub"):
         monkeypatch.setattr(_dm, "_hub", MagicMock(), raising=False)
 
-    # logger.error 在 start_record 的 except 中被调用且 loguru 队列会卡死，
-    # 这里同步落盘以便看到真实异常（排查循环根因用）。
-    def _sync_err(msg: object, *a: Any, **k: Any) -> None:
-        try:
-            import traceback as _tb
+    # start_record 的 except 会吞掉真实异常、loguru 队列在测试进程里又会卡死，故把
+    # logger.error/warning 改为收进 _Cap.errors，断言失败时随消息一并输出。
+    #   [历史注] 2026-09-21 MID-66 之前落盘到 tests/_exc.log：路径写死盘符、CI/Linux 失效，
+    #   且在仓库里留一次性产物（现由 tests/test_test_hygiene.py 的 R4 规则拦住 *.log 残留）。
+    def _capture(level: str, msg: object) -> None:
+        cap.errors.append(f"[{level}] {msg}\n{traceback.format_exc()}")
 
-            with open("D:/DouyinLiveRecorder-dev/tests/_exc.log", "w", encoding="utf-8") as _f:
-                _f.write(str(msg) + "\n")
-                _tb.print_exc(file=_f)
-        except Exception:
-            pass
-
-    monkeypatch.setattr(main.logger, "error", _sync_err)
-    monkeypatch.setattr(main.logger, "warning", _sync_err)
-    # 真实异常会被 start_record 内部 except 吞掉并无限循环；让 record_error 触发退出标志，
-    # 使循环在首个异常后干净退出，便于读取 _exc.log 中的真实异常。
+    monkeypatch.setattr(main.logger, "error", lambda msg, *a, **k: _capture("ERROR", msg))
+    monkeypatch.setattr(main.logger, "warning", lambda msg, *a, **k: _capture("WARNING", msg))
+    # 真实异常会被 start_record 内部 except 吞掉并无限循环；让 record_error 触发退出标志，使循环
+    # 在首个异常后干净退出，异常本身留在 _Cap.errors 里可读。本行**覆盖**上面 record_error 的
+    # no-op 桩（顺序敏感：换到那行之前就会被 no-op 抢走，异常轮次重新变成无限循环）。
     monkeypatch.setattr(main, "record_error", lambda *a, **k: setattr(main, "exit_recording", True))
 
     return cap
@@ -375,7 +450,10 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
 def _actual_of(case: dict[str, Any], cap: _Cap) -> dict[str, Any]:
     if case["platform"] in ("shopee", "花椒直播"):
         return {"download": cap.downloads[0]} if cap.downloads else {"download": None}
-    return {"command": cap.commands[0]} if cap.commands else {"command": None}
+    if not cap.commands:
+        # 三个键一起给 None：快照条目形状恒定，缺命令时也不会让基准比对退化成「键都不在」
+        return {"command": None, "platform": None, "danmaku_args": None}
+    return dict(cap.commands[0])
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -407,8 +485,88 @@ def test_start_record_command_golden(
     expected = golden.get(case["id"])
     if expected is None:
         pytest.fail(f"黄金基准缺少用例 {case['id']}（重新 GOLDEN_REGEN=1 生成）")
+    if case["platform"] in ("shopee", "花椒直播"):
+        assert set(expected) == {"download"}, f"直下条目键形状异常（用例 {case['id']}）: {sorted(expected)}"
+    else:
+        # SEV-2224：基准条目必须真的带 platform / danmaku_args。缺键说明这份 JSON 是
+        # 旧格式（手改过、或用被 MIN-2265 污染的 _REGEN 语义重生成过），那时弹幕接线
+        # 不在比对范围内——快照会「全绿但什么都没看」。
+        assert {"command", "platform", "danmaku_args"} <= set(
+            expected
+        ), f"基准条目 {case['id']} 缺键，实际键: {sorted(expected)}（请 GOLDEN_REGEN=1 重生成）"
+    # start_record 的 except 会吞掉真实异常并只打日志；命令为 None 时把捕获到的
+    # ERROR/WARNING 一并抛出，否则失败信息只剩「None != [...]」，无从定位。
     assert actual == expected, (
         f"命令与黄金基准不符（用例 {case['id']}）。\n"
         f"  期望: {expected}\n  实际: {actual}\n"
-        "若属预期重构，请先 GOLDEN_REGEN=1 重新生成基准。"
+        + (f"  期间日志:\n    " + "\n    ".join(cap.errors) + "\n" if cap.errors else "")
+        + "若属预期重构，请先 GOLDEN_REGEN=1 重新生成基准。"
     )
+
+
+# ---------------------------------------------------------------------------
+# 快照自身的质量锁（MIN-2265 / SEV-2224）
+#
+# 黄金比对有个天然失效面：基准 JSON 一旦被「当前实现」覆盖，之后所有错位都成为新基准，
+# 20 条用例会全绿地什么都不证明。下面两条把「基准是否还是一份有意义的快照」变成断言。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, False),
+        ("", False),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        (" 是 ", True),
+    ],
+)
+def test_golden_regen_switch_uses_the_shared_boolean_vocabulary(raw: str | None, expected: bool) -> None:
+    # MIN-2265 的直判锁：`GOLDEN_REGEN=0` / `=false` 绝不能再被当成「开启重生成」。
+    # 口径复用 src/config_bool.parse_config_bool（AGENTS.md 关键约定第 9 条），
+    # 本用例同时证明「没有第二套真值集合」——改回 bool(str) 时 "0"/"false" 两格立刻变红。
+    assert _regen_enabled(raw) is expected
+
+
+def test_golden_regen_is_off_in_normal_runs() -> None:
+    # 会话级前提见证：普通跑法（含 CI）下 _REGEN 必须为 False。
+    # 若某处把 GOLDEN_REGEN 设成了非空字符串，上面 20 条比对会在 return 里全部跳过，
+    # 并在 session 末覆盖基准——这条把该前提显式化，而不是依赖「环境里恰好没有」。
+    # 真的需要重生成时，用 `GOLDEN_REGEN=1 pytest ...`——那一轮本条不适用（skip 而非失败，
+    # 否则重生成命令自身总是红的，会被误当成缺陷「顺手改掉」）。
+    if _REGEN:
+        pytest.skip("GOLDEN_REGEN=1：本条锁的是「比对模式」的前提，重生成轮次不适用")
+    assert _REGEN is False, "当前会话处于「重生成基准」模式，比对用例不会执行（详见 _regen_enabled）"
+
+
+def test_golden_snapshot_shape_is_sane() -> None:
+    # 结构锁：条数 == 用例数、每条命令非空且含 -i、弹幕两键齐备。
+    # 有人只删不改（把基准清成 {}、或把 command 写成 []）时，比对仍可能「逐条 None != None」
+    # 地全绿——这条就是那类自证失效的兜底。
+    assert _GOLDEN_PATH.exists(), f"黄金基准文件缺失: {_GOLDEN_PATH}"
+    golden = json.loads(_GOLDEN_PATH.read_text(encoding="utf-8"))
+    assert set(golden) == set(_GOLDEN_IDS), (
+        f"基准条目与用例集不一致（基准 {len(golden)} 条 / 用例 {len(_GOLDEN_IDS)} 条）："
+        f" 仅基准有 {sorted(set(golden) - set(_GOLDEN_IDS))}，仅用例有 {sorted(set(_GOLDEN_IDS) - set(golden))}"
+    )
+    for case in _CASES:
+        entry = golden[case["id"]]
+        if case["platform"] in ("shopee", "花椒直播"):
+            download = entry["download"]
+            assert isinstance(download, dict) and download.get("flv_url"), f"{case['id']} 的直下参数为空"
+            assert download.get("platform") == case["platform"], f"{case['id']} 的直下 platform 与用例不符"
+            continue
+        command = entry["command"]
+        assert isinstance(command, list) and len(command) > 5, f"{case['id']} 的命令为空或过短: {command}"
+        assert "-i" in command, f"{case['id']} 的命令缺 -i 输入锚点（F-01 的输入侧参数全靠它定位）"
+        assert str(command[command.index("-i") + 1]).startswith(
+            ("http://", "https://", "rtmp://")
+        ), f"{case['id']} 的 -i 后面不是拉流地址: {command[command.index('-i') + 1]!r}"
+        assert entry["platform"] == case["platform"], f"{case['id']} 快照里的 platform 与用例不符"
+        assert "danmaku_args" in entry, f"{case['id']} 快照缺 danmaku_args 键（SEV-2224 的接线未被记录）"

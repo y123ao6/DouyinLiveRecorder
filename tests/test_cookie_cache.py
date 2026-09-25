@@ -376,3 +376,61 @@ class TestClear:
         clear()
         assert cc._cookie_cache == {}
         assert get_cached("https://a.example.com/") is None
+
+
+# ── MID-40：通用 singleflight 必须与 fetch_cookies 一样有世代比对 ──────────────
+# fetch_cookies 早在 MI-12 就补了「写回前比对 _cache_generation」，而 singleflight
+# 一直缺这半条：拉取期间被 invalidate_generic()/clear() 作废过的结果仍被无条件回填，
+# 于是「凭据被平台拒绝 → 失效」只能等 TTL（30 分钟）自然过期，自愈链断在半路。
+class TestSingleflightGeneration:
+    # 在途拉取期间被 invalidate_generic 作废 → 本次结果不得回填缓存
+    async def test_invalidate_during_inflight_fetch_is_not_resurrected(self) -> None:
+        gate = asyncio.Event()
+        calls = 0
+
+        async def _factory() -> str:
+            nonlocal calls
+            calls += 1
+            await gate.wait()
+            return "rejected-value"
+
+        task = asyncio.create_task(cc.singleflight("bili_buvid3|", factory=_factory, timeout=2))
+        # 等拉取者真正进入 factory（即已登记在途、尚未回填）
+        for _ in range(200):
+            if "bili_buvid3|" in cc._generic_inflight and calls == 1:
+                break
+            await asyncio.sleep(0.01)
+        assert calls == 1
+
+        # 关键交错：拉取者还在路上，失效已经发生
+        cc.invalidate_generic("bili_buvid3|")
+        gate.set()
+        assert await task == "rejected-value"
+        assert "rejected-value" not in [v for v, _ts in cc._generic_cache.values()], "被作废的凭据又被回填"
+
+        # 下一次调用必须重新拉取，而不是命中那份被拒的值
+        cc.invalidate_generic("bili_buvid3|")
+        second = await cc.singleflight("bili_buvid3|", factory=_make_counting_factory(), timeout=2)
+        assert second == "fresh-value"
+        assert calls == 1  # 第一次的 factory 未被再次执行，说明走的是新拉取而非缓存命中
+
+    # 未被作废时结果照常缓存（不得把缓存写没，否则去重意义全无）
+    async def test_normal_fetch_still_cached(self) -> None:
+        calls = 0
+
+        async def _factory() -> str:
+            nonlocal calls
+            calls += 1
+            return "v"
+
+        assert await cc.singleflight("k-cached", factory=_factory, timeout=2) == "v"
+        assert await cc.singleflight("k-cached", factory=_factory, timeout=2) == "v"
+        assert calls == 1
+        assert cc._generic_cache["k-cached"][0] == "v"
+
+
+def _make_counting_factory() -> Any:
+    async def _factory() -> str:
+        return "fresh-value"
+
+    return _factory

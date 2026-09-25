@@ -3,11 +3,21 @@
 #
 # 覆盖:start() 立即创建 SRT 文件；弹幕时间戳相对录像起点计算；
 # start() 幂等；分段模式每片时间轴重置；未调 start() 时以首条为 T0(旧行为兜底)。
+#
+# 2026-09-24 迁移：产物目录由模块级 `tests/_out_e2e` 改走 tmp_path / TemporaryDirectory。
+# 原形态在 **import 期** os.makedirs(tests/_out_e2e)，而 tests/conftest.py 会在**任意**
+# pytest 会话退出时 rmtree 该目录——同一坑已由 tests/test_bili_e2e.py 记录并把自身迁走，
+# 本文件当时漏迁。后果是全量跑时这 4 条偶发 FileNotFoundError 假红（小集合单跑必绿，
+# 且把本文件换回旧版反而更容易红），属会话级共享目录的竞争，不是 SRT 逻辑回归。
+# 四个 case 的 base 文件名互不重叠，改成「每个 case 一个空目录」后，原先每段开头的
+# os.listdir + os.remove 预清扫不再需要（顺带不再消耗 harness 按轮次计的删除配额）。
 
 import asyncio
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,17 +26,11 @@ from src.base import DanmakuBase
 from src.collector import DanmakuCollector
 from src.srt_writer import SrtWriter
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_out_e2e")
-os.makedirs(OUT, exist_ok=True)
-
 
 # 守护正常路径：start() 须同步创建 SRT 文件（即使尚无弹幕）；弹幕时间戳相对录像起点
 # T0 计算（非从 0 开始），且对同一 writer 重复 start() 保持幂等（不重置 T0）。
-def test_immediate_file_and_anchored_timeline() -> None:
-    base = os.path.join(OUT, "anchor_单文件")
-    for f in os.listdir(OUT):
-        if f.startswith("anchor_"):
-            os.remove(os.path.join(OUT, f))
+def _immediate_file_and_anchored_timeline(out_dir: str) -> None:
+    base = os.path.join(out_dir, "anchor_单文件")
     w = SrtWriter(base_filename=base, segment_seconds=None)
     t0 = 1000.0
     w.start(now=t0)
@@ -45,11 +49,8 @@ def test_immediate_file_and_anchored_timeline() -> None:
 
 
 # 守护分段模式：每片时间轴各自从片内 0 复位，且 start() 即生成 _000 片（无需等弹幕到达）。
-def test_segment_reset() -> None:
-    base = os.path.join(OUT, "anchor_分段")
-    for f in os.listdir(OUT):
-        if f.startswith("anchor_"):
-            os.remove(os.path.join(OUT, f))
+def _segment_reset(out_dir: str) -> None:
+    base = os.path.join(out_dir, "anchor_分段")
     w = SrtWriter(base_filename=base, segment_seconds=2.0)
     t0 = 1000.0
     w.start(now=t0)
@@ -71,9 +72,9 @@ def test_segment_reset() -> None:
 
 # 守护旧行为兜底：未显式 start() 时以首条弹幕为 T0（时间戳 00:00:00,000），
 # 兼容直接写调用、无需预热起点。
-def test_no_start_fallback() -> None:
+def _no_start_fallback(out_dir: str) -> None:
     # 未调 start() 时以首条弹幕为 T0(兼容直接写调用的测试)。
-    base = os.path.join(OUT, "anchor_兜底")
+    base = os.path.join(out_dir, "anchor_兜底")
     w = SrtWriter(base_filename=base, segment_seconds=None)
     w.write("A", "首条", now=1.05)
     w.close()
@@ -104,12 +105,9 @@ class _SilentDanmaku(DanmakuBase):
 
 # 经真实 DanmakuCollector 启动的集成回归：即使一条弹幕都没有，SRT 也须在 start() 同步
 # 存在——守护「文件在 start() 同步落盘、不依赖弹幕到达」的不变量（time.sleep 仅为等线程）。
-def test_collector_creates_srt_at_start() -> None:
+def _collector_creates_srt_at_start(out_dir: str) -> None:
     # 经真实 DanmakuCollector 启动,即使一条弹幕都没有,SRT 也应立即存在。
-    base = os.path.join(OUT, "anchor_collector")
-    for f in os.listdir(OUT):
-        if f.startswith("anchor_"):
-            os.remove(os.path.join(OUT, f))
+    base = os.path.join(out_dir, "anchor_collector")
     collector = DanmakuCollector(
         danmaku_cls=_SilentDanmaku,
         danmaku_args={},
@@ -123,9 +121,33 @@ def test_collector_creates_srt_at_start() -> None:
     print("[PASS] collector 集成:start() 同步创建 SRT(无弹幕也有文件)")
 
 
-if __name__ == "__main__":
-    test_immediate_file_and_anchored_timeline()
-    test_segment_reset()
-    test_no_start_fallback()
-    test_collector_creates_srt_at_start()
+def test_immediate_file_and_anchored_timeline(tmp_path: Path) -> None:
+    # pytest 入口：断言与直跑共用同一个 _* 主体，产物只落 tmp_path，不碰会话级共享目录。
+    _immediate_file_and_anchored_timeline(str(tmp_path))
+
+
+def test_segment_reset(tmp_path: Path) -> None:
+    _segment_reset(str(tmp_path))
+
+
+def test_no_start_fallback(tmp_path: Path) -> None:
+    _no_start_fallback(str(tmp_path))
+
+
+def test_collector_creates_srt_at_start(tmp_path: Path) -> None:
+    _collector_creates_srt_at_start(str(tmp_path))
+
+
+def main() -> None:
+    # 保留 `python tests/test_srt_timeline_anchor.py` 的人工通道：跑同一套断言，
+    # 四个 case 的 base 文件名互不重叠，共用一个临时目录即可，产物用后即弃。
+    with tempfile.TemporaryDirectory(prefix="dlr_srt_anchor_") as out_dir:
+        _immediate_file_and_anchored_timeline(out_dir)
+        _segment_reset(out_dir)
+        _no_start_fallback(out_dir)
+        _collector_creates_srt_at_start(out_dir)
     print("=== SRT 时间轴锚定回归全部通过 ===")
+
+
+if __name__ == "__main__":
+    main()

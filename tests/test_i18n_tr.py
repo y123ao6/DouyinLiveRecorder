@@ -29,13 +29,13 @@ def test_tr_with_format_expression_via_kwarg() -> None:
     assert out == "caught ValueError: boom"
 
 
-def test_tr_missing_kwarg_raises_keyerror() -> None:
-    # 占位符未传对应 kwarg 时直接 KeyError（不静默退化为原文），
-    # 与 f-string「变量未定义即 NameError」对称地暴露拼写错误
-    import pytest
-
-    with pytest.raises(KeyError):
-        i18n.tr("hello {name}")
+def test_tr_missing_kwarg_falls_back_to_template() -> None:
+    # MI-23 修复后语义：占位符未传对应 kwarg 时**不再抛异常**，降级为原文模板。
+    # 旧测试断言「必须 KeyError」，锁定的正是会导致错误分支二次崩溃的前提：
+    # i18n.tr() 的调用点大量位于 except 分支内，而译文是外部可编辑数据（译者可能把
+    # {e} 写成 {err}）。二次异常会顶掉原始异常，把「网络失败」升级成崩溃并掩盖真实故障。
+    # 现在保证 tr() 永不抛——拼写错误仍可通过「日志里出现未插值的花括号」识别。
+    assert i18n.tr("hello {name}") == "hello {name}"
 
 
 def test_tr_translates_then_formats() -> None:

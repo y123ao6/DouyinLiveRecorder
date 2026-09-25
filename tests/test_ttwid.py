@@ -4,6 +4,7 @@ import asyncio
 import configparser
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +20,30 @@ from src.ttwid import (
     get_ttwid,
     warmup_ttwid,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ttwid_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
+    # MIN-2220 起快路读的是「按出口分列」的模块级 dict（_cached_ttwid_by_proxy）。
+    # conftest 的逐用例重置只清镜像 `_cached_ttwid`，而本文件有用例会显式把镜像置成
+    # 非空来验「TTL 内命中」，于是上一个用例留下的桶值会串进来（实测表现为拿到
+    # "ttwid=from_config" 这种别的用例写的陈旧值）。这里整体换一只新 dict：
+    # 用例内的写入都落在临时对象上，monkeypatch 撤销后真实模块 dict 保持干净、不外溢。
+    monkeypatch.setattr(ttwid_module, "_cached_ttwid_by_proxy", {})
+    monkeypatch.setattr(ttwid_module, "_ttwid_scopes", set())
+
+
+def _prime_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    proxy_addr: str | None = None,
+    *,
+    age: float = 0.0,
+) -> None:
+    # 构造「某出口已有缓存」的前置态：镜像与分桶成对写（与生产写入口 _cache_ttwid 同形），
+    # 只写其中一个就是在测一个生产到不了的状态，快路的镜像判空前置也会被绕开。
+    ttwid_module._cached_ttwid_by_proxy[proxy_addr or ""] = (value, time.monotonic() - age)
+    monkeypatch.setattr(ttwid_module, "_cached_ttwid", value)
 
 
 # _app_root 定位配置根目录：普通运行取脚本旁 config/，frozen 运行取可执行文件目录。
@@ -114,11 +139,13 @@ class TestGetTtwid:
     # Test get_ttwid.
 
     @pytest.mark.asyncio
-    async def test_cached_returns_directly(self) -> None:
-        ttwid_module._cached_ttwid = "ttwid=cached_value"
+    async def test_cached_returns_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # MID-33 后「非空」不再等于「永久有效」：命中必须同时满足「未过 TTL」，
+        # 故此处要连获取时刻一起写（只写值 = 陈旧 = 应当重新拉取，见下方 TTL 用例）。
+        # MIN-2220 后「值 + 时刻」存放在按出口分列的 dict 里，故用 _prime_bucket 成对写。
+        _prime_bucket(monkeypatch, "ttwid=cached_value")
         result = await get_ttwid()
         assert result == "ttwid=cached_value"
-        ttwid_module._cached_ttwid = ""
 
     @pytest.mark.asyncio
     async def test_reads_config_first(self) -> None:
@@ -259,3 +286,88 @@ class TestGetTtwidSingleflight:
 
         assert result == "ttwid=from_config"
         ttwid_module._cached_ttwid = ""
+
+
+# ── MID-33：模块全局 ttwid 的 TTL 与显式失效入口 ────────────────────────────
+# 旧语义是「非空即永久返回」：抖音一旦作废 ttwid（风控常见形态），本进程不重启就
+# 再也不重新获取，表现为抖音解析长期「HTTP 200 + 空响应体」，而 cookie_cache 的
+# 30 分钟自愈在这层根本不参与判定（对照 src/room.py 的 sec_uid 缓存）。
+class TestTtwidTtl:
+    @pytest.mark.asyncio
+    async def test_fresh_global_short_circuits_without_network(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _prime_bucket(monkeypatch, "ttwid=fresh")
+
+        async def _boom(*args: object, **kwargs: object) -> str:
+            raise AssertionError("TTL 内命中缓存不得再发网络请求")
+
+        monkeypatch.setattr(ttwid_module, "_fetch_ttwid", _boom)
+        assert await get_ttwid() == "ttwid=fresh"
+
+    @pytest.mark.asyncio
+    async def test_stale_global_triggers_refetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 超过 TTL 的缓存值必须被丢弃并重新拉取（这正是「被作废后自愈」的主路径）
+        _prime_bucket(
+            monkeypatch,
+            "ttwid=stale",
+            age=ttwid_module._TTWID_TTL_SECONDS + 1,
+        )
+        monkeypatch.setattr(ttwid_module, "_read_config_ttwid", lambda: "")
+        clear_cookie_cache()
+
+        async def _fetch(proxy_addr: object = None) -> str:
+            return "ttwid=refreshed"
+
+        monkeypatch.setattr(ttwid_module, "_fetch_ttwid", _fetch)
+        assert await get_ttwid() == "ttwid=refreshed"
+        assert ttwid_module._cached_ttwid == "ttwid=refreshed"
+        # 重新缓存后要重新计时（否则每轮都判陈旧 → 退化成完全不缓存）
+        assert time.monotonic() - ttwid_module._cached_ttwid_by_proxy[""][1] < 5
+
+    @pytest.mark.asyncio
+    async def test_invalidate_purges_global_and_both_cache_layers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 三层都要清：模块全局 / generic singleflight / 同网址 cookie 缓存。
+        # 只清全局的话，下一轮 singleflight 命中同一份旧值——MID-40 描述的「失效只
+        # 生效一半」，故本用例断言的是「作废后确实拿到了新的凭据」。
+        monkeypatch.setattr(ttwid_module, "_read_config_ttwid", lambda: "")
+        clear_cookie_cache()
+        values = iter(["first", "second"])  # _fetch_ttwid 自己会拼 "ttwid=" 前缀
+        calls: list[int] = []
+
+        async def _fake_req(**kwargs: object) -> dict[str, str]:
+            calls.append(1)
+            return {"ttwid": next(values)}
+
+        monkeypatch.setattr(ttwid_module, "async_req", _fake_req)
+
+        assert await get_ttwid() == "ttwid=first"
+        ttwid_module.invalidate_ttwid()
+        assert ttwid_module._cached_ttwid == ""
+        assert await get_ttwid() == "ttwid=second"
+        assert len(calls) == 2, f"失效后未重新拉取（被下层缓存喂回旧值）: {calls}"
+
+    def test_invalidate_is_safe_before_any_fetch(self) -> None:
+        # 未拉取过时调用不得抛错（弹幕侧的失败处理路径可能先于任何成功获取）
+        ttwid_module.invalidate_ttwid()
+        assert ttwid_module._cached_ttwid == ""
+
+    @pytest.mark.asyncio
+    async def test_invalidate_accepts_proxy_addr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ttwid_module, "_read_config_ttwid", lambda: "")
+        clear_cookie_cache()
+        cookies = {"ttwid": "with-proxy"}
+
+        async def _fake_req(**kwargs: object) -> dict[str, str]:
+            return cookies
+
+        monkeypatch.setattr(ttwid_module, "async_req", _fake_req)
+        assert await get_ttwid("127.0.0.1:10808") == "ttwid=with-proxy"
+        ttwid_module.invalidate_ttwid("127.0.0.1:10808")
+        assert "douyin_ttwid|127.0.0.1:10808" not in cc_generic_keys()
+        cookies["ttwid"] = "with-proxy-2"
+        assert await get_ttwid("127.0.0.1:10808") == "ttwid=with-proxy-2"
+
+
+def cc_generic_keys() -> set[str]:
+    import src.cookie_cache as cc_module
+
+    return set(cc_module._generic_cache)

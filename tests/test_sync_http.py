@@ -7,32 +7,78 @@ import gzip
 import http.client
 import json
 import ssl
+import urllib.request
 from io import BytesIO
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sync_http import _get_opener, _resolve_ssl_verify, sync_req
+from src.sync_http import (
+    _get_insecure_opener,
+    _get_opener,
+    _opener_secure,
+    _resolve_ssl_verify,
+    session,
+    sync_req,
+)
+
+
+def _opener_https_context(opener: urllib.request.OpenerDirector) -> ssl.SSLContext:
+    # 取 opener 上那一支 HTTPSHandler 实际使用的 SSLContext。
+    # 为什么要专门写这个小助手：urllib 的 build_opener() **总会**补齐默认 handler，
+    # 所以「有没有 HTTPSHandler」区分不出两支 opener（安全支也带一支默认 context 的），
+    # 真正有语义的判据是它挂的 context 校验不校验证书。
+    # CPython 3.14 里该属性名是私有的 `_context`（更早版本为 `context`）——两个都试，
+    # 都取不到即判失败而不是跳过，否则属性一改名这条锁就静默失效（又一处假绿）。
+    # typeshed 没声明 OpenerDirector.handlers（运行时确有该属性）→ 用 cast 收窄，
+    # 不用三参 getattr：后者返回 Any，会让后面的 isinstance 过滤一起失去检查。
+    handlers = cast("list[object]", getattr(opener, "handlers"))
+    https_handlers = [h for h in handlers if isinstance(h, urllib.request.HTTPSHandler)]
+    assert len(https_handlers) == 1, f"opener 上应恰好一支 HTTPSHandler：{https_handlers}"
+    handler = https_handlers[0]
+    context: ssl.SSLContext | None = getattr(handler, "_context", None) or getattr(handler, "context", None)
+    assert context is not None, "HTTPSHandler 上取不到 SSLContext（urllib 内部改名？需同步本用例）"
+    return context
 
 
 class TestGetOpener:
     # Test opener 选择逻辑.
+    #
+    # MID-2266 附带核对：两条用例原先只 `assert opener is not None`——把 _get_opener 的
+    # 两个分支合并成「恒返回 insecure opener」也会同时全绿，等于没锁「按 ssl_verify 分流」
+    # 这条安全不变量（F-12 的惰性降级面）。现按**对象同一性**断言命中的是哪一支 opener，
+    # 并直接查各支 HTTPSHandler 实际挂上的 SSLContext.verify_mode。
 
     @patch("src.sync_http.config")
     # ssl_verify=True 须返回标准安全 opener，与默认生产环境一致
     def test_ssl_verify_true_returns_secure_opener(self, mock_config: MagicMock) -> None:
-        # 开启证书校验（ssl_verify=True）须返回标准 opener，与默认生产环境一致
+        # 开启证书校验（ssl_verify=True）须返回标准安全 opener，与默认生产环境一致
         # ssl_verify=True 时使用安全 opener.
         mock_config.ssl_verify = True
-        opener = _get_opener()
-        assert opener is not None
+        assert _get_opener() is _opener_secure, "全局要求校验证书时必须用安全 opener"
+        context = _opener_https_context(_opener_secure)
+        assert context.verify_mode == ssl.CERT_REQUIRED, "安全 opener 的 context 必须校验证书链"
+        assert context.check_hostname is True, "安全 opener 的 context 必须校验主机名"
 
     @patch("src.sync_http.config")
     def test_ssl_verify_false_returns_insecure_opener(self, mock_config: MagicMock) -> None:
         # ssl_verify=False 时使用不安全 opener.
         mock_config.ssl_verify = False
         opener = _get_opener()
-        assert opener is not None
+        assert opener is _get_insecure_opener(), "降级分支必须命中惰性构造的那一支（不得每次新建）"
+        assert opener is not _opener_secure, "两分支返回同一对象即说明分流被合并（假绿本体）"
+        # 惰性构造的 insecure opener 必须真的带上 CERT_NONE，否则「降级」只是换了个对象
+        assert _opener_https_context(opener).verify_mode == ssl.CERT_NONE
+
+    @patch("src.sync_http.config")
+    def test_explicit_override_beats_global_switch(self, mock_config: MagicMock) -> None:
+        # F-12 的单次覆盖语义：显式传值以该次调用为准，不被全局开关拖下水
+        # （凭据类调用点可强制校验）。判据同样是对象同一性，不是「非 None」。
+        mock_config.ssl_verify = False
+        assert _get_opener(True) is _opener_secure
+        mock_config.ssl_verify = True
+        assert _get_opener(False) is _get_insecure_opener()
 
 
 # sync_req 同步请求入口：按 ssl_verify 与是否走代理分流两条实现路径。
@@ -369,3 +415,64 @@ class TestSslVerifyScoping:
         sync_req("http://example.com", proxy_addr="http://127.0.0.1:1", ssl_verify=False)
         _args, kwargs = mock_session.get.call_args
         assert kwargs["verify"] is False
+
+
+# MID-27（2026-09-20）：代理地址归一必须与异步侧同址同语义。
+# 配置项「代理地址」由 read_config_value 原样读入，用户普遍写裸 127.0.0.1:7890；
+# 归一缺失时 requests 抛 InvalidSchema/InvalidURL，被外层 except 吞成空串
+# ——本仓列为最难归因的失败形态（「开代理后 sync 解析全失败、async 正常」）。
+class TestProxyAddrNormalization:
+    @patch("src.sync_http._session")
+    @patch("src.sync_http.config")
+    def test_bare_ip_port_gets_http_scheme(self, mock_config: MagicMock, mock_session_fn: MagicMock) -> None:
+        # 裸 ip:port 必须被补成 http://ip:port 再交给 requests
+        mock_config.ssl_verify = True
+        session_obj = MagicMock()
+        session_obj.get.return_value.text = "ok"
+        mock_session_fn.return_value = session_obj
+        sync_req("http://example.com", proxy_addr="127.0.0.1:7890")
+        _args, kwargs = session_obj.get.call_args
+        assert kwargs["proxies"] == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+
+    @patch("src.sync_http._session")
+    @patch("src.sync_http.config")
+    def test_prefixed_proxy_left_untouched(self, mock_config: MagicMock, mock_session_fn: MagicMock) -> None:
+        # 已带协议前缀（含 socks5）时不得二次补前缀
+        mock_config.ssl_verify = True
+        session_obj = MagicMock()
+        session_obj.get.return_value.text = "ok"
+        mock_session_fn.return_value = session_obj
+        sync_req("http://example.com", proxy_addr="socks5://127.0.0.1:1080")
+        _args, kwargs = session_obj.get.call_args
+        assert kwargs["proxies"]["http"] == "socks5://127.0.0.1:1080"
+
+    @patch("src.sync_http._session")
+    @patch("src.sync_http.config")
+    def test_proxy_post_branch_uses_normalized_addr(self, mock_config: MagicMock, mock_session_fn: MagicMock) -> None:
+        # POST 分支同样归一（两条分支共用一次归一，不能只修 GET）
+        mock_config.ssl_verify = True
+        session_obj = MagicMock()
+        session_obj.post.return_value.text = "ok"
+        mock_session_fn.return_value = session_obj
+        sync_req("http://example.com", proxy_addr="127.0.0.1:7890", data={"k": "v"})
+        _args, kwargs = session_obj.post.call_args
+        assert kwargs["proxies"]["https"] == "http://127.0.0.1:7890"
+
+    @patch("src.sync_http._session")
+    @patch("src.sync_http.config")
+    def test_empty_proxy_stays_direct(self, mock_config: MagicMock, mock_session_fn: MagicMock) -> None:
+        # 空串代理视为未配置：仍走直连分支（handle_proxy_addr 返回 None）
+        mock_config.ssl_verify = True
+        sync_req("http://example.com", proxy_addr="")
+        mock_session_fn.assert_not_called()
+
+
+# MIN-08 的配套出口：需要状态码的调用点（Weverse 等凭据端点）经 session() 复用同一
+# 线程级 Session，而不是绕过本模块直接 requests.post。
+class TestSharedSessionAccessor:
+    @patch("src.sync_http._session")
+    def test_session_wrapper_delegates_to_thread_local_factory(self, mock_session_fn: MagicMock) -> None:
+        expected = MagicMock()
+        mock_session_fn.return_value = expected
+        assert session() is expected
+        mock_session_fn.assert_called_once()

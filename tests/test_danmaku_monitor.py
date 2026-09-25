@@ -157,12 +157,14 @@ def test_room_stopped_removes_room_and_logs_event(tmp_path: Path) -> None:
 
     snap = hub.snapshot(0)
     assert all(r["name"] != "房间A" for r in snap["rooms"])
+    hub.flush()  # MID-25：落盘已挪到独立写线程，读文件前须先等队列排空
     lines = (tmp_path / "dm.jsonl").read_text(encoding="utf-8").splitlines()
     assert any(json.loads(line).get("state") == "stopped" for line in lines)
 
     # 未注册房间：无操作不抛异常、不写事件
     before = len(lines)
     hub.room_stopped("不存在的房间")
+    hub.flush()
     assert len((tmp_path / "dm.jsonl").read_text(encoding="utf-8").splitlines()) == before
 
 
@@ -176,12 +178,76 @@ def test_jsonl_lines_valid_and_rotation(tmp_path: Path, monkeypatch: pytest.Monk
         hub.room_message("房间A", "chat", f"用户{i}", f"消息内容{i}" * 5)
 
     log_file = tmp_path / "dm.jsonl"
+    hub.flush()  # MID-25：轮转发生在写线程里，断言前先等队列排空
     assert log_file.exists()
     content = log_file.read_text(encoding="utf-8")
     for line in content.splitlines():
         assert json.loads(line)  # 每行可解析
     # 超阈值后原文件重命名为 .1 备份，新文件继续写入（轮转不丢历史）。
     assert (tmp_path / "dm.jsonl.1").exists()
+
+
+def test_sidecar_write_does_not_hold_hub_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # MID-25 主用例：磁盘 IO 不得发生在 hub._lock 内。
+    # 旧实现 open/write/flush 全在锁里，80 房间 × 10 条/秒 ≈ 800 次带 flush 的串行落盘，
+    # 一次被慢盘拖住的 flush 会让所有房间的 ws 收包/心跳协程一起停摆（协议层 ping 超时
+    # → 断连风暴），snapshot() 也抢同一把锁。
+    # 做法：把真正的写函数换成「持锁观察期内一直不返回」的慢版本，再从另一线程抢锁。
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_append(files: dict, path: str, line: str) -> None:
+        started.set()
+        assert release.wait(timeout=10), "测试未在 10s 内放行慢写入"
+
+    monkeypatch.setattr(dm, "_append_sidecar_line", _slow_append)
+    hub = DanmakuMonitorHub(log_path=str(tmp_path / "dm.jsonl"))
+    hub.room_started("房间A", "抖音直播")
+    assert started.wait(3), "写线程未执行到落盘函数"
+
+    try:
+        # 落盘卡住期间：① hub 自己的锁必须立即可得（其他房间不被串住）
+        assert hub._lock.acquire(timeout=0.5), "边车写盘期间仍持有 hub._lock"
+        hub._lock.release()
+        # ② 事件循环侧的投递本身不被阻塞（room_message 只做统计 + 入队）
+        t0 = time.monotonic()
+        for i in range(200):
+            hub.room_message("房间A", "chat", f"u{i}", f"m{i}")
+        assert time.monotonic() - t0 < 0.5, "room_message 被慢盘拖住"
+        # ③ snapshot() 也不被拖住（旧实现与写盘争同一把锁）
+        t0 = time.monotonic()
+        snap = hub.snapshot(0)
+        assert time.monotonic() - t0 < 0.5
+        assert snap["rooms"]
+    finally:
+        release.set()
+
+    hub.flush()
+    hub.close_file()
+
+
+def test_close_file_waits_for_pending_writes_before_closing(tmp_path: Path) -> None:
+    # close_file() 处于「停止录制 → 日志归档改名」链路上：Windows 下句柄未关的文件
+    # rename 必抛 PermissionError，故它必须等已入队事件真正落盘后再关句柄；
+    # MID-25 把写盘挪进独立线程后，「已 accept 的事件一条都不能丢」变得只能靠这次排空保证。
+    hub = DanmakuMonitorHub(log_path=str(tmp_path / "dm.jsonl"))
+    log_file = tmp_path / "dm.jsonl"
+    hub.room_started("房间A", "抖音直播")
+    hub._stats_stop.set()  # 停掉周期 stats 线程：否则它可能在断言窗口内多写若干行
+    _feed_chat(hub, "房间A", 30)
+    hub.close_file()
+
+    assert hub._file is None
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    # 1 条 conn/started + 展示流里的每一条（chat 按每秒采样，故与 snapshot 同口径）
+    assert len(lines) == 1 + len(hub.snapshot(0)["messages"])
+
+    # 关闭后惰性重开：下一条事件仍能落盘，且不会把上一条冲掉
+    hub.room_message("房间A", "gift", "老板", "火箭×1")
+    hub.close_file()
+    after = log_file.read_text(encoding="utf-8").splitlines()
+    assert len(after) == len(lines) + 1
+    assert json.loads(after[-1])["type"] == "gift"
 
 
 def test_hub_swallows_errors_without_raising() -> None:
@@ -454,7 +520,10 @@ def test_gui_tail_reads_jsonl_and_handles_rotation(tmp_path: Any) -> None:
     )
 
     stub = _make_gui_stub(tmp_path)
-    t = threading.Thread(target=gui.LiveRecorderGUI._danmaku_tail_loop, args=(stub,), daemon=True)
+    # MID-2250 连带修正：_danmaku_tail_loop 的退出标志已改为**逐次创建的局部 Event 形参**
+    # （原读共享的 self._danmaku_tail_stop，会被新一轮 clear() 抹掉退出信号 → 线程永不退出），
+    # 故这里必须把它作为第二个实参传入，不能再按旧签名只给 stub。
+    t = threading.Thread(target=gui.LiveRecorderGUI._danmaku_tail_loop, args=(stub, threading.Event()), daemon=True)
     t.start()
 
     # 等待 tail 线程读取 JSONL 并分发：房间A 进入监控表、消息入展示流（带锁读取避免竞态）。

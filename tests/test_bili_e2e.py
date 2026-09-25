@@ -2,12 +2,25 @@
 # 端到端验证:用真实格式的 B站打包帧喂 BilibiliDanmaku + collector,确认 SRT 产出。
 #
 # 不依赖外网弹幕,验证:帧协议 → 解析 → collector → SrtWriter 全链路。
+#
+# MIN-2266 ②：本文件原先 0 个 `test_` 函数——全部逻辑待在 `main()` 里、只在
+# `__main__` 守卫下执行，于是 pytest 收集到的是「空文件」：帧协议 → 解析 → SRT 落盘
+# 这条串联从不自动跑，断言可以腐烂而文件继续向读者 advertise「e2e 已验证」。
+# 它也与 AGENTS 允许「需活房间 + 外网、默认保持人工通道」的 5 个
+# `test_*_live_collector.py` **不同类**——本文件全程离线（自己 struct.pack 造帧），
+# 没有任何理由不进 pytest。现把主体拆成 test_bili_frame_to_srt_end_to_end，
+# 直跑入口 `python tests/test_bili_e2e.py` 仍可用（调同一个函数）。
+# 输出目录改走 tmp_path：不再写 tests/_out_e2e/ —— 该目录由 tests/conftest.py 在
+# **任意** pytest 会话退出时 rmtree（见 AGENTS「全量 pytest 运行期间不得再启第二个
+# pytest 会话」条目），写进去的用例在并发会话下必红。
 
 import asyncio
 import json
 import os
 import struct
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -39,14 +52,12 @@ def danmu_msg(text: str, user: str) -> dict:
     }
 
 
-def main() -> None:
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_out_e2e", "test_主播_bili")
-    os.makedirs(os.path.dirname(base), exist_ok=True)
+def _run_end_to_end(out_dir: str) -> None:
+    # 端到端主体：SRT 落盘 + 真实帧解析两段断言，全部写进调用方给的 out_dir。
+    base = os.path.join(out_dir, "test_主播_bili")
+    os.makedirs(out_dir, exist_ok=True)
     # base 含中文文件名,顺带验证 SrtWriter 对 UTF-8 路径的兼容(Windows 默认 GBK 易踩坑)。
-    # 清理旧文件
-    for f in os.listdir(os.path.dirname(base)):
-        if f.startswith("test_主播_bili"):
-            os.remove(os.path.join(os.path.dirname(base), f))
+    # out_dir 由 tmp_path / mkdtemp 提供，本就是空目录，无需再清扫历史文件。
 
     srt = SrtWriter(base_filename=base, segment_seconds=None)
     # 模拟 collector 回调:message_count 记数 + write
@@ -93,6 +104,19 @@ def main() -> None:
     assert got[0].user_name == "测试用户"
     print(f"=== 帧解析通过: {got[0].user_name}: {got[0].message} ===")
     loop.close()
+
+
+def test_bili_frame_to_srt_end_to_end(tmp_path: Path) -> None:
+    # pytest 入口（MIN-2266 ②）：断言与直跑共用同一个 _run_end_to_end，避免两套演化。
+    # 只依赖 tmp_path —— 不触网、不读 config、不碰 tests/_out_e2e 这类会话级共享目录。
+    _run_end_to_end(str(tmp_path))
+
+
+def main() -> None:
+    # 保留 `python tests/test_bili_e2e.py` 的人工通道：跑同一套断言，产物落临时目录后即弃。
+    with tempfile.TemporaryDirectory(prefix="dlr_bili_e2e_") as out_dir:
+        _run_end_to_end(out_dir)
+    print("=== 端到端验证全部通过 ===")
 
 
 if __name__ == "__main__":

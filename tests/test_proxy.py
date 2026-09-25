@@ -1,5 +1,7 @@
 # Tests for src/proxy.py module - 代理检测模块.
 
+import sys
+
 import pytest
 from pytest import MonkeyPatch
 
@@ -28,9 +30,18 @@ class TestProxyInfo:
         assert info.port == "3128"
 
     def test_ip_without_port_raises(self) -> None:
-        # 仅有 IP 无端口抛异常.
+        # 仅有 IPv4/域名、无端口 → 抛异常（「填错了一半」的形态，必须报错）。
+        # MID-2233③ 之后唯一的例外是 IPv6 字面量，见 test_bare_ipv6_without_port_ok：
+        # 裸 IPv6 在 URL 里必须写 [..]，注册表常存无端口的 "::1"，旧注释承诺放行、
+        # 实现却被本条 raise 抢先命中（注释与实现相反），现已就地兑现。
         with pytest.raises(ValueError, match="IP or port"):
             ProxyInfo("192.168.1.1", "")
+
+    def test_bare_ipv6_without_port_ok(self) -> None:
+        # MID-2233③：裸 IPv6 + 空端口现在真的能通过（旧实现永远抛 ValueError）
+        info = ProxyInfo("::1", "")
+        assert info.ip == "::1"
+        assert info.proxy_url == "http://[::1]"
 
     def test_port_without_ip_raises(self) -> None:
         # 仅有端口无 IP 抛异常.
@@ -88,7 +99,19 @@ class TestProxyInfo:
 # 代理相关环境变量：_get_proxy_info_linux / _is_proxy_enabled_linux 会读取这些。
 # 测试统一用 monkeypatch 逐个删/设，避免 patch.dict(os.environ) 整体快照/恢复环境时，
 # 因 harness 注入的 CODEBUDDY_MCP_CONFIG 膨胀超过 Windows 环境变量 32767 上限而崩溃。
-_PROXY_ENV_KEYS = ("http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "ALL_PROXY")
+# MIN-20②：大小写两种形态都要清/设——实现同时读取两者。
+# MID-2233①：ftp_proxy / FTP_PROXY 仍在清理清单里（保证「本机设了 ftp 代理」这一
+# 触发条件可复现），但**不再**是实现的读取候选，见 TestProxyDetectorLinux 的同名用例。
+_PROXY_ENV_KEYS = (
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "ftp_proxy",
+    "FTP_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+)
 
 
 def _clear_proxy_env(monkeypatch: MonkeyPatch) -> None:
@@ -99,39 +122,105 @@ def _clear_proxy_env(monkeypatch: MonkeyPatch) -> None:
 
 class TestProxyDetectorLinux:
     # Test ProxyDetector Linux 平台方法.
+    # MIN-20：_get_proxy_info_linux 的返回由 (ip, port) 元组改为 ProxyInfo——
+    # 元组装不下凭据，而「认证代理无法还原完整地址」正是本条缺陷之一。
 
     def test_linux_get_proxy_info_with_auth(self, monkeypatch: MonkeyPatch) -> None:
-        # 带认证信息的代理 URL 正确解析.
+        # 带认证信息的代理 URL：host/port 解析正确，且凭据被保留（不再被 split("@")[1] 丢弃）.
         _clear_proxy_env(monkeypatch)
         monkeypatch.setenv("http_proxy", "http://user:pass@proxy.example.com:3128/")
-        ip, port = ProxyDetector._get_proxy_info_linux()
-        assert ip == "proxy.example.com"
-        assert port == "3128"
-        # 实际解析逻辑：去掉 user:pass@ 后按 : 分割
+        info = ProxyDetector._get_proxy_info_linux()
+        assert info.ip == "proxy.example.com"
+        assert info.port == "3128"
+        assert info.user == "user"
+        assert info.password == "pass"
+        # 可还原成 requests/httpx 直接可用的地址（认证代理不再丢失）
+        assert info.proxy_url == "http://user:pass@proxy.example.com:3128"
 
     def test_linux_get_proxy_info_simple(self, monkeypatch: MonkeyPatch) -> None:
         # 简单代理 URL 解析.
         _clear_proxy_env(monkeypatch)
         monkeypatch.setenv("http_proxy", "http://10.0.0.1:8080")
-        ip, port = ProxyDetector._get_proxy_info_linux()
-        assert ip == "10.0.0.1"
-        assert port == "8080"
+        info = ProxyDetector._get_proxy_info_linux()
+        assert info.ip == "10.0.0.1"
+        assert info.port == "8080"
+        assert info.proxy_url == "http://10.0.0.1:8080"
 
     def test_linux_get_proxy_info_https(self, monkeypatch: MonkeyPatch) -> None:
         # https_proxy 环境变量解析.
         _clear_proxy_env(monkeypatch)
         monkeypatch.setenv("https_proxy", "http://proxy.test:9090/")
-        ip, port = ProxyDetector._get_proxy_info_linux()
+        info = ProxyDetector._get_proxy_info_linux()
         # 取决于环境变量优先级
-        assert isinstance(ip, str)
-        assert isinstance(port, str)
+        assert isinstance(info.ip, str)
+        assert isinstance(info.port, str)
+
+    def test_linux_get_proxy_info_uppercase_only(self, monkeypatch: MonkeyPatch) -> None:
+        # MIN-20②：只设大写 HTTP_PROXY（curl/requests 都认）时不得报「无代理」.
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.ip, info.port) == ("127.0.0.1", "7890")
+        detector = ProxyDetector.__new__(ProxyDetector)
+        assert detector._is_proxy_enabled_linux() is True
+
+    def test_linux_get_proxy_info_all_proxy_fallback(self, monkeypatch: MonkeyPatch) -> None:
+        # MIN-20②：只有 ALL_PROXY（无 http/https 形态）时也要能检出.
+        # MID-2233⑤（附带）：本用例旧版只断言 ip/port，正好把 ② 的问题掩盖掉了——
+        # socks5:// 被剥成裸 host:port 后 ip/port 看起来完全正确，只有 proxy_url
+        # 才会暴露「协议被静默改写成 http://」。现按新语义补齐协议与还原地址的断言。
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1080")
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.ip, info.port) == ("127.0.0.1", "1080")
+        assert info.scheme == "socks5"
+        assert info.proxy_url == "socks5://127.0.0.1:1080"
+
+    def test_linux_http_proxy_keeps_http_scheme(self, monkeypatch: MonkeyPatch) -> None:
+        # 显式 http:// 与「缺省补 http://」两种来源都要还原成同一个可用地址
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:7890")
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.scheme, info.proxy_url) == ("http", "http://127.0.0.1:7890")
+
+    def test_linux_https_proxy_scheme_is_kept_too(self, monkeypatch: MonkeyPatch) -> None:
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("https_proxy", "https://secure-proxy.example:3128")
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.ip, info.scheme) == ("secure-proxy.example", "https")
+        assert info.proxy_url == "https://secure-proxy.example:3128"
+
+    def test_proxy_url_brackets_bare_ipv6_host(self) -> None:
+        # MID-2233③ 的连带项：无端口裸 IPv6 还原成 URL 时必须补方括号，
+        # 否则 "http://::1:8080" 这类非法 authority 会让下游 requests/httpx 直接 InvalidURL
+        assert ProxyInfo("::1", "8080").proxy_url == "http://[::1]:8080"
+        assert ProxyInfo("[::1]", "8080").proxy_url == "http://[::1]:8080"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows 环境变量大小写不敏感，无法同时存在两种形态")
+    def test_linux_lowercase_wins_over_uppercase(self, monkeypatch: MonkeyPatch) -> None:
+        # POSIX 惯例：小写优先于大写（两条取值不同时必须取小写那条）。
+        # Windows 的进程环境块大小写不敏感，setenv("HTTP_PROXY") 会覆盖 setenv("http_proxy")，
+        # 该优先级在 Windows 上不可观测 → 按平台跳过（CI 在 Linux 实际执行到）。
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("http_proxy", "http://lower.example:1111")
+        monkeypatch.setenv("HTTP_PROXY", "http://upper.example:2222")
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.ip, info.port) == ("lower.example", "1111")
+
+    def test_linux_bare_ipv6_no_port_is_not_picked(self, monkeypatch: MonkeyPatch) -> None:
+        # 无端口的裸值不返回（ProxyInfo 校验要求 ip/port 成对），继续看下一个变量
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("http_proxy", "http://10.0.0.1")
+        monkeypatch.setenv("https_proxy", "http://10.0.0.2:8443")
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.ip, info.port) == ("10.0.0.2", "8443")
 
     def test_linux_no_proxy(self, monkeypatch: MonkeyPatch) -> None:
         # 无代理环境变量时返回空.
         _clear_proxy_env(monkeypatch)
-        ip, port = ProxyDetector._get_proxy_info_linux()
-        assert ip == ""
-        assert port == ""
+        info = ProxyDetector._get_proxy_info_linux()
+        assert info.ip == ""
+        assert info.port == ""
 
     def test_linux_is_proxy_enabled_false(self, monkeypatch: MonkeyPatch) -> None:
         # 无代理时返回 False.
@@ -146,10 +235,76 @@ class TestProxyDetectorLinux:
         detector = ProxyDetector.__new__(ProxyDetector)
         assert detector._is_proxy_enabled_linux() is True
 
+    def test_ftp_proxy_alone_does_not_enable_proxy(self, monkeypatch: MonkeyPatch) -> None:
+        # MID-2233①：只设了 ftp_proxy 的机器不得被判 global_proxy=True。
+        # 旧集合含 ftp_proxy → 「已检测到系统代理」成立、而实际取到/下发的地址为空，
+        # 9 个海外平台仍走「有代理」分支却直连境外域名，日志归因方向被彻底带偏。
+        # 本仓全部出站请求都是 http/https，FTP 代理对本程序没有意义。
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("ftp_proxy", "ftp://10.0.0.9:21")
+        monkeypatch.setenv("FTP_PROXY", "ftp://10.0.0.9:21")
+        detector = ProxyDetector.__new__(ProxyDetector)
+        assert detector._is_proxy_enabled_linux() is False
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.ip, info.port, info.proxy_url) == ("", "", "")
+
+    def test_read_set_excludes_ftp_proxy(self) -> None:
+        # 结构锁：候选元组里不得再出现 ftp 形态（注释承诺与实现同源，见 MID-2233①）
+        assert ProxyDetector._LINUX_PROXY_ENV_NAMES == ("http_proxy", "https_proxy", "all_proxy")
+
     def test_linux_proxy_with_trailing_slash(self, monkeypatch: MonkeyPatch) -> None:
         # 末尾斜杠被正确处理.
         _clear_proxy_env(monkeypatch)
         monkeypatch.setenv("http_proxy", "http://proxy.example.com:8080/")
-        ip, port = ProxyDetector._get_proxy_info_linux()
-        assert ip == "proxy.example.com"
-        assert port == "8080"
+        info = ProxyDetector._get_proxy_info_linux()
+        assert info.ip == "proxy.example.com"
+        assert info.port == "8080"
+
+    def test_linux_ipv6_bracket_env(self, monkeypatch: MonkeyPatch) -> None:
+        # MIN-20①：环境变量里的 [::1]:8080 形态同样必须解析成功（IPv6 回环代理）.
+        _clear_proxy_env(monkeypatch)
+        monkeypatch.setenv("http_proxy", "http://[::1]:8080")
+        info = ProxyDetector._get_proxy_info_linux()
+        assert (info.ip, info.port) == ("[::1]", "8080")
+        assert info.proxy_url == "http://[::1]:8080"
+
+
+class TestSplitHostPort:
+    # MIN-20：host/port/凭据拆解的形态表（Windows 注册表与环境变量两条路径共用同一实现）。
+
+    @pytest.mark.parametrize(
+        ("raw", "ip", "port", "user", "password"),
+        [
+            # 括号 IPv6（注册表 ProxyServer 的实际写法）：旧实现 split(":", 1) 会切成
+            # ip="["、port=":1]:8080" → ProxyInfo 校验抛 ValueError
+            ("[::1]:8080", "[::1]", "8080", "", ""),
+            ("[2001:db8::1]:3128", "[2001:db8::1]", "3128", "", ""),
+            # 裸 IPv6（无方括号）：整串作 ip，不误切成端口
+            ("::1", "::1", "", "", ""),
+            # 常规形态
+            ("127.0.0.1:7890", "127.0.0.1", "7890", "", ""),
+            ("proxy.example.com:3128", "proxy.example.com", "3128", "", ""),
+            ("proxy.example.com", "proxy.example.com", "", "", ""),
+            # 认证代理：凭据必须保留（旧实现 split("@", 1)[1] 直接丢弃）
+            ("user:pass@10.0.0.1:8080", "10.0.0.1", "8080", "user", "pass"),
+            ("user:pass@[::1]:8080", "[::1]", "8080", "user", "pass"),
+            ("u2:p@ss@10.0.0.1:80", "10.0.0.1", "80", "u2", "p@ss"),
+            ("name@10.0.0.1:80", "10.0.0.1", "80", "name", ""),
+            ("", "", "", "", ""),
+        ],
+    )
+    def test_shapes(self, raw: str, ip: str, port: str, user: str, password: str) -> None:
+        assert ProxyDetector._split_host_port(raw) == (ip, port, user, password)
+
+    def test_ipv6_bracket_proxy_info_validates(self) -> None:
+        # 括号形态必须能通过 ProxyInfo 的校验分支（旧实现下该校验整块是死代码）
+        info = ProxyInfo(*ProxyDetector._split_host_port("[::1]:8080"))
+        assert info.ip == "[::1]"
+        assert info.port == "8080"
+
+    def test_credentials_not_in_repr(self) -> None:
+        # 凭据不得随 repr 进日志（本仓凭据红线：logs 轮转保留多份＝凭据长期落盘）
+        info = ProxyInfo("10.0.0.1", "8080", "user", "secret-pass")
+        assert "secret-pass" not in repr(info)
+        assert "user" not in repr(info)
+        assert info.proxy_url == "http://user:secret-pass@10.0.0.1:8080"

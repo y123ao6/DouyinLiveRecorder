@@ -4,6 +4,7 @@
 # 用法:python tests/test_bili_live_collector.py https://live.bilibili.com/545068  [秒数]
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -76,7 +77,14 @@ def main() -> None:
             print("[WARN] 当前房间该时段无弹幕(连接正常)")
     else:
         print(f"[FAIL] SRT 未生成: {srt_file}")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "bilibili", "script": "test_bili_live_collector.py", "url": URL, "status": "FAIL", "messages": 0})}'
+        )
         sys.exit(1)
+    _srt_sz = os.path.getsize(srt_file)
+    print(
+        f'VERIFICATION_RESULT: {json.dumps({"platform": "bilibili", "script": "test_bili_live_collector.py", "url": URL, "status": "PASS" if count > 0 else "WARN", "messages": count, "srt_bytes": _srt_sz})}'
+    )
 
 
 if __name__ == "__main__":

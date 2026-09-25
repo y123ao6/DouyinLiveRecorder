@@ -1,0 +1,252 @@
+# scripts/check_runtime_pins.py 的回归用例（2026-09-22 新增，随 W1「第 4 类口径」一起补）。
+#
+# 被测面是**闸门的分流语义**，不是仓库当前的钉定数据（数据会变，锁数据会把用例变成倒计时）：
+#   ① 发布矩阵内的未钉定槽位 → --strict 必红；
+#   ② 矩阵外的键（无 runner 产出）→ 只告警，但**必须被打印出来**（静默省略等于谎称全覆盖）；
+#   ③ SOURCE-BUILD-PROVENANCE 标记：证据齐备才算满足，缺证据与「未钉定」同等处置
+#      （这条是防「换个更容易填的标记拿免检」的唯一防线）；
+#   ④ 缺槽位 / 缺键等结构缺陷 → rc=2（门禁本身坏了 ≠ 代码不合格）。
+# 全部离线：_load_build_exe 被打桩成受控表，不触发网络也不读真实 build_exe 的数据。
+
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import Any
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+_MATRIX_KEYS = ["windows-x64", "linux-x64", "macos-arm64"]
+_ALL_KEYS = ("windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64")
+
+
+def _load_checker() -> ModuleType:
+    # scripts/ 不在包路径内，按文件路径显式加载（与 test_run_gates.py / check_runtime_pins 自身同手法）
+    spec = importlib.util.spec_from_file_location(
+        "_runtime_pins_probe_under_test", ROOT / "scripts" / "check_runtime_pins.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_build_exe() -> Any:
+    spec = importlib.util.spec_from_file_location("_build_exe_for_pins_probe", ROOT / "build_exe.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+checker = _load_checker()
+build_exe = _load_build_exe()
+
+_HEX64 = "a" * 64
+
+
+def _fake_module(table: dict[str, dict[str, str]], declared_keys: tuple[str, ...] = _ALL_KEYS) -> SimpleNamespace:
+    # _slot_is_gated 复用 build_exe 的真实现：判定口径必须只有一份事实源，
+    # 打桩打成「恒 True」会让本文件的用例全部失去意义。
+    return SimpleNamespace(
+        _PINNED_RUNTIME_SHA256=table,
+        RUNTIME_SLOTS=("ffmpeg", "node"),
+        RELEASE_RUNTIME_KEYS=declared_keys,
+        _slot_is_gated=build_exe._slot_is_gated,
+        _is_source_build_marker=build_exe._is_source_build_marker,
+        SOURCE_BUILD_PROVENANCE=build_exe.SOURCE_BUILD_PROVENANCE,
+        UNVERIFIED_PIN=build_exe.UNVERIFIED_PIN,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _matrix_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 矩阵固定成 CI 真实三平台，避免本用例随 build-release.yml 的矩阵调整而误红/误绿
+    monkeypatch.setattr(checker, "_runtime_matrix_keys", lambda: list(_MATRIX_KEYS))
+
+
+# MID-2260（2026-09-23）：上面那条 autouse fixture 把 `_runtime_matrix_keys` **整体桩掉**，
+# 于是没有任何用例会驱动真解析器——把真实现改成 `return []`，所有未钉定槽位都会落进
+# 「矩阵外 → 只告警」的桶里，`--strict` 对全占位表返回 0，build-release.yml 直接放行、
+# full zip 把未经校验的 ffmpeg/node 打进对外分发包。下面的用例一律**先把真实现装回去**
+# （保留一份模块级引用，绕开 autouse 的替换），驱动真解析器 + 真分流语义。
+_REAL_RUNTIME_MATRIX_KEYS = checker._runtime_matrix_keys
+
+
+def _restore_real_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(checker, "_runtime_matrix_keys", _REAL_RUNTIME_MATRIX_KEYS)
+
+
+def _unpinned_everywhere() -> dict[str, dict[str, str]]:
+    # 「全部槽位仍是占位标记」形态：只有真矩阵参与判定才会红，桩成空矩阵就全绿。
+    return {key: {"ffmpeg": build_exe.UNVERIFIED_PIN, "node": build_exe.UNVERIFIED_PIN} for key in _ALL_KEYS}
+
+
+def test_real_matrix_parser_reads_workflow_runner_tags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _restore_real_matrix(monkeypatch)
+    workflow = tmp_path / "build-release.yml"
+    workflow.write_text(
+        "jobs:\n"
+        "  build:\n"
+        "    strategy:\n"
+        "      matrix:\n"
+        "        include:\n"
+        "          - os: windows-latest\n"
+        "            arch: x64\n"
+        "          - os: ubuntu-latest\n"
+        "          - os: macos-latest\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(checker, "_WORKFLOW", workflow)
+    assert checker._runtime_matrix_keys() == ["windows-x64", "linux-x64", "macos-arm64"]
+
+
+def test_real_matrix_parser_rejects_unregistered_runner_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 新 runner 标签未登记进 RUNNER_TO_RUNTIME_KEY 时必须 rc=2（SystemExit(2)）：
+    # 「静默丢掉一个平台」正是「表里五键都管住了」错觉的来源。
+    _restore_real_matrix(monkeypatch)
+    workflow = tmp_path / "build-release.yml"
+    workflow.write_text(
+        "        include:\n          - os: windows-latest\n          - os: ubuntu-24.04-arm\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(checker, "_WORKFLOW", workflow)
+    with pytest.raises(SystemExit) as excinfo:
+        checker._runtime_matrix_keys()
+    assert excinfo.value.code == 2
+
+
+def test_real_matrix_parser_rejects_workflow_without_os_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 矩阵结构被改写（例如改用 runs-on: ${{ matrix.os }} 的两段式写法）→ 解析不到 os，
+    # 绝不能退化成「无平台可查 → 通过」。
+    _restore_real_matrix(monkeypatch)
+    workflow = tmp_path / "build-release.yml"
+    workflow.write_text("jobs:\n  build:\n    runs-on: ubuntu-latest\n", encoding="utf-8")
+    monkeypatch.setattr(checker, "_WORKFLOW", workflow)
+    with pytest.raises(SystemExit) as excinfo:
+        checker._runtime_matrix_keys()
+    assert excinfo.value.code == 2
+
+
+def test_workflow_matrix_and_test_constant_stay_in_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 跨文件同源锁：本文件把矩阵「固定成三平台」这件事必须与真 workflow 一致。
+    # _MATRIX_KEYS 漂移（矩阵加/删平台而测试没跟）时，autouse fixture 会把真缺口桩掉。
+    _restore_real_matrix(monkeypatch)
+    assert checker._runtime_matrix_keys() == list(_MATRIX_KEYS), (
+        "build-release.yml 的发布矩阵与 tests/test_check_runtime_pins.py 的 _MATRIX_KEYS 不一致，"
+        "请同步两处（同 AGENTS.md「版本常量跨 workflow 同值」口径）"
+    )
+
+
+def test_strict_blocks_all_placeholder_table_with_real_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
+    # MID-2260 的正主：真矩阵 + 全占位表 + --strict 必须 rc=1。
+    # 把 `_runtime_matrix_keys` 改成 `return []`（或桩成空列表且无人见证）→ 这里必红。
+    _restore_real_matrix(monkeypatch)
+    assert (
+        _run(monkeypatch, _unpinned_everywhere(), strict=True) == 1
+    ), "全占位表在 --strict 下放行：矩阵解析被旁路 = 发布链无校验（SEV-10 形态）"
+    # 结构模式仍只报结构问题（rc=0），两种模式的语义不得混用。
+    assert _run(monkeypatch, _unpinned_everywhere(), strict=False) == 0
+
+
+def _run(monkeypatch: pytest.MonkeyPatch, table: dict[str, dict[str, str]], *, strict: bool) -> int:
+    # 只打桩「表从哪来」，判定路径全程走真实现：本文件的价值就在于证明**分流与判据**正确，
+    # 若连 check() 一起桩掉就成了自证（AGENTS.md「测试不得自实现被测逻辑」同源）。
+    monkeypatch.setattr(checker, "_load_build_exe", lambda: _fake_module(table))
+    return int(checker.check(strict=strict))
+
+
+def _pinned_table() -> dict[str, dict[str, str]]:
+    # 基线取「全部满足」形态，各用例再各自破坏一格——这样任何新增键/槽位都会在基线里暴露
+    # （缺槽位 → rc=2），而不是悄悄少测一格。
+    return {key: {"ffmpeg": _HEX64, "node": _HEX64} for key in _ALL_KEYS}
+
+
+def test_matrix_unpinning_still_blocks_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 两个模式必须同时成立才叫「没收窄过头」：strict 拦矩阵内缺口，结构模式只报结构问题。
+    # 只看 strict 会漏掉另一侧退化——把结构模式也判红，等于每个 PR 都因数据未钉定而挂。
+    table = _pinned_table()
+    table["linux-x64"]["ffmpeg"] = build_exe.UNVERIFIED_PIN
+    assert _run(monkeypatch, table, strict=True) == 1, "矩阵内未钉定却放行 = 发布链被旁路"
+    assert _run(monkeypatch, table, strict=False) == 0, "结构模式不应因未钉定变红（那是数据态不是缺陷）"
+
+
+def test_offmatrix_unpinned_is_warned_not_hidden(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 没有任何 runner 产出 macos-x64 → 要求它钉定既不拦真实产物，又会让人以为「五键都管住了」；
+    # 因此它不参与 --strict，但**必须被打印**，否则后来的人会以为表里这些键同样有闸。
+    table = _pinned_table()
+    table["macos-x64"]["ffmpeg"] = build_exe.UNVERIFIED_PIN
+    assert _run(monkeypatch, table, strict=True) == 0
+    out = capsys.readouterr().out
+    assert "macos-x64/ffmpeg" in out and "不在发布矩阵内" in out, out
+
+
+def test_source_build_marker_without_evidence_is_not_a_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 第 4 类的标记若比 64 位十六进制更容易填，就必须同等拦下；否则「放宽判定」变成了
+    # 一条绕闸通道（与 CR-11 的「空表 + warn 后继续」同一族失效）。
+    table = _pinned_table()
+    table["macos-arm64"]["ffmpeg"] = build_exe.SOURCE_BUILD_PROVENANCE
+    assert _run(monkeypatch, table, strict=True) == 1
+
+
+def test_source_build_marker_with_full_evidence_passes_and_is_announced(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    evidence = {"source_sha256": "b" * 64, "recipe_sha256": "c" * 64, "provenance_ref": "build-release.yml@sha"}
+    monkeypatch.setitem(build_exe._SOURCE_BUILD_EVIDENCE, "macos-arm64", {"ffmpeg": evidence})
+    table = _pinned_table()
+    table["macos-arm64"]["ffmpeg"] = build_exe.SOURCE_BUILD_PROVENANCE
+    assert _run(monkeypatch, table, strict=True) == 0
+    assert "第 4 类" in capsys.readouterr().out, "满足第 4 类必须显式说出来，不得与「已钉定」混为一谈"
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["missing_ref", "short_source", "nonhex_recipe", "empty_all"],
+    ids=["缺 provenance", "source 长度不足", "recipe 非十六进制", "三件全空"],
+)
+def test_incomplete_evidence_never_satisfies_the_fourth_class(monkeypatch: pytest.MonkeyPatch, broken: str) -> None:
+    good = {"source_sha256": "b" * 64, "recipe_sha256": "c" * 64, "provenance_ref": "build-release.yml@sha"}
+    if broken == "missing_ref":
+        good.pop("provenance_ref")
+    elif broken == "short_source":
+        good["source_sha256"] = "b" * 63
+    elif broken == "nonhex_recipe":
+        good["recipe_sha256"] = "z" * 64
+    else:
+        good = {}
+    monkeypatch.setitem(build_exe._SOURCE_BUILD_EVIDENCE, "macos-arm64", {"ffmpeg": dict(good)})
+    table = _pinned_table()
+    table["macos-arm64"]["ffmpeg"] = build_exe.SOURCE_BUILD_PROVENANCE
+    assert _run(monkeypatch, table, strict=True) == 1, f"证据形态不完整却放行：{broken}"
+
+
+def test_missing_slot_is_a_structural_failure_not_a_data_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 缺槽位/空表/键不在矩阵内 = 门禁本身失效 → rc=2（与「代码不合格」的 rc=1 必须分开）
+    table = _pinned_table()
+    del table["windows-x64"]["node"]
+    assert _run(monkeypatch, table, strict=False) == 2
+    assert _run(monkeypatch, {}, strict=False) == 2, "空表必须硬失败（CR-11 的原始形态）"
+
+
+def test_matrix_key_missing_from_table_is_structural(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = _pinned_table()
+    del table["macos-arm64"]
+    monkeypatch.setattr(
+        checker, "_load_build_exe", lambda: _fake_module(table, declared_keys=("windows-x64", "linux-x64"))
+    )
+    assert checker.check(strict=True) == 2, "矩阵要建的平台在表里没有 = 覆盖缺口，须按门禁失效处理"
+
+
+def test_emit_env_exports_the_live_table(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # CI 靠这段 JSON 把钉定值透传给 build job；导出的必须是**同一份事实源**而不是脚本内副本
+    monkeypatch.setattr(checker, "_load_build_exe", lambda: _fake_module(_pinned_table()))
+    assert checker.emit_env() == 0
+    exported = json.loads(capsys.readouterr().out)
+    assert set(exported) == set(_ALL_KEYS)
+    assert exported["linux-x64"]["node"] == _HEX64

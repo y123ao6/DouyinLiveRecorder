@@ -109,7 +109,8 @@ def test_read_config_value_delimiter_key_then_normal_key_still_writes(tmp_path: 
 
 def test_main_huya_old_key_compat_missing_only_reads(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     # main.py 兼容旧键在缺键时仅读取、绝不写回——缺失时不进入写回路径。
-    options = {"是": True, "否": False}
+    # 2026-09-17：解析改用统一的 config_io.read_config_bool（旧用例复刻的是已废弃的
+    # options 字典查表，会让测试继续背书已删实现，故同步到真实现口径）。
     parser = config_io.configparser.RawConfigParser()
     parser.read_string("[录制设置]\n禁用SSL证书验证的平台(逗号分隔)=抖音直播\n")
     platforms = {p.strip() for p in parser.get("录制设置", "禁用SSL证书验证的平台(逗号分隔)").split(",") if p.strip()}
@@ -117,24 +118,37 @@ def test_main_huya_old_key_compat_missing_only_reads(tmp_path: Path, monkeypatch
     # 旧键缺失 → has_option 为 False → 不触发任何写回
     assert not parser.has_option("录制设置", "虎牙是否禁用SSL证书验证(是/否)")
 
-    # 复刻 main.py guard：仅读取，不应抛异常
+    # 复刻 main.py guard：仅读取，不应抛异常（也不得因此新建旧键）
     if parser.has_option("录制设置", "虎牙是否禁用SSL证书验证(是/否)"):
-        if options.get(parser.get("录制设置", "虎牙是否禁用SSL证书验证(是/否)").strip(), False):
+        if config_io.read_config_bool(parser, "录制设置", "虎牙是否禁用SSL证书验证(是/否)", False):
             platforms.add("虎牙直播")
 
     assert platforms == {"抖音直播"}
+    assert not parser.has_option("录制设置", "虎牙是否禁用SSL证书验证(是/否)")
 
 
 def test_main_huya_old_key_compat_present_yes_adds(tmp_path: Path) -> None:
     # 旧键存在且 =是 时，等价于把「虎牙直播」加入禁用列表（保留迁移前的语义）。
-    options = {"是": True, "否": False}
     parser = config_io.configparser.RawConfigParser()
     parser.read_string("[录制设置]\n虎牙是否禁用SSL证书验证(是/否)=是\n")
     platforms: set[str] = set()
 
     if parser.has_option("录制设置", "虎牙是否禁用SSL证书验证(是/否)"):
-        if options.get(parser.get("录制设置", "虎牙是否禁用SSL证书验证(是/否)").strip(), False):
+        if config_io.read_config_bool(parser, "录制设置", "虎牙是否禁用SSL证书验证(是/否)", False):
             platforms.add("虎牙直播")
+
+    assert platforms == {"虎牙直播"}
+
+
+@pytest.mark.parametrize("raw", ["是", "true", "TRUE", "1", "yes", "on"])
+def test_main_huya_old_key_compat_true_encodings_add(tmp_path: Path, raw: str) -> None:
+    # 旧键的任何真值写法（是/true/1/yes/on）都应等价于「加入禁用列表」
+    parser = config_io.configparser.RawConfigParser()
+    parser.read_string(f"[录制设置]\n虎牙是否禁用SSL证书验证(是/否)={raw}\n")
+    platforms: set[str] = set()
+
+    if config_io.read_config_bool(parser, "录制设置", "虎牙是否禁用SSL证书验证(是/否)", False):
+        platforms.add("虎牙直播")
 
     assert platforms == {"虎牙直播"}
 

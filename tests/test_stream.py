@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
 # src/stream.py 测试：分两部分 —— ① 纯工具/画质映射函数（bitrate_to_quality / code_to_zh /
 # is_downgrade / _pad_list / get_quality_index 及四张画质常量表一致性）；② 核心平台流地址解析
-# （抖音/虎牙/斗鱼/快手/YY/网易/TikTok 的 get_*_stream_url）。
+# （抖音/虎牙/斗鱼/快手/YY/网易/TikTok/B站 的 get_*_stream_url，以及通用入口 get_stream_url）。
 # 测试策略：用 AsyncMock 桩掉 src.stream.get_response_status（可用性网络探针），把「解析逻辑」
 # 与「候选可达性探测」彻底隔离 —— 这样 m3u8 不可达降级、离线短路等分支可被确定性触发，而非依赖
-# 真实 CDN 响应。画质边界数字（LD≤600 / HD≤1000 / BD≤4000）直接来自 QUALITY_MAPPING 阈值，
-# 用例既锁住分段边界也防阈值回归。通用入口 get_stream_url 的「原样返回」契约用同一性断言 `is`
+# 真实 CDN 响应。画质边界数字（LD≤600 / HD≤1000 / BD≤4000）取自码率上限表 QUALITY_MAPPING_BIT
+# （QUALITY_MAPPING 只有 OD=0…LD=5 的排序索引、不含码率，两者不可混引），用例既锁分段边界也防阈值回归。
+# 通用入口 get_stream_url 的「原样返回」契约用同一性断言 `is`
 # 锁定，杜绝短路路径返回被篡改副本的回归。
+# 2026-09-20 补充（档位语义回归锁）：TestHuyaLegacyTierByRatioValue 锁「虎牙 exsphd 按数值而非
+# 出现顺序解释」；TestBilibiliQualityReadback 锁「qn 反向表一对多取更高档 + 表外 qn 不入白名单」；
+# TestKuaishouNumericQuality 锁「数字画质先过 QUALITY_MAPPING 解码再查码率表」；
+# B站用例另用 AsyncMock 桩 src.stream.get_bilibili_stream_data（第二段网络入口）：patch 目标必须是
+# src.stream 命名空间里的那份导入引用（src/stream.py 顶部 from .spider import ...），改成 src.spider.*
+# 会让 get_bilibili_stream_url 仍打到真实现、用例静默走网络。
 
 from typing import TypedDict, cast
 from unittest.mock import AsyncMock, patch
@@ -31,7 +38,8 @@ from src.stream import (
 
 
 # 测试侧收窄：get_*_stream_url 返回类型声明为 dict[str, object]（不变类型），
-# 访问返回的异构字段时需按 MEMORY cast 模式收窄到具体结构。
+# 访问返回的异构字段时按本仓通行的 cast(dict[str, object], ...) / 专用 TypedDict 中转收窄
+# （mypy 侧 warn_return_any + disallow_untyped_defs 会把 Any 泄漏报成 no-any-return）。
 class HuyaResult(TypedDict):
     is_live: bool
     m3u8_url: str
@@ -48,19 +56,20 @@ class TestBitrateToQuality:
     # bitrate_to_quality: 码率 → 画质代码映射。
 
     def test_zero_bitrate_returns_od(self) -> None:
-        # 0 码率视为「无有效流」→ 落到原画 OD（最低档兜底），避免负/零码率算出更低的伪档位。
+        # 0 码率视为「无有效流」→ 落到原画 OD（表内容量最大档 = 无上限档），
+        # 不走升序循环，免得 0 被误判成最低档 LD 而把无码率源标成「流畅」。
         assert bitrate_to_quality(0) == "OD"
 
     def test_negative_bitrate_returns_od(self) -> None:
-        # 负码率（接口异常/缺字段）同样兜底到 OD，与 0 同处理，不抛错。
+        # 负码率（接口异常/缺字段）与 0 同走 `not bitrate or bitrate <= 0` 早退，不抛错。
         assert bitrate_to_quality(-100) == "OD"
 
     def test_low_bitrate_returns_ld(self) -> None:
-        # LD 上限 600
+        # LD 容量上限 600（QUALITY_MAPPING_BIT）：升序 LD<SD<HD<UHD<BD<OD 找首个「容量 ≥ 实码率」的档
         assert bitrate_to_quality(500) == "LD"
 
     def test_boundary_600_returns_ld(self) -> None:
-        # 码率==LD 上限边界（600）须仍判 LD；
+        # 码率==LD 上限边界（600）须仍判 LD（判定是 <= 不是 <）；
         # 锁住分段闭区间，防阈值回归把边界错判为 SD。
         assert bitrate_to_quality(600) == "LD"
 
@@ -68,15 +77,15 @@ class TestBitrateToQuality:
         assert bitrate_to_quality(601) == "SD"
 
     def test_mid_bitrate_returns_hd(self) -> None:
-        # HD 上限 1000
+        # HD 上限 1000（SD=800 / UHD=2000，故 801~1000 落 HD）
         assert bitrate_to_quality(999) == "HD"
 
     def test_high_bitrate_returns_bd(self) -> None:
-        # BD 上限 4000
+        # BD 上限 4000（UHD=2000 < BD=4000，2001~4000 落 BD；BD4 同为 4000 但不在本表回值集合内）
         assert bitrate_to_quality(3000) == "BD"
 
     def test_very_high_bitrate_returns_od(self) -> None:
-        # OD 无上限（>4000 落入 OD）
+        # OD 表内写 99999，且循环全部不命中时仍有末位 return "OD" → 实际无上限（>4000 一律原画）
         assert bitrate_to_quality(99999) == "OD"
 
     def test_exact_bd_boundary(self) -> None:
@@ -150,9 +159,10 @@ class TestPadList:
         assert result == [1, 2, 3, 4]
 
     def test_default_min_length_is_6(self) -> None:
-        # 缺省 min_length=6（2026-09-12 审查 6.5 修复：原 5 致 LD 档（索引 5）越界，
-        # 用户选"流畅"画质时漏录）；
-        # 锁住默认填充长度与末项复制。
+        # 缺省 min_length=6（2026-09-12 审查 6.5 修复：原 5 让 LD 档（QUALITY_MAPPING 索引 5）越界，
+        # 被下游 min(...) 钳制后退回"未开播"分支，用户选"流畅"画质时部分平台永远录不上）；
+        # 非空列表原地补末项、空列表返回 [None] * min_length **新列表**——MID-16 的 TikTok 空 FLV
+        # 分支正是被这份「非空即真」的空占位列表骗过，见下方 TestGetTiktokStreamUrl 的 MID-16 注释。
         result = _pad_list([1])
         assert len(result) == 6
         assert result[0] == 1
@@ -160,7 +170,9 @@ class TestPadList:
 
 
 class TestGetQualityIndex:
-    # get_quality_index: 解析画质参数。
+    # get_quality_index: 画质入参 → (档位代码, 通用索引)。数字入参按 QUALITY_MAPPING 的键序取档
+    # （首字符是数字才生效，>= len(keys)=6 一律回退 0），蓝光子档位在此折叠回 BD——
+    # 折叠是本表不塞进 BD4/BD8/BD20/BD30 的前提（见 TestConstants 与 AGENTS 同条约定）。
 
     def test_none_returns_first(self) -> None:
         name, idx = get_quality_index(None)
@@ -211,7 +223,13 @@ class TestGetQualityIndex:
 
 
 class TestConstants:
-    # 确保画质相关常量映射保持一致。
+    # 四张画质表的键集合关系（AGENTS「蓝光子档位必须折叠到 BD 索引、不得塞进通用 QUALITY_MAPPING」
+    # 的机检面，类名在本文件为 TestConstants，函数名 test_quality_mapping_keys_match_*）：
+    # QUALITY_MAPPING 是权威 6 键序（OD=0/BD=1/UHD=2/HD=3/SD=4/LD=5），QUALITY_LEVEL /
+    # QUALITY_MAPPING_BIT / QUALITY_CODE_TO_ZH 各是它的**超集**，多出的键必须恰为 BD_SUB_TIERS
+    # 四档（30000/20000/8000/4000 与对应中文名）。因此只能断「基础键子集 + 差集恰等于子档位」：
+    # 要求三表键全等会把合法的细粒度档判成回归；只断基础键互为子集，则有人往 QUALITY_MAPPING
+    # 里塞一个 BD4 也能全绿——而那正是通用选档错位的事故形态。
 
     def test_quality_mapping_keys_match_level_keys(self) -> None:
         # QUALITY_LEVEL 是 QUALITY_MAPPING 的超集：额外含蓝光细粒度子档位（BD30/BD20/BD8/BD4）
@@ -281,10 +299,14 @@ class TestGetDouyinStreamUrl:
                 "hevc_flv_url": None,
             },
         }
-        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True):
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True) as mock_status:
             result = await get_douyin_stream_url(json_data, video_quality="HD")
 
         assert result["is_live"] is True
+        # MID-26：解析阶段的探针也必须带 platform（与 stream_select / ffmpeg 同一份
+        # 拉流侧 SSL 口径），否则证书异常平台的 m3u8 会被判不可达、错误降级画质
+        assert mock_status.await_args is not None
+        assert mock_status.await_args.kwargs.get("platform") == "抖音直播"
         assert result["quality"] == "HD"
         # 固化选中结果契约（弱断言仅检查真值/键存在，会漏检选错画质或空 URL 回归）。
         # HD 请求的 flv 索引被截断到 SD，m3u8 索引截断到 HD，故实际质量回落为 SD。
@@ -589,11 +611,236 @@ class TestGetTiktokStreamUrl:
         assert result["anchor_name"] == "Streamer-streamer1"
         assert result["title"] == "Live Now"
         # 固化选中结果契约（弱断言仅检查真值，会漏检选错画质或空 URL 回归）。
-        # OD 请求索引截断到末档 → 选中最高码率 origin（BD），flv_url 回退为 m3u8。
+        # OD 请求索引截断到末档 → 选中最高码率 origin（BD）。
+        # MID-15：flv_url 字段**只放 FLV**。原写法 `"flv_url": m3u8_url or flv_url` 让同一个
+        # m3u8 同时进 hls_candidates 与 flv_candidates（去重只在组内）→ 同一轮被连续校验两次、
+        # 日志把 HLS 源记成「FLV 源」，最关键是绕过「HLS采集排除平台」的整组剔除语义。
         assert result["m3u8_url"] == "https://tiktok.example.com/origin.m3u8?codec=h264"
-        assert result["flv_url"] == "https://tiktok.example.com/origin.m3u8?codec=h264"
+        assert result["flv_url"] == "https://tiktok.example.com/origin.flv?codec=h264"
         assert result["actual_quality"] == "BD"
+        # 「无 FLV 时以 HLS 顶上」由 record_url 通道承担
         assert result["record_url"] == result["m3u8_url"]
+
+    @staticmethod
+    def _json(stream_data: dict[str, object]) -> dict[str, object]:
+        import json
+
+        return {
+            "LiveRoom": {
+                "liveRoomUserInfo": {"user": {"status": 2, "nickname": "Streamer", "uniqueId": "streamer1"}},
+                "liveRoom": {
+                    "title": "Live Now",
+                    "streamData": {"pull_data": {"stream_data": json.dumps(stream_data)}},
+                },
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_hls_only_room_does_not_raise(self) -> None:
+        # MID-16：TikTok 只下发 hls 一路时，get_video_quality_url(stream, "flv") 仍会为每个
+        # 条目追加一个 {"url": "", vbitrate, resolution}（追加条件是 vbitrate/resolution，
+        # 与 q_key 是否存在无关），于是 FLV 侧全是空地址项。
+        # 原实现两重问题：① `"flv_url": m3u8_url or flv_url` 把 m3u8 塞进 FLV 通道（MID-15）；
+        # ② flv 列表为空时 _pad_list([]) 返回 [None] * 6（新列表、非空即真），
+        #    `if flv_url_list else {"url": ""}` 的兜底进不去 → flv_dict 为 None →
+        #    .get("url") 抛 AttributeError，被 trace_error_decorator 伪装成「未开播」。
+        # 现在索引前过滤 None 与空地址项，两条路径都走 {"url": ""} 兜底。
+        from src.stream import get_tiktok_stream_url
+
+        stream_data: dict[str, object] = {
+            "data": {
+                "origin": {
+                    "main": {"sdk_params": '{"vbitrate": 4000, "VCodec": "h264", "resolution": "1920x1080"}'},
+                    "hls": "https://tiktok.example.com/origin.m3u8",
+                }
+            }
+        }
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True) as mock_status:
+            result = await get_tiktok_stream_url(cast(dict[str, object], self._json(stream_data)), video_quality="OD")
+        # 修复前这里得到的是装饰器的 {"is_live": False} 兜底（AttributeError 被吞）
+        assert result["is_live"] is True
+        assert result["m3u8_url"] == "https://tiktok.example.com/origin.m3u8?codec=h264"
+        # MID-15：FLV 通道为空就诚实地空，不得用 m3u8 顶替
+        assert result["flv_url"] == ""
+        assert result["record_url"] == "https://tiktok.example.com/origin.m3u8?codec=h264"
+        # 无 FLV 时按选中的 HLS 项回采档位（4000kbps → BD），不再伪装成 OD
+        assert result["actual_quality"] == "BD"
+        # 空 FLV 列表不得产出画质候选（None 占位项已被剔除）
+        assert result["available_qualities"] is None
+        # MID-26：探针必须带 platform —— 与 stream_select / ffmpeg 共用拉流侧 SSL 口径
+        # （get_effective_ssl_verify(platform)），否则「禁用SSL证书验证的平台」命中时
+        # 探针必然证书报错 → 判不可达 → 明明可录的档位被静默降级
+        assert mock_status.await_args is not None
+        assert mock_status.await_args.kwargs.get("platform") == "TikTok直播"
+
+
+class TestHuyaLegacyTierByRatioValue:
+    # MID-13 / MID-14：虎牙档位必须按 ratio **数值**解释，与 exsphd 的出现顺序无关。
+
+    @staticmethod
+    def _json(exsphd: str, bit_rate: int = 0) -> dict[str, object]:
+        anti = f"wsSecret=hs&wsTime=6a&ctype=huya_live&fs=bgct&exsphd={exsphd}"
+        info: dict[str, object] = {"nick": "anchor", "introduction": "title"}
+        if bit_rate:
+            info["bitRate"] = bit_rate
+        return {
+            "data": [
+                {
+                    "gameLiveInfo": info,
+                    "gameStreamInfoList": [
+                        {
+                            "sCdnType": "HS",
+                            "sStreamName": "S",
+                            "sFlvUrl": "http://hs.flv.huya.com/src",
+                            "sFlvUrlSuffix": "flv",
+                            "sFlvAntiCode": anti,
+                            "sHlsUrl": "http://hs.hls.huya.com/src",
+                            "sHlsUrlSuffix": "m3u8",
+                            "sHlsAntiCode": anti,
+                        }
+                    ],
+                }
+            ]
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exsphd", ["264_0 264_500 264_2000 264_8000", "264_8000 264_2000 264_500 264_0"])
+    async def test_uhd_ratio_is_order_independent(self, exsphd: str) -> None:
+        # 原实现把 labels=["UHD","HD","SD","LD"] 与 reversed(findall) 做**位置式** zip：
+        # 同一串 exsphd 换个顺序就得到完全不同的档位标签（请求超清实拉蓝光8M），
+        # 且 actual_quality 被回写成请求值 → is_downgrade 恒 False、日志与面板双盲。
+        from src.stream import get_huya_stream_url
+
+        result = await get_huya_stream_url(cast(dict[str, object], self._json(exsphd)), video_quality="UHD")
+        assert str(result["flv_url"]).endswith("&ratio=2000")
+        assert result["actual_quality"] == "UHD"
+        # available_qualities 亦按数值集合输出（画质由高到低），不再依赖字符串顺序
+        assert result["available_qualities"] == ["OD", "BD", "BD8", "UHD", "LD"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_no_interpretable_ratio_falls_back_to_origin(self) -> None:
+        # exsphd 只有 264_0（房间仅原画）：按 BD 分支口径不附加 ratio、回采 OD 并告警，
+        # 而不是把 0 当成「UHD 的 ratio」拼进 URL
+        from src.stream import get_huya_stream_url
+
+        result = await get_huya_stream_url(cast(dict[str, object], self._json("264_0")), video_quality="UHD")
+        assert "ratio=" not in str(result["flv_url"])
+        assert result["actual_quality"] == "OD"
+
+    @pytest.mark.asyncio
+    async def test_unregistered_ratio_is_named_by_value_and_warns(self) -> None:
+        # MID-14：exsphd 携带表外 ratio（12000）时，降级档位名按数值就近取 BD8，
+        # 不得回落到**请求档**（那是把降级伪装成按请求录）；且必须告警。
+        from src.stream import get_huya_stream_url
+
+        with patch("src.stream.logger.warning") as warn:
+            result = await get_huya_stream_url(
+                cast(dict[str, object], self._json("264_0 264_12000 264_500", bit_rate=20000)),
+                video_quality="BD20",
+            )
+        assert str(result["flv_url"]).endswith("&ratio=12000")
+        assert result["quality"] == "BD20"
+        assert result["actual_quality"] == "BD8"
+        assert is_downgrade("BD20", cast(str, result["actual_quality"])) is True
+        assert any("不可用" in str(c.args[0]) for c in warn.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_nearest_code_prefers_lower_tier_on_tie(self) -> None:
+        # 表外值就近取档：6000 与 4000/8000 等距，取**更低画质**（BD4）——
+        # 宁可多打一条降级告警，也不把更低的实际档位伪装成高档
+        from src.stream import huya_code_for_ratio
+
+        assert huya_code_for_ratio(6000) == "BD4"
+        assert huya_code_for_ratio(12000) == "BD8"
+        assert huya_code_for_ratio(2000) == "UHD"
+        assert huya_code_for_ratio(250) == "LD"
+
+
+class TestBilibiliQualityReadback:
+    # MIN-05：B站 qn→档位反向表与表外 qn 的处理。
+
+    @staticmethod
+    async def _resolve(current_qn: int, accept_qn: list[int], video_quality: str) -> dict[str, object]:
+        from src.stream import get_bilibili_stream_url
+
+        json_data = {
+            "anchor_name": "bili",
+            "live_status": 1,
+            "title": "T",
+            "room_url": "https://live.bilibili.com/1",
+        }
+        play = {"current_qn": current_qn, "accept_qn": accept_qn, "url": "https://bilivideo/x.m3u8"}
+        with patch("src.stream.get_bilibili_stream_data", new_callable=AsyncMock, return_value=play):
+            return await get_bilibili_stream_url(cast(dict[str, object], json_data), video_quality=video_quality)
+
+    @pytest.mark.asyncio
+    async def test_qn80_prefers_sd_over_ld(self) -> None:
+        # SD 与 LD 同为 "80"（B站无独立标清档），推导式反向表后写覆盖前写 → 实发 80 恒被
+        # 回采成 LD，于是请求「标清」时打出根本不存在的降级告警（SD=7 → LD=8）。
+        # 一对多必须显式取**更高档**。
+        result = await self._resolve(80, [10000, 400, 250, 150, 80], "SD")
+        assert result["actual_quality"] == "SD"
+        assert is_downgrade("SD", cast(str, result["actual_quality"])) is False
+        # 请求流畅时同样回采 80 → SD，等级更高、不属降级
+        assert is_downgrade("LD", "SD") is False
+
+    @pytest.mark.asyncio
+    async def test_out_of_table_qn_not_leaked(self) -> None:
+        # accept_qn 常含表外值（20000/30000/0）：不得把裸数字塞进 available_qualities
+        result = await self._resolve(400, [20000, 10000, 400, 0, 250], "BD")
+        assert result["available_qualities"] == ["OD", "BD", "UHD"]
+        assert result["actual_quality"] == "BD"
+
+    @pytest.mark.asyncio
+    async def test_unknown_current_qn_keeps_requested(self) -> None:
+        # current_qn 表外：保持请求档（不伪造档位名），与既有契约一致
+        result = await self._resolve(20000, [20000, 10000], "OD")
+        assert result["actual_quality"] == "OD"
+        assert result["available_qualities"] == ["OD"]
+
+
+class TestKuaishouNumericQuality:
+    # MIN-06：数字画质入参必须按通用索引语义解码，不得按位置索引码率表。
+
+    @pytest.mark.asyncio
+    async def test_numeric_index_decoded_through_quality_mapping(self) -> None:
+        from src.stream import get_kuaishou_stream_url
+
+        json_data = {
+            "type": 2,
+            "is_live": True,
+            "anchor_name": "ks",
+            "flv_url_list": [
+                {"url": "https://ks.example.com/max.flv", "bitrate": 30000},
+                {"url": "https://ks.example.com/mid.flv", "bitrate": 4000},
+                {"url": "https://ks.example.com/low.flv", "bitrate": 1500},
+            ],
+        }
+        # "2" 在通用 QUALITY_MAPPING 里是 UHD（码率上限 2000）。
+        # 原实现直接 list(QUALITY_MAPPING_BIT.items())[2] —— 该表为蓝光子档位插了位，
+        # 位置 2 是 BD30(30000)，于是「请求 UHD」实拉最高码率档并把 quality 改写成 BD30。
+        result = await get_kuaishou_stream_url(cast(dict[str, object], json_data), video_quality="2")
+        assert result["quality"] == "UHD"
+        assert result["flv_url"] == "https://ks.example.com/low.flv"
+        assert result["actual_quality"] == "UHD"
+
+    @pytest.mark.asyncio
+    async def test_named_quality_unchanged(self) -> None:
+        # 对照：中文名入参（录制链实际形态）行为不变
+        from src.stream import get_kuaishou_stream_url
+
+        json_data = {
+            "type": 2,
+            "is_live": True,
+            "anchor_name": "ks",
+            "flv_url_list": [
+                {"url": "https://ks.example.com/max.flv", "bitrate": 30000},
+                {"url": "https://ks.example.com/mid.flv", "bitrate": 4000},
+            ],
+        }
+        result = await get_kuaishou_stream_url(cast(dict[str, object], json_data), video_quality="BD")
+        assert result["quality"] == "BD"
+        assert result["flv_url"] == "https://ks.example.com/mid.flv"
 
 
 class TestGetKuaishouStreamUrl:
@@ -741,13 +988,71 @@ class TestGetStreamUrl:
                 {"m3u8": "https://example.com/sd.m3u8", "flv": "https://example.com/sd.flv"},
             ],
         }
+        # MID-20(a)：未传 hls_extra_key 时原实现把**整份 play_url_list[i] 字典**当流地址返回，
+        # 而 stream_select 的 isinstance(str) / _as_str_list 会静默丢弃 → 「解析成功却无任何
+        # 流地址」。现按 url/play_url/m3u8_url/flv_url 顺序探测，探测不到即返回 ""。
+        # 该字典只有 m3u8/flv 两个非探测序列键，故得到空串而不是 dict。
         result = await get_stream_url(json_data, video_quality="OD", url_type="m3u8")
         assert result["is_live"] is True
-        # url_type="m3u8" 且未传 hls_extra_key 时，m3u8_url 取整个 play_url_list[0] 字典（OD 选中索引 0）。
-        # 精确锁定选中值与 record_url 契约，杜绝「真值/键存在」的假绿断言漏检空值/错选回归。
-        assert result["m3u8_url"] == {"m3u8": "https://example.com/od.m3u8", "flv": "https://example.com/od.flv"}
-        assert result["record_url"] == result["m3u8_url"]
+        assert result["m3u8_url"] == ""
+        assert result["record_url"] == ""
         assert result["quality"] == "OD"
+
+        # 显式传 key 时按 key 取值（既有契约），record_url 与之同源
+        result = await get_stream_url(json_data, video_quality="OD", url_type="m3u8", hls_extra_key="m3u8")
+        assert result["m3u8_url"] == "https://example.com/od.m3u8"
+        assert result["record_url"] == "https://example.com/od.m3u8"
+
+    @pytest.mark.asyncio
+    async def test_missing_key_returns_empty_not_keyerror(self) -> None:
+        # MID-20：play_url[key] 的 KeyError 会穿透到 main.py 的通用 except 并
+        # record_error(host) 计入按 host 的熔断样本（AGENTS 2026-09-19：与其它平台
+        # 「安静重试一轮」不等价，严重时自动注释用户房间地址）。缺键必须返回 ""。
+        from src.stream import get_stream_url
+
+        json_data = {
+            "is_live": True,
+            "anchor_name": "generic",
+            "title": "Generic Live",
+            "play_url_list": [{"flv": "https://example.com/od.flv"}],
+        }
+        result = await get_stream_url(json_data, url_type="flv", flv_extra_key="no_such_key")
+        assert result["is_live"] is True
+        assert result["flv_url"] == ""
+        assert result["record_url"] == ""
+
+    @pytest.mark.asyncio
+    async def test_generic_url_key_probed_in_order(self) -> None:
+        # 未指定 extra_key 时的取值顺序 url → play_url → m3u8_url → flv_url（MID-20）
+        from src.stream import get_stream_url
+
+        json_data = {
+            "is_live": True,
+            "anchor_name": "generic",
+            "title": "Generic Live",
+            "play_url_list": [
+                {"play_url": "https://example.com/p.m3u8", "m3u8_url": "https://example.com/h.m3u8"},
+                {"flv_url": "https://example.com/only.flv"},
+            ],
+        }
+        result = await get_stream_url(json_data, video_quality="OD", url_type="m3u8")
+        assert result["record_url"] == "https://example.com/p.m3u8"
+        # 该项只有 flv_url：按探测序列落到 flv_url（总比把 dict / 空值塞进录制链路好）
+        result = await get_stream_url(json_data, video_quality="HD", url_type="flv")
+        assert result["flv_url"] == "https://example.com/only.flv"
+
+    @pytest.mark.asyncio
+    async def test_malformed_payload_falls_back_instead_of_raising(self) -> None:
+        # MID-20：本函数必须是**带兜底装饰器**的平台入口（本层其余 8 处都有）。
+        # 未加 @trace_error_decorator 前，这里的 AttributeError 会穿透到 main.py 的通用
+        # except 并 record_error(host) 计入按 host 的熔断样本——AGENTS 2026-09-19 条目
+        # 明确指出这与其他平台「异常只安静重试一轮」不等价，严重时会自动注释用户房间地址。
+        # 输入形态：平台 JSON 把 play_url_list 下发成 dict（劫持/改版均可能）。
+        from src.stream import get_stream_url
+
+        json_data = {"is_live": True, "anchor_name": "generic", "play_url_list": {"url": "https://x/a.m3u8"}}
+        result = await get_stream_url(json_data)
+        assert result == {"is_live": False}
 
     @pytest.mark.asyncio
     async def test_flv_type(self) -> None:
@@ -757,13 +1062,13 @@ class TestGetStreamUrl:
             "is_live": True,
             "anchor_name": "generic",
             "title": "Generic Live",
-            "play_url_list": [{"flv": "https://example.com/od.flv"}],
+            "play_url_list": [{"url": "https://example.com/od.flv"}],
         }
         result = await get_stream_url(json_data, url_type="flv")
         assert result["is_live"] is True
-        # url_type="flv" 且未传 flv_extra_key 时，flv_url 取整个 play_url_list[0] 字典。
+        # MID-20：缺 flv_extra_key 时按探测序列取 url（原实现返回整份 dict，被下游静默丢弃）。
         # 精确锁定选中值与 record_url 契约，杜绝「真值/键存在」的假绿断言漏检空值/错选回归。
-        assert result["flv_url"] == {"flv": "https://example.com/od.flv"}
+        assert result["flv_url"] == "https://example.com/od.flv"
         assert result["record_url"] == result["flv_url"]
 
     @pytest.mark.asyncio
@@ -774,12 +1079,14 @@ class TestGetStreamUrl:
             "is_live": True,
             "anchor_name": "generic",
             "title": "Generic Live",
-            "play_url_list": [{"m3u8": "https://example.com/a.m3u8", "flv": "https://example.com/a.flv"}],
+            "play_url_list": [{"m3u8_url": "https://example.com/a.m3u8", "flv_url": "https://example.com/a.flv"}],
         }
         result = await get_stream_url(json_data, url_type="all")
         assert result["is_live"] is True
-        # url_type="all" 且未传 hls_extra_key/flv_extra_key 时，m3u8_url/flv_url 取整个 play_url_list[0] 字典。
-        # 精确锁定选中值与 record_url 契约，杜绝「键存在即可」的假绿断言漏检空值/错选回归。
-        assert result["m3u8_url"] == {"m3u8": "https://example.com/a.m3u8", "flv": "https://example.com/a.flv"}
-        assert result["flv_url"] == {"m3u8": "https://example.com/a.m3u8", "flv": "https://example.com/a.flv"}
+        # MID-20：未传 extra_key 时按 url/play_url/m3u8_url/flv_url 顺序探测，
+        # m3u8_url 槽取到 m3u8_url 键、flv_url 槽亦取同一序列的首个命中值（此处为 m3u8_url）。
+        # 关键是**永远返回 str**，不再是整份 dict（dict 会被 stream_select 静默丢弃）。
+        assert result["m3u8_url"] == "https://example.com/a.m3u8"
         assert result["record_url"] == result["m3u8_url"]
+        assert isinstance(result["flv_url"], str)
+        assert result["flv_url"] == "https://example.com/a.m3u8"
