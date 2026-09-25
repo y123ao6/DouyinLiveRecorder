@@ -5,6 +5,7 @@
 # 与 main.py 一致:record_danmaku_args = {'room_id': json_data['room_id']}。
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -27,10 +28,16 @@ def main() -> None:
     info = asyncio.run(spider.get_douyu_info_data(url=URL, proxy_addr=None))
     if not isinstance(info, dict) or not info.get("room_id"):
         print(f"[FAIL] 房间信息获取失败: {info!r}")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "douyu", "script": "test_douyu_live_collector.py", "url": URL, "status": "FAIL", "messages": 0})}'
+        )
         sys.exit(1)
     print(f"[OK] anchor={info.get('anchor_name')} is_live={info.get('is_live')} room_id={info.get('room_id')}")
     if not info.get("is_live"):
         print("[FAIL/WARN] 房间未开播,无法验证弹幕")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "douyu", "script": "test_douyu_live_collector.py", "url": URL, "status": "SKIP", "reason": "room_offline", "messages": 0})}'
+        )
         sys.exit(1)
 
     # 斗鱼弹幕仅需 room_id（rid）：走 websocket 弹幕协议，无需额外签名/令牌，
@@ -75,7 +82,14 @@ def main() -> None:
             print("[WARN] 当前房间该时段无弹幕(连接可能正常)")
     else:
         print(f"[FAIL] SRT 未生成: {srt_file}")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "douyu", "script": "test_douyu_live_collector.py", "url": URL, "status": "FAIL", "messages": 0})}'
+        )
         sys.exit(1)
+    _srt_sz = os.path.getsize(srt_file)
+    print(
+        f'VERIFICATION_RESULT: {json.dumps({"platform": "douyu", "script": "test_douyu_live_collector.py", "url": URL, "status": "PASS" if count > 0 else "WARN", "messages": count, "srt_bytes": _srt_sz})}'
+    )
 
 
 if __name__ == "__main__":

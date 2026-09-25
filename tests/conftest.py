@@ -2,17 +2,21 @@
 
 import os
 import shutil
+import sys
 from collections.abc import Generator
 from typing import Any
 
 import pytest
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-# 测试运行期产生的临时输出目录（SRT 落盘等），会话结束后统一清理，避免残留
-_TEST_OUT_DIRS = (
-    os.path.join(_TESTS_DIR, "_out_live"),
-    os.path.join(_TESTS_DIR, "_out_e2e"),
-)
+# 测试运行期产生的临时输出目录（SRT 落盘等），会话结束后统一清理，避免残留。
+# 2026-09-24 收敛：`_out_e2e` 已从此清单移除——唯一的写入方 tests/test_srt_timeline_anchor.py
+# 已改用 tmp_path，而它原先在**导入期** makedirs 这个共享目录、却由本钩子在**任意**会话退出时
+# rmtree，正是那条历史约束「全量 `pytest` 运行期间不得再启第二个 pytest 会话」的全部成因；
+# 该约束现已被 AGENTS.md「测试产物一律走 tmp_path，不得写「导入期 makedirs 的会话级共享目录」」
+# 条目取代（机制作为历史保留在该条内）。现在保留的 `_out_live` 仍有人写：五个
+# `test_*_live_collector.py` 双模式脚本（含真机验证）把 SRT 落在该目录，不得一并删。
+_TEST_OUT_DIRS = (os.path.join(_TESTS_DIR, "_out_live"),)
 
 
 def pytest_configure(config: Any) -> None:
@@ -47,22 +51,22 @@ def _clean_credential_caches() -> Generator[None]:
     # 另外三处「模块级 _cached_* 兜底变量」与 singleflight 缓存是两套独立状态：
     # singleflight 命中即返回，模块变量仅在调用方成功时回写；只清一边会让另一边
     # 继续提供旧值，故一并重置。
+    from src import spider as _spider
+    from src import ttwid as _ttwid
     from src.cookie_cache import clear as _clear
 
     def _reset() -> None:
         _clear()
-        try:
-            import src.spider as _spider
-        except Exception:
-            return
+        # MIN-2266 ④：原先这两个 import 各自裹在 `try/except Exception: return` 里，
+        # 一旦 src.spider 导入期抛错（或被摘出 sys.modules），四个模块级 `_cached_*`
+        # 与其后的 `_cached_ttwid` **全部不重置且不报错**——去重类用例退化成跨用例命中
+        # 旧值，表现为「单独跑通过、整包跑失败」，正是本 fixture 要消灭的那类污染。
+        # import 提到 fixture 顶部且不做任何容错：这里出错说明被测模块真的坏了，
+        # 收集/执行期就该红（import 失败是 ImportError，不是需要吞掉的环境差异）。
         _spider._cached_kuaishou_did = ""
         _spider._cached_twitch_client_id = ""
         _spider._bili_buvid_cached = ""
         _spider._bili_buvid_is_fallback = False
-        try:
-            import src.ttwid as _ttwid
-        except Exception:
-            return
         _ttwid._cached_ttwid = ""
 
     _reset()
@@ -83,9 +87,54 @@ def _pin_identity_translation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(i18n, "_tr", lambda text: text)
 
 
+def _stream_policy(stream: object) -> tuple[str | None, str | None]:
+    # 取标准流的编码策略；替身对象上缺失或非字符串的取值统一归一为 None，便于直接比较。
+    encoding = getattr(stream, "encoding", None)
+    errors = getattr(stream, "errors", None)
+    return encoding if isinstance(encoding, str) else None, errors if isinstance(errors, str) else None
+
+
+@pytest.fixture(autouse=True)
+def _guard_stdio_encoding_policy() -> Generator[None]:
+    # 标准流编码策略守卫（2026-09-23 故障引出的通用护栏）：任何用例都不得悄悄改掉
+    # **宿主进程**的 stdout/stderr 编码策略。起因是 build_exe._ensure_utf8_streams 的裸
+    # reconfigure(encoding="utf-8") 把 pytest fd 捕获包装器（EncodedFile，errors="replace"）
+    # 就地翻成 strict；代价却不在当场，而要等几十个用例之后会话收尾读捕获时才以
+    # UnicodeDecodeError 炸出来，还常常先嫁祸给无关用例
+    # （见 DIAGNOSIS_2026-09-23_pytest-teardown-crash.md）。这里把代价提前到「当场点名」。
+    watched = {"stdout": sys.stdout, "stderr": sys.stderr}
+    before = {name: _stream_policy(stream) for name, stream in watched.items()}
+    yield
+    violations: list[str] = []
+    for name, stream in watched.items():
+        current = getattr(sys, name)
+        if current is not stream:
+            # pytest 自身的捕获机制会在用例前后替换这两个对象，属框架行为而非用例副作用
+            continue
+        after = _stream_policy(current)
+        if after == before[name]:
+            continue
+        violations.append(f"sys.{name}: {before[name]} -> {after}")
+        # 先尽力复原再断言：避免单个用例的污染顺会话扩散，把后面几十条用例全染红
+        encoding, errors = before[name]
+        reconfigure = getattr(current, "reconfigure", None)
+        if callable(reconfigure) and isinstance(encoding, str) and isinstance(errors, str):
+            try:
+                reconfigure(encoding=encoding, errors=errors)
+            except ValueError, OSError:
+                # 已被重定向到已关闭/非法句柄时放过：本守卫只做隔离与点名，不参与判定
+                pass
+    assert not violations, (
+        "用例改动了宿主进程的 stdout/stderr 编码策略（这会破坏 pytest 的 fd 捕获，"
+        f"详见 DIAGNOSIS_2026-09-23_pytest-teardown-crash.md）：{'；'.join(violations)}"
+    )
+
+
 def pytest_unconfigure(config: Any) -> None:
     # 会话结束（含 pytest 收集失败/中断退出）后清理测试输出目录，确保不残留临时文件；
     # ignore_errors=True：目录不存在或 Windows 下偶发句柄占用（杀毒/索引扫描）时静默跳过，
-    # 清理失败不应让 pytest 以异常退出码结束。两个目录已在 .gitignore，残留亦不污染仓库。
+    # 清理失败不应让 pytest 以异常退出码结束。所列目录已在 .gitignore，残留亦不污染仓库
+    # （.gitignore 里的 `tests/_out_e2e/` 条目**有意保留**：旧副本或外部脚本仍可能重建该目录，
+    # 留着它才能继续防止这类残留被误提交）。
     for out_dir in _TEST_OUT_DIRS:
         shutil.rmtree(out_dir, ignore_errors=True)

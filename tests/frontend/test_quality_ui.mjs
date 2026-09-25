@@ -20,12 +20,22 @@
 // currentLang），四语文案用同一链路行为级断言，而非源码静态扫描。
 //
 // 由 tests/test_frontend_quality_ui.py 以子进程运行（node 缺失时该 pytest 用例 skip）。
-import { readFileSync } from 'node:fs';
+//
+// 【2026-09-20 范围扩展】本文件已从「画质切换」扩为 web/app.js 面板前端用例的统一入口，另覆盖：
+//   MID-37 掩码凭据的空值保护（loadConfig 打标 + saveConfig 确认门槛 + 服务端 400 文案）；
+//   MID-38 登出入口显隐（登录可见 / 点击吊销 token / 登录页与无 token 部署隐藏）；
+//   MID-39 后端错误体解析（toast 只显示 detail，不把原始 JSON 弹成消息）；
+//   MIN-10 前端内嵌四语目录的机械门禁（键集一致 + index.html 静态文案全部入目录）。
+// 新增用例仍需要本文件的 DOM/fetch 桩，故沿用同一 harness 而不是另开 .mjs——另开会脱离
+// tests/test_frontend_quality_ui.py 的单文件驱动、CI 静默漏跑。
+import { readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 
 const APP_JS = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf8');
+// MIN-10 门禁需要静态读取面板 HTML（data-i18n 键清单 / 硬编码文案扫描），见文件末尾该段说明
+const INDEX_HTML = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf8');
 
 // —— DOM 桩 ——————————————————————————————————————————————
 
@@ -65,8 +75,9 @@ function makeClassList() {
     };
 }
 
-// fetch 路由桩：routes 以 "METHOD path" 为键，值为 {status?, json?} 或 (callIndex) => 同构对象。
-// 响应恒带 application/json 头（api() 按它决定 JSON.parse），全部请求记录进 log 供断言。
+// fetch 路由桩：routes 以 "METHOD path" 为键，值为 {status?, json?|text?} 或 (callIndex) => 同构对象
+// （text 表示非 JSON 响应体，见 makeResponse）。
+// 响应恒带 json 或 html 头（api() 按它决定 JSON.parse），全部请求记录进 log 供断言。
 function makeFetch(routes, log) {
     return async (path, init) => {
         init = init || {};
@@ -77,27 +88,47 @@ function makeFetch(routes, log) {
             return makeResponse(404, { detail: 'no test route for ' + method + ' ' + path });
         }
         const spec = typeof route === 'function' ? route(log.length) : route;
-        return makeResponse(spec.status || 200, spec.json || {});
+        return makeResponse(spec.status || 200, spec.json || {}, spec.text);
     };
 }
 
-function makeResponse(status, data) {
-    const text = JSON.stringify(data);
+function makeResponse(status, data, rawText) {
+    const text = rawText === undefined ? JSON.stringify(data) : rawText;
     return {
         status,
         ok: status >= 200 && status < 300,
-        headers: { get: () => 'application/json' },
+        // rawText 用于「非 JSON 错误体」场景（HTML 错误页/纯文本），走 MID-39 的通用文案回退分支
+        headers: { get: () => (rawText === undefined ? 'application/json' : 'text/html') },
         text: async () => text,
     };
 }
 
 // —— 应用启动 ————————————————————————————————————————————
 
+// —— 应用启动 ————————————————————————————————————————————
+
+// #config-container 的 input 还原：app.js 用 innerHTML 拼配置行、再用
+// querySelectorAll('#config-container input') 取回节点，而 DOM 桩不解析 HTML。
+// 这里按属性把 <input> 标签还原成元素桩，并**按 innerHTML 缓存**——测试改动的必须正是
+// saveConfig 读到的同一批对象（重新渲染后 innerHTML 变化才会重解析，语义与真实 DOM 一致）。
+function parseConfigInputs(html) {
+    const inputs = [];
+    for (const tag of html.match(/<input\b[^>]*>/g) || []) {
+        const el = makeElement('config-input');
+        for (const m of tag.matchAll(/([\w-]+)="([^"]*)"/g)) el.setAttribute(m[1], m[2]);
+        el.readOnly = /\breadonly\b/.test(tag);
+        el.value = el.getAttribute('value') || '';
+        inputs.push(el);
+    }
+    return inputs;
+}
+
 // 在沙箱中加载 app.js 并完成 DOMContentLoaded 初始化（语言/主题/事件绑定/启动引导）。
 // lang 控制初始语言；routes 补充被测视图所需接口（房间列表与画质选项须由用例提供）。
-async function bootApp({ lang, routes } = {}) {
+async function bootApp({ lang, routes, confirm = () => true, injectToken = true, seedClasses = {} } = {}) {
     const lang_ = lang || 'zh_CN';
     const fetchLog = [];
+    const confirmCalls = [];
     const elements = new Map();
     // 五个导航 tab 桩：'.tab' 选择器返回它们，tab 点击 → showView(data-view)
     const tabs = ['dashboard', 'danmaku', 'rooms', 'config', 'files'].map(v => {
@@ -106,12 +137,31 @@ async function bootApp({ lang, routes } = {}) {
         return el;
     });
     const docListeners = {};
+    // index.html 里带 class 的元素（如 #logout-btn 的 hidden）需在桩内还原，否则显隐断言失去前提
+    function getOrCreate(id) {
+        if (!elements.has(id)) {
+            const el = makeElement(id);
+            (seedClasses[id] || []).forEach(c => el.classList.add(c));
+            elements.set(id, el);
+        }
+        return elements.get(id);
+    }
+    let configCache = { html: null, inputs: [] };
+    function configInputs() {
+        const html = getOrCreate('config-container').innerHTML;
+        if (configCache.html !== html) configCache = { html, inputs: parseConfigInputs(html) };
+        return configCache.inputs;
+    }
     const document = {
-        getElementById(id) {
-            if (!elements.has(id)) elements.set(id, makeElement(id));
-            return elements.get(id);
+        getElementById: getOrCreate,
+        querySelectorAll(sel) {
+            if (sel === '.tab') return tabs;
+            if (sel === '#config-container input') return configInputs();
+            return [];
         },
-        querySelectorAll(sel) { return sel === '.tab' ? tabs : []; },
+        // renderRecordingControl 走 class 选择器取状态标签；桩不建模 class 树，返回 null 即
+        // 走 app.js 自己的 `if (onEl && offEl)` 跳过分支（该分支的显隐语义不在本文件覆盖范围）
+        querySelector() { return null; },
         addEventListener(type, fn) { (docListeners[type] = docListeners[type] || []).push(fn); },
         documentElement: makeElement('html'),
         body: makeElement('body'),
@@ -134,7 +184,7 @@ async function bootApp({ lang, routes } = {}) {
         // no-op 定时器：toast 自动隐藏/轮询递归不执行，测试确定性（见模块头注释）
         setTimeout() { return 0; },
         clearTimeout() {},
-        confirm() { return true; },
+        confirm(...args) { confirmCalls.push(args[0]); return confirm(...args); },
         EventSource: class { constructor() {} close() {} addEventListener() {} },
     };
     sandbox.window = sandbox; // app.js 经 window.xxx 导出；浏览器里 window 即全局
@@ -144,8 +194,8 @@ async function bootApp({ lang, routes } = {}) {
     docListeners['DOMContentLoaded'][0]();
     await flush();
     // 401 引导已清空 token（api() 的 401 分支 setToken('')），注入测试 token 供鉴权头断言
-    localStorage.setItem('dlr_token', 'tok-test');
-    return { sandbox, elements, tabs, fetchLog, localStorage };
+    if (injectToken) localStorage.setItem('dlr_token', 'tok-test');
+    return { sandbox, elements, tabs, fetchLog, localStorage, confirmCalls, configInputs };
 }
 
 // 派发「直播间」tab 点击：showView('rooms') → 拉画质选项 → 渲染房间列表
@@ -321,4 +371,474 @@ test('四语切换成功文案行为级断言（toast 按当前语言渲染）',
             `语言 ${lang} 的切换成功文案缺失或不一致（I18N 四目录键集须一致）`
         );
     }
+});
+
+// —— 布尔配置解析口径（app.js 的 parseConfigBool） ——————————————————
+//
+// app.js 是单个 IIFE，只把 toggleRoom / deleteRoom / loadFiles / downloadFile 挂到 window 上
+// （刻意保持极小的全局面）。布尔解析属私有实现，故这里从源码中按大括号配对抽出
+// 「token 集 + parseConfigBool」片段单独求值，而不是为了测试去扩大生产代码的导出面。
+// 后半段用行为级断言兜住「内部确实用 parseConfigBool 判定」——只测片段会漏掉
+// httpsRecordingEnabled 又改回 `=== '是'` 的情况。
+
+function extractParseBoolSource() {
+    const start = APP_JS.indexOf('var CONFIG_TRUE_TOKENS');
+    assert.ok(start >= 0, 'app.js 未找到 CONFIG_TRUE_TOKENS 定义');
+    return APP_JS.slice(start, findFunctionEnd('parseConfigBool'));
+}
+
+// 按大括号配对取函数体结尾位置；未找到函数或括号不配对时断言失败（避免静默返回 -1 后
+// 拿到半截源码、让后面的断言在错误前提上"碰巧通过"）。
+function findFunctionEnd(name) {
+    const start = APP_JS.indexOf('function ' + name + '(');
+    assert.ok(start >= 0, `app.js 未找到函数 ${name}`);
+    let depth = 0;
+    for (let i = APP_JS.indexOf('{', start); i < APP_JS.length; i++) {
+        if (APP_JS[i] === '{') depth++;
+        else if (APP_JS[i] === '}') {
+            depth--;
+            if (depth === 0) return i + 1;
+        }
+    }
+    throw new Error(`函数 ${name} 大括号未配对`);
+}
+
+function extractFunctionSource(name) {
+    const end = findFunctionEnd(name);
+    return APP_JS.slice(APP_JS.indexOf('function ' + name + '('), end);
+}
+
+const boolSandbox = { Object };
+vm.createContext(boolSandbox);
+vm.runInContext(extractParseBoolSource(), boolSandbox, { filename: 'app.js#parseConfigBool' });
+
+// MID-2263（2026-09-22）：断言基准**必须**取自两端源码，不得在测试里内联字面量清单。
+// 旧写法把 token 表抄进用例，于是从 `src/config_bool.py::TRUE_TOKENS` 删掉 "on" 后
+// 「后端回落 default、前端仍显示为『是』」这一分叉两侧都绿——跨语言不变量只靠人记。
+// 现在：JS 侧从 app.js 抠 CONFIG_*_TOKENS 键集合，Python 侧从 src/config_bool.py 抠
+// TRUE_TOKENS/FALSE_TOKENS，逐 token 双向断言「两端解析同一布尔」。
+const CONFIG_BOOL_PY = readFileSync(new URL('../../src/config_bool.py', import.meta.url), 'utf8');
+
+function extractJsTokenSet(name) {
+    const m = APP_JS.match(new RegExp(name + '\\s*=\\s*\\{([^}]*)\\}'));
+    assert.ok(m, `app.js 未找到 ${name} 定义`);
+    const keys = [];
+    for (const entry of m[1].split(',')) {
+        const key = entry.split(':')[0].trim().replace(/^['"]|['"]$/g, '');
+        if (key) keys.push(key);
+    }
+    assert.ok(keys.length, `${name} 抠出 0 个 token（正则已漂移）`);
+    return keys;
+}
+
+function extractPyTokenSet(name) {
+    const m = CONFIG_BOOL_PY.match(new RegExp(name + '\\s*:\\s*frozenset\\[str\\]\\s*=\\s*frozenset\\(\\{([^}]*)\\}\\)'));
+    assert.ok(m, `src/config_bool.py 未找到 ${name}`);
+    const keys = [];
+    for (const entry of m[1].split(',')) {
+        const key = entry.trim();
+        if (!key) continue;
+        const lit = key.match(/^(['"])(.*)\1$/);
+        assert.ok(lit, `${name} 里的 ${JSON.stringify(key)} 不是简单字符串字面量，抠取逻辑已失效`);
+        keys.push(lit[2]);
+    }
+    assert.ok(keys.length, `${name} 抠出 0 个 token（正则已漂移）`);
+    return keys;
+}
+
+test('MID-2263：前端 CONFIG_*_TOKENS 与后端 TRUE/FALSE_TOKENS 集合逐一相等（跨语言不变量）', () => {
+    const jsTrue = extractJsTokenSet('CONFIG_TRUE_TOKENS');
+    const jsFalse = extractJsTokenSet('CONFIG_FALSE_TOKENS');
+    const pyTrue = extractPyTokenSet('TRUE_TOKENS');
+    const pyFalse = extractPyTokenSet('FALSE_TOKENS');
+    // 用 sorted 比较而非 deepEqual：集合语义下顺序不承载含义，两端书写顺序不同不应报红
+    assert.deepEqual(jsTrue.slice().sort(), pyTrue.slice().sort(),
+        'CONFIG_TRUE_TOKENS 与 src/config_bool.py::TRUE_TOKENS 不是同一集合（改一侧须同步另一侧）');
+    assert.deepEqual(jsFalse.slice().sort(), pyFalse.slice().sort(),
+        'CONFIG_FALSE_TOKENS 与 src/config_bool.py::FALSE_TOKENS 不是同一集合（改一侧须同步另一侧）');
+    // 真/假集合不得有交集——两端各自的 token 语义必须互斥
+    assert.deepEqual(jsTrue.filter(t => jsFalse.includes(t)), [], '真值 token 与假值 token 重叠');
+    assert.deepEqual(pyTrue.filter(t => pyFalse.includes(t)), [], '后端真值 token 与假值 token 重叠');
+});
+
+test('SEV-2210：同一组输入串在前端 parseConfigBool 与后端 parse_config_bool 得到相同布尔', () => {
+    const parse = boolSandbox.parseConfigBool;
+    const pyTrue = extractPyTokenSet('TRUE_TOKENS');
+    const pyFalse = extractPyTokenSet('FALSE_TOKENS');
+    // 输入集由**后端源码里的 token 集合**驱动（大小写与首尾空白变体一并覆），
+    // 外加两端都必须回落 default 的空值/未识别值。
+    const trueInputs = [];
+    const falseInputs = [];
+    for (const t of pyTrue) trueInputs.push(t, t.toUpperCase(), '  ' + t + '  ');
+    for (const t of pyFalse) falseInputs.push(t, t.toUpperCase(), '  ' + t + '  ');
+    for (const t of trueInputs) {
+        assert.equal(parse(t, false), true, `前端未按后端口径判为开启: ${JSON.stringify(t)}`);
+    }
+    for (const t of falseInputs) {
+        assert.equal(parse(t, true), false, `前端未按后端口径判为关闭: ${JSON.stringify(t)}`);
+    }
+    // 空值与未识别值：两端都回落 default（前端 fallback 形参，后端 default 形参）
+    for (const t of ['', '   ', null, undefined, 'maybe', '真', '是/否', '2', 'onoff']) {
+        assert.equal(parse(t, true), true, `fallback=true 未生效: ${JSON.stringify(t)}`);
+        assert.equal(parse(t, false), false, `fallback=false 未生效: ${JSON.stringify(t)}`);
+    }
+});
+
+test('SEV-2210：全文件不得残留 === / == 直比「是」「否」的旧形态', () => {
+    // 「== \"是\"」是 SEV-2210 的历史坑（旧实现只认「是」一种写法）。仅锁 httpsRecordingEnabled
+    // 会漏掉任何**新增**的同类判定，故改为全文件扫描（注释行里作为历史说明出现的形态已由
+    // app.js 自身写成 `=== '是'：` 的散文形式，不构成比较表达式；此处按「含 == 或 === 且
+    // 右侧为是/否字面量」判定是否存在真实比较）。
+    const offenders = [];
+    const lines = APP_JS.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim().startsWith('//')) continue; // 注释里的历史说明不算
+        if (/(===|==)\s*['"][是否]['"]/.test(line)) offenders.push(`app.js:${i + 1}: ${line.trim()}`);
+    }
+    assert.deepEqual(offenders, [], '存在把布尔配置直比「是/否」的旧形态，须走 parseConfigBool');
+});
+
+test('httpsRecordingEnabled 经 parseConfigBool 判定，不得退回直比「是」', () => {
+    // 源码级断言：该函数决定 SSL 提示文案与用户对「是否启用https录制」写法的心智一致性，
+    // 曾因只比较 === '是' 而让「= true」被显示成 HTTP 模式（与实际拉流协议相反）。
+    const body = extractFunctionSource('httpsRecordingEnabled');
+    assert.ok(body.includes('parseConfigBool('), 'httpsRecordingEnabled 未使用 parseConfigBool');
+    assert.ok(!/==\s*['"]是['"]/.test(body), 'httpsRecordingEnabled 又退回直接比较「是」');
+});
+
+// —— MID-37 / MID-39：掩码凭据的空值保护与后端错误体解析 ——————————————————
+//
+// app.js 的 loadConfig 用 innerHTML 拼配置行，saveConfig 再经 querySelectorAll 读回，
+// 故本段用 bootConfigView 走完整渲染链路（tab 点击 → GET /api/config → 渲染 → 点保存 →
+// 逐项 PUT），断言的是真实请求与真实 toast 文案，而不是孤立函数。
+const MASKED_CONFIG = {
+    Cookie: { douyin_cookie: '***' },
+    推送配置: { tgapi令牌: '***', 邮件服务器地址: 'smtp.qq.com' },
+    录制设置: { 输出格式: 'ts' },
+};
+
+async function bootConfigView(cfg, { routes = {}, confirm } = {}) {
+    const ctx = await bootApp({
+        confirm,
+        routes: { 'GET /api/config': () => ({ json: cfg }), 'PUT /api/config': { json: { ok: true } }, ...routes },
+    });
+    const tab = ctx.tabs.find(t => t.getAttribute('data-view') === 'config');
+    tab._listeners.click[0].call(tab);
+    await flush();
+    return ctx;
+}
+
+function findInput(ctx, key) {
+    return ctx.configInputs().find(i => i.getAttribute('data-key') === key);
+}
+
+async function clickSaveConfig(ctx) {
+    ctx.elements.get('config-save-btn')._listeners.click[0]();
+    await flush();
+}
+
+function putBodies(ctx) {
+    return ctx.fetchLog.filter(f => f.method === 'PUT').map(f => JSON.parse(f.body));
+}
+
+test('loadConfig 给掩码凭据打 data-masked 标记并给出行内说明（MID-37 渲染侧）', async () => {
+    const ctx = await bootConfigView(MASKED_CONFIG);
+    const html = ctx.elements.get('config-container').innerHTML;
+    assert.ok(html.includes('data-masked="1"'), '掩码项未打 data-masked 标记');
+    assert.ok(html.includes('hint-masked'), '掩码项缺少说明提示，用户不知道 *** 背后仍有真实值');
+    assert.equal(findInput(ctx, 'douyin_cookie').getAttribute('data-masked'), '1');
+    assert.equal(findInput(ctx, 'tgapi令牌').getAttribute('data-masked'), '1');
+    // 非掩码值（含同为敏感键名但后端未回掩码的项）不得被误标
+    assert.equal(findInput(ctx, '输出格式').getAttribute('data-masked'), null);
+    assert.equal(findInput(ctx, '邮件服务器地址').getAttribute('data-masked'), null);
+    // password / text 输入类型的既有口径不回归
+    assert.ok(html.includes('type="password"'), '敏感键未用 password 框');
+    assert.ok(html.includes('type="text"'), '非敏感键被误改为 password 框');
+});
+
+test('原样提交掩码 *** 一律跳过，绝不回写（写入侧最后防线）', async () => {
+    const ctx = await bootConfigView(MASKED_CONFIG);
+    await clickSaveConfig(ctx);
+    assert.deepEqual(putBodies(ctx), [], '掩码值被原样提交会覆盖真实凭据');
+    assert.equal(ctx.elements.get('toast').textContent, '无变更');
+});
+
+test('掩码项被清空：用户拒绝确认 → 不提交并明确提示已跳过', async () => {
+    const ctx = await bootConfigView(MASKED_CONFIG, { confirm: () => false });
+    findInput(ctx, 'douyin_cookie').value = '';
+    await clickSaveConfig(ctx);
+    assert.equal(ctx.confirmCalls.length, 1, '清空掩码凭据必须弹确认');
+    assert.ok(ctx.confirmCalls[0].includes('douyin_cookie'), '确认文案须点明是哪个键');
+    assert.deepEqual(putBodies(ctx), [], '用户拒绝确认后仍提交了空值');
+    assert.equal(ctx.elements.get('toast').textContent, '已跳过 1 项掩码凭据的空值提交');
+});
+
+test('掩码项清空且用户确认 → 提交空值，服务端 400 的 detail 明确显示（非通用错误）', async () => {
+    const ctx = await bootConfigView(MASKED_CONFIG, {
+        routes: {
+            'PUT /api/config': { status: 400, json: { detail: '敏感配置项不得清空：如需移除请显式填写占位值并手工编辑 config.ini' } },
+        },
+    });
+    findInput(ctx, 'douyin_cookie').value = '';
+    await clickSaveConfig(ctx);
+    assert.deepEqual(putBodies(ctx), [{ section: 'Cookie', key: 'douyin_cookie', value: '' }]);
+    const toastText = ctx.elements.get('toast').textContent;
+    assert.ok(toastText.startsWith('服务端拒绝保存: '), '400 须走「服务端拒绝」文案，实际: ' + toastText);
+    assert.ok(toastText.includes('敏感配置项不得清空'), '须显示服务端给出的原因，实际: ' + toastText);
+    assert.ok(!toastText.includes('"detail"'), 'toast 不得回显原始 JSON');
+});
+
+test('非掩码键留空无需确认（保护不得扩成全局阻塞）', async () => {
+    const ctx = await bootConfigView(MASKED_CONFIG);
+    findInput(ctx, '输出格式').value = '';
+    await clickSaveConfig(ctx);
+    assert.deepEqual(ctx.confirmCalls, [], '普通键留空不该弹凭据确认');
+    assert.deepEqual(putBodies(ctx), [{ section: '录制设置', key: '输出格式', value: '' }]);
+    assert.equal(ctx.elements.get('toast').textContent, '已保存 1 项');
+});
+
+test('MID-39：JSON 错误体只取 detail，登录页不再显示 {"detail":...}', async () => {
+    const ctx = await bootApp({
+        injectToken: false,
+        routes: { 'POST /api/login': { status: 401, json: { detail: '口令错误' } } },
+    });
+    ctx.elements.get('login-password').value = 'bad';
+    ctx.elements.get('login-submit')._listeners.click[0]();
+    await flush();
+    const text = ctx.elements.get('login-error').textContent;
+    assert.equal(text, '口令错误', '登录报错应只显示 detail，实际: ' + text);
+});
+
+test('MID-39：非 JSON 错误体回退本地化通用文案，安装路径不进 toast', async () => {
+    const ctx = await bootConfigView(MASKED_CONFIG, {
+        routes: {
+            'PUT /api/config': { status: 502, text: '<html>502 Bad Gateway<br>D:\\DouyinLiveRecorder\\logs\\streamget.log</html>' },
+        },
+    });
+    findInput(ctx, '输出格式').value = 'mkv';
+    await clickSaveConfig(ctx);
+    const toastText = ctx.elements.get('toast').textContent;
+    assert.ok(toastText.startsWith('保存失败: '), '非 400 失败仍走通用「保存失败」前缀，实际: ' + toastText);
+    assert.ok(toastText.includes('请求失败 (502)'), '通用文案须带状态码便于报障，实际: ' + toastText);
+    assert.ok(!toastText.includes('DouyinLiveRecorder'), '原始响应体（含安装绝对路径）不得进 toast');
+});
+
+// —— MID-38：登出入口显隐与 bearer 吊销 ————————————————————————————
+//
+// index.html 的 #logout-btn 带 class="hidden"（style.css 为 display:none!important），
+// 改动前全仓无任何代码移除它 → WD-09 补的 POST /api/logout 在 UI 上不可达。桩按 HTML 初值
+// 还原该 class（seedClasses），于是「登录后必须可见」的断言与真实首屏一致。
+const LOGOUT_SEED = { 'logout-btn': ['hidden'] };
+
+test('MID-38 前提：index.html 的 #logout-btn 默认带 hidden（未登录不显示）', () => {
+    const tag = (INDEX_HTML.match(/<button[^>]*id="logout-btn"[^>]*>/) || [])[0];
+    assert.ok(tag, 'index.html 未找到 #logout-btn');
+    assert.ok(/\bclass="[^"]*\bhidden\b[^"]*"/.test(tag), '#logout-btn 默认必须是 hidden');
+});
+
+test('登录成功后登出入口可见，点击调用 POST /api/logout 并清空 token', async () => {
+    const ctx = await bootApp({
+        injectToken: false,
+        seedClasses: LOGOUT_SEED,
+        routes: {
+            'POST /api/login': { json: { token: 'tok-abc' } },
+            'POST /api/logout': { json: { ok: true } },
+        },
+    });
+    const btn = ctx.elements.get('logout-btn');
+    assert.ok(btn.classList.contains('hidden'), '未登录时登出入口必须隐藏');
+    ctx.elements.get('login-password').value = 'pw';
+    ctx.elements.get('login-submit')._listeners.click[0]();
+    await flush();
+    assert.deepEqual(JSON.parse(ctx.fetchLog.find(f => f.path === '/api/login').body), { password: 'pw' });
+    assert.ok(
+        !btn.classList.contains('hidden'),
+        'MID-38 回归：登录后登出入口仍不可见，/api/logout 无法从 UI 触达'
+    );
+
+    btn._listeners.click[0]();
+    await flush();
+    const logout = ctx.fetchLog.find(f => f.method === 'POST' && f.path === '/api/logout');
+    assert.ok(logout, '未调用 POST /api/logout');
+    assert.equal(logout.headers.Authorization, 'Bearer tok-abc', '登出请求必须带当前 bearer');
+    assert.equal(ctx.localStorage.getItem('dlr_token'), null, '登出后本地 token 必须清空');
+    assert.ok(btn.classList.contains('hidden'), '登出后入口应收起');
+    assert.ok(!ctx.elements.get('login-view').classList.contains('hidden'), '登出后应回到登录页');
+});
+
+test('登出请求失败也必须清本地并回登录页（不得把用户卡在面板里）', async () => {
+    const ctx = await bootApp({
+        injectToken: false,
+        seedClasses: LOGOUT_SEED,
+        routes: {
+            'POST /api/login': { json: { token: 'tok-abc' } },
+            'POST /api/logout': { status: 500, json: { detail: 'boom' } },
+        },
+    });
+    ctx.elements.get('login-password').value = 'pw';
+    ctx.elements.get('login-submit')._listeners.click[0]();
+    await flush();
+    const btn = ctx.elements.get('logout-btn');
+    btn._listeners.click[0]();
+    await flush();
+    assert.equal(ctx.localStorage.getItem('dlr_token'), null);
+    assert.ok(ctx.elements.get('login-view').classList.contains('hidden') === false, '注销失败也应回到登录页');
+    assert.ok(btn.classList.contains('hidden'), '回到登录页后入口应收起');
+});
+
+test('无 token 的正常启动（认证关闭）不显示登出入口', async () => {
+    const ctx = await bootApp({
+        injectToken: false,
+        seedClasses: LOGOUT_SEED,
+        routes: { 'GET /api/status': { json: { engine_alive: true, recording_enabled: false } } },
+    });
+    assert.ok(!ctx.elements.get('dashboard-view').classList.contains('hidden'), '引导应进入仪表盘');
+    assert.ok(ctx.elements.get('logout-btn').classList.contains('hidden'), '无 bearer 可吊销时不该显示登出');
+});
+
+// —— MIN-10：前端内嵌四语目录的机械化门禁 ————————————————————————
+//
+// web/app.js 自带一套与后端 i18n/ 完全独立的四语目录（面板文案），仓库约定「新增/修改翻译串
+// 须同步五处」过去只靠人记。本段把该约定变成门禁：目录键集与后端语言集合对齐、index.html 的
+// 每个 data-i18n* 键与 app.js 的每个 t('字面量') 键都在四目录内、四目录键集逐一相等、
+// 无空值/无键名回显、同模板四语占位符一致、HTML 里不存在未入目录的硬编码中文。
+// 目录直接从 app.js 源码里截取字面量求值（不复制第二份清单，删掉生产目录就测不到东西）。
+function extractI18nCatalogs() {
+    const start = APP_JS.indexOf('var I18N = {');
+    assert.ok(start >= 0, 'app.js 未找到 var I18N 定义');
+    let depth = 0;
+    let i = APP_JS.indexOf('{', start);
+    for (; i < APP_JS.length; i++) {
+        if (APP_JS[i] === '{') depth++;
+        else if (APP_JS[i] === '}') {
+            depth--;
+            if (depth === 0) break;
+        }
+    }
+    const snippet = APP_JS.slice(start, i + 1) + ';';
+    assert.ok(snippet.endsWith('};'), 'I18N 片段截取不完整（大括号不配对）');
+    const box = { Object };
+    vm.createContext(box);
+    vm.runInContext(snippet, box, { filename: 'app.js#I18N' });
+    assert.ok(box.I18N && box.I18N.zh_CN, 'I18N 目录求值失败');
+    // 每个目录的最后一条若缺失即代表截取被截断（目录值里的 {q}/{n} 等成对花括号不影响配对）
+    assert.ok(Object.keys(box.I18N.zh_CN).includes('toast.langSwitchFailed'), 'I18N 目录被截断');
+    return box.I18N;
+}
+
+// 后端语言集合由 i18n/ 目录实测得出（en_US.json / en_GB.json / zh_TW.yaml + zh_CN/LC_MESSAGES/*.mo），
+// 避免把语言清单在测试里再抄一遍——新增语言时前端内嵌目录漏补会被这条直接拦下。
+function backendLanguages() {
+    const dir = new URL('../../i18n/', import.meta.url);
+    const langs = new Set();
+    for (const entry of readdirSync(dir)) {
+        if (/^[a-z]{2}_[A-Z]{2}\.(json|ya?ml)$/.test(entry)) langs.add(entry.split('.')[0]);
+        else if (/^[a-z]{2}_[A-Z]{2}$/.test(entry)) {
+            const files = readdirSync(new URL(`../../i18n/${entry}/LC_MESSAGES/`, import.meta.url));
+            if (files.some(f => f.endsWith('.mo'))) langs.add(entry);
+        }
+    }
+    return [...langs].sort();
+}
+
+const I18N = extractI18nCatalogs();
+const FRONTEND_LANGS = Object.keys(I18N);
+// CJK 判定用显式码位区间（扩展 A / 基本区 / 兼容表意文字），不用字面字符写范围，
+// 以免编辑器把端点替换成形近字后 🌙 这类符号被误判为中文。
+// CJK 判定按码位区间用十六进制字面量写（扩展 A / 基本区 / 兼容表意文字），并且逐码位比较。
+// 不用字面汉字写区间端点（编辑器的形近字归一化会改掉码位，实测连 emoji 的 UTF-16 代理项都被
+// 判进区间），也不用 \u 转义（测试文件里再放一份转义只增加读噪声）。
+function hasCjk(text) {
+    for (const ch of String(text)) {
+        const cp = ch.codePointAt(0);
+        if ((cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff)) return true;
+    }
+    return false;
+}
+
+test('前端内嵌目录的语言集合 == 后端 i18n 目录实测语言集合', () => {
+    assert.deepEqual(FRONTEND_LANGS.slice().sort(), backendLanguages());
+});
+
+test('四语目录键集逐一相等（漏改任一处即红，MIN-10 的核心断言）', () => {
+    const base = Object.keys(I18N.zh_CN);
+    assert.ok(base.length >= 100, `目录键数异常偏小（${base.length}），疑似截取不完整`);
+    for (const lang of FRONTEND_LANGS) {
+        const keys = Object.keys(I18N[lang]);
+        assert.equal(keys.length, base.length, `${lang} 目录键数 ${keys.length} 与 zh_CN ${base.length} 不等`);
+        assert.deepEqual(base.filter(k => !keys.includes(k)), [], `${lang} 缺失键`);
+        assert.deepEqual(keys.filter(k => !base.includes(k)), [], `${lang} 多出键`);
+    }
+});
+
+test('index.html 的 data-i18n / -placeholder / -title 键全部命中四语目录', () => {
+    const keys = new Set();
+    for (const m of INDEX_HTML.matchAll(/data-i18n(?:-placeholder|-title)?="([^"]+)"/g)) keys.add(m[1]);
+    assert.ok(keys.size >= 40, `未从 index.html 抓到足够的 data-i18n 键（${keys.size}），选择器可能已漂移`);
+    for (const lang of FRONTEND_LANGS) {
+        const missing = [...keys].filter(k => !Object.prototype.hasOwnProperty.call(I18N[lang], k));
+        assert.deepEqual(missing, [], `${lang} 目录缺少界面键: ${missing.join(', ')}`);
+    }
+});
+
+test('app.js 里 t(...) 字面量键与废弃键映射值全部命中四语目录', () => {
+    const used = new Set();
+    for (const m of APP_JS.matchAll(/[^A-Za-z_$.]t\('([^']+)'\)/g)) used.add(m[1]);
+    // 废弃键经 t(DEPRECATED_CONFIG_KEYS[key]) 动态取值，须把该映射的值一并纳入检查
+    const mapStart = APP_JS.indexOf('var DEPRECATED_CONFIG_KEYS = {');
+    assert.ok(mapStart >= 0, 'app.js 未找到 DEPRECATED_CONFIG_KEYS');
+    const mapBody = APP_JS.slice(mapStart, APP_JS.indexOf('};', mapStart) + 2);
+    for (const m of mapBody.matchAll(/:\s*'([^']+)'/g)) used.add(m[1]);
+    assert.ok(used.size >= 40, `未从 app.js 抓到足够的 t() 键（${used.size}）`);
+    for (const lang of FRONTEND_LANGS) {
+        const missing = [...used].filter(k => !Object.prototype.hasOwnProperty.call(I18N[lang], k));
+        assert.deepEqual(missing, [], `${lang} 目录缺少动态文案键: ${missing.join(', ')}`);
+    }
+});
+
+test('四语目录无空值、无「键名原样回显」，英文目录不得照抄中文源串', () => {
+    for (const lang of FRONTEND_LANGS) {
+        for (const [k, v] of Object.entries(I18N[lang])) {
+            assert.equal(typeof v, 'string', `${lang}.${k} 不是字符串`);
+            assert.ok(v.trim().length > 0, `${lang}.${k} 为空 → 界面渲染空白`);
+            assert.notEqual(v.trim(), k, `${lang}.${k} 与键名相同 → 这是 t() 缺失回退的形态，说明未翻译`);
+            if (lang.startsWith('en_')) {
+                // 中文源串里含「是否弹幕监控(是/否)」这类后端配置键名是刻意保留，整体译文仍须不同
+                const zh = I18N.zh_CN[k];
+                assert.ok(
+                    !(hasCjk(zh) && v.trim() === zh.trim()),
+                    `${lang}.${k} 与中文源串完全相同 → 未翻译`
+                );
+            }
+        }
+    }
+});
+
+test('同一模板的四语译文占位符集合一致（漏一个会渲染出 {n} 原文）', () => {
+    const ph = s => (String(s).match(/\{[^{}]+\}/g) || []).slice().sort().join(',');
+    for (const k of Object.keys(I18N.zh_CN)) {
+        const expected = ph(I18N.zh_CN[k]);
+        for (const lang of FRONTEND_LANGS) {
+            assert.equal(ph(I18N[lang][k]), expected, `${lang}.${k} 的占位符集合与 zh_CN 不一致`);
+        }
+    }
+});
+
+test('index.html 不存在未入目录的硬编码中文（含 title/placeholder）', () => {
+    const catalogValues = new Set(Object.values(I18N.zh_CN).map(v => String(v).trim()));
+    const visible = INDEX_HTML
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<script[\s\S]*?<\/script>/g, '')
+        .replace(/<style[\s\S]*?<\/style>/g, '');
+    const offenders = [];
+    for (const m of visible.matchAll(/>([^<>]+)</g)) {
+        const text = m[1].trim();
+        if (text && hasCjk(text) && !catalogValues.has(text)) offenders.push('文本节点: ' + text);
+    }
+    for (const m of INDEX_HTML.matchAll(/\s(?:title|placeholder)="([^"]+)"/g)) {
+        const text = m[1].trim();
+        if (text && hasCjk(text) && !catalogValues.has(text)) offenders.push('属性值: ' + text);
+    }
+    assert.deepEqual(offenders, [], '存在切语言不会跟着变的硬编码文案');
 });

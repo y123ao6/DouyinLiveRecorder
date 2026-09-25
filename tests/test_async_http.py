@@ -2,11 +2,14 @@
 
 import asyncio
 import threading
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+import src.async_http as async_http
+from src import web_config
 from src.async_http import (
     _client_cache,
     _client_cache_lock,
@@ -16,6 +19,19 @@ from src.async_http import (
     close_all_clients_sync,
     get_response_status,
 )
+
+# MIN-2219 起，get_response_status 会按「本机解析结果」判定直连目标是否落在内网，
+# 判定链最终走 web_config._resolve_host_ips（该函数的注释明确它是**为用例留的 DNS seam**，
+# 见 tests/test_web_config.py 的同一手法）。本文件全部探针用例都必须与该 seam 隔离，
+# 否则：① 无外网/无 DNS 的 CI 与开发机上「example.com 可达」类用例会随机转红；
+# ② 用例会把真实解析结果当成被测行为来断言。默认桩值是一个公网 IP（= 放行）。
+_PUBLIC_IP = "93.184.216.34"
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns_as_public(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(web_config, "_resolve_host_ips", lambda host: [_PUBLIC_IP])
+
 
 # ────────────────────────────────────────────────────────────
 # _get_client: 客户端缓存与复用
@@ -80,14 +96,27 @@ class TestGetClient:
 
 
 class TestClientCacheLock:
-    # 批次5重构：_client_cache 由普通 threading.Lock 保护（临界区无 await），
+    # 批次5重构：_client_cache 由 threading 锁保护（临界区无 await），
     # 避免原「模块级单槽 asyncio.Lock 随循环重建」的跨线程竞态——
     # 线程 A 可能拿到线程 B 循环绑定的锁并 await，触发 'bound to a different event loop'。
 
-    def test_cache_lock_is_threading_lock(self) -> None:
-        # 缓存锁必须是普通 threading.Lock 而非模块级单槽 asyncio.Lock；
-        # 临界区无 await，避免跨线程/跨循环 await 触发 'bound to a different event loop'。
-        assert isinstance(_client_cache_lock, type(threading.Lock()))
+    def test_cache_lock_is_reentrant_threading_lock(self) -> None:
+        # MIN-2221：锁必须是**可重入**的 threading.RLock，不能是 asyncio.Lock，
+        # 也不再是普通 threading.Lock。
+        # 为什么必须重入：main.py 的 safe_exit（SIGINT/SIGTERM，跑在主线程）会调
+        # close_all_clients_sync() 取同一把锁，而主线程自身可能正持它跑 _get_client 的
+        # 同步临界区（warmup / 启动期探测的 asyncio.run）。非重入锁下信号恰好落在
+        # 临界区内即同线程自死锁——表现为「Ctrl+C 后既不退出也不报错」。
+        assert isinstance(_client_cache_lock, type(threading.RLock()))
+        assert not isinstance(_client_cache_lock, type(threading.Lock()))
+
+    def test_cache_lock_is_reentrant_in_practice(self) -> None:
+        # 行为级守卫（不看类型、只看能否重入）：外层持有时内层非阻塞 acquire 必须成功。
+        # 换成 threading.Lock 这一句即返回 False → 用例红，且**不会挂死**
+        # （刻意用 blocking=False，避免有人把锁改回非重入时整个 pytest 卡在这里）。
+        with _client_cache_lock:
+            assert _client_cache_lock.acquire(blocking=False) is True
+            _client_cache_lock.release()
 
     def test_concurrent_get_client_across_loops_no_error(self) -> None:
         # 多线程各用独立事件循环并发获取客户端：不应抛跨循环/跨线程异常
@@ -112,6 +141,296 @@ class TestClientCacheLock:
         assert errors == []
         with _client_cache_lock:
             _client_cache.clear()
+
+
+# ────────────────────────────────────────────────────────────
+# MID-21：缓存键的事件循环维度（不得互相逐出存活客户端）
+# ────────────────────────────────────────────────────────────
+
+
+class TestClientCacheLoopDimension:
+    # 每房间一线程、每轮一个 asyncio.run() 循环：不同循环必须各自持有条目。
+
+    def test_foreign_loop_does_not_evict_live_client(self) -> None:
+        # 核心回归：旧 key 不含循环 → 循环 B 会把循环 A **正在使用**的条目 pop 掉自建。
+        # 现两个循环各得一支客户端，且 A 的条目在 B 取完之后仍在缓存里。
+        _client_cache.clear()
+        loop_a = asyncio.new_event_loop()
+        loop_b = asyncio.new_event_loop()
+        client_a: httpx.AsyncClient | None = None
+        client_b: httpx.AsyncClient | None = None
+        try:
+            client_a = loop_a.run_until_complete(_get_client(None, 10, True, False))
+            client_b = loop_b.run_until_complete(_get_client(None, 10, True, False))
+            assert client_a is not client_b
+            entries_a = [(k, v) for k, v in _client_cache.items() if k[3] is loop_a]
+            assert len(entries_a) == 1
+            assert entries_a[0][1][0] is client_a
+            assert not client_a.is_closed
+            # 同一循环内重复获取必须复用同一实例（每请求重做 TCP+TLS 的形态已消失）
+            again = loop_a.run_until_complete(_get_client(None, 10, True, False))
+            assert again is client_a
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+            if client_a is not None:
+                loop_a.run_until_complete(client_a.aclose())
+            if client_b is not None:
+                loop_b.run_until_complete(client_b.aclose())
+            loop_a.close()
+            loop_b.close()
+
+    def test_room_threads_each_keep_their_own_entry(self) -> None:
+        # 多线程形态（贴近生产：每房间一个线程 + 各自独立的循环）并发取同一 key：
+        # 每个线程拿到的客户端互不相同，且全部仍留在缓存里（无人被别的房间逐出）。
+        _client_cache.clear()
+        n_threads = 4
+        started = threading.Barrier(n_threads + 1)
+        keep_alive = threading.Event()
+        seen: list[tuple[httpx.AsyncClient, asyncio.AbstractEventLoop]] = []
+        seen_lock = threading.Lock()
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                client = loop.run_until_complete(_get_client(None, 10, True, False))
+                with seen_lock:
+                    seen.append((client, loop))
+                _ = started.wait(timeout=15)
+                # 循环保持存活（不 close）直到主线程断言完毕——复现「房间仍在录制」
+                _ = keep_alive.wait(timeout=15)
+            except BaseException as e:  # pragma: no cover - 仅收集异常
+                errors.append(e)
+                _ = started.wait(timeout=15)
+            finally:
+                asyncio.set_event_loop(None)
+                loop.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        try:
+            _ = started.wait(timeout=15)
+            assert errors == []
+            assert len(seen) == n_threads
+            assert len({id(c) for c, _ in seen}) == n_threads, "不同房间被分配了同一支客户端"
+            with _client_cache_lock:
+                # 值自 MIN-2217 起是三元 (client, loop, owner_thread)——owner 只在
+                # _close_all_clients 里起作用（atexit/信号钩子只能安全关闭本线程建的那份连接池）。
+                # 本条锁只核对「存活客户端仍在缓存里」，故 owner 不参与判定，但解包形状必须
+                # 与 src.async_http._CacheValue 同步：按二元解包会直接 ValueError（旧测试即过时）。
+                cached_clients = {id(client) for client, _loop, _owner in _client_cache.values()}
+            for client, _loop in seen:
+                assert id(client) in cached_clients, "存活客户端被其它循环逐出（MID-21 回归）"
+                assert not client.is_closed
+        finally:
+            keep_alive.set()
+            for t in threads:
+                t.join(timeout=20)
+            with _client_cache_lock:
+                _client_cache.clear()
+
+    def test_sweep_drops_references_but_never_closes_cross_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 超阈值触发清扫时：已关闭循环的条目只丢引用，**绝不**为其创建 aclose 协程
+        # （2026-09-04 的跨循环决策依然是硬约束，本条是它的静态守卫）。
+        from src.async_http import _CACHE_SWEEP_THRESHOLD
+
+        _client_cache.clear()
+        dead_clients = []
+        for _ in range(_CACHE_SWEEP_THRESHOLD + 1):
+            loop = asyncio.new_event_loop()
+            mock = MagicMock(spec=httpx.AsyncClient)
+            mock.is_closed = False
+            mock.aclose = AsyncMock()
+            _client_cache[("dead", True, False, loop)] = (mock, loop, threading.current_thread())
+            dead_clients.append(mock)
+            loop.close()
+        current = asyncio.new_event_loop()
+        new_client: httpx.AsyncClient | None = None
+        try:
+            new_client = current.run_until_complete(_get_client(None, 10, True, False))
+        finally:
+            with _client_cache_lock:
+                remaining = dict(_client_cache)
+                _client_cache.clear()
+            if new_client is not None:
+                current.run_until_complete(new_client.aclose())
+            current.close()
+        assert [k for k in remaining if k[0] == "dead"] == [], "已关闭循环的条目未被清扫"
+        for mock in dead_clients:
+            mock.aclose.assert_not_called()
+
+
+# ────────────────────────────────────────────────────────────
+# MID-22：登录 / 取 Cookie 类调用与共享客户端隔离（cookie jar 不跨房间串号）
+# ────────────────────────────────────────────────────────────
+
+
+class TestStatefulCallIsolation:
+    # return_cookies=True 的 4 个调用点全是登录/取 token，绝不能复用带持久 jar 的共享客户端。
+
+    @pytest.mark.asyncio
+    async def test_stateful_request_does_not_touch_shared_client(self) -> None:
+        _client_cache.clear()
+        shared = MagicMock(spec=httpx.AsyncClient)
+        shared.is_closed = False
+        shared.cookies = MagicMock()
+        own = AsyncMock()
+        resp = MagicMock()
+        resp.cookies.items.return_value = [("sid", "B-account")]
+        own.get.return_value = resp
+        released: list[object] = []
+
+        async def _fake_release(client: object) -> None:
+            released.append(client)
+
+        get_calls: list[tuple[object, ...]] = []
+        real_get_client = async_http._get_client
+
+        async def _spy_get_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+            get_calls.append(args)
+            return await real_get_client(*args, **kwargs)  # type: ignore[arg-type]
+
+        with (
+            patch("src.async_http._get_client", side_effect=_spy_get_client),
+            patch("src.async_http._build_client", return_value=own),
+            patch("src.async_http._release_client", side_effect=_fake_release),
+            patch("src.async_http.utils.handle_proxy_addr", return_value=None),
+        ):
+            _client_cache[("", True, False, asyncio.get_running_loop())] = (
+                shared,
+                asyncio.get_running_loop(),
+                threading.current_thread(),
+            )
+            result = await async_req("https://example.com", return_cookies=True)
+
+        assert result == {"sid": "B-account"}
+        assert get_calls == [], "登录/取 Cookie 调用仍走了缓存客户端（cookie jar 会跨账号累积）"
+        assert released == [own], "独占客户端未被关闭，连接池泄漏"
+
+    @pytest.mark.asyncio
+    async def test_plain_request_still_uses_shared_client(self) -> None:
+        # 反向断言：普通文本请求仍复用缓存客户端（否则 MID-21 的复用收益被误伤成每次自建）
+        _client_cache.clear()
+        loop = asyncio.get_running_loop()
+        shared = AsyncMock()
+        shared.is_closed = False
+        resp = MagicMock()
+        resp.text = "body"
+        shared.get.return_value = resp
+        _client_cache[("", True, True, loop)] = (shared, loop, threading.current_thread())
+        with (
+            patch("src.async_http.utils.handle_proxy_addr", return_value=None),
+            patch("src.async_http._build_client") as build_spy,
+        ):
+            result = await async_req("https://example.com")
+        assert result == "body"
+        build_spy.assert_not_called()
+        shared.get.assert_called_once()
+
+
+# ────────────────────────────────────────────────────────────
+# MID-26：探针按平台取拉流侧 SSL 策略
+# ────────────────────────────────────────────────────────────
+
+
+class TestGetResponseStatusSslPolicy:
+    # get_response_status 的入参是**流地址**，verify 必须与 ffmpeg / stream_select 同源。
+
+    @pytest.mark.asyncio
+    async def test_platform_override_reaches_the_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from src import http_config
+
+        monkeypatch.setattr(http_config, "stream_ssl_verify", True)
+        monkeypatch.setattr(http_config, "ssl_verify_platform_overrides", {"虎牙直播": False})
+        mock_client = AsyncMock()
+        head = MagicMock()
+        head.status_code = 200
+        mock_client.head.return_value = head
+        with patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client) as get_spy:
+            assert await get_response_status("https://example.com/a.m3u8", platform="虎牙直播") is True
+        # 第 3 个位置参数即 verify：命中「禁用SSL证书验证的平台」→ False（与 ffmpeg -tls_verify 一致）
+        assert get_spy.await_args is not None
+        assert get_spy.await_args.args[2] is False
+
+    @pytest.mark.asyncio
+    async def test_platform_without_override_follows_stream_policy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from src import http_config
+
+        monkeypatch.setattr(http_config, "stream_ssl_verify", True)
+        monkeypatch.setattr(http_config, "ssl_verify_platform_overrides", {})
+        mock_client = AsyncMock()
+        head = MagicMock()
+        head.status_code = 200
+        mock_client.head.return_value = head
+        with patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client) as get_spy:
+            assert await get_response_status("https://example.com/a.m3u8", platform="抖音直播") is True
+        assert get_spy.await_args is not None
+        assert get_spy.await_args.args[2] is True
+
+    @pytest.mark.asyncio
+    async def test_https_recording_mode_exempts_stream_side(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 「是否启用https录制」开启 → 拉流侧全局豁免校验（stream_ssl_verify=False），
+        # 探针不得再按控制面的 True 去校验证书（否则校验假红、画质被误降）
+        from src import http_config
+
+        monkeypatch.setattr(http_config, "stream_ssl_verify", False)
+        monkeypatch.setattr(http_config, "ssl_verify", True)
+        monkeypatch.setattr(http_config, "ssl_verify_platform_overrides", {})
+        mock_client = AsyncMock()
+        head = MagicMock()
+        head.status_code = 200
+        mock_client.head.return_value = head
+        with patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client) as get_spy:
+            assert await get_response_status("https://example.com/a.m3u8", platform="虎牙直播") is True
+        assert get_spy.await_args is not None
+        assert get_spy.await_args.args[2] is False
+
+    @pytest.mark.asyncio
+    async def test_explicit_verify_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # verify 显式传值时单次覆盖语义保持不变（平台策略只填默认值）
+        from src import http_config
+
+        monkeypatch.setattr(http_config, "stream_ssl_verify", False)
+        mock_client = AsyncMock()
+        head = MagicMock()
+        head.status_code = 200
+        mock_client.head.return_value = head
+        with patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client) as get_spy:
+            assert await get_response_status("https://example.com/a.m3u8", verify=True, platform="虎牙直播") is True
+        assert get_spy.await_args is not None
+        assert get_spy.await_args.args[2] is True
+
+    @pytest.mark.asyncio
+    async def test_legacy_proxy_addr_keyword_still_accepted(self) -> None:
+        # 迁移期兼容：src/stream.py 现有调用用 proxy_addr= 关键字，不得因签名改造而炸
+        mock_client = AsyncMock()
+        head = MagicMock()
+        head.status_code = 200
+        mock_client.head.return_value = head
+        with (
+            patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client),
+            patch("src.async_http.utils.handle_proxy_addr", return_value="http://127.0.0.1:7890") as hp,
+        ):
+            assert await get_response_status(url="https://example.com/a.m3u8", proxy_addr="127.0.0.1:7890") is True
+        # handle_proxy_addr 是同步调用 → 用 call_args（await_args 只适用于被 await 的替身）
+        assert hp.call_args is not None
+        assert hp.call_args.args[0] == "127.0.0.1:7890"
+
+    @pytest.mark.asyncio
+    async def test_proxy_keyword_reaches_client(self) -> None:
+        mock_client = AsyncMock()
+        head = MagicMock()
+        head.status_code = 200
+        mock_client.head.return_value = head
+        with (
+            patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client) as get_spy,
+            patch("src.async_http.utils.handle_proxy_addr", return_value="http://127.0.0.1:7890"),
+        ):
+            assert await get_response_status("https://example.com", proxy="http://127.0.0.1:7890") is True
+        assert get_spy.await_args is not None
+        assert get_spy.await_args.args[0] == "http://127.0.0.1:7890"
 
 
 # ────────────────────────────────────────────────────────────
@@ -160,7 +479,12 @@ class TestCloseAllClientsSync:
         _client_cache.clear()
         mock_client = MagicMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
-        _client_cache[("test", True, False)] = (mock_client, MagicMock())
+        # MID-21：缓存键已含事件循环维度（4 元组），替身键须同步
+        _client_cache[("test", True, False, MagicMock(spec=asyncio.AbstractEventLoop))] = (
+            mock_client,
+            MagicMock(),
+            threading.current_thread(),
+        )
         assert len(_client_cache) == 1
         close_all_clients_sync()
         assert len(_client_cache) == 0
@@ -280,6 +604,9 @@ class TestAsyncReq:
     async def test_return_cookies_returns_cookies(self) -> None:
         # return_cookies=True 返回 cookie 字典。
         # return_cookies 须把 cookie jar 转 dict，供登录态向下游透传。
+        # MID-22：登录/取 Cookie 类调用不走缓存客户端，故此处 patch _build_client
+        # （而不是 _get_client）——若哪天有人把它改回共享缓存，本用例的替身就不会被命中，
+        # 断言随之失败，账号隔离这条不变量就有了回归锁。
         mock_response = MagicMock()
         mock_response.text = "ok"
         mock_cookies = MagicMock()
@@ -290,12 +617,13 @@ class TestAsyncReq:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client),
+            patch("src.async_http._build_client", return_value=mock_client),
             patch("src.async_http.utils.handle_proxy_addr", return_value=None),
         ):
             result = await async_req("https://example.com", return_cookies=True)
 
         assert result == {"session": "abc123", "token": "xyz"}
+        mock_client.get.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_return_cookies_with_include_cookies(self) -> None:
@@ -310,7 +638,7 @@ class TestAsyncReq:
         mock_client.get.return_value = mock_response
 
         with (
-            patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client),
+            patch("src.async_http._build_client", return_value=mock_client),
             patch("src.async_http.utils.handle_proxy_addr", return_value=None),
         ):
             result = await async_req("https://example.com", return_cookies=True, include_cookies=True)
@@ -349,11 +677,13 @@ class TestAsyncReq:
     @pytest.mark.asyncio
     async def test_exception_cookies_returns_empty_dict(self) -> None:
         # return_cookies 模式异常返回空字典。
+        # MID-22 后该分支的客户端由 _build_client 独占创建，替身必须打在同一个口上，
+        # 否则用例会拿到真 AsyncClient 并触网。
         mock_client = AsyncMock()
         mock_client.get.side_effect = Exception("network error")
 
         with (
-            patch("src.async_http._get_client", new_callable=AsyncMock, return_value=mock_client),
+            patch("src.async_http._build_client", return_value=mock_client),
             patch("src.async_http.utils.handle_proxy_addr", return_value=None),
         ):
             result = await async_req("https://example.com", return_cookies=True)

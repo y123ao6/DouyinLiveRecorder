@@ -69,7 +69,7 @@ def test_get_bilibili_danmaku_info_happy_path() -> None:
         return ""
 
     # 冻结 time 为 1700000000：w_rid 签名依赖 wts 时间戳，固定值使签名可复现、断言稳定。
-    with patch("src.spider.async_req", side_effect=fake_req), patch("src.spider.time") as t:
+    with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=fake_req), patch("src.spider.time") as t:
         t.time.return_value = 1700000000
         # 预期 w_rid（与函数内用同一冻结时间签名，验证签名路径可复现）
         expected = spider._sign_wbi({"id": "763679", "type": "0", "web_location": "444.8"}, _IMG_KEY, _SUB_KEY)
@@ -95,7 +95,6 @@ def test_get_bilibili_danmaku_info_happy_path() -> None:
     assert captured["spi_url"].endswith("/x/frontend/finger/spi")
 
 
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_get_bilibili_danmaku_info_spi_empty_uses_fallback_buvid() -> None:
     # 回归：spi 端点风控返回空响应体（200 + 空 body，_loads_dict 得 {}），
     # 旧逻辑会让 buvid 静默为空 -> 进房包带空 buvid -> 弹幕服务器硬断连。
@@ -123,8 +122,12 @@ def test_get_bilibili_danmaku_info_spi_empty_uses_fallback_buvid() -> None:
         return ""
 
     # 同时 mock 首页 Set-Cookie 备取（返回空）与冻结时间；spi 两跳空走 uuid 兜底路径。
+    # MID-65：async_req 是 `async def`，patch 虽会自动选 AsyncMock，但那是隐式行为——
+    # 一旦有人把它换成普通 Mock，side_effect 返回的协程就没人 await，GC 时抛
+    # 「coroutine was never awaited」的 RuntimeWarning（本仓明令禁止用 filterwarnings 压制）。
+    # 故显式写 new_callable=AsyncMock，把「驱动 async 路径必须用 awaitable 桩」钉成可读契约。
     with (
-        patch("src.spider.async_req", side_effect=fake_req),
+        patch("src.spider.async_req", new_callable=AsyncMock, side_effect=fake_req),
         patch("src.spider._cache_fetch_cookies", new_callable=AsyncMock, return_value={}) as home_mock,
         patch("src.spider.time") as t,
     ):
@@ -160,7 +163,7 @@ def test_get_bilibili_danmaku_info_empty_danmu_returns_none() -> None:
                 return responses[key]
         return ""
 
-    with patch("src.spider.async_req", side_effect=fake_req), patch("src.spider.time") as t:
+    with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=fake_req), patch("src.spider.time") as t:
         t.time.return_value = 1700000000
         result = asyncio.run(spider.get_bilibili_danmaku_info("https://live.bilibili.com/462"))
 
@@ -197,7 +200,7 @@ def test_bili_buvid_cached_across_calls() -> None:
         return ""
 
     # 两次调用不同房间（462 / 3336696）：验证 buvid 进程内缓存使第二次不再请求 spi 端点。
-    with patch("src.spider.async_req", side_effect=fake_req), patch("src.spider.time") as t:
+    with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=fake_req), patch("src.spider.time") as t:
         t.time.return_value = 1700000000
         r1 = asyncio.run(spider.get_bilibili_danmaku_info("https://live.bilibili.com/462"))
         r2 = asyncio.run(spider.get_bilibili_danmaku_info("https://live.bilibili.com/3336696"))
@@ -238,7 +241,7 @@ def test_bili_buvid_fallback_cached_across_calls() -> None:
 
     # 两次调用同房间：spi 空触发 uuid 兜底，兜底值同样缓存，第二次 0 次 spi 请求。
     with (
-        patch("src.spider.async_req", side_effect=fake_req),
+        patch("src.spider.async_req", new_callable=AsyncMock, side_effect=fake_req),
         patch("src.spider._cache_fetch_cookies", new_callable=AsyncMock, return_value={}),
         patch("src.spider.time") as t,
     ):
@@ -335,7 +338,7 @@ def test_buvid_prefers_cookie_over_spi() -> None:
 
     # cookie 携带真实注册 buvid3：必须优先提取并跳过 spi，避免用未注册 uuid 被 AUTH 软拒绝。
     cookie = "SESSDATA=x; buvid3=REAL-BUVID3-123; other=1"
-    with patch("src.spider.async_req", side_effect=fake_req), patch("src.spider.time") as t:
+    with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=fake_req), patch("src.spider.time") as t:
         t.time.return_value = 1700000000
         result = asyncio.run(spider.get_bilibili_danmaku_info("https://live.bilibili.com/462", cookies=cookie))
 
@@ -348,12 +351,24 @@ def test_buvid_prefers_cookie_over_spi() -> None:
 
 
 class _FakeAuthWs:
-    # 捕获 close 调用的假 WebSocket
+    # 捕获断开调用的假 WebSocket 客户端。
+    # MID-2245 后生产代码从 `self._ws.close()` 改走 `self._ws.fail(reason)`——语义差别是
+    # 「调用方主动停止」 vs 「连接不可用且要回调 on_close」（用 close 会让 collector 侧与
+    # room_connected 配对的 hub.room_closed() 永不发出，监控页永久停在「已连接 / 0 条」）。
+    # 因此本替身必须实现 fail()：置 closed 并记下 reason，否则 ensure_future 起的协程会在
+    # 无人持有引用的情况下抛 AttributeError —— 断言只会表现为「closed 仍为 False」的假因，
+    # 并额外漏出一条 "Task exception was never retrieved" 告警（本仓 pytest 口径为 0 警告）。
     def __init__(self) -> None:
         self.closed = False
+        self.fail_reasons: list[str] = []
 
     async def close(self) -> None:
         self.closed = True
+
+    async def fail(self, reason: str = "") -> None:
+        # 与 src/ws_client.py::WsClient.fail 同形：先置停止、再关底层连接、最后上报原因。
+        self.closed = True
+        self.fail_reasons.append(reason)
 
 
 def _decode_auth_reply(payload: bytes) -> tuple[Any, Any]:
@@ -393,6 +408,10 @@ def test_auth_reply_failure_closes_connection() -> None:
         client, ws = _decode_auth_reply(b'{"code":-101,"message":"auth failed"}')
     assert client._stopped is True
     assert ws.closed is True
+    # MID-2245 的真实不变量不是「连接被关」而是「走的是会被上报的 fail() 出口」：
+    # 只断言 closed 会让「退回 close()」这一实现照样通过（close 同样置 closed），
+    # 于是监控页残留「已连接 / 0 条」的原始缺陷可以无声回归。
+    assert ws.fail_reasons and ws.fail_reasons[0], "认证被拒未走 WsClient.fail()，on_close 不会上报"
     inv.assert_called_once()
 
 
@@ -431,8 +450,8 @@ def test_buvid_from_homepage_setcookie_when_spi_empty() -> None:
 
     # 让 spi 两跳空、首页 Set-Cookie 返回真实 buvid3；验证优先采用首页值而非 uuid 兜底。
     with (
-        patch("src.spider.async_req", side_effect=fake_req),
-        patch("src.spider._cache_fetch_cookies", side_effect=fake_home),
+        patch("src.spider.async_req", new_callable=AsyncMock, side_effect=fake_req),
+        patch("src.spider._cache_fetch_cookies", new_callable=AsyncMock, side_effect=fake_home),
         patch("src.spider.time") as t,
     ):
         t.time.return_value = 1700000000
@@ -483,6 +502,10 @@ def test_auth_watchdog_fires_without_reply() -> None:
     # 软拒绝路径：连接被标记停止并主动断开，buvid 缓存失效钩子恰好调用一次。
     assert client._stopped is True
     assert ws.closed is True
+    # MID-2245 的真实不变量不是「连接被关」而是「走的是会被上报的 fail() 出口」：
+    # 只断言 closed 会让「退回 close()」这一实现照样通过（close 同样置 closed），
+    # 于是监控页残留「已连接 / 0 条」的原始缺陷可以无声回归。
+    assert ws.fail_reasons and ws.fail_reasons[0], "认证被拒未走 WsClient.fail()，on_close 不会上报"
     inv.assert_called_once()
 
 

@@ -5,6 +5,7 @@
 # 走 get_huya_app_stream_url(OD/BD/UHD 路径),顺带验证返回的 yyid/lChannelId/lSubChannelId。
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -28,6 +29,9 @@ def main() -> None:
     # 二者均不同于「已进房但无弹幕」,失败语义必须区分,避免误判为连接故障。
     if not isinstance(info, dict) or not info.get("is_live"):
         print(f"[FAIL] 房间未开播或信息获取失败: {info!r}")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "huya", "script": "test_huya_live_collector.py", "url": URL, "status": "SKIP" if isinstance(info, dict) and not info.get("is_live") else "FAIL", "reason": "room_offline" if isinstance(info, dict) and not info.get("is_live") else "fetch_failed", "messages": 0})}'
+        )
         sys.exit(1)
     # 虎牙 app 弹幕三参数：ayyuid=用户yyid、topSid=频道id(lChannelId)、subSid=子频道id
     # (lSubChannelId)，均由 get_huya_app_stream_url 解析返回；cast→int 把宽松类型收窄为协议所需 int。
@@ -73,7 +77,14 @@ def main() -> None:
             print("[WARN] 当前房间该时段无弹幕(连接正常)")
     else:
         print(f"[FAIL] SRT 未生成: {srt_file}")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "huya", "script": "test_huya_live_collector.py", "url": URL, "status": "FAIL", "messages": 0})}'
+        )
         sys.exit(1)
+    _srt_sz = os.path.getsize(srt_file)
+    print(
+        f'VERIFICATION_RESULT: {json.dumps({"platform": "huya", "script": "test_huya_live_collector.py", "url": URL, "status": "PASS" if count > 0 else "WARN", "messages": count, "srt_bytes": _srt_sz})}'
+    )
 
 
 if __name__ == "__main__":

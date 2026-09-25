@@ -107,6 +107,65 @@ def _hls_drop_guards(path: Path) -> list[str]:
     return guards
 
 
+# 取「选项名恰好等于 opt 的位置清单」：(list_node, index)。
+def _option_positions(path: Path, opt: str) -> list[tuple[ast.List, int]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    entries: list[tuple[ast.List, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.List):
+            continue
+        for index, item in enumerate(node.elts):
+            if isinstance(item, ast.Constant) and item.value == opt:
+                entries.append((node, index))
+    return entries
+
+
+# 当前 ffmpeg 里「仅输出侧合法」的选项（2026-09-23 实测：本机 master 构建
+# N-126755-g52f05ac780-20260922 的 -h full 把 -thread_queue_size 列在
+# "Advanced per-file options (output-only)" 段）。放错侧不再是「静默不生效」
+# 而是直接 EINVAL(-22)：输入根本没打开，录制 100% 失败。
+_OUTPUT_ONLY_OPTIONS = ("-thread_queue_size",)
+
+
+class TestOutputOnlyOptionsFollowInputFlag:
+    # 不变量四（2026-09-23 事故沉淀）：ffmpeg master 把 -thread_queue_size 收窄成
+    # 输出专属选项（doc/ffmpeg.texi：6.1/7.1/8.0/9.0.2 标 (input/output)，master 标
+    # (output)），因此它在 `-i` 之前即非法——实测报
+    # 「Option thread_queue_size ... cannot be applied to input url ...
+    # Error opening input files: Invalid argument」，退出码 -22。
+    # 输出侧位置在 6.1 起全部版本合法（含 master），故它是本仓支持面内唯一可用位置。
+
+    def test_scan_finds_the_option_at_the_expected_sites(self) -> None:
+        # 反向见证：断言扫描确实看到这些选项，否则下面的位置断言会空跑变假绿。
+        # main.py 只有一个命令定义点（_build_ffmpeg_input_args）；standalone 从不携带
+        # 该选项（其标志集本就与 main.py 不同，见 CODE_REVIEW_2026-09-21.md 第 496 行）。
+        for opt in _OUTPUT_ONLY_OPTIONS:
+            assert len(_option_positions(_MAIN_PATH, opt)) == 1, f"main.py 中 {opt} 的定义点数量变化"
+            assert not _option_positions(_STANDALONE_PATH, opt), f"standalone 不应出现 {opt}"
+
+    def test_output_only_options_follow_i_flag(self) -> None:
+        for opt in _OUTPUT_ONLY_OPTIONS:
+            for node, index in _option_positions(_MAIN_PATH, opt):
+                i_indices = [
+                    i for i, item in enumerate(node.elts) if isinstance(item, ast.Constant) and item.value == "-i"
+                ]
+                assert i_indices, f"main.py: 命令列表缺少 -i: {[ast.unparse(e) for e in node.elts[:5]]}..."
+                assert index > max(i_indices), f"main.py: {opt} 必须位于 -i 之后（当前 ffmpeg 判为输出专属选项）"
+
+    def test_output_only_option_has_literal_value(self) -> None:
+        # 缺值形态与 2026-09-11 事故同族：ffmpeg 会把下一个选项名当作取值。
+        for opt in _OUTPUT_ONLY_OPTIONS:
+            for node, index in _option_positions(_MAIN_PATH, opt):
+                assert index + 1 < len(node.elts), f"main.py: {opt} 缺少取值（位于列表末尾）"
+                value_node = node.elts[index + 1]
+                assert isinstance(
+                    value_node, ast.Constant
+                ), f"main.py: {opt} 后必须紧跟字面量取值，发现: {ast.unparse(value_node)}"
+                assert isinstance(value_node.value, str) and not value_node.value.startswith(
+                    "-"
+                ), f"main.py: {opt} 的取值不能是选项名: {ast.unparse(value_node)}"
+
+
 class TestReconnectAtEofDroppedForHls:
     # 不变量三：m3u8 输入必须移除 -reconnect_at_eof 参数对（守卫必须存在于每个
     # 命令定义点）。main.py 1 处（录制主命令）；standalone 2 处（build_ffmpeg_cmd

@@ -6,7 +6,9 @@
 # 迁移把这些调用点改写为 i18n.tr(模板, **kw)——「先查表、后插值」。
 #
 # 本文件锁定三条不变量（全部静态成立，零运行时依赖）：
-#   ① 不再出现「有价值的」logger/print f-string（防止有人改回旧写法）；
+#   ① 不再出现「有价值的」logger/print f-string（防止有人改回旧写法）；判据是「首参**子树**
+#      含带 FormattedValue 的 JoinedStr」而非「首参直接是 JoinedStr」——后者会漏掉
+#      `f"A" + (f"B" if x else "") + f"C"` 这类 ast.BinOp 形态（MID-68，详见该用例内注释）；
 #   ② 每个 tr() 调用的模板占位符集合 == 关键字实参集合（防止改模板漏改实参）；
 #   ③ 运行时模板集合 ⊆ zh_CN.po 键集合（目录覆盖完整，等价于提取器「缺失 0」）。
 
@@ -14,6 +16,7 @@ import ast
 import importlib.util
 import re
 from pathlib import Path
+from typing import TypeGuard
 
 # 项目根：本文件位于 tests/ 下，取上级目录；后续所有路径都相对它解析
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +51,9 @@ _EX = _load_extractor()
 SCAN_FILES: list[Path] = getattr(_EX, "SCAN_FILES")
 is_valuable = getattr(_EX, "is_valuable")
 scan_file = getattr(_EX, "scan_file")
+# 占位符还原（丢格式说明符/转换符、双引号转单引号）复用提取器实现：本文件与提取器
+# 必须给出同一个 msgid 形态，否则门禁与目录登记两侧口径漂移
+extract_constant_or_template = getattr(_EX, "extract_constant_or_template")
 # tr() 的模块别名集合取自提取器，避免两处硬编码各自漂移
 TR_CALLER_IDS: set[str] = getattr(_EX, "TR_CALLER_IDS")
 
@@ -58,37 +64,106 @@ def _iter_files() -> list[Path]:
     return [p for p in SCAN_FILES if p.exists()]
 
 
+def _is_tr_call(node: ast.AST) -> TypeGuard[ast.Call]:
+    # tr(模板, **kw) / i18n.tr(...) / i18n_module.tr(...)——别名集合取自提取器，避免两处硬编码。
+    # 用 TypeGuard 而非 bool：调用点要在判定后直接取 node.args，纯 bool 不会收窄类型（mypy attr-defined）
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (isinstance(func, ast.Name) and func.id == "tr") or (
+        isinstance(func, ast.Attribute)
+        and func.attr == "tr"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in TR_CALLER_IDS
+    )
+
+
+def _interpolated_fstrings(node: ast.AST) -> list[ast.JoinedStr]:
+    # MID-68（2026-09-21）：门禁谓词由「首参**直接是** JoinedStr」收紧为「首参**子树里**有
+    # 带 FormattedValue 的 JoinedStr」。旧判据看不见 `logger.warning(f"A" + (f"B" if x else "") + f"C")`
+    # 这类形态——它的首参是 ast.BinOp，于是「先插值、后查目录」的违规整类逃逸
+    # （2026-09-20 实测有 6 处真实违规从此漏过：斗鱼降级链、画质降级告警、磁盘空间提示等）。
+    # 唯一收敛处是 tr() 调用：按约定②「格式说明符/转换符由调用方预先求值后作实参传入」
+    # （`_backoff=f"{v:.0f}"`、`value=repr(value)`），那些 f-string 发生在查表**之后**、
+    # 不影响 msgid 匹配，一并判违规会把本仓推荐写法打成回归；故只递归其模板位（首参）。
+    if isinstance(node, ast.JoinedStr):
+        return [node] if any(isinstance(v, ast.FormattedValue) for v in node.values) else []
+    if _is_tr_call(node):
+        return _interpolated_fstrings(node.args[0]) if node.args else []
+    found: list[ast.JoinedStr] = []
+    for child in ast.iter_child_nodes(node):
+        found.extend(_interpolated_fstrings(child))
+    return found
+
+
+def _message_text(node: ast.AST, src: str) -> str:
+    # 还原「将要送给 logger/print 的整条消息模板」用于价值判定（与提取器 is_valuable 同口径）：
+    # 字符串常量原样取、f-string 占位符还原为 {expr}、`+` 拼接与三元/布尔分支两侧都并入
+    # （拼接后的文本正是翻译看到的 msgid 形态）；其余节点（函数调用等）视为无自然语言
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return extract_constant_or_template(node, src) or ""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _message_text(node.left, src) + _message_text(node.right, src)
+    if isinstance(node, ast.BoolOp):
+        return "".join(_message_text(v, src) for v in node.values)
+    if isinstance(node, ast.IfExp):
+        return _message_text(node.body, src) + _message_text(node.orelse, src)
+    if _is_tr_call(node) and node.args:
+        return _message_text(node.args[0], src)
+    return ""
+
+
+def _offending_linenos(src: str) -> list[int]:
+    # 判据本体（供全仓扫描与下方的判据自检用例共用，避免两处各写一份遍历而漂移）：
+    # logger.* 只看首参；print 看全部位置参。命中条件 = 子树含被插值的 f-string
+    # 且整条消息有自然语言（与提取器 is_valuable 同口径，纯占位符/装饰线不入目录）
+    out: list[int] = []
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        is_print = isinstance(node.func, ast.Name) and node.func.id == "print"
+        is_log = (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in LOGGER_METHODS
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "logger"
+        )
+        if not (is_print or is_log):
+            continue
+        args = node.args if is_print else node.args[:1]
+        for arg in args:
+            if not _interpolated_fstrings(arg):
+                continue
+            if is_valuable(_message_text(arg, src)):
+                out.append(node.lineno)
+    return out
+
+
 def test_no_valuable_fstring_in_logger_or_print() -> None:
-    # ① 迁移后不应再有「有价值的」f-string 出现在 logger.* 首参或 print 任意位置
+    # ① 迁移后不应再有「有价值的」f-string 出现在 logger.* 首参（含拼接形态）或 print 任意位置
     offenders: list[str] = []
     for path in _iter_files():
         src = path.read_text(encoding="utf-8-sig")
-        tree = ast.parse(src, filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            is_print = isinstance(node.func, ast.Name) and node.func.id == "print"
-            is_log = (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr in LOGGER_METHODS
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "logger"
-            )
-            if not (is_print or is_log):
-                continue
-            args = node.args if is_print else node.args[:1]
-            for arg in args:
-                if not isinstance(arg, ast.JoinedStr):
-                    continue
-                parts: list[str] = []
-                for v in arg.values:
-                    if isinstance(v, ast.Constant) and isinstance(v.value, str):
-                        parts.append(v.value)
-                    elif isinstance(v, ast.FormattedValue):
-                        parts.append("{" + (ast.get_source_segment(src, v.value) or "") + "}")
-                if is_valuable("".join(parts)):
-                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+        offenders.extend(f"{path.relative_to(ROOT)}:{lineno}" for lineno in _offending_linenos(src))
     assert not offenders, "以下位置仍是 logger/print f-string（应改用 i18n.tr）：" + ", ".join(offenders)
+
+
+def test_gate_predicate_sees_concatenated_fstring() -> None:
+    # 判据自检（MID-68）：上面那条全仓扫描必须真的**能**抓到拼接形态，否则它仍是假绿。
+    # 把 _interpolated_fstrings 退回旧判据 `isinstance(arg, ast.JoinedStr)` 会让本用例变红。
+    src = (
+        "logger.warning(f'A rate={a}' + (f', msg={m}' if m else '') + f' next rate={b}')\n"
+        "print(f'x: {v}' + ' tail text')\n"
+        "logger.error(i18n.tr(f'模板位被插值 {x}', x=x))\n"
+    )
+    assert _offending_linenos(src) == [1, 2, 3], "门禁漏抓：拼接 f-string / tr 模板位 f-string 必须全部命中"
+    # 反向：约定②允许「把格式说明符预求值为实参」——这类 f-string 发生在查表之后，
+    # 不影响 msgid 匹配，判违规会把本仓推荐写法打成回归（旧 `_backoff=f"{v:.0f}"` 即此形态）
+    assert _offending_linenos("logger.debug(i18n.tr('退避 {_backoff}s', _backoff=f'{v:.0f}'))\n") == []
+    assert _offending_linenos("logger.debug(i18n.tr('常量模板 {masked_url}', masked_url=url))\n") == []
 
 
 def test_tr_template_placeholders_match_kwargs() -> None:

@@ -5,6 +5,7 @@
 # 与 main.py web 路径一致:get_douyin_web_stream_data → id_str 作为 room_id,
 # 随机 12 位 user_id,cookie 复用录制 cookie(默认空)。
 
+import json
 import os
 import random
 import sys
@@ -53,12 +54,18 @@ def main() -> None:
     room_data = asyncio.run(spider.get_douyin_web_stream_data(url=URL, proxy_addr=None, cookies=cookie))
     if not isinstance(room_data, dict) or not room_data.get("id_str"):
         print(f"[FAIL] 房间信息获取失败: {str(room_data)[:200]}")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "douyin", "script": "test_douyin_live_collector.py", "url": URL, "status": "FAIL", "messages": 0})}'
+        )
         sys.exit(1)
     status = room_data.get("status")
     print(f"[OK] anchor={room_data.get('anchor_name')} status={status} id_str={room_data.get('id_str')}")
     # status==2 表示主播正在直播（与抖音 web 协议约定）；非 2 则无法验证弹幕，提前退出。
     if status != 2:
         print(f"[FAIL/WARN] 房间未开播(status={status}),无法验证弹幕")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "douyin", "script": "test_douyin_live_collector.py", "url": URL, "status": "SKIP", "reason": "room_offline", "messages": 0})}'
+        )
         sys.exit(1)
 
     # room_id 取 web 路径的 id_str；user_id 为随机 12 位游客标识（10**11~10**12-1，
@@ -109,7 +116,14 @@ def main() -> None:
             print("[WARN] 当前房间该时段无弹幕(连接可能正常)")
     else:
         print(f"[FAIL] SRT 未生成: {srt_file}")
+        print(
+            f'VERIFICATION_RESULT: {json.dumps({"platform": "douyin", "script": "test_douyin_live_collector.py", "url": URL, "status": "FAIL", "messages": 0})}'
+        )
         sys.exit(1)
+    _srt_sz = os.path.getsize(srt_file)
+    print(
+        f'VERIFICATION_RESULT: {json.dumps({"platform": "douyin", "script": "test_douyin_live_collector.py", "url": URL, "status": "PASS" if count > 0 else "WARN", "messages": count, "srt_bytes": _srt_sz})}'
+    )
 
 
 if __name__ == "__main__":

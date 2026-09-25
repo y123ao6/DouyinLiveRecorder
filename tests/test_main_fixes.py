@@ -5,6 +5,7 @@
 import subprocess
 import sys
 import threading
+import types
 from collections.abc import Mapping
 from typing import Any
 from unittest.mock import patch
@@ -165,26 +166,85 @@ class FakeProcess:
         self.killed = True
 
 
+def _popen_class_returning(proc: FakeProcess) -> type[Any]:
+    # SEV-2225 迁移：Popen 替身必须是**类**且定义 __class_getitem__ —— 本仓 main.check_subprocess
+    # 的内层函数注解 subprocess.Popen[bytes] 在 def 时即求值，lambda / 不带该钩子的普通类分别报
+    # 'function' object is not subscriptable / type 'X' is not subscriptable（AGENTS.md 硬约定）。
+    # __new__ 直接返回预置实例，于是 with subprocess.Popen(...) as process 拿到的就是它；
+    # 每次调用的实参记进 popen_calls，替代旧写法的 mock_popen.call_count（断言能力不降）。
+    calls: list[tuple[Any, ...]] = []
+
+    class _Popen:
+        popen_calls = calls
+
+        def __class_getitem__(cls, item: Any) -> type[Any]:
+            return cls
+
+        def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+            calls.append((args, kwargs))
+            return proc
+
+    return _Popen
+
+
+def _install_subprocess_shim(module_globals: dict[str, Any], monkeypatch: pytest.MonkeyPatch, popen: type[Any]) -> None:
+    # 只替换「真正执行 subprocess 的那个模块命名空间」里的全局引用，绝不改 stdlib 模块本体：
+    # 旧写法 patch("subprocess.Popen") 的容器是全进程唯一的 stdlib 模块对象，with 窗口内同进程的
+    # harness safe-delete 守卫线程（要求真 Popen 支持上下文管理协议，否则报
+    # SAFE_DELETE_BULK_GUARD_ERROR）、loguru enqueue 线程、coverage 全都拿到假实现。
+    # vars(subprocess) 浅拷贝保留 PIPE / STDOUT / TimeoutExpired / CalledProcessError 等常量，仅换 Popen。
+    shim = types.SimpleNamespace(**vars(subprocess))
+    shim.Popen = popen
+    monkeypatch.setitem(module_globals, "subprocess", shim)
+
+
+@pytest.fixture
+def ffmpeg_checked_globals(main_mod: Any) -> dict[str, Any]:
+    # 替身必须装进 src.video_postprocess 的模块字典，**不是** main 的：`_run_ffmpeg_checked` 定义在
+    # src/video_postprocess.py，main.py 只是 re-export，函数的 __globals__ 指向前者。
+    # 若照搬成 monkeypatch.setattr(main, "subprocess", shim) 就是**静默 no-op**（假绿）：三条用例
+    # 会去起真实 ffmpeg 进程——机器上有 ffmpeg 时靠退出码蒙断言、没有时 FileNotFoundError。
+    # 故这里按 __globals__ 取容器并核对归属（2026-09-23 实测 __name__ == "src.video_postprocess"），
+    # 归属一旦变化当场变红而不是悄悄失效。
+    module_globals: dict[str, Any] = main_mod._run_ffmpeg_checked.__globals__
+    assert module_globals.get("__name__") == "src.video_postprocess"
+    return module_globals
+
+
 class TestRunFfmpegChecked:
     # _run_ffmpeg_checked：超时终止 + 非零退出抛 CalledProcessError（转码不再挂死线程）.
     # 旧实现直接 subprocess.run 阻塞，ffmpeg 卡死会拖垮整个录制线程。
 
-    def test_success_returns_output(self, main_mod: Any) -> None:
-        with patch("subprocess.Popen", return_value=FakeProcess(returncode=0, out=b"ok output")) as mock_popen:
-            out = main_mod._run_ffmpeg_checked(["ffmpeg", "-version"])
+    def test_success_returns_output(
+        self, main_mod: Any, ffmpeg_checked_globals: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = FakeProcess(returncode=0, out=b"ok output")
+        popen = _popen_class_returning(proc)
+        _install_subprocess_shim(ffmpeg_checked_globals, monkeypatch, popen)
+        out = main_mod._run_ffmpeg_checked(["ffmpeg", "-version"])
         assert "ok output" in out
-        assert mock_popen.call_count == 1
+        assert len(popen.popen_calls) == 1
 
-    def test_failure_raises_called_process_error(self, main_mod: Any) -> None:
-        with patch("subprocess.Popen", return_value=FakeProcess(returncode=1, out=b"bad")):
-            with pytest.raises(subprocess.CalledProcessError):
-                main_mod._run_ffmpeg_checked(["ffmpeg", "-this-flag-does-not-exist"])
+    def test_failure_raises_called_process_error(
+        self, main_mod: Any, ffmpeg_checked_globals: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        popen = _popen_class_returning(FakeProcess(returncode=1, out=b"bad"))
+        _install_subprocess_shim(ffmpeg_checked_globals, monkeypatch, popen)
+        with pytest.raises(subprocess.CalledProcessError):
+            main_mod._run_ffmpeg_checked(["ffmpeg", "-this-flag-does-not-exist"])
+        # 必须断言替身真被走到：本机的真实 ffmpeg 对一个不存在的参数同样回非零码，
+        # 于是「shim 装错命名空间 → 起了真进程」也会让上面那条 raise 通过（2026-09-23 变异验证：
+        # 未补本条断言时，故意把 shim 装到 main 命名空间后另两条变红、本条仍绿；补上后三条全红）。
+        # 这条计数断言就是把「静默 no-op」形态摁住的那一半。
+        assert len(popen.popen_calls) == 1
 
-    def test_timeout_kills_process(self, main_mod: Any) -> None:
+    def test_timeout_kills_process(
+        self, main_mod: Any, ffmpeg_checked_globals: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         fake = FakeProcess(returncode=0, out=b"", timeout_on_communicate=True)
-        with patch("subprocess.Popen", return_value=fake):
-            with pytest.raises(subprocess.TimeoutExpired):
-                main_mod._run_ffmpeg_checked(["ffmpeg", "-i", "x"], timeout=1)
+        _install_subprocess_shim(ffmpeg_checked_globals, monkeypatch, _popen_class_returning(fake))
+        with pytest.raises(subprocess.TimeoutExpired):
+            main_mod._run_ffmpeg_checked(["ffmpeg", "-i", "x"], timeout=1)
         assert fake.killed
 
 

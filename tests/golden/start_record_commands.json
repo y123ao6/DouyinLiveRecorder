@@ -12,8 +12,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -33,6 +31,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -48,7 +48,13 @@
       "-f",
       "mpegts",
       "/recordings/抖音直播/测试主播_260913_120000.ts"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "ts_seg": {
     "command": [
@@ -63,8 +69,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -84,6 +88,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -105,7 +111,13 @@
       "-reset_timestamps",
       "1",
       "/recordings/抖音直播/测试主播_2026-09-13_12-00-00_%03d.ts"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "ts_m3u8": {
     "command": [
@@ -120,8 +132,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -139,6 +149,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -154,7 +166,13 @@
       "-f",
       "mpegts",
       "/recordings/抖音直播/测试主播_260913_120000.ts"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "ts_m3u8_seg": {
     "command": [
@@ -169,8 +187,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -188,6 +204,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -209,7 +227,13 @@
       "-reset_timestamps",
       "1",
       "/recordings/抖音直播/测试主播_2026-09-13_12-00-00_%03d.ts"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "ts_overseas_https": {
     "command": [
@@ -226,8 +250,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "40000000",
       "-probesize",
@@ -245,6 +267,8 @@
       "15000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "2048",
       "-correct_ts_overflow",
@@ -260,7 +284,9 @@
       "-f",
       "mpegts",
       "/recordings/TikTok直播/测试主播_260913_120000.ts"
-    ]
+    ],
+    "platform": "TikTok直播",
+    "danmaku_args": null
   },
   "flv_ffmpeg": {
     "command": [
@@ -275,8 +301,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -296,6 +320,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -313,7 +339,13 @@
       "-f",
       "flv",
       "/recordings/抖音直播/测试主播_260913_120000_00.flv"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "flv_ffmpeg_seg": {
     "command": [
@@ -328,8 +360,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -349,6 +379,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -372,7 +404,13 @@
       "-reset_timestamps",
       "1",
       "/recordings/抖音直播/测试主播_260913_120000_%03d.flv"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "mkv": {
     "command": [
@@ -387,8 +425,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -408,6 +444,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -425,7 +463,13 @@
       "-f",
       "matroska",
       "/recordings/抖音直播/测试主播_260913_120000.mkv"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "mkv_seg": {
     "command": [
@@ -440,8 +484,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -461,6 +503,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -484,7 +528,13 @@
       "-reset_timestamps",
       "1",
       "/recordings/抖音直播/测试主播_2026-09-13_12-00-00_%03d.mkv"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "mp4": {
     "command": [
@@ -499,8 +549,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -520,6 +568,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -535,7 +585,13 @@
       "-f",
       "mp4",
       "/recordings/抖音直播/测试主播_260913_120000.mp4"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "mp4_seg": {
     "command": [
@@ -550,8 +606,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -571,6 +625,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -594,7 +650,13 @@
       "-movflags",
       "+frag_keyframe+empty_moov",
       "/recordings/抖音直播/测试主播_2026-09-13_12-00-00_%03d.mp4"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "mp3": {
     "command": [
@@ -609,8 +671,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -630,6 +690,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -643,7 +705,13 @@
       "-ab",
       "320k",
       "/recordings/抖音直播/测试主播_260913_120000_00.mp3"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "mp3_seg": {
     "command": [
@@ -658,8 +726,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -679,6 +745,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -700,7 +768,13 @@
       "-reset_timestamps",
       "1",
       "/recordings/抖音直播/测试主播_260913_120000_%02d.mp3"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "m4a": {
     "command": [
@@ -715,8 +789,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -736,6 +808,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -753,7 +827,13 @@
       "-movflags",
       "+faststart",
       "/recordings/抖音直播/测试主播_260913_120000_00.m4a"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "m4a_seg": {
     "command": [
@@ -768,8 +848,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -789,6 +867,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -812,7 +892,13 @@
       "-reset_timestamps",
       "1",
       "/recordings/抖音直播/测试主播_260913_120000_%02d.m4a"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "audio_only_platform": {
     "command": [
@@ -827,8 +913,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -848,6 +932,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -865,7 +951,9 @@
       "-movflags",
       "+faststart",
       "/recordings/猫耳FM直播/测试主播_260913_120000_00.m4a"
-    ]
+    ],
+    "platform": "猫耳FM直播",
+    "danmaku_args": null
   },
   "proxy": {
     "command": [
@@ -882,8 +970,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -903,6 +989,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -918,7 +1006,13 @@
       "-f",
       "mpegts",
       "/recordings/抖音直播/测试主播_260913_120000.ts"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "headers": {
     "command": [
@@ -933,8 +1027,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -956,6 +1048,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -971,7 +1065,13 @@
       "-f",
       "mp4",
       "/recordings/抖音直播/测试主播_260913_120000.mp4"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "h265_flv_to_ts": {
     "command": [
@@ -986,8 +1086,6 @@
       "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
       "-protocol_whitelist",
       "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
-      "-thread_queue_size",
-      "1024",
       "-analyzeduration",
       "20000000",
       "-probesize",
@@ -1007,6 +1105,8 @@
       "8000k",
       "-sn",
       "-dn",
+      "-thread_queue_size",
+      "1024",
       "-max_muxing_queue_size",
       "1024",
       "-correct_ts_overflow",
@@ -1022,7 +1122,13 @@
       "-f",
       "mpegts",
       "/recordings/抖音直播/测试主播_260913_120000.ts"
-    ]
+    ],
+    "platform": "抖音直播",
+    "danmaku_args": {
+      "room_id": "7412345678901234567",
+      "user_id": "123456789012",
+      "cookie": ""
+    }
   },
   "direct_flv_download": {
     "download": {

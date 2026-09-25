@@ -8,6 +8,7 @@
 #
 # 所有 spider / stream 调用均替换为记录型异步桩，用例不发任何真实网络请求。
 
+import ast
 import sys
 import threading
 from pathlib import Path
@@ -165,8 +166,9 @@ def test_custom_stream_suffix_is_case_insensitive(dispatch_env: tuple, url: str,
     assert expected_key in port_info
 
 
-def test_new_platform_entry_can_be_registered(main_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 「新平台接入成本」是 F-01 的核心诉求：追加一个处理函数 + 一条表项即可，
+def test_new_platform_entry_can_be_registered(
+    main_mod: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:  # 「新平台接入成本」是 F-01 的核心诉求：追加一个处理函数 + 一条表项即可，
     # 不需要进 600 行链里插分支。此处用一个临时表项验证该扩展点确实可用。
     seen: list[str] = []
 
@@ -183,3 +185,179 @@ def test_new_platform_entry_can_be_registered(main_mod: Any, monkeypatch: pytest
     assert result is not None
     assert result[0] == "测试平台"
     assert seen == ["https://probe.example/room"]
+
+
+# --------------------------------------------------------------------------------------
+# MID-04（CODE_REVIEW_2026-09-20）：白名单 host 与分发表必须一一对应
+#
+# 准入按 `url_host in PLATFORM_HOST` **精确 host** 匹配，分派按**子串**匹配。
+# 白名单里有、表项里没有任何片段命中的 host 会让房间线程每轮走 _resolve_unrecognized：
+# 一条 error → sleep → 无限空转，永不录制、永不注释、也**不记 record_error**
+# （熔断/背压统计完全看不到它），白占监控位并持续污染日志。
+# --------------------------------------------------------------------------------------
+def test_every_platform_host_has_a_resolver(main_mod: Any) -> None:
+    matchers = [matcher for matcher, _handler in main_mod._PLATFORM_RESOLVERS]
+
+    def _covered(host: str) -> bool:
+        # 用两种协议各试一次：白名单只写裸 host，用户粘贴的地址两种形态都合法
+        return any(matcher(f"{scheme}://{host}/123456") for scheme in ("https", "http") for matcher in matchers)
+
+    uncovered = [host for host in main_mod.PLATFORM_HOST if not _covered(host)]
+    assert not uncovered, f"PLATFORM_HOST 中以下 host 没有任何 resolver 命中: {uncovered}"
+
+
+def test_platform_host_entries_that_were_fixed_on_2026_09_20(main_mod: Any) -> None:
+    # www.redelight.cn：全仓（spider / stream / JS 签名脚本 / 平台清单）零引用，
+    # 留在白名单里只会让用户配一个永不录制的地址 → 已按 MID-04 摘除。
+    assert "www.redelight.cn" not in main_mod.PLATFORM_HOST
+    # huodong.m.taobao.com：淘宝直播分享页 host（get_taobao_stream_url 的 Referer 即该域名），
+    # 此前白名单有、表项没有 → 现已接入 _resolve_tb_cn。
+    assert main_mod._match_host("tb.cn", "tbzb.taobao.com", "huodong.m.taobao.com")("https://huodong.m.taobao.com/x")
+
+
+# --------------------------------------------------------------------------------------
+# MID-03（CODE_REVIEW_2026-09-20）：录制链里的「平台名字面量」必须等于 resolver 回写值
+#
+# 这些列表参与运行期判定（是否强制 http、是否强制直下 FLV、是否纯音频、源地址日志走哪个字段），
+# 而比对对象是 _resolve_* 回写的 `platform`。写成 host 片段（曾经的 "migu"）就是死项：
+# 不报错、只是永不生效。此处用 AST 把两侧交叉校验，防止再次漂移。
+# --------------------------------------------------------------------------------------
+# 需要与 resolver 回写平台名比对的主循环内列表/元组（变量名 → main.py）
+_PLATFORM_NAME_LITERALS = (
+    "http_record_list",
+    "only_flv_platform_list",
+    "only_audio_platform_list",
+    "re_plat",
+)
+
+
+def _resolver_platform_names(tree: "ast.Module") -> set[str]:
+    # 收集所有 _resolve_* 处理函数里对 `platform` 的字面量赋值（含 if/else 分支内的）
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("_resolve_"):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Assign) and isinstance(inner.value, ast.Constant):
+                if isinstance(inner.value.value, str) and any(
+                    isinstance(t, ast.Name) and t.id == "platform" for t in inner.targets
+                ):
+                    names.add(inner.value.value)
+    return names
+
+
+def _literal_sequences_by_name(tree: "ast.Module") -> dict[str, list[str]]:
+    # 收集 `name = ["a", "b"]` / `name = ("a", "b")` 形式的字符串序列赋值
+    found: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        targets: list[str] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target.id]
+            value = node.value
+        if value is None or not targets:
+            continue
+        if not isinstance(value, (ast.List, ast.Tuple)):
+            continue
+        items = [v.value for v in value.elts if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+        if len(items) == len(value.elts):
+            for target in targets:
+                found[target] = items
+    return found
+
+
+def test_platform_name_literals_match_resolver_writeback(main_mod: Any) -> None:
+    tree = ast.parse((_REPO_ROOT / "main.py").read_text(encoding="utf-8"))
+    resolver_names = _resolver_platform_names(tree)
+    assert resolver_names, "AST 未能取到任何 resolver 回写的平台名（扫描口径失效即假绿）"
+    sequences = _literal_sequences_by_name(tree)
+
+    unknown: list[str] = []
+    for var in _PLATFORM_NAME_LITERALS:
+        items = sequences.get(var)
+        assert items, f"main.py 中找不到列表 {var}（被改名或删除，本回归锁随之失效）"
+        for item in items:
+            if item not in resolver_names:
+                unknown.append(f"{var}: {item}")
+    assert not unknown, f"以下平台名字面量在任何 resolver 的回写值里都不存在（死项）: {unknown}"
+
+
+def test_migu_is_not_a_dead_http_record_entry(main_mod: Any) -> None:
+    # 回归具体缺陷：http_record_list 曾写 "migu"，而咪咕 resolver 回写 "咪咕直播" → 死项
+    tree = ast.parse((_REPO_ROOT / "main.py").read_text(encoding="utf-8"))
+    sequences = _literal_sequences_by_name(tree)
+    assert "migu" not in sequences["http_record_list"]
+    assert "咪咕直播" in sequences["http_record_list"]
+
+
+# --------------------------------------------------------------------------------------
+# SEV-03 后续（2026-09-20）：自定义流判定必须按**路径扩展名**，不能整串子串包含
+#
+# 旧实现 `".flv" in url.lower()` 让任意地址只要在 query 里塞 `?a=.flv` 就命中自定义流分支，
+# 于是面板写入的 http://127.0.0.1:8000/x?a=.flv 会被原样送进 ffmpeg 的 -i（CR-09 的 SSRF 旁路）。
+# 反向要求：path 以 .m3u8/.flv 结尾、后面带任意 query/fragment 的合法形态必须照常命中，
+# 且大小写不敏感。
+# --------------------------------------------------------------------------------------
+_LEGITIMATE_STREAM_URLS = [
+    "https://cdn.example.com/live/1.m3u8",
+    "https://cdn.example.com/live/1.M3U8",
+    # 带签名 query 的真实形态（斗鱼/虎牙 HLS、FLV）
+    "https://cdn.example.com/live/1.m3u8?wsSecret=abc&wsTime=1",
+    "http://cdn.example.com/live/1.flv?txSecret=abc&txTime=1",
+    "http://cdn.example.com/live/1.FLV",
+]
+
+_SUFFIX_BYPASS_URLS = [
+    # query / fragment 里的扩展名不算数
+    "http://127.0.0.1:8000/x?a=.flv",
+    "http://169.254.169.254/latest/meta-data/?x=.m3u8",
+    "https://example.com/room/123#frag.flv",
+    "https://example.com/room/123?path=/a/b.m3u8",
+    # 无扩展名 / 其它扩展名
+    "https://example.com/nothing",
+    "https://example.com/index.html",
+]
+
+
+@pytest.mark.parametrize("url", _LEGITIMATE_STREAM_URLS)
+def test_custom_stream_still_matches_real_stream_paths(dispatch_env: tuple, url: str) -> None:
+    main_mod, _calls = dispatch_env
+    result = main_mod._resolve_platform_stream(url, None, "原画")
+    assert result is not None
+    platform, port_info, _danmaku, _new_url = result
+    assert platform == "自定义录制直播"
+
+
+@pytest.mark.parametrize("url", _SUFFIX_BYPASS_URLS)
+def test_query_or_fragment_suffix_cannot_reach_custom_stream_branch(dispatch_env: tuple, url: str) -> None:
+    main_mod, _calls = dispatch_env
+    assert main_mod._resolve_platform_stream(url, None, "原画") is None, f"{url} 不应命中自定义流分支"
+    assert main_mod._match_stream_suffix(".m3u8", ".flv")(url) is False
+
+
+def test_stream_path_suffix_ignores_query_and_fragment(main_mod: Any) -> None:
+    assert main_mod._stream_path_suffix("https://h/a.m3u8?x=1") == ".m3u8"
+    assert main_mod._stream_path_suffix("https://h/a.FLV#z") == ".flv"
+    assert main_mod._stream_path_suffix("https://h/a?x=.flv") == ""
+    assert main_mod._stream_path_suffix("https://h") == ""
+    # 畸形入参（urlsplit 抛 ValueError）按「无扩展名」处理，不得抛出
+    assert main_mod._stream_path_suffix("http://[::1:notaport]/a.flv") in ("", ".flv")
+
+
+def test_custom_stream_keys_follow_path_extension(dispatch_env: tuple) -> None:
+    # flv_url / m3u8_url 的归属必须与匹配器同一判据（路径扩展名）：
+    # 旧实现按整串子串选键，于是 `.m3u8?....flv` 的 HLS 清单被写进 flv_url（当成 FLV 直下）
+    main_mod, _calls = dispatch_env
+    result = main_mod._resolve_platform_stream("https://cdn.example.com/a.m3u8?f=.flv", None, "原画")
+    assert result is not None
+    platform, port_info, _danmaku, _new_url = result
+    assert platform == "自定义录制直播"
+    assert "m3u8_url" in port_info and "flv_url" not in port_info
+
+    result2 = main_mod._resolve_platform_stream("https://cdn.example.com/a.flv?f=.m3u8", None, "原画")
+    assert result2 is not None
+    port_info2 = result2[1]
+    assert "flv_url" in port_info2 and "m3u8_url" not in port_info2

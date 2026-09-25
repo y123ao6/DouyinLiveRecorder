@@ -1,4 +1,18 @@
 # Tests for src/ab_sign.py module - A-Bogus 签名算法.
+#
+# MID-67（2026-09-21）：原 test_known_hash 只断言 isinstance(str) + len == 64，
+# 任何「输出 64 位 hex」的实现都能通过（把 SM3 整个删掉换成 sha256 也照样绿），
+# 违反本仓「删掉生产实现就会失败」判据。现按 GB/T 32905-2016 的两条标准向量钉死，
+# 并用 hashlib（OpenSSL）作独立裁判交叉核对——裁判不是本仓代码，故不构成自实现被测逻辑。
+# 注意：审查记录里给出的两条期望值实为「正确前缀 + 错误后缀」（分别在
+# 第 9 / 第 41 个十六进制字符处偏离标准值），已用 OpenSSL 与 GB/T 32905-2016 双向核对后
+# 按标准值落定（见下方 _SM3_KAT_VECTORS）——生产实现本身是对的，未作改动。
+
+import hashlib
+import time
+import types
+from importlib import import_module
+from types import ModuleType
 
 import pytest
 
@@ -16,6 +30,26 @@ from src.ab_sign import (
     rc4_encrypt,
     result_encrypt,
 )
+
+# GB/T 32905-2016 附录 A 的两条示例，外加空串这一边界（三条均与 OpenSSL SM3 逐字符一致）
+_SM3_KAT_VECTORS = [
+    ("abc", "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"),
+    (
+        "abcd" * 16,
+        "debe9ff92275b8a138604889c18e5a4d6fdb70e5387e5765293dcba39c0c5732",
+    ),
+    ("", "1ab21d8355cfa17f8e61194831e81a8f22bec8c728fefb747ed035eb5082aa2b"),
+]
+
+# src/__init__.py 里 `from .ab_sign import ab_sign` 把包属性 src.ab_sign 重绑成了**同名函数**，
+# 于是 `from src import ab_sign` 拿到的是函数、没有 __name__ 之外的模块属性可 patch。
+# 冻结时钟必须落到真正的模块对象上，故显式经 import_module 取 sys.modules 里的模块本体。
+_AB_SIGN_MODULE: ModuleType = import_module("src.ab_sign")
+
+
+def _module_shim(module: ModuleType) -> types.SimpleNamespace:
+    # 浅拷贝替身（AGENTS.md 测试约定）：替换目标模块命名空间里的全局名，不改 stdlib 模块本体。
+    return types.SimpleNamespace(**vars(module))
 
 
 class TestRc4Encrypt:
@@ -39,10 +73,13 @@ class TestRc4Encrypt:
         assert rc4_encrypt(plaintext, "key1") != rc4_encrypt(plaintext, "key2")
 
     def test_known_value(self) -> None:
-        # 已知输入的确定性输出.
-        result = rc4_encrypt("abc", "key")
-        assert isinstance(result, str)
-        assert len(result) == 3
+        # 教材版 RC4（KSA + PRGA，无丢弃字节）在 key="Key"/明文="Plaintext" 下的字节序列。
+        # 这是**回归快照**而非外部标准向量（本函数是 A-Bogus 与上游 JS 的互操作件，
+        # 真正的外部一致性由线上签名成功率兜底）；关键是不再像旧断言那样「任何 3 字符输出都行」。
+        # 旧断言 isinstance(str) + len == 3 把整个 rc4_encrypt 删掉换成 "xxx" 也照样绿。
+        assert rc4_encrypt("Plaintext", "Key").encode("latin-1").hex() == "bbf316e8d940af0ad3"
+        # 自解密是本仓实际用法（bb 串加密后再解回来），单独保留一条对称性断言
+        assert rc4_encrypt("abc", "key") == "\x6a\x0e\x57"
 
 
 class TestLeftRotate:
@@ -122,12 +159,22 @@ class TestGgJ:
 class TestSM3:
     # Test SM3 哈希算法.
 
-    def test_known_hash(self) -> None:
-        # SM3('abc') 的已知标准值.
-        sm3 = SM3()
-        result = sm3.sum("abc", output_format="hex")
-        assert isinstance(result, str)
-        assert len(result) == 64  # 256-bit hash = 64 hex chars
+    @pytest.mark.parametrize(("message", "digest"), _SM3_KAT_VECTORS)
+    def test_known_hash(self, message: str, digest: str) -> None:
+        # GB/T 32905-2016 标准摘要值逐字符比对（MID-67：旧断言只查长度，任何 64 位 hex 都过）。
+        # 判据「删掉生产实现就会失败」：换成 sha256/随机 hex 立刻不等。
+        assert SM3().sum(message, output_format="hex") == digest
+
+    def test_known_hash_matches_openssl_reference(self) -> None:
+        # 独立裁判：hashlib('sm3') 由 OpenSSL 提供（非本仓实现），逐条核对标准向量。
+        # 该 OpenSSL 构建/发行版禁用 SM3 时（FIPS provider）本条 skip——标准向量那条仍在守。
+        try:
+            hashlib.new("sm3")
+        except Exception as exc:  # ValueError: unsupported hash type / Provider 禁用
+            pytest.skip(f"本机构建无 SM3 参考实现: {type(exc).__name__}")
+        for message, digest in _SM3_KAT_VECTORS:
+            assert hashlib.new("sm3", message.encode("utf-8")).hexdigest() == digest
+            assert SM3().sum(message, output_format="hex") == digest
 
     def test_empty_string(self) -> None:
         # 空字符串的 SM3 哈希.
@@ -265,13 +312,23 @@ class TestGenerateRc4BbStr:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_deterministic(self) -> None:
-        # 相同输入确定性输出（时间相关，但结构一致）.
+    def test_deterministic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # MID-67：旧用例名为「确定性」、实际只断两条非空 str，注释还自认「时间戳不同，两次
+        # 结果可能不同」——等于什么都没测。generate_rc4_bb_str 里唯一的时间来源是模块全局
+        # time.time()（start_time/end_time 会进 bb 串），冻结后必须逐字节相等。
+        # 冻结一律走浅拷贝替身挂到 src.ab_sign 命名空间，绝不 setattr 到 stdlib time 本体。
+        frozen = _module_shim(time)
+        frozen.time = lambda: 1_700_000_000.0
+        monkeypatch.setattr(_AB_SIGN_MODULE, "time", frozen)
+
         r1 = generate_rc4_bb_str("p=1", "ua", "env")
         r2 = generate_rc4_bb_str("p=1", "ua", "env")
-        # 由于时间戳不同，两次结果可能不同，但都应为非空字符串
+        assert r1 == r2, "冻结时钟后两次调用必须逐字节一致"
         assert isinstance(r1, str) and len(r1) > 0
-        assert isinstance(r2, str) and len(r2) > 0
+
+        # 反向断言：时间戳确实被吃进了 bb 串，否则「相等」只是因为该值根本没参与计算
+        frozen.time = lambda: 1_700_000_001.0
+        assert generate_rc4_bb_str("p=1", "ua", "env") != r1
 
 
 class TestAbSign:

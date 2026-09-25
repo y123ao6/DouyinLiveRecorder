@@ -23,10 +23,9 @@ class TestInitGettext:
     def test_locale_path_exists(self) -> None:
         assert Path(i18n.locale_path).exists()
 
-    def test_init_gettext_returns_callable(self) -> None:
-        tr = i18n.init_gettext(i18n.locale_path, "zh_CN")
-        assert callable(tr)
-        assert tr("任意文本") == "任意文本"  # 源语言为中文，恒等映射
+    # MIN-2254（2026-09-23）：原 `test_init_gettext_returns_callable` 随 `i18n.init_gettext()`
+    # 一并删除——该函数返回绑死 locale_name 的 gettext、不随 set_language 重读 `_tr`，
+    # 与本模块「热切换」契约相反且生产零调用，留着等于给下一个改动留陷阱。
 
 
 class TestMoCatalog:
@@ -36,14 +35,17 @@ class TestMoCatalog:
 
     def test_translation_works_without_lang_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Windows 客户端普遍不设置 LANG/LC_* 环境变量；翻译加载不得依赖它们。
-        # 清空这些变量后直接走 init_gettext 真实加载路径做一次翻译查找：
-        # 若实现回退为按环境变量查找的全局 gettext.gettext，此处会查不到而失败。
+        # 清空这些变量后直接走本模块的 .mo 加载器做一次查表：若实现回退成
+        # 按环境变量查找的全局 gettext.gettext，这里会查不到而失败。
+        # MIN-2254 后改驱 `_load_mo_catalog`：原用例经已删除的 `init_gettext()` 走全局
+        # gettext（进程级副作用 + 不随 set_language 生效），意图不变、换更直接的入口。
         # 必须用 monkeypatch 逐键删除：patch.dict(os.environ) 会整体快照并回写环境，
         # harness 注入的超长变量会撞上 Windows 32767 字符上限（见 AGENTS.md 已知坑）。
         for key in [k for k in os.environ if k.startswith(("LANG", "LC_"))]:
             monkeypatch.delenv(key, raising=False)
-        tr = i18n.init_gettext(i18n.locale_path, "zh_CN")
-        assert tr("IP banned. Please change device or network.") == "IP被禁止 请更换设备或网络"
+        catalog = i18n._load_mo_catalog(i18n.locale_path, "zh_CN")
+        assert catalog is not None, "清空 LANG/LC_* 后 .mo 目录加载不出来"
+        assert catalog["IP banned. Please change device or network."] == "IP被禁止 请更换设备或网络"
 
     def test_po_and_mo_in_sync(self) -> None:
         # .po 与 .mo 字节级同步，改动 .po 忘记重编译时在此失败；
@@ -141,10 +143,69 @@ class TestLanguageSwitching:
         assert i18n._tr("开始录制") == "Start Recording"
 
     def test_set_language_normalizes_input(self) -> None:
-        assert i18n.set_language("zh-cn") is True
+        # set_language 返回**实际生效**的语言码（MID-52），不再返回布尔
+        assert i18n.set_language("zh-cn") == "zh_CN"
         assert i18n.get_language() == "zh_CN"
-        assert i18n.set_language("EN") is True
+        assert i18n.set_language("EN") == "en_US"
         assert i18n.get_language() == "en_US"
+
+    # MID-52 回归锁：语言目录缺失时不得安装「恒等映射 + 仍回报请求码」的组合。
+    # 旧实现在此会让 GUI 打印「语言已切换」、把请求码写进 config.ini，而录制子进程按
+    # resolve_language 落到 en_US —— 同一部署两个进程两种语言。
+    def test_set_language_falls_back_when_catalog_missing(self) -> None:
+        original_tr = i18n._tr
+        try:
+            with patch.object(i18n, "has_catalog", return_value=False):
+                effective = i18n.set_language("zh_TW")
+            # 回退口径与 resolve_language 一致：可识别但无目录 → FALLBACK_LANGUAGE
+            assert effective == i18n.FALLBACK_LANGUAGE
+            # get_language() 必须与**实际装载**的翻译器同源，否则调用方无从发现回退
+            assert i18n.get_language() == effective
+            assert i18n._tr is not original_tr
+            assert i18n._tr("开始录制") == "Start Recording"
+        finally:
+            i18n._tr = original_tr
+            i18n._current_language = i18n.DEFAULT_LANGUAGE
+
+    def test_set_language_unrecognized_falls_back_like_resolve(self) -> None:
+        # 不可识别的语言值：resolve_language 回退 en_US，set_language 必须同口径
+        # （normalize_language 对未知值回退 zh_CN，若直接用它，GUI 与子进程又会分裂）
+        assert i18n.set_language("fr_FR") == i18n.FALLBACK_LANGUAGE
+        assert i18n.get_language() == i18n.FALLBACK_LANGUAGE
+
+    def test_set_language_empty_keeps_default_language(self) -> None:
+        # 空值不探测系统语言（那是 resolve_language 的职责）：否则同一句 set_language('')
+        # 在不同宿主环境下结果不同，GUI 初值不可复现
+        assert i18n.set_language("") == i18n.DEFAULT_LANGUAGE
+        assert i18n.set_language(None) == i18n.DEFAULT_LANGUAGE
+
+    def test_set_language_effective_equals_requested_for_all_supported(self) -> None:
+        # 正常安装路径（四目录齐备）下，返回值必须等于请求码：回退逻辑不得误伤现有行为
+        for code in i18n.SUPPORTED_LANGUAGES:
+            assert i18n.set_language(code) == code
+            assert i18n.get_language() == code
+
+    # MID-53 回归锁：语言选择器的显示名必须逐码唯一，否则「显示名 → 语言码」反查表
+    # 会被后写覆盖（en_US / en_GB 都折成 English 时永远只能选到 en_GB）。
+    def test_unique_display_names_are_injective(self) -> None:
+        names = i18n.unique_display_names()
+        assert set(names) == set(i18n.SUPPORTED_LANGUAGES)
+        assert len(set(names.values())) == len(names)
+        # 两个英语变体必须可区分（旧形态：裁剪括注后同为 "English"）
+        assert names["en_US"] != names["en_GB"]
+        # 与 GUI 反向表同构：按显示名反查必须能取回原码
+        assert {name: code for code, name in names.items()}["English (US)"] == "en_US"
+
+    def test_unique_display_names_dedupe_collision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 合成重名（未来新增语言时把两个显示名写成同一个串）也必须产出唯一值
+        monkeypatch.setattr(
+            i18n,
+            "SUPPORTED_LANGUAGES",
+            {"zh_CN": "中文", "en_US": "English", "en_GB": "English"},
+        )
+        names = i18n.unique_display_names()
+        assert len(set(names.values())) == 3
+        assert names["en_GB"] != names["en_US"]
 
     def test_normalize_language_variants(self) -> None:
         assert i18n.normalize_language("zh_cn") == "zh_CN"

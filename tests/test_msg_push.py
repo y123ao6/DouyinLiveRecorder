@@ -1,14 +1,20 @@
 # Tests for msg_push.py 批次5修复 - 凭证脱敏与钉钉载荷回归测试.
-# 中文：守护两类行为——(1) 凭证脱敏 _mask_secret/_mask_url 不再因「长度门槛」漏遮蔽
+# 中文：守护三类行为——(1) 凭证脱敏 _mask_secret/_mask_url 不再因「长度门槛」漏遮蔽
 # （短密钥、8 位 Bark key、Telegram bot token 此前会落入日志）；(2) 钉钉载荷按 number
-# 是否存在决定是否带 atMobiles 字段。
+# 是否存在决定是否带 atMobiles 字段；(3) MID-58：「密钥即路径末段」的渠道（Bark / Server酱 /
+# 息知）无条件遮蔽末段，不再按 day.app 主机名白名单——自建 / 反代 Bark 的 device key
+# 同样不得进轮转日志。
 # Mock 设计：钉钉用例 patch msg_push.opener.open（urllib 层）拦截真实 HTTP，捕获请求体
-# 后断言 JSON 载荷，避免触网且精确校验发出字段。
+# 后断言 JSON 载荷，避免触网且精确校验发出字段；Bark 用例另挂一个 loguru sink，
+# 断言**实际写进日志的那一行**不含明文 key（只测 _mask_url 会漏掉「调用点忘传参数」）。
 
+from collections.abc import Callable
 from typing import cast
 from unittest.mock import patch
 
-from msg_push import _mask_secret, _mask_url, dingtalk
+from loguru import logger
+
+from msg_push import _mask_secret, _mask_url, bark, dingtalk
 
 
 # 守护 _mask_secret 的长度分档策略：短凭证整串遮蔽、长凭证保留首尾各 2 位。
@@ -33,8 +39,28 @@ class TestMaskSecret:
 class TestMaskUrl:
     def test_bark_short_key_masked(self) -> None:
         # 8 位 Bark key 此前因长度 <=12 漏遮蔽，凭证落盘日志
-        masked = _mask_url("https://api.day.app/AbCd1234")
+        masked = _mask_url("https://api.day.app/AbCd1234", mask_last_segment=True)
         assert "AbCd1234" not in masked
+
+    # MID-58 回归锁：Bark 的密钥位置是「路径最后一段」，与主机名无关。旧实现靠
+    # hostname.endswith("day.app") 白名单命中，自建 / 反代 Bark 因此整串明文进轮转日志
+    # （拿到即可向用户手机无限推送）。现由调用方按渠道声明 mask_last_segment。
+    def test_self_hosted_bark_key_masked(self) -> None:
+        masked = _mask_url("https://bark.example.com/AbCdEfGh", mask_last_segment=True)
+        assert "AbCdEfGh" not in masked
+        assert masked == "https://bark.example.com/****"
+
+    # 反向护栏：不声明「末段即密钥」的渠道行为不变——钉钉/Telegram/状态接口的
+    # 路径段（robot、status）是定位信息，全遮会让日志失去排查价值。
+    def test_other_channels_keep_short_path_segments(self) -> None:
+        assert _mask_url("https://oapi.dingtalk.com/robot/send") == "https://oapi.dingtalk.com/robot/send"
+        assert _mask_url("https://example.com/api/status") == "https://example.com/api/status"
+
+    # 多级路径只遮最后一段：Server酱 sctapi 形态 <SCT 长密钥>.send 本就命中长密钥规则，
+    # 这里断言「前面的路径段仍保留」，确认遮蔽范围没有扩大到整条 path。
+    def test_only_last_segment_masked(self) -> None:
+        masked = _mask_url("https://host/push/v1/AbCdEfGh", mask_last_segment=True)
+        assert masked == "https://host/push/v1/****"
 
     def test_telegram_bot_token_masked(self) -> None:
         masked = _mask_url("https://api.telegram.org/bot123456:AAABCDEFGH/sendMessage")
@@ -54,6 +80,34 @@ class TestMaskUrl:
         assert masked == "https://example.com/api/status"
 
 
+# MID-58 端到端锁：真正写日志的是 bark() 的失败分支，只测 _mask_url 的话，
+# 调用点漏传 mask_last_segment 依然会把明文 key 写进 logs/streamget.log。
+class TestBarkFailureLogMasking:
+    def test_bark_failure_log_masks_self_hosted_key(self) -> None:
+        captured: list[str] = []
+        sink_id = logger.add(lambda message: captured.append(str(message)), level="WARNING")
+        try:
+            with patch("msg_push.opener.open", side_effect=_fail_response(b'{"code": 500, "message": "nope"}')):
+                result = bark("https://bark.example.com/AbCdEfGh", "title", "content")
+        finally:
+            logger.remove(sink_id)
+        assert result["success"] == []
+        assert result["error"] == ["https://bark.example.com/AbCdEfGh"]
+        joined = "".join(captured)
+        assert "AbCdEfGh" not in joined
+        assert "bark.example.com/****" in joined
+
+    def test_bark_failure_log_masks_official_key(self) -> None:
+        captured: list[str] = []
+        sink_id = logger.add(lambda message: captured.append(str(message)), level="WARNING")
+        try:
+            with patch("msg_push.opener.open", side_effect=_fail_response(b'{"code": 500}')):
+                bark("https://api.day.app/AbCd1234", "title", "content")
+        finally:
+            logger.remove(sink_id)
+        assert "AbCd1234" not in "".join(captured)
+
+
 # 最小 urllib 响应桩：仅实现 read() 返回预设 body，供 opener.open 的 side_effect 包装返回，
 # 使 patch 能捕获请求体又无需真实网络。
 class FakeResponse:
@@ -68,6 +122,16 @@ class FakeResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+# opener.open 的替身工厂：返回预设响应体（业务失败），使推送走「失败 + 写日志」分支。
+# 定义在 FakeResponse 之后——本文件未启用 future annotations，签名里的类必须先存在。
+# 签名用 ... 是因为真实调用点为 opener.open(req, timeout=N)，位置/关键字参数都在变。
+def _fail_response(body: bytes) -> Callable[..., FakeResponse]:
+    def fake_open(req: object, timeout: int = 10) -> FakeResponse:
+        return FakeResponse(body)
+
+    return fake_open
 
 
 # 守护钉钉机器人载荷的 @ 人字段构造：number 的有无决定是否携带 atMobiles。

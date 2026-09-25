@@ -164,10 +164,13 @@ class TestHuyaSubTiers:
 
     @pytest.mark.asyncio
     async def test_legacy_uhd_via_exsphd_labels(self) -> None:
-        # 旧档位（UHD/HD/SD/LD）继续走 exsphd 标签映射，行为不变
+        # 旧档位（UHD/HD/SD/LD）按 exsphd 的**数值语义**取档（与蓝光子档位分支同一张表）。
+        # 本用例原断言的是「&ratio=8000」——那来自位置式 zip(["UHD","HD","SD","LD"],
+        # reversed(findall))：把 exsphd 当有序序列，exsphd 换个顺序标签就整体反转，
+        # 请求超清实拉蓝光8M，且 actual_quality 回写成请求值使 is_downgrade 恒 False。
+        # MID-13 已修正为按 ratio 数值查表，故此处锁 2000（=超清，见上方 2026-08-29 实测表）。
         result = await get_huya_stream_url(_huya_json(exsphd="264_0 264_500 264_2000 264_8000"), video_quality="UHD")
-        # qlist 降序 [8000, 2000, 500, 0] → UHD=8000
-        assert str(result["flv_url"]).endswith("&ratio=8000")
+        assert str(result["flv_url"]).endswith("&ratio=2000")
         assert result["actual_quality"] == "UHD"
 
 

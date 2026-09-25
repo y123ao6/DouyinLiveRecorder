@@ -10,6 +10,7 @@
 import json
 import subprocess
 import time
+import types
 from pathlib import Path
 from typing import Any, cast
 
@@ -97,7 +98,12 @@ def test_ws_heartbeat_timeout_closes_connection(monkeypatch: pytest.MonkeyPatch)
         # 心跳里 sleep 4 秒，超过 1+heartbeat_interval 阈值
         await asyncio.sleep(4.0)
 
-    monkeypatch.setattr(ws_client.websockets, "connect", fake_connect)
+    # MID-66（tests/test_test_hygiene.py R1 规则）：websockets 是三方模块本体，
+    # setattr 到它上面等于全进程换掉 connect——同会话其它用例的真实/打桩连接都会吃到假实现。
+    # 正确写法是浅拷贝替身，只替换 ws_client 命名空间里的全局名（与 subprocess/httpx 同源）。
+    _ws_shim = types.SimpleNamespace(**vars(ws_client.websockets))
+    _ws_shim.connect = fake_connect
+    monkeypatch.setattr(ws_client, "websockets", _ws_shim)
     client = ws_client.WsClient(
         url="ws://example.invalid",
         on_message=lambda _d: None,
