@@ -10,6 +10,11 @@
 #   ② 三段终止等待按剩余预算分摊且**永不为 0**（timeout<3 时 timeout//3 == 0
 #      等于跳过优雅退出，MP4 丢 moov）；
 #   ③ Windows 下 stdin 写完即关闭（写失败也要关）。
+#
+# ③ 是 Windows 专属形态（POSIX 侧发 SIGINT、根本不碰 stdin，原因见 src/ffmpeg_proc.py
+# 的 _QUIT_VIA_STDIN 注释），但 CI 跑在 ubuntu——若按平台 skip，这两条锁会在 CI 上静默
+# 消失（与 MID-2264「skipped 与 passed 不可区分」同一风险）。故统一用 monkeypatch 把
+# fp._QUIT_VIA_STDIN 置 True，让 Windows 路径在 Linux CI 上也被真实执行。
 
 import subprocess
 import threading
@@ -95,8 +100,9 @@ def _isolate_registry() -> Any:
     _clear_registry()
 
 
-def test_stage_budget_never_zero_for_small_timeout() -> None:
+def test_stage_budget_never_zero_for_small_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     # timeout=1 时旧实现 timeout//3 == 0 → proc.wait(0) 立即超时，优雅退出整段被跳过
+    monkeypatch.setattr(fp, "_QUIT_VIA_STDIN", True)
     proc = _FakeProc(exits_on="terminate")
     ok = fp._terminate_ffmpeg_process(cast(Any, proc), timeout=1)
 
@@ -118,9 +124,10 @@ def test_stage_budget_splits_full_timeout() -> None:
     assert len(proc.waits) == 3, proc.waits
 
 
-def test_stdin_closed_even_when_write_fails() -> None:
+def test_stdin_closed_even_when_write_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     # 旧实现把 close() 与 write/flush 放在同一个 try 里：写失败即跳过 close，
     # 部分 ffmpeg 构建要读到 EOF 才处理 'q'，于是优雅退出形同虚设
+    monkeypatch.setattr(fp, "_QUIT_VIA_STDIN", True)
     proc = _FakeProc(exits_on="kill", raise_on_stdin_write=True)
     fp._terminate_ffmpeg_process(cast(Any, proc), timeout=3)
 

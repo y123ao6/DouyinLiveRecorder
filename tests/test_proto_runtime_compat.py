@@ -36,7 +36,11 @@ def _declared_protobuf_specifier() -> str:
         stripped = line.split("#", 1)[0].strip()
         if stripped.startswith("protobuf"):
             return stripped[len("protobuf") :].strip()
-    pytest.fail("requirements.txt 中未找到 protobuf 声明")
+    # 这里刻意用 raise 而非 pytest.fail()：CI 的 typecheck job 只装 requirements.txt + mypy，
+    # 未安装 pytest 时 `import pytest` 解析为 Any，pytest.fail() 的 NoReturn 标注丢失，
+    # mypy 会认为本函数可能隐式返回 None 而报 [return]（本机装了 pytest 则完全看不到）。
+    # raise 是天然的 NoReturn，与「是否装了 pytest」无关，两种环境结论一致。
+    raise AssertionError("requirements.txt 中未找到 protobuf 声明")
 
 
 def test_declared_specifier_is_bounded_above() -> None:

@@ -260,6 +260,11 @@ class TestSelfShadowGuard:
             link.symlink_to(bundle / "ffmpeg")
         except OSError:
             pytest.skip("symlink not permitted on this host")
+        # Windows（无开发者模式 / 无特权）上 symlink_to 不抛错却也造不出真链接：
+        # is_symlink() 仍为 False、os.readlink() 报 WinError 4390，于是下面走的是
+        # 「普通文件」路径——realpath 归一判据根本没被覆盖，断言恒假。按既有约定显式跳过。
+        if not link.is_symlink():
+            pytest.skip("symlink silently unsupported: symlink_to() created no real link on this host")
         calls: list[tuple[str, str]] = []
         _patch_probes(
             monkeypatch,
