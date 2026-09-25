@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
+from loguru import logger
+
 # YAML 为可选依赖：缺失时仅损失 .yaml 目录支持，JSON/gettext 不受影响。
 # mypy 默认配置要求显式 stubs（types-PyYAML），但项目把 PyYAML 视为可选，
 # 故在此忽略"未安装/无类型存根"提示；运行时经下方 try/except 优雅降级。
@@ -64,7 +66,6 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 
 # 判断语言标识是否可识别（受支持码/已知别名/带编码后缀变体）；不回退默认值
 def is_recognized_language(value: str | None) -> bool:
-    # 可识别 = 精确匹配规范码、别名表命中、或带编码后缀的前缀命中
     if not value:
         return False
     v = value.strip()
@@ -79,9 +80,9 @@ def is_recognized_language(value: str | None) -> bool:
     return prefix.replace("-", "_") in SUPPORTED_LANGUAGES
 
 
-# 把任意语言标识归一化为受支持的规范语言码；无法识别时回退默认语言
+# 把任意语言标识归一化为受支持的规范语言码：精确匹配 → 别名表（小写 + 连字符）→
+# 前缀匹配（如 zh_CN.UTF-8）→ 无法识别时回退默认语言
 def normalize_language(value: str | None) -> str:
-    # 归一化规则：精确匹配 → 别名表（小写/连字符）→ 前缀匹配（如 zh_CN.UTF-8）→ 默认
     if not value:
         return DEFAULT_LANGUAGE
     v = value.strip()
@@ -141,14 +142,16 @@ def _windows_ui_language() -> str | None:
     return locale.windows_locale.get(lang_id)
 
 
-# 判断某语言是否存在可加载的翻译目录文件（.mo / .json / .yaml 任一存在即可）
+# 判断某语言是否**真的能装载**出翻译目录（MID-2248）：判据是「加载得到非空映射」而非「文件存在」——
+# set_language 的 _effective_language 与 resolve_language 的唯一判据就是它，「文件在、装不出来」的
+# 两种真实形态会漏过 is_file()：① PyYAML 未安装 → _load_yaml_catalog 返回 None（zh_TW 只剩恒等映射）；
+# ② .mo 损坏 → _load_mo_catalog 捕获异常返回 None。漏网时 _current_language 仍被置成请求码，
+# GUI 回退告警（比较 effective != lang_code）不触发，日志打出「语言已切换」而界面与录制子进程
+# 全是简体中文原文——零告警的语言失效。现三处判据共用本函数，装载失败即按「无目录」回退
+# FALLBACK_LANGUAGE。代价：每次判定完整解析一遍目录（.mo/.json/.yaml 各约 680 条），调用频率仅
+# 进程启动、GUI/Web 改语言与 main 主循环每轮热同步（≥30s 一轮），可忽略。
 def has_catalog(lang: str) -> bool:
-    base = Path(locale_path)
-    return (
-        (base / lang / "LC_MESSAGES" / f"{lang}.mo").is_file()
-        or (base / f"{lang}.json").is_file()
-        or (base / f"{lang}.yaml").is_file()
-    )
+    return bool(_load_translations(locale_path, lang))
 
 
 # 把配置语言键值解析为最终显示语言（main.py 启动初始化/热切换与 GUI 初始解析的统一入口）：
@@ -189,7 +192,6 @@ _project_root = os.path.normpath(str(module_dir))
 
 # 判断调用者文件是否位于需要翻译的项目源码目录下。
 def _should_translate(caller_file: str) -> bool:
-    # 判断调用者文件是否来自需要翻译的源码目录
     caller_norm = os.path.normpath(caller_file)
     # 在项目根目录下即为项目源码（含 src/ 及 main.py/web.py/gui.py 等）
     return caller_norm.startswith(_project_root)
@@ -207,9 +209,28 @@ def _load_json_catalog(path: Path) -> dict[str, str] | None:
     return {str(k): str(v) for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
 
+# 已就「缺 PyYAML」提醒过的目录（按路径去重）：语言判定发生在启动期与主循环每轮
+# 热同步（≥30s 一轮），不去重会把同一条告警按轮次刷进日志、淹掉真实线索。
+_YAML_MISSING_WARNED: set[str] = set()
+
+
 # 从 YAML 文件加载「原文 → 译文」映射；未安装 pyyaml / 文件不存在 / 解析失败时返回 None
 def _load_yaml_catalog(path: Path) -> dict[str, str] | None:
     if yaml is None:
+        # MID-2248：该降级此前完全静默——调用方只会看到「这个语言没目录」，日志里
+        # 没有任何「为什么」，用户视角是「切了繁体却没生效且无提示」。补一条 warning
+        # 指明根因（缺 PyYAML）与后果（YAML 目录不可用、已按回退语言出文）。
+        # 只在 .yaml 真的存在时提醒：候选语言本就常常不带 YAML 文件（zh_CN 走 .mo、
+        # en_US 走 .json），对不存在的文件报「PyYAML 缺失」是纯噪音。
+        warned_key = str(path)
+        if path.is_file() and warned_key not in _YAML_MISSING_WARNED:
+            _YAML_MISSING_WARNED.add(warned_key)
+            logger.warning(
+                tr(
+                    "未安装 PyYAML，无法加载 YAML 格式翻译目录 {yaml_path}（该语言已回退为默认语言）",
+                    yaml_path=warned_key,
+                )
+            )
         return None
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -250,22 +271,11 @@ def _load_translations(locale_dir: str | Path, lang: str) -> dict[str, str] | No
     return _load_yaml_catalog(base / f"{lang}.yaml")
 
 
-# 初始化 gettext 翻译环境，返回绑定域与目录的 gettext 函数。
-def init_gettext(locale_dir: str | Path, locale_name: str) -> Callable[[str], str]:
-    # 初始化 gettext 翻译环境。
-    # 不再写死 LANG 环境变量：".utf8" 后缀在 macOS 上不是合法 locale（应为 .UTF-8），
-    # 且该变量会经 gui.py 的 env=os.environ.copy() 传染整个录制子进程树，
-    # 导致子进程 locale.setlocale(LC_ALL, '') 抛 locale.Error。
-    #
-    # 同时不再依赖 gettext.gettext 的全局查找：那会按 LANGUAGE/LC_ALL/LANG 环境变量
-    # 推断语言目录，而 Windows 客户端普遍不设置这些变量（本仓库又未随包分发 .mo 的
-    # 回退查找路径），结果 zh_CN.mo 永远查不到、翻译静默失效。
-    # 这里显式指定 languages=[locale_name] 直接加载 locale_dir 下对应 .mo，
-    # 缺文件时回退恒等映射，行为与之前一致。
-    _ = gettext.bindtextdomain(locale_name, locale_dir)
-    _ = gettext.textdomain(locale_name)
-    translation = gettext.translation(locale_name, locale_dir, languages=[locale_name], fallback=True)
-    return translation.gettext
+# [MIN-2254 已删除 init_gettext(locale_dir, locale_name)] 其返回的 gettext 函数**绑死在传入的
+# locale_name 上**、不随 set_language() 重读 _tr——用它者切换语言后静默退回旧语言；且
+# gettext.bindtextdomain/textdomain 是进程级全局副作用，会经 gui.py 的 env 传染整个录制子进程树。
+# 留一个「看起来能用、用了就失去热切换」的公开面是下一个改动踩坑的最短路径，故整体删除而不保留
+# 兼容壳。加载目录一律走 _load_translations / _build_translator（唯一的翻译函数构建入口）。
 
 
 # 构建某语言的翻译函数：加载翻译目录，命中返回译文、未命中回退原文
@@ -284,14 +294,39 @@ _tr: Callable[[str], str] = _build_translator(locale_path, DEFAULT_LANGUAGE)
 original_print = builtins.print  # 保存原始 print 函数
 
 
-# 切换当前语言：归一化 → 加载翻译目录 → 热替换 _tr；语言不可用或目录缺失时回退恒等映射。
-# 返回切换是否成功（归一化后语言即视为成功；目录缺失只影响译文，不视为失败）
-def set_language(lang: str | None) -> bool:
+# 切换当前语言：归一化 → 目录可用性判定 → 加载翻译目录 → 热替换 _tr。
+# 返回**实际生效**的语言码（调用方据此写配置 / 提示用户），而不是布尔「请求是否合法」。
+# MID-52：目录缺失时（PyYAML 未装 → zh_TW.yaml 加载不了；发行包漏装 en_GB.json）按
+# resolve_language 的口径回退 FALLBACK_LANGUAGE（该码同样无目录时仍是 FALLBACK_LANGUAGE），
+# 保证 _current_language 与实际装载的翻译目录**永远一致**——旧实现回报请求码，「语言已切换」
+# 是假的，且该码写回 config.ini 后录制子进程经 resolve_language 落到 en_US：同一部署两种语言。
+# 注意：本函数刻意不做系统语言探测（那是 resolve_language 的职责，main/GUI 入口已先调用），
+# 否则「set_language('') 应为默认语言」这一既有语义会被宿主环境改掉。
+def set_language(lang: str | None) -> str:
     global _current_language, _tr
-    normalized = normalize_language(lang)
-    _current_language = normalized
-    _tr = _build_translator(locale_path, normalized)
-    return True
+    effective = _effective_language(lang)
+    _current_language = effective
+    _tr = _build_translator(locale_path, effective)
+    return effective
+
+
+# 把「请求的语言」折算为「有目录可加载的生效语言」；候选按优先级排列。
+# 全部候选都没有目录（理论上只出现在「整个 i18n 目录没装好」的畸形发行包）时返回
+# FALLBACK_LANGUAGE——与 resolve_language 在同一情形下的答案保持一致，这样 GUI/Web 与录制
+# 子进程至少报同一个码（译文都是恒等映射，不再有二义）。「有目录」的判据即 has_catalog
+# （MID-2248 收紧为「真的装载得出非空映射」，判据详见该函数注释）。
+def _effective_language(lang: str | None) -> str:
+    raw = (lang or "").strip()
+    if not raw:
+        candidates: list[str] = [DEFAULT_LANGUAGE, FALLBACK_LANGUAGE]
+    elif not is_recognized_language(raw):
+        candidates = [FALLBACK_LANGUAGE, DEFAULT_LANGUAGE]
+    else:
+        candidates = [normalize_language(raw), FALLBACK_LANGUAGE, DEFAULT_LANGUAGE]
+    for code in candidates:
+        if has_catalog(code):
+            return code
+    return FALLBACK_LANGUAGE
 
 
 # 返回当前语言规范码
@@ -304,6 +339,26 @@ def available_languages() -> dict[str, str]:
     return dict(SUPPORTED_LANGUAGES)
 
 
+# 「语言码 → 唯一显示名」表，供 GUI / Web 语言选择器渲染菜单值并做显示名 → 语言码反查。
+#
+# MID-53 修复：GUI 原先自行 `name.split(" (")[0]` 裁剪括注，于是
+# "English (US)" 与 "English (UK)" 都折成 "English" —— 反查表后写覆盖前写只剩 en_GB，
+# 用户从 GUI 永远选不到 en_US，且下拉里出现两个同名项。显示名的裁剪规则**只此一处**，
+# 调用方不得再自行裁剪；重名时追加语言码兜底（语言码本身互不相同，故结果必然唯一）。
+def unique_display_names() -> dict[str, str]:
+    names: dict[str, str] = {}
+    used: set[str] = set()
+    for code, name in SUPPORTED_LANGUAGES.items():
+        display = name.strip()
+        if display in used:
+            display = f"{display} ({code})"
+        if display in used:  # 极端情形：追加语言码后仍与既有项重名 → 直接用语言码
+            display = code
+        used.add(display)
+        names[code] = display
+    return names
+
+
 # 包装 print：对来自源码目录的输出自动翻译后再打印。
 def translated_print(
     *args: object,
@@ -312,7 +367,6 @@ def translated_print(
     file: TextIO | None = None,
     flush: bool = False,
 ) -> None:
-    # 包装后的 print 函数，自动翻译 src/ 和项目根目录下的输出
     try:
         frame = inspect.currentframe()
         caller_file = frame.f_back.f_code.co_filename if frame and frame.f_back else ""
@@ -331,12 +385,22 @@ def translated_print(
 
 
 # 带占位符的翻译入口（先查表再插值）：
-# 调用方传「原文模板 + 字段值」，避免 f-string 在查表前先把模板替换为已插值字符串、
+# 调用方传「原文模板（必须是字面量常量串，与目录键严格一致）+ 字段值」，
+# 避免 f-string 在查表前先把模板替换为已插值字符串、
 # 导致目录里 [{record_name}] 这类 msgid 永远查不到、翻译静默退化为原文。
 # 翻译命中时按 .format(**kwargs) 二次插值；未命中则直接对原文格式化为最终输出。
 # 表达式类占位符（如 {type(e).__name__}）调用方须提前求值为局部变量后再传入。
 def tr(template: str, **kwargs: Any) -> str:
-    # 模板必须是字面量（与目录键严格一致），kwargs 提供 .format() 所需字段；
-    # 若模板含 format 不识别的占位符，KeyError 直接抛出（不该静默吞），
-    # 这会与 f-string 的「字段未传即 NameError」对称地暴露拼写错误。
-    return _tr(template).format(**kwargs)
+    # MI-23 修复：译文是**外部可编辑数据**（po/json/yaml 由译者维护），占位符写错
+    # （把 {e} 写成 {err}）或含未转义的花括号都会抛 KeyError/IndexError/ValueError；
+    # 而 tr() 的调用点大量位于 except 分支内，二次异常会顶掉原始异常，把「网络失败」
+    # 升级成崩溃，并把真实故障掩盖掉（zh_CN 常为恒等映射，问题只在切换语言后暴露）。
+    # 此处保证 tr() 永不抛：格式化失败时降级为原文模板，并回退用原文模板再格式化一次。
+    translated = _tr(template)
+    try:
+        return translated.format(**kwargs)
+    except KeyError, IndexError, ValueError:
+        try:
+            return template.format(**kwargs)
+        except KeyError, IndexError, ValueError:
+            return template

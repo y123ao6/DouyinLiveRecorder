@@ -29,6 +29,10 @@
 #                              预置的未受信 aws/tap 导致的 brew 报错。
 #   · PYTHONUTF8            —— 由 build_exe.py 内部 _ensure_utf8_streams() 自行设置，
 #                              避免 Windows runner cp1252 控制台输出中文日志崩溃。
+#   · DLR_RUNTIME_SHA256    —— 非 secret：full 版内置的 ffmpeg / node 的官方 SHA256 钉定表，
+#                              由 prepare job 的 "Verify runtime binary SHA256 pins" 步骤
+#                              校验后从 build_exe.py 透传（事实源仍是 build_exe.py，不放这里）。
+#                              表内仍是占位值时 prepare 即失败，发布链不产出产物（SEV-10）。
 #   如需代码签名（Windows Authenticode / macOS codesign & notarize），
 #   再新增 secrets.WINDOWS_CERT_PFX_BASE64 / APPLE_ID / APPLE_APP_PASSWORD 等，
 #   并在对应平台的构建步骤后追加签名步骤。当前发布**未签名**。
@@ -66,6 +70,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_release: ${{ steps.version.outputs.is_release }}
+      # 运行时二进制 SHA256 钉定表（JSON，按 <os>-<arch> 分列），透传给 build job 的
+      # DLR_RUNTIME_SHA256；缺任一项时上一步已让 prepare 失败（SEV-10 fail-closed）
+      runtime_pins: ${{ steps.runtime-pins.outputs.pins }}
       # 与 ci.yml 保持一致的运行环境常量（单一事实源，改一处即全局生效）
       python_build: ${{ steps.consts.outputs.python_build }}
       node_version: ${{ steps.consts.outputs.node_version }}
@@ -124,6 +131,22 @@ jobs:
       # 复用 CI 同一脚本，确保各消费方仍是「动态读取」而非写死版本号
       - name: Check version consistency across consumers
         run: python scripts/check_version.py
+
+      # SEV-10：发布路径 fail-closed 的前半段。build_exe.py --dual 会从 gyan.dev /
+      # evermeet.ca / johnvansickle.com / nodejs.org 拉取约 300MB 的 ffmpeg+node 并打进
+      # 对外分发的 full zip（这些二进制以子进程方式执行）。本步在**任何平台开始构建之前**
+      # 校验钉定表：表为空 / 缺平台 / 缺槽位 → rc=2；存在未填入官方 SHA256 的槽位 → rc=1，
+      # prepare 失败即整条发布链不产出产物（这是刻意的：官方值未核实前不得发布）。
+      # 官方值核实后请改 build_exe.py 的 _PINNED_RUNTIME_SHA256，不要在本文件里硬编码副本。
+      - name: Verify runtime binary SHA256 pins (fail-closed)
+        id: runtime-pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/check_runtime_pins.py --strict
+          # 校验通过后把整表以 JSON 透传给 build job（env 注入，与仓库内容同一份值）
+          pins=$(python scripts/check_runtime_pins.py --emit-env)
+          echo "pins=${pins}" >> "$GITHUB_OUTPUT"
 
       - name: Write job summary
         shell: bash
@@ -295,6 +318,26 @@ jobs:
             export HOMEBREW_NO_REQUIRE_TAP_TRUST=1 HOMEBREW_NO_AUTO_UPDATE=1
             && brew install ffmpeg
 
+      # P-2（2026-09-22 批准引入 gnupg）：build_exe.py 会对 evermeet 的 ffmpeg 产物做官方 GPG
+      # 签名核验（配置见 build_exe._RUNTIME_GPG_SIGNATURES），且**发布路径 fail-closed**——
+      # gpg 不可用即终止构建，不会退化成「跳过核验照样出包」。
+      # 仅 macOS 需要：gyan.dev / johnvansickle 实测不公布签名文件，那两路无物可验，
+      # 将来若给它们换了会公布签名的来源，在此按同样形态补一步即可。
+      - name: Install gnupg (macOS)
+        if: matrix.platform == 'macos'
+        uses: ./.github/actions/retry
+        with:
+          label: brew 安装 gnupg
+          backoff: "15"
+          command: >-
+            export HOMEBREW_NO_REQUIRE_TAP_TRUST=1 HOMEBREW_NO_AUTO_UPDATE=1
+            && brew install gnupg
+
+      - name: Report gnupg availability (macOS)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: gpg --version | head -2
+
       # PyInstaller 来自 pyproject [project.optional-dependencies].build，
       # 不写死版本，保持与项目声明一致（>=6.10.0）。
       - name: Install dependencies
@@ -306,13 +349,20 @@ jobs:
             && pip install -r requirements.txt
             && pip install ".[build]"
 
+      # --require-pinned：显式表达「发布路径缺钉定即终止」（build_exe.py 在 CI 下本来也
+      # 会因 GITHUB_ACTIONS=true 默认开启，这里写出来是为了让发布命令自解释）。
+      # DLR_RUNTIME_SHA256 由 prepare 的校验步骤透传，与 build_exe.py 的钉定表同一份值。
       - name: Build executables + smoke test (Linux, xvfb)
         if: matrix.platform == 'linux'
-        run: xvfb-run -a python build_exe.py --smoke --dual
+        env:
+          DLR_RUNTIME_SHA256: ${{ needs.prepare.outputs.runtime_pins }}
+        run: xvfb-run -a python build_exe.py --smoke --dual --require-pinned
 
       - name: Build executables + smoke test
         if: matrix.platform != 'linux'
-        run: python build_exe.py --smoke --dual
+        env:
+          DLR_RUNTIME_SHA256: ${{ needs.prepare.outputs.runtime_pins }}
+        run: python build_exe.py --smoke --dual --require-pinned
 
       - name: List build output
         shell: bash

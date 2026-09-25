@@ -1,24 +1,19 @@
-// DouyinLiveRecorder Web 管理面板前端逻辑。
-// 将 UI 绑定到 src/web_api.py 暴露的 REST API：
-// 仪表盘（状态轮询/日志）、弹幕监控（增量游标轮询）、直播间、配置、文件。
+// DouyinLiveRecorder Web 管理面板前端逻辑：把 UI 绑定到 src/web_api.py 暴露的 REST API，
+// 覆盖仪表盘（状态轮询/日志）、弹幕监控（增量游标轮询）、直播间、配置、文件五块。
 //
-// 【整体架构】
-// 整个前端用一个 IIFE 模块包裹（见下方 (function(){...})()），所有状态与函数都封闭在
-// 私有作用域内，仅把 window.toggleRoom / window.deleteRoom / window.loadFiles /
-// window.downloadFile 暴露给内联/事件委托调用。这样避免污染全局，也避免每次重渲染表格时
-// 重新解析内联 onclick 字符串（表格行由 innerHTML 拼接，已改用 rooms-tbody 上的事件委托）。
-//
-// 状态组织：以一组模块级闭包变量保存（sseStopped/sseSource 仪表盘轮询、dm* 弹幕轮询与缓冲、
-// configBackup 配置原始快照用于 diff、toastTimer 提示定时器），没有引入框架或状态机。
-//
-// 与后端交互：统一经 api() 包装 fetch，自动附带 Bearer Token、JSON 序列化、401 跳转登录、
-// 按 content-type 决定返回 JSON 还是纯文本；二进制下载绕过 api() 直接 fetch+blob。
-// 轮询全部用 setTimeout 递归（非真 SSE/WebSocket），每轮结束后若未被停止则排下一轮，
-// 离屏/切视图时通过 stop* 清理定时器，避免多个视图同时轮询造成请求堆积。
-//
-// 安全要点：所有动态文本（房间名、弹幕、文件名、配置值、日志）渲染前一律经 esc() 转义，
-// 敏感配置段（Cookie/账号密码/Authorization）输入框用 password 类型，saveConfig 跳过 '***'
-// 掩码，防止配置值原样回写覆盖后端真实凭据。
+// 【整体架构】整个前端包在一个 IIFE 里（见下方 (function(){...})()），状态与函数都封闭在私有
+// 作用域，仅把 window.toggleRoom / window.deleteRoom / window.loadFiles / window.downloadFile
+// 暴露给内联与事件委托调用——既避免污染全局，也避免每次重渲染表格时重新解析内联 onclick
+// （表格行由 innerHTML 拼接，已改用 rooms-tbody 上的事件委托）。
+// 状态组织：一组模块级闭包变量（sseWanted/sseStopped/sseSource 仪表盘轮询、dm* 弹幕轮询与缓冲、
+// configBackup 配置快照供 diff、toastTimer 提示定时器），不引入框架或状态机。
+// 与后端交互：统一经 api() 包装 fetch——自动带 Bearer Token、JSON 序列化、401 跳登录、按
+// content-type 决定返回 JSON 还是纯文本；二进制下载刻意绕过 api()（它返回 text，会破坏 blob），
+// 直接 fetch + blob。轮询全部用 setTimeout 递归（非真 SSE/WebSocket），每轮结束后若未被停止才排
+// 下一轮；切视图/离屏经 stop* 清定时器，避免多视图同时轮询造成请求堆积。
+// 安全要点：所有动态文本（房间名、弹幕、文件名、配置值、日志）渲染前一律经 esc() 转义；敏感段的
+// 输入框用 password 类型。掩码凭据的三条防线（MID-37）以 saveConfig 的头注释为唯一事实源，其中
+// 「原样看到 '***' 即跳过提交」是**写入侧唯一防线**，删掉它掩码就会被回写、覆盖后端真实凭据。
 (function () {
     'use strict';
 
@@ -26,20 +21,84 @@
     var THEME_KEY = 'dlr_theme';
     var SENSITIVE_SECTIONS = { 'Cookie': true, '账号密码': true, 'Authorization': true };
 
-    // 敏感键名模式（与后端 web_config.is_sensitive_key 保持一致）：仅靠节名会漏掉
-    // 「推送配置」节内的 tgapi令牌/发件人密码(授权码)/pushplus推送token，以及各平台节内的
-    // popkontv_token 等独立凭据——它们在 DOM 里会被渲染成明文 text 输入框。
-    var SENSITIVE_KEY_RE = /令牌|密码|授权码|token|secret|passwd|password|api[_-]?key/i;
+    // MI-27：token 存取统一走此入口，sessionStorage 优先、不可用时回退 localStorage。
+    // 回退是必要的：Safari 无痕模式与「禁用站点数据」会把 storage 访问变成抛异常，直接写
+    // sessionStorage 会让登录流程整体失败（前端测试环境同样只注入了 localStorage）。
+    function _tokenStore() {
+        try {
+            if (typeof sessionStorage !== 'undefined' && sessionStorage) return sessionStorage;
+        } catch (e) { /* 访问被拒（隐私模式）：走回退 */ }
+        try {
+            if (typeof localStorage !== 'undefined' && localStorage) return localStorage;
+        } catch (e) { /* both unavailable */ }
+        return null;
+    }
+
+    // MID-2238（2026-09-22）：主题与语言的持久化原先是**裸** localStorage 访问——MI-27 已在本文件
+    // 写下上方那条「storage 访问会抛异常」的结论，却只为 token 建了兜底。而 initTheme() 是
+    // DOMContentLoaded 回调的第一条语句，它一抛异常，后面的 initLanguage、五个 tab 绑定、登录/登出
+    // 按钮、事件委托、启动引导监听器一个都不注册：面板退化成静态页且无任何报错。
+    // 故 theme/lang 一律走下面这对安全存取口，两个 init 内部各自 try/catch，前一个失败不带走后续绑定。
+    function safeGetItem(key) {
+        try {
+            var store = _tokenStore();
+            return store ? store.getItem(key) : null;
+        } catch (e) {
+            return null; // 隐私模式下 storage 读取被拒：按「无持久化偏好」处理
+        }
+    }
+
+    function safeSetItem(key, value) {
+        try {
+            var store = _tokenStore();
+            if (store) store.setItem(key, value);
+        } catch (e) { /* 写入被拒（配额/隐私模式）：偏好本次生效、不持久化即可 */ }
+    }
+
+    // 敏感项走「节白名单 + 键名正则」双重口径（与后端 web_config.is_sensitive_key /
+    // _SENSITIVE_KEY_PATTERN 同步，新增配置键时须确认它是否落入正则）：仅靠节名会漏掉「推送配置」节内的
+    // tgapi令牌/发件人密码(授权码)/pushplus推送token，以及各平台节内的 popkontv_token 等独立凭据
+    // ——它们在 DOM 里会被渲染成明文 text 输入框。
+    // CR-10 再补两类：端点型键名（钉钉/微信/bark 推送接口链接、ntfy 推送地址、代理地址）与值形态兜底
+    // ——「凭据嵌在值里」的键按键名一律漏，而用户会在 text 框里一眼看到完整 webhook / userinfo 账密。
+    var SENSITIVE_KEY_RE = /令牌|密码|授权码|token|secret|passwd|password|api[_-]?key|推送接口链接|推送地址|代理地址/i;
     // 例外：expiry/timeout/有效期 类键是数值型运维参数（如 web_token_expiry 秒数），无保密意义。
     var NOT_SECRET_KEY_RE = /expiry|timeout|有效期|过期/i;
+    // 值形态检测（与后端 _looks_like_secret_value 同口径）：URL 且带凭据查询串或 userinfo
+    var SECRET_VALUE_QUERY_RE = /(access[_-]?token|token|key|secret|pwd|passwd|password|auth)=/i;
+    var URL_VALUE_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+    // 后端 read_config_safe 对敏感项回显的掩码值（与 src/web_config.py::SENSITIVE_MASK 同值）。
+    // 面板里看到它就知道「真实值存在但被隐藏」，据此区分「用户没动」与「用户改成了空串」。
+    var SENSITIVE_MASK = '***';
+
+    function isSensitiveValue(value) {
+        if (!value) return false;
+        var v = String(value).trim();
+        if (!URL_VALUE_RE.test(v)) return false;
+        var parts = v.split('/');
+        if (parts.length > 2 && parts[2].indexOf('@') >= 0) return true; // http://user:pass@host
+        return SECRET_VALUE_QUERY_RE.test(v);
+    }
 
     function isSensitiveField(section, key) {
+        // MIN-2237（2026-09-22）：判定顺序必须与后端 is_sensitive_item 逐字对齐——后端的例外表
+        // 只在键名分支内部生效，即「敏感节」优先级高于例外。原前端把例外表提到最前短路，于是
+        // [Cookie] 抖音cookie有效期 这类「敏感节 + 含有效期」的键后端脱敏、前端判非敏感并渲染成
+        // 明文 text 输入框（值虽仍是掩码，但用户会误读成「这项没被保护」）。
+        if (SENSITIVE_SECTIONS[section]) return true;
         if (NOT_SECRET_KEY_RE.test(key)) return false;
-        return !!SENSITIVE_SECTIONS[section] || SENSITIVE_KEY_RE.test(key);
+        return SENSITIVE_KEY_RE.test(key);
     }
 
     var sseSource = null;
     var sseStopped = true;
+    // SEV-2227：把「想要轮询」与「轮询已停」拆成两个状态（本文件该拆分的唯一完整说明，其余
+    // 各处只引用不重述）。原实现只有一个 sseStopped：隐藏时 stopSSE() 把它置 true，回到前台却判断
+    // 「sseStopped 为假则启」——该判断在隐藏之后**恒假**，轮询永不恢复：用户切走一次标签页再切回来，
+    // 监控数/错误数/磁盘/录制列表全部冻结在切走前那一帧，连「引擎已停止」这类假绿/假红结论都再无数据可刷新。
+    // 现在 sseWanted 表达用户意图（进仪表盘即 true），sseStopped 只表达「当前有没有在飞的定时器」，
+    // 恢复条件为 sseWanted && sseStopped。
+    var sseWanted = false;
     var configBackup = null;
     var toastTimer = null;
 
@@ -58,37 +117,71 @@
 
     // ===== API 接口契约速查（路径/方法/关键参数/返回/前后端处理）=====
     // 所有请求经 api() 自动带 Bearer Token；401 统一清 Token 并跳登录；非 2xx 抛错由调用方 catch。
-    // GET  /api/status                 → 仪表盘快照 {engine_alive, recording_enabled, monitoring,
-    //                                         recording_count, error_count, recent_errors, disk_free_gb,
-    //                                         recording:[{name,quality,actual_quality,start_time,duration}]}
-    // POST /api/recording/toggle       body{enable:bool} → 切换引擎录制开关，成功即回拉 /api/status 同步按钮
-    // GET  /api/logs?lines=100         → {lines:[...]} 纯文本日志行，拼到 #log-stream
-    // GET  /api/danmaku?since=<seq>     → {rooms:[...], messages:[...], last_seq, truncated}
-    //                                         增量游标：首次 since=0，之后用返回 last_seq 续拉，避免重复
-    // GET  /api/language               → {language}；PUT body{language} 热切换（后端控制台/日志同步翻译）
-    // POST /api/login    body{password}→ {token}；失败抛错显示到 #login-error
-    // GET  /api/rooms                 → [{url,quality,name,enabled,recording}]；增删/启停/切画质：
-    // POST /api/rooms   body{url,quality?,name?}；DELETE /api/rooms?url=；POST /api/rooms/toggle body{url,enable}
-    // PUT  /api/rooms/quality         body{url,quality} → 按房间切换画质（quality 空=恢复默认，与桌面端共用画质段）
-    // GET  /api/rooms/qualities       → {options:[...], builtin:[...]}；PUT body{options:[...]} 回写画质选项
-    //                                         （与桌面端画质切换菜单共用，落地 config.ini [录制设置]）
-    // GET  /api/config                 → {section:{key:value}}；PUT /api/config body{section,key,value} 单键落盘
-    // GET  /api/files?path=            → [{name,type,path,size?,mtime?}]；下载绕过 api() 直接 blob 流
+    // GET  /api/status → 仪表盘快照 {engine_alive, recording_enabled, monitoring, recording_count,
+    //      error_count, recent_errors, disk_free_gb, recording:[{name,quality,actual_quality,start_time,duration}]}
+    //      可选 stale:true（超时回退的陈旧快照）；error:"status_unavailable" 表示采样失败（HTTP 仍为 200，
+    //      不得当成功渲染）。[2026-09-23] 契约里已无 main_loop_alive：它读的 main.main_loop_ticks 从未在
+    //      main.py 定义、该键永不下发；判据与撤下过程见 src/web_api.py::_read_engine_status
+    // POST /api/recording/toggle body{enable:bool} → 切换引擎录制开关，成功即回拉 /api/status 同步按钮
+    // GET  /api/logs?lines=100 → {lines:[...]} 纯文本日志行，拼到 #log-stream
+    // GET  /api/danmaku?since=<seq> → {rooms:[...], messages:[...], last_seq, truncated}；增量游标：首次
+    //      since=0，之后用返回 last_seq 续拉避免重复。error:"danmaku_unavailable" = 本次采样失败（仍是 200），
+    //      renderDanmaku 保留上一轮表与缓冲、只提示取不到
+    // GET/PUT /api/language → {language}；PUT body{language} 热切换（后端控制台/日志同步翻译）
+    // POST /api/login body{password} → {token}；失败抛错显示到 #login-error
+    // GET  /api/rooms → [{url,quality,name,enabled,recording}]；POST body{url,quality?,name?} 新增、
+    //      DELETE ?url= 删除、POST /api/rooms/toggle body{url,enable} 启停
+    // PUT  /api/rooms/quality body{url,quality} → 按房间切换画质（quality 空=恢复默认，与桌面端共用画质段）
+    // GET/PUT /api/rooms/qualities → {options:[...], builtin:[...]}；PUT body{options:[...]} 回写画质选项
+    //      （与桌面端画质切换菜单共用，落地 config.ini [录制设置]）
+    // GET  /api/config → {section:{key:value}}；PUT /api/config body{section,key,value} 单键落盘
+    // GET  /api/files?path= → [{name,type,path,size?,mtime?}]；下载绕过 api() 直接 blob 流
     function $(id) { return document.getElementById(id); }
 
-    // 1. Token helpers
+    // 1. Token helpers —— MI-27：一律经 _tokenStore() 存取。语义变化：token 由 localStorage 移到
+    // sessionStorage，正常浏览器下关闭标签页即失效，配合 /api/logout 吊销服务端 bearer 收窄泄露窗口；
+    // 仅 sessionStorage 不可用时才回退 localStorage（隐私模式的让步，此时「关标签页即失效」并不成立）。
     function getToken() {
-        return localStorage.getItem(TOKEN_KEY) || '';
+        var st = _tokenStore();
+        return st ? (st.getItem(TOKEN_KEY) || '') : '';
     }
     function setToken(t) {
+        var st = _tokenStore();
+        if (!st) return;
         if (t) {
-            localStorage.setItem(TOKEN_KEY, t);
+            st.setItem(TOKEN_KEY, t);
         } else {
-            localStorage.removeItem(TOKEN_KEY);
+            st.removeItem(TOKEN_KEY);
         }
     }
 
     // 2. api fetch wrapper
+    // WD-10：加请求超时。原实现未传 signal 也无 Promise.race，服务端若在
+    // main.get_status() 里卡住（它要与录制主循环抢 record_state_lock），前端 await fetch
+    // 会无限期 pending；而下一轮 setTimeout 排在 .then() 之后，于是轮询链**就此停止**，
+    // 界面停在最后一次数据、且 .catch 把错误吞掉——运维最不该失真的时刻反而静默失准。
+    // 2b. 后端错误体解析（MID-39）：非 2xx 的响应体通常是 FastAPI 的 {"detail": "..."}，
+    // 旧实现 `throw new Error(text)` 把整段原始响应体当消息抛出，于是 toast 上出现的是
+    // `{"detail":"..."}` 甚至 422 的 pydantic 嵌套结构与 Windows 绝对路径（认证关闭时对局域网可见）。
+    // 现只取 detail 字符串作为用户可见消息；识别不出结构时回退本地化的通用文案（**不回显原文**，
+    // 纯文本/HTML 错误页同样可能带路径与栈）。诊断线索不丢：状态码与原始响应体挂在 err.status /
+    // err.rawBody 上并写一条 console.warn，排障时看控制台即可拿到全文。
+    function apiError(status, text, path, fallback) {
+        var detail = '';
+        try {
+            var parsed = JSON.parse(text);
+            if (parsed && typeof parsed.detail === 'string') detail = parsed.detail;
+        } catch (e) { /* 非 JSON 响应体：只用通用文案，原文仅进控制台 */ }
+        var err = new Error(detail || fallback + ' (' + status + ')');
+        err.status = status;
+        err.rawBody = text;
+        if (typeof console !== 'undefined' && console.warn) {
+            console.warn('[api] ' + status + ' ' + path + ' -> ' + text);
+        }
+        return err;
+    }
+
+    var API_TIMEOUT_MS = 10000;
     async function api(path, opts) {
         opts = opts || {};
         var headers = Object.assign({}, opts.headers || {});
@@ -101,19 +194,30 @@
         if (token) {
             headers['Authorization'] = 'Bearer ' + token;
         }
-        var resp = await fetch(path, {
-            method: opts.method || 'GET',
-            headers: headers,
-            body: body,
-        });
+        var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, API_TIMEOUT_MS) : null;
+        var resp;
+        try {
+            resp = await fetch(path, {
+                method: opts.method || 'GET',
+                headers: headers,
+                body: body,
+                signal: ctrl ? ctrl.signal : undefined,
+            });
+        } catch (e) {
+            // 超时与网络失败统一为可识别的错误，交给调用方决定退避
+            throw new Error(e && e.name === 'AbortError' ? 'timeout' : String(e));
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
         var text = await resp.text();
         if (resp.status === 401) {
             setToken('');
             showLogin();
-            throw new Error(text || t('common.unauthorized'));
+            throw apiError(401, text, path, t('common.unauthorized'));
         }
         if (!resp.ok) {
-            throw new Error(text);
+            throw apiError(resp.status, text, path, t('common.requestFailed'));
         }
         var ct = resp.headers.get('content-type') || '';
         if (ct.indexOf('application/json') !== -1) {
@@ -160,7 +264,9 @@
         return d.toLocaleString('zh-CN', { hour12: false });
     }
 
-    // 6. esc HTML 转义
+    // 6. esc HTML 转义：所有外部可控文本进 innerHTML 前必须过这里。五个替换里 & < > 防标签/实体注入，
+    // 两个引号防属性注入——本文件的表格行与配置行都是字符串拼接（value="…"、data-url="…"、title="…"），
+    // 漏转义引号即可从属性里逃出并挂上事件处理器。走 textContent 的位置不经它，但拼接路径一律不得裸插值。
     function esc(s) {
         if (s == null) return '';
         return String(s)
@@ -171,9 +277,15 @@
             .replace(/'/g, '&#39;');
     }
 
-    // 6b. 前端 i18n：界面文案字典（与后端 i18n.py 的语言集一致）。
-    // 后端负责控制台/日志输出翻译（GET/PUT /api/language 即时热切换），
-    // 前端负责静态界面文案：data-i18n / data-i18n-placeholder 属性 + t() 动态拼接。
+    // 6b. 前端 i18n：界面文案字典（语言集与后端 i18n.py 一致：zh_CN / en_US / en_GB / zh_TW）。
+    // 后端负责控制台/日志输出翻译（GET/PUT /api/language 即时热切换），前端负责静态界面文案：
+    // data-i18n / data-i18n-placeholder / data-i18n-title 属性 + t() 动态拼接。
+    // 下面四套目录是**字符串数据**（等同代码），键与值都不可随手改：
+    //   ① 与后端四份目录（i18n/zh_CN.po、en_US.json、en_GB.json、zh_TW.yaml）构成「五处同改」的
+    //      文档化同步点——新增/修改一条翻译串须五处齐改，少一处面板就渲染出未翻译或空白文案；
+    //   ② 四套键集必须逐一相等、且须覆盖 index.html 的每个 data-i18n* 键与本文件每个 t() 字面量键
+    //      ——该不变量由 tests/frontend/test_quality_ui.mjs 的 MIN-10 段机检（它按字面量截取本文件的
+    //      I18N 声明求值，故声明行与四套键名不可重排或改名）。
     var LANG_KEY = 'dlr_lang';
     var currentLang = 'zh_CN';
     var I18N = {
@@ -181,12 +293,15 @@
             'title': 'DouyinLiveRecorder 管理面板', 'brand': '直播录制管理面板',
             'tab.dashboard': '仪表盘', 'tab.danmaku': '弹幕监控', 'tab.rooms': '直播间',
             'tab.config': '配置', 'tab.files': '文件', 'logout': '退出',
+            'theme.toggle': '切换主题', 'language.select': '语言',
             'login.title': '登录', 'login.password': '访问密码', 'login.submit': '登录', 'login.failed': '登录失败',
             'dashboard.engineWarning': '⚠️ 录制引擎已停止运行，请检查日志或重启服务',
+            'dashboard.statusUnavailable': '⚠️ 状态数据获取失败，面板数据可能不是最新的（后端错误码 status_unavailable）',
             'dashboard.monitoring': '监测中', 'dashboard.recording': '录制中',
             'dashboard.errors': '错误数(累计/近期)', 'dashboard.disk': '磁盘剩余(GB)',
             'dashboard.recordingNow': '正在录制', 'dashboard.logs': '实时日志',
             'recording.state.on': '录制运行中', 'recording.state.off': '录制已停止',
+            'recording.state.probeFailed': '状态取证失败',
             'recording.start': '开始录制', 'recording.stop': '停止录制',
             'toast.recordingStarted': '录制已开始', 'toast.recordingStopped': '录制已停止',
             'col.name': '名称', 'col.platform': '平台', 'col.status': '状态', 'col.startTime': '开始时间',
@@ -196,11 +311,10 @@
             'empty.noRecording': '暂无录制', 'loading': '加载中...', 'loadFailed': '加载失败',
             'danmaku.rooms': '弹幕房间', 'danmaku.col.total': '累计弹幕', 'danmaku.col.rate': '速率(条/分)',
             'danmaku.col.gifts': '礼物', 'danmaku.col.online': '在线', 'danmaku.emptyRooms': '暂无监控数据',
+            'danmaku.unavailable': '弹幕监控状态获取失败，以下为最后一次成功取到的数据（后端错误码 danmaku_unavailable）',
             'danmaku.live': '实时弹幕', 'danmaku.allRooms': '全部房间', 'danmaku.clear': '清空',
             'danmaku.connected': '已连接', 'danmaku.disconnected': '已断开', 'danmaku.noData': '暂无弹幕数据',
-            // 2026-09-12 新增（CODE_REVIEW_FIX_1 F-21）：筛选无匹配时的空态提示。
-            // 原实现在有消息但筛选不匹配时把区域清空（''），用户分不清是「筛选条件
-            // 选错了」还是「真的没弹幕」，只能逐个切换筛选排查。
+            // 2026-09-12 新增（CODE_REVIEW_FIX_1 F-21）：筛选无匹配时的空态提示，理由见 dmRenderStream
             'danmaku.noMatch': '当前筛选条件下没有弹幕，试试切换房间或选择「全部房间」',
             'danmaku.gift': '[礼物] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' 条已省略)',
             'danmaku.truncated': '（消息量过大，部分已折叠）',
@@ -222,8 +336,18 @@
             'config.hint.sslOn': 'HTTPS 录制模式：已全局跳过 SSL 证书校验，此列表无需配置（兼容保留）',
             'config.hint.sslOff': 'HTTP 录制模式：默认校验证书；列表内平台将跳过证书校验（适用于证书异常平台，如虎牙/B站）',
             'config.deprecated': '已整合进「是否启用https录制」，此配置不再生效',
+            // MID-37：掩码凭据的三条提示文案（行内说明 / 清空确认 / 跳过统计 / 服务端拒绝）
+            'config.hint.masked': '该项已脱敏为 *** ，原值仍保存在服务端；留空提交需要先确认，且服务端不允许清空敏感项',
+            'config.clearSecretConfirm': '「{k}」当前显示的是掩码 ***，提交空值会尝试用空串覆盖真实凭据（无法自动回滚）。确定仍要提交空值吗？',
+            'config.secretSkipped': '已跳过 {n} 项掩码凭据的空值提交',
+            'config.saveRejected': '服务端拒绝保存: ',
+            'config.partialSaved': '已应用 {n} 项，第 {m} 项失败，其余改动未提交（已回拉服务端真值）',
+            'config.authChangeConfirm': '即将修改认证相关配置「{k}」：这会改变谁能访问本面板（关闭认证或改写口令都可能让本机任意进程获得控制权），且该变更不随 token 吊销而回滚。确认提交？',
+            'config.authChangeSkipped': '已跳过 {n} 项认证相关改动（未确认）',
+            'config.authChangeReauth': '请复验当前 Web 口令（修改认证配置需要；留空或取消即放弃本次改动）:',
             'files.title': '录制文件', 'files.root': '根目录', 'files.emptyDir': '空目录',
             'common.yes': '是', 'common.no': '否', 'common.unauthorized': '未授权',
+            'common.requestFailed': '请求失败',
             'toast.enabled': '已启用', 'toast.disabled': '已禁用', 'toast.opFailed': '操作失败: ',
             'toast.deleted': '已删除', 'toast.deleteFailed': '删除失败: ', 'toast.added': '已添加',
             'toast.addFailed': '添加失败: ', 'toast.urlRequired': '请输入直播间地址',
@@ -235,12 +359,15 @@
             'title': 'DouyinLiveRecorder Panel', 'brand': 'Live Recording Panel',
             'tab.dashboard': 'Dashboard', 'tab.danmaku': 'Danmaku', 'tab.rooms': 'Rooms',
             'tab.config': 'Config', 'tab.files': 'Files', 'logout': 'Logout',
+            'theme.toggle': 'Toggle theme', 'language.select': 'Language',
             'login.title': 'Login', 'login.password': 'Access password', 'login.submit': 'Login', 'login.failed': 'Login failed',
             'dashboard.engineWarning': '⚠️ The recording engine has stopped. Check logs or restart the service',
+            'dashboard.statusUnavailable': '⚠️ Failed to fetch status data; the panel may be showing stale values (backend error code status_unavailable)',
             'dashboard.monitoring': 'Monitoring', 'dashboard.recording': 'Recording',
             'dashboard.errors': 'Errors (total/recent)', 'dashboard.disk': 'Disk free (GB)',
             'dashboard.recordingNow': 'Recording now', 'dashboard.logs': 'Live logs',
             'recording.state.on': 'Recording active', 'recording.state.off': 'Recording stopped',
+            'recording.state.probeFailed': 'Status evidence unavailable',
             'recording.start': 'Start recording', 'recording.stop': 'Stop recording',
             'toast.recordingStarted': 'Recording started', 'toast.recordingStopped': 'Recording stopped',
             'col.name': 'Name', 'col.platform': 'Platform', 'col.status': 'Status', 'col.startTime': 'Start time',
@@ -250,6 +377,7 @@
             'empty.noRecording': 'No recordings', 'loading': 'Loading...', 'loadFailed': 'Load failed',
             'danmaku.rooms': 'Danmaku rooms', 'danmaku.col.total': 'Messages', 'danmaku.col.rate': 'Rate (msg/min)',
             'danmaku.col.gifts': 'Gifts', 'danmaku.col.online': 'Online', 'danmaku.emptyRooms': 'No monitoring data',
+            'danmaku.unavailable': 'Failed to fetch danmaku monitoring status; showing the last data retrieved successfully (backend error code danmaku_unavailable)',
             'danmaku.live': 'Live danmaku', 'danmaku.allRooms': 'All rooms', 'danmaku.clear': 'Clear',
             'danmaku.connected': 'Connected', 'danmaku.disconnected': 'Disconnected', 'danmaku.noData': 'No danmaku data',
             // F-21 (2026-09-12): empty state shown when the room filter matches nothing
@@ -274,8 +402,18 @@
             'config.hint.sslOn': 'HTTPS mode: certificate verification is globally skipped; this list is not needed (kept for compatibility)',
             'config.hint.sslOff': 'HTTP mode: certificates are verified by default; platforms in this list skip verification (for platforms with broken certificates, e.g. Huya/Bilibili)',
             'config.deprecated': 'Merged into "是否启用https录制"; this option no longer takes effect',
+            // MID-37: hints for masked credentials (inline note / clear confirmation / skipped count / server rejection)
+            'config.hint.masked': 'This value is masked as ***; the real value is still stored server-side. Submitting it empty requires confirmation, and the server refuses to blank sensitive items',
+            'config.clearSecretConfirm': '"{k}" currently shows the mask ***; submitting an empty value would overwrite the real credential with an empty string (not automatically reversible). Submit the empty value anyway?',
+            'config.secretSkipped': 'Skipped {n} empty submission(s) for masked credentials',
+            'config.saveRejected': 'Rejected by server: ',
+            'config.partialSaved': 'Applied {n} item(s); item {m} failed and the remaining changes were not submitted (server values reloaded)',
+            'config.authChangeConfirm': 'You are about to change the authentication setting "{k}": this alters who can reach this panel (disabling auth or resetting the password may let any local process take control), and the change is not reverted by revoking tokens. Submit?',
+            'config.authChangeSkipped': 'Skipped {n} authentication-related change(s) (not confirmed)',
+            'config.authChangeReauth': 'Re-enter the current Web password (required to change authentication settings; leave blank or cancel to discard this change):',
             'files.title': 'Recordings', 'files.root': 'Root', 'files.emptyDir': 'Empty folder',
             'common.yes': 'Yes', 'common.no': 'No', 'common.unauthorized': 'Unauthorized',
+            'common.requestFailed': 'Request failed',
             'toast.enabled': 'Enabled', 'toast.disabled': 'Disabled', 'toast.opFailed': 'Operation failed: ',
             'toast.deleted': 'Deleted', 'toast.deleteFailed': 'Delete failed: ', 'toast.added': 'Added',
             'toast.addFailed': 'Add failed: ', 'toast.urlRequired': 'Please enter a live room URL',
@@ -287,12 +425,15 @@
             'title': 'DouyinLiveRecorder Panel', 'brand': 'Live Recording Panel',
             'tab.dashboard': 'Dashboard', 'tab.danmaku': 'Danmaku', 'tab.rooms': 'Rooms',
             'tab.config': 'Config', 'tab.files': 'Files', 'logout': 'Log out',
+            'theme.toggle': 'Toggle theme', 'language.select': 'Language',
             'login.title': 'Log in', 'login.password': 'Access password', 'login.submit': 'Log in', 'login.failed': 'Log in failed',
             'dashboard.engineWarning': '⚠️ The recording engine has stopped. Check logs or restart the service',
+            'dashboard.statusUnavailable': '⚠️ Failed to fetch status data; the panel may be showing stale values (backend error code status_unavailable)',
             'dashboard.monitoring': 'Monitoring', 'dashboard.recording': 'Recording',
             'dashboard.errors': 'Errors (total/recent)', 'dashboard.disk': 'Disk free (GB)',
             'dashboard.recordingNow': 'Recording now', 'dashboard.logs': 'Live logs',
             'recording.state.on': 'Recording active', 'recording.state.off': 'Recording stopped',
+            'recording.state.probeFailed': 'Status evidence unavailable',
             'recording.start': 'Start recording', 'recording.stop': 'Stop recording',
             'toast.recordingStarted': 'Recording started', 'toast.recordingStopped': 'Recording stopped',
             'col.name': 'Name', 'col.platform': 'Platform', 'col.status': 'Status', 'col.startTime': 'Start time',
@@ -302,6 +443,7 @@
             'empty.noRecording': 'No recordings', 'loading': 'Loading...', 'loadFailed': 'Load failed',
             'danmaku.rooms': 'Danmaku rooms', 'danmaku.col.total': 'Messages', 'danmaku.col.rate': 'Rate (msg/min)',
             'danmaku.col.gifts': 'Gifts', 'danmaku.col.online': 'Online', 'danmaku.emptyRooms': 'No monitoring data',
+            'danmaku.unavailable': 'Failed to fetch danmaku monitoring status; showing the last data retrieved successfully (backend error code danmaku_unavailable)',
             'danmaku.live': 'Live danmaku', 'danmaku.allRooms': 'All rooms', 'danmaku.clear': 'Clear',
             'danmaku.connected': 'Connected', 'danmaku.disconnected': 'Disconnected', 'danmaku.noData': 'No danmaku data',
             // F-21 (2026-09-12): empty state shown when the room filter matches nothing
@@ -326,8 +468,18 @@
             'config.hint.sslOn': 'HTTPS mode: certificate verification is globally skipped; this list is not needed (kept for compatibility)',
             'config.hint.sslOff': 'HTTP mode: certificates are verified by default; platforms in this list skip verification (for platforms with broken certificates, e.g. Huya/Bilibili)',
             'config.deprecated': 'Merged into "是否启用https录制"; this option no longer takes effect',
+            // MID-37: hints for masked credentials (inline note / clear confirmation / skipped count / server rejection)
+            'config.hint.masked': 'This value is masked as ***; the real value is still stored server-side. Submitting it empty requires confirmation, and the server refuses to blank sensitive items',
+            'config.clearSecretConfirm': '"{k}" currently shows the mask ***; submitting an empty value would overwrite the real credential with an empty string (not automatically reversible). Submit the empty value anyway?',
+            'config.secretSkipped': 'Skipped {n} empty submission(s) for masked credentials',
+            'config.saveRejected': 'Rejected by server: ',
+            'config.partialSaved': 'Applied {n} item(s); item {m} failed and the remaining changes were not submitted (server values reloaded)',
+            'config.authChangeConfirm': 'You are about to change the authentication setting "{k}": this alters who can reach this panel (disabling auth or resetting the password may let any local process take control), and the change is not reverted by revoking tokens. Submit?',
+            'config.authChangeSkipped': 'Skipped {n} authentication-related change(s) (not confirmed)',
+            'config.authChangeReauth': 'Re-enter the current Web password (required to change authentication settings; leave blank or cancel to discard this change):',
             'files.title': 'Recordings', 'files.root': 'Root', 'files.emptyDir': 'Empty folder',
             'common.yes': 'Yes', 'common.no': 'No', 'common.unauthorized': 'Unauthorised',
+            'common.requestFailed': 'Request failed',
             'toast.enabled': 'Enabled', 'toast.disabled': 'Disabled', 'toast.opFailed': 'Operation failed: ',
             'toast.deleted': 'Deleted', 'toast.deleteFailed': 'Delete failed: ', 'toast.added': 'Added',
             'toast.addFailed': 'Add failed: ', 'toast.urlRequired': 'Please enter a live room URL',
@@ -339,12 +491,15 @@
             'title': 'DouyinLiveRecorder 管理面板', 'brand': '直播錄製管理面板',
             'tab.dashboard': '儀表板', 'tab.danmaku': '彈幕監控', 'tab.rooms': '直播間',
             'tab.config': '設定', 'tab.files': '檔案', 'logout': '登出',
+            'theme.toggle': '切換主題', 'language.select': '語言',
             'login.title': '登入', 'login.password': '存取密碼', 'login.submit': '登入', 'login.failed': '登入失敗',
             'dashboard.engineWarning': '⚠️ 錄製引擎已停止執行，請檢查日誌或重新啟動服務',
+            'dashboard.statusUnavailable': '⚠️ 狀態資料取得失敗，面板資料可能不是最新的（後端錯誤碼 status_unavailable）',
             'dashboard.monitoring': '監測中', 'dashboard.recording': '錄製中',
             'dashboard.errors': '錯誤數(累計/近期)', 'dashboard.disk': '磁碟剩餘(GB)',
             'dashboard.recordingNow': '正在錄製', 'dashboard.logs': '即時日誌',
             'recording.state.on': '錄製運行中', 'recording.state.off': '錄製已停止',
+            'recording.state.probeFailed': '狀態取證失敗',
             'recording.start': '開始錄製', 'recording.stop': '停止錄製',
             'toast.recordingStarted': '錄製已開始', 'toast.recordingStopped': '錄製已停止',
             'col.name': '名稱', 'col.platform': '平台', 'col.status': '狀態', 'col.startTime': '開始時間',
@@ -354,6 +509,7 @@
             'empty.noRecording': '暫無錄製', 'loading': '載入中...', 'loadFailed': '載入失敗',
             'danmaku.rooms': '彈幕房間', 'danmaku.col.total': '累計彈幕', 'danmaku.col.rate': '速率(條/分)',
             'danmaku.col.gifts': '禮物', 'danmaku.col.online': '線上', 'danmaku.emptyRooms': '暫無監控資料',
+            'danmaku.unavailable': '彈幕監控狀態取得失敗，以下為最後一次成功取得的資料（後端錯誤碼 danmaku_unavailable）',
             'danmaku.live': '即時彈幕', 'danmaku.allRooms': '全部房間', 'danmaku.clear': '清空',
             'danmaku.connected': '已連線', 'danmaku.disconnected': '已斷線', 'danmaku.noData': '暫無彈幕資料',
             // F-21（2026-09-12）：篩選無匹配時的空態提示
@@ -378,8 +534,18 @@
             'config.hint.sslOn': 'HTTPS 錄製模式：已全域跳過 SSL 憑證校驗，此列表無需設定（相容保留）',
             'config.hint.sslOff': 'HTTP 錄製模式：預設校驗憑證；列表內平台將跳過憑證校驗（適用於憑證異常平台，如虎牙/B站）',
             'config.deprecated': '已整合進「是否啟用https錄製」，此設定不再生效',
+            // MID-37：遮罩憑據的四條提示（行內說明 / 清空確認 / 跳過統計 / 服務端拒絕）
+            'config.hint.masked': '該項已脫敏為 *** ，原值仍儲存於服務端；提交空值需要先確認，且服務端不允許清空敏感項',
+            'config.clearSecretConfirm': '「{k}」目前顯示的是遮罩 ***，提交空值會嘗試以空字串覆寫真實憑據（無法自動回滾）。確定仍要提交空值嗎？',
+            'config.secretSkipped': '已跳過 {n} 項遮罩憑據的空值提交',
+            'config.saveRejected': '服務端拒絕儲存: ',
+            'config.partialSaved': '已套用 {n} 項，第 {m} 項失敗，其餘變更未提交（已回拉服務端真值）',
+            'config.authChangeConfirm': '即將修改認證相關設定「{k}」：這會改變誰能存取本面板（關閉認證或改寫口令都可能讓本機任意程序取得控制權），且該變更不隨 token 吊銷而回滾。確認提交？',
+            'config.authChangeSkipped': '已跳過 {n} 項認證相關變更（未確認）',
+            'config.authChangeReauth': '請複驗目前 Web 口令（修改認證設定需要；留空或取消即放棄本次變更）:',
             'files.title': '錄製檔案', 'files.root': '根目錄', 'files.emptyDir': '空資料夾',
             'common.yes': '是', 'common.no': '否', 'common.unauthorized': '未授權',
+            'common.requestFailed': '請求失敗',
             'toast.enabled': '已啟用', 'toast.disabled': '已停用', 'toast.opFailed': '操作失敗: ',
             'toast.deleted': '已刪除', 'toast.deleteFailed': '刪除失敗: ', 'toast.added': '已新增',
             'toast.addFailed': '新增失敗: ', 'toast.urlRequired': '請輸入直播間位址',
@@ -397,7 +563,9 @@
         return key;
     }
 
-    // 应用静态文案：data-i18n → textContent；data-i18n-placeholder → placeholder
+    // 应用静态文案：data-i18n → textContent；data-i18n-placeholder → placeholder；
+    // data-i18n-title → title 悬浮提示（MIN-10：原本 index.html 的两处 title 是硬编码中文，
+    // 切到英文界面仍是中文；用独立属性而不是 data-i18n，避免把 #theme-toggle 的 🌙/☀️ 文本覆盖掉）。
     function applyTranslations() {
         var nodes = document.querySelectorAll('[data-i18n]');
         for (var i = 0; i < nodes.length; i++) {
@@ -407,10 +575,14 @@
         for (var j = 0; j < phNodes.length; j++) {
             phNodes[j].setAttribute('placeholder', t(phNodes[j].getAttribute('data-i18n-placeholder')));
         }
+        var titleNodes = document.querySelectorAll('[data-i18n-title]');
+        for (var k = 0; k < titleNodes.length; k++) {
+            titleNodes[k].setAttribute('title', t(titleNodes[k].getAttribute('data-i18n-title')));
+        }
         document.documentElement.setAttribute('lang', currentLang.replace('_', '-'));
     }
 
-    // 初始化语言选择器：读后端当前语言（失败回退 localStorage），渲染选项
+    // 初始化语言选择器：读后端当前语言（失败回退本地偏好 safeGetItem，sessionStorage 优先），渲染选项
     function initLanguage() {
         var sel = $('language-select');
         if (!sel) return;
@@ -422,25 +594,41 @@
         }
         sel.innerHTML = opts;
         api('/api/language').then(function (data) {
-            currentLang = data && data.language ? data.language : (localStorage.getItem(LANG_KEY) || 'zh_CN');
-            localStorage.setItem(LANG_KEY, currentLang);
+            currentLang = data && data.language ? data.language : (safeGetItem(LANG_KEY) || 'zh_CN');
+            safeSetItem(LANG_KEY, currentLang);
             sel.value = currentLang;
             applyTranslations();
         }).catch(function () {
-            currentLang = localStorage.getItem(LANG_KEY) || 'zh_CN';
+            currentLang = safeGetItem(LANG_KEY) || 'zh_CN';
             sel.value = currentLang;
             applyTranslations();
         });
         sel.addEventListener('change', function () {
-            var target = sel.value;
-            api('/api/language', { method: 'PUT', body: { language: target } }).then(function () {
-                currentLang = target;
-                localStorage.setItem(LANG_KEY, target);
-                applyTranslations();
+            setLanguage(sel.value);
+        });
+    }
+
+    // MID-2239（2026-09-22）：PUT /api/language 的响应契约（language/fallback/notice）此前整体未消费——
+    // 形参被丢掉、恒按**请求值**本地切换。后端刻意改为「先 set_language() 拿生效码、按生效码落盘、再把
+    // 三字段回给调用方」，并明写「前端据此更新，不得再按请求值回写」。典型失效：PyYAML 缺失使 zh_TW
+    // 装载不到 → 用户选繁體中文、后端实际生效并落盘 en_US，前端却仍把界面切成内嵌 zh_TW 并把偏好写成
+    // zh_TW，回退说明一次都不显示——正是 MID-52 要消灭的「面板与录制进程各说一种语言」。
+    function setLanguage(target) {
+        api('/api/language', { method: 'PUT', body: { language: target } }).then(function (res) {
+            // 以**生效码**为准：后端回什么就切什么、就持久化什么
+            currentLang = (res && res.language) || target;
+            safeSetItem(LANG_KEY, currentLang);
+            var sel = $('language-select');
+            if (sel) sel.value = currentLang;
+            applyTranslations();
+            if (res && res.fallback) {
+                // 回退说明由后端给出（含目标语言与生效语言），是本地化过的文案
+                toast(res.notice || t('toast.langSwitched'), 'info');
+            } else {
                 toast(t('toast.langSwitched'), 'success');
-            }).catch(function (e) {
-                toast(t('toast.langSwitchFailed') + (e.message || ''), 'error');
-            });
+            }
+        }).catch(function (e) {
+            toast(t('toast.langSwitchFailed') + (e.message || ''), 'error');
         });
     }
 
@@ -451,14 +639,33 @@
         }
     }
 
+    // 7b. 登出按钮显隐（MID-38）：#logout-btn 在 index.html 里带 class="hidden"（style.css 的 .hidden
+    // 为 display:none !important），而改动前全仓只有一处 addEventListener、**没有任何代码移除该 class**
+    // ——于是 WD-09 专门补的 POST /api/logout（泄露 token 的唯一吊销入口，token 默认有效 86400s）在
+    // 界面上根本点不到。登录成功 / 进入任意面板视图即显示，回到登录页即收起。
+    function setLogoutVisible(visible) {
+        var btn = $('logout-btn');
+        if (!btn) return;
+        if (visible) {
+            btn.classList.remove('hidden');
+        } else {
+            btn.classList.add('hidden');
+        }
+    }
+
     // 8. showView
     function showView(name) {
         stopDanmakuPolling();
-        // 切视图先停掉上一视图的轮询：原先只在最后的 else 分支调用 stopSSE，
-        // 导致切到 rooms/config/files/danmaku 后 /api/status 仍每 2s 轮询并渲染隐藏 DOM。
-        // 统一的「先停后按需启」与上方 stopDanmakuPolling 保持同一语义。
+        // 切视图先停掉上一视图的轮询：原先只在最后的 else 分支调用 stopSSE，导致切到
+        // rooms/config/files/danmaku 后 /api/status 仍每 2s 轮询并渲染隐藏 DOM。统一的「先停后按需
+        // 启」与上方 stopDanmakuPolling 保持同一语义。MID-2240：日志轮询必须一并停掉——否则切到
+        // 配置/文件/弹幕视图后 /api/logs 仍在每 5s 读一次日志文件（纯浪费），且它不会被下面的分支重新判断。
         stopSSE();
+        stopLogsPolling();
         hideAllViews();
+        // 以「有 token」而非「有视图」为显示条件：认证关闭的部署根本没有 bearer 可吊销，
+        // 而未登录时顶栏的 tab 依然可点（视图本就可见），无条件显示会露出一个无效入口。
+        setLogoutVisible(!!getToken());
         var v = $(name + '-view');
         if (v) v.classList.remove('hidden');
         var tabs = document.querySelectorAll('.tab');
@@ -481,21 +688,29 @@
             startDanmakuPolling();
         } else if (name === 'dashboard') {
             startSSE();
+            // MID-2240：日志只在切到仪表盘时拉一次，长期停在仪表盘上就永远看不到新日志
+            // （用户切走后日志不再刷新，回到仪表盘也只在那一刻拉一次）。交给轮询同步刷新。
             loadLogs();
+            startLogsPolling();
         }
     }
 
     // 9. showLogin
     function showLogin() {
         hideAllViews();
+        // MID-38：登录页不得留登出入口——token 已被（或即将被）清空，此处是唯一的收起时机。
+        setLogoutVisible(false);
         var lv = $('login-view');
         if (lv) lv.classList.remove('hidden');
         stopSSE();
         stopDanmakuPolling();
+        stopLogsPolling();
     }
 
-    // 10. doLogin —— 调 POST /api/login，成功把返回的 token 存入 localStorage 并进入仪表盘；
-    // 失败（含 401）在 #login-error 显示后端报错文案。密码仅此一次明文发送，之后用 Token。
+    // 10. doLogin —— 调 POST /api/login，成功即经 setToken() 存好返回的 token 并进入仪表盘；失败（含 401）
+    // 在 #login-error 显示后端报错文案。密码仅此一次明文发送，之后一律用 Token。
+    // 注：MID-2238 后语言/主题偏好同样走 _tokenStore()，故正常浏览器下也落在 sessionStorage、**不再跨
+    // 浏览器重启持久化**——这是「隐私模式下不抛异常」换来的取舍，别把它当 localStorage 依赖。
     async function doLogin() {
         var pw = $('login-password').value;
         try {
@@ -508,19 +723,61 @@
         }
     }
 
-    // 11. startSSE / stopSSE（轮询实现，非真实 SSE）
+    // 11. startSSE / stopSSE / pauseSSE（轮询实现，非真实 SSE）
+    // WD-10：失败退避 + 页面可见性感知。原实现固定 2 秒一发——服务端 500/断网时仍严格 2s 重试
+    // （叠加后端每请求读配置的开销），且无 visibilitychange 处理，后台标签页/最小化窗口持续发请求。
+    // 现为「正常 2s，连续失败按 2→5→10→30s 退避」，页面隐藏时停轮询、可见时立即拉一次。
+    // 三个入口的分工即上方 SEV-2227 的两态拆分：startSSE=想要轮询、stopSSE=不要轮询（连意图一起清）、
+    // pauseSSE=只清定时器并保留意图（仅供 visibilitychange 的隐藏侧使用，别在切视图时误用）。
+    var SSE_OK_INTERVAL = 2000;
+    var SSE_BACKOFF_STEPS = [2000, 5000, 10000, 30000];
+    var sseFailCount = 0;
     function startSSE() {
-        stopSSE();
+        sseWanted = true;
+        if (sseSource) {
+            clearTimeout(sseSource);
+            sseSource = null;
+        }
         sseStopped = false;
         sseSource = setTimeout(function poll() {
-            api('/api/status').then(renderStatus).catch(function () {}).then(function () {
-                if (!sseStopped) {
-                    sseSource = setTimeout(poll, 2000);
-                }
-            });
+            api('/api/status')
+                .then(function (data) {
+                    sseFailCount = 0;
+                    renderStatus(data);
+                })
+                .catch(function () {
+                    sseFailCount += 1;
+                    // SEV-2228：网络层失败（后端不可达/超时）才是「已断开」这一支；
+                    // 仪表盘上的提示必须经 showStatusWarning，只写弹幕流等于没提示（见 markBackendUnreachable）。
+                    markBackendUnreachable(true);
+                    showStatusWarning(t('dashboard.statusUnavailable'));
+                })
+                .then(function () {
+                    if (sseStopped) return;
+                    var delay = SSE_OK_INTERVAL;
+                    if (sseFailCount > 0) {
+                        delay = SSE_BACKOFF_STEPS[Math.min(sseFailCount - 1, SSE_BACKOFF_STEPS.length - 1)];
+                    }
+                    sseSource = setTimeout(poll, delay);
+                });
         }, 0);
     }
+
+    // 放弃轮询（切离仪表盘/退出登录时调用）：连意图一起清掉，否则切回仪表盘会被
+    // visibilitychange 的恢复分支重新拉起一个不该存在的轮询。
     function stopSSE() {
+        sseWanted = false;
+        _haltSSE();
+    }
+
+    // 暂停轮询但保留意图：仅用于「页面隐藏」，可见时按 sseWanted 恢复。
+    function pauseSSE() {
+        _haltSSE();
+    }
+
+    // pauseSSE 与 stopSSE 的共同底座：只清在飞定时器并把状态置「已停」，
+    // 是否连「想要轮询」的意图一起清掉由调用方决定（两态拆分见上方 SEV-2227 的状态声明处）。
+    function _haltSSE() {
         sseStopped = true;
         if (sseSource) {
             clearTimeout(sseSource);
@@ -528,9 +785,62 @@
         }
     }
 
-    // 12. renderStatus
+    // 仪表盘告警横幅的唯一写入口（SEV-2228 起「拿不到 / 不新鲜 / 引擎死」三类都走这里），传空串即隐藏。
+    // #status-warning 常驻仪表盘视图内，不像 #danmaku-stream 那样受视图可见性限制。
+    function showStatusWarning(text) {
+        var el = $('status-warning');
+        if (!el) return;
+        if (text) {
+            el.textContent = text;
+            el.classList.remove('hidden');
+        } else {
+            el.textContent = '';
+            el.classList.add('hidden');
+        }
+    }
+
+    // WD-10：把「已断开」显式呈现给用户，而不是让面板停在陈旧数据上。MID-2237：这里写的
+    // #danmaku-stream 只存在于弹幕视图里，后端不可达时仪表盘上没有任何提示（元素在 DOM 中但所属视图
+    // 隐藏），等于白写；但弹幕视图下它确实有效，故保留该写入，仪表盘侧由 showStatusWarning 独立承担。
+    function markBackendUnreachable(flag) {
+        var el = $('danmaku-stream');
+        if (!el) return;
+        if (flag) {
+            el.textContent = t('danmaku.disconnected');
+        }
+    }
+
+    // SEV-2221 / SEV-2228：告警优先级即下面的判定顺序：先报「拿不到 / 不新鲜」，再报「引擎死」。存活
+    // 判定一律用 === false 而非真假值：字段缺失（后端未接线）视为健康，否则未接线的后端会把所有面板
+    // 刷成红色告警——修复自己变成假告警源。
+    // [历史注 2026-09-23] 此处曾有一条「已撤下的主循环探针键 === false」分支：它读的计数字段从未在
+    // main.py 定义、键永不下发 → 分支永不成立（判据与撤下过程见 src/web_api.py::_read_engine_status）；
+    // 「取证失败」改由下面两个真实信号承担：error（采样抛错）与 stale（超时回退）。
+    function updateStatusWarning(s) {
+        if (!s || s.error === 'status_unavailable') {
+            showStatusWarning(t('dashboard.statusUnavailable'));
+            return;
+        }
+        if (s.stale === true) {
+            showStatusWarning(t('dashboard.statusUnavailable'));
+            return;
+        }
+        if (s.engine_alive === false) {
+            showStatusWarning(t('dashboard.engineWarning'));
+            return;
+        }
+        showStatusWarning('');
+    }
+
+    // 12. renderStatus —— /api/status 快照的唯一渲染出口：启动引导、仪表盘轮询、toggleRecording 之后
+    // 的状态回拉三处都调它。故「拿不到 / 不新鲜 / 引擎死」的裁决必须放在这里（经 updateStatusWarning 与
+    // renderRecordingControl），放到任一调用方都会让另外两条入口的口径分叉。
     function renderStatus(s) {
         if (!s) s = {};
+        // SEV-2228：HTTP 200 也可能带 {"error":"status_unavailable"}——采样失败时后端不再回 5xx，为的是
+        // 让面板继续响应。旧实现不看 error，直接把监测数/录制数/磁盘画成「-」当作成功，用户看到的是
+        // 「一切正常但数字全是横杠」。这里统一裁决告警，并把陈旧值显式标注出来。
+        updateStatusWarning(s);
         renderRecordingControl(s);
         var warnEl = $('engine-warning');
         if (warnEl) {
@@ -540,6 +850,7 @@
                 warnEl.classList.add('hidden');
             }
         }
+        var unavailable = s.error != null || s.stale === true;
         $('stat-monitoring').textContent = (s.monitoring != null ? s.monitoring : '-');
         $('stat-recording').textContent = (s.recording_count != null ? s.recording_count : '-');
         // 错误数双口径：累计（进程启动起）/ 近期（近 error_window_size 次检测周期内）
@@ -548,9 +859,12 @@
         $('stat-errors').textContent = errTotal + ' / ' + errRecent;
         $('stat-disk').textContent = (s.disk_free_gb != null ? s.disk_free_gb : '-');
         var tbody = $('recording-tbody');
-        var rec = s.recording || [];
+        var rec = unavailable ? [] : (s.recording || []);
         if (!rec.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="empty">' + esc(t('empty.noRecording')) + '</td></tr>';
+            // 失败/陈旧时用「取证失败」而非「暂无录制」——后者会让用户以为录制真的空了。
+            // 明文经 esc() 后再拼（与上方既有写法同型），文案全部来自本地四语目录。
+            var emptyText = esc(unavailable ? t('dashboard.statusUnavailable') : t('empty.noRecording'));
+            tbody.innerHTML = '<tr><td colspan="5" class="empty">' + emptyText + '</td></tr>';
             return;
         }
         var html = '';
@@ -573,21 +887,29 @@
         tbody.innerHTML = html;
     }
 
-    // 12b. 录制控制条：按状态快照同步「开始/停止录制」按钮与状态标签。
-    // recording_enabled 为引擎级录制开关（后端 get_status 暴露）：开启时禁用「开始」
-    // 并启用「停止」，关闭时反之；引擎线程死亡时两按钮均禁用（切换开关已无意义，
-    // 页面顶部另有引擎告警横幅）。状态标签用双子 span + hidden 切换，文案交给
-    // data-i18n 静态翻译（语言切换即时生效，无需等下一次轮询）。
+    // 12b. 录制控制条：按状态快照同步「开始/停止录制」按钮与状态标签。recording_enabled 为引擎级录制
+    // 开关（后端 get_status 暴露）：开启时禁用「开始」并启用「停止」，关闭时反之；引擎线程死亡时两按钮
+    // 均禁用（切换开关已无意义，页面顶部另有引擎告警横幅）。状态标签用三 span + hidden 切换
+    // （on/off/probe），文案交给 data-i18n 静态翻译（语言切换即时生效，无需等下一次轮询）。
     function renderRecordingControl(s) {
         var enabled = s.recording_enabled === true;
-        var engineAlive = s.engine_alive !== false;
+        // SEV-2228 后半：`engine_alive !== false` 只挡得住「后端明说引擎已死」。采样失败回的是 HTTP 200 +
+        // {"error":"status_unavailable"}、超时回退则是 stale:true，两种形态**都不带 engine_alive 键** →
+        // undefined !== false 判成「活着」，于是面板在完全不知道引擎死活的状态下仍放行开始/停止：点下去只会
+        // 在 POST /api/recording/toggle 上撞一个用户看不懂的错误，而「停止录制」这条兜底路径尤其不该在取证
+        // 失败时被当成可用。故 error/stale 一律按「未知」处理（两键禁用 + 标签切「取证失败」），与仪表盘
+        // 横幅同口径——renderStatus 已在报这条。
+        var unknown = s.error != null || s.stale === true;
+        var engineAlive = s.engine_alive !== false && !unknown;
         // 状态标签容器是 class（index.html 的 span.recording-state），勿用 #id 选择器
         var onEl = document.querySelector('.recording-state .state-on');
         var offEl = document.querySelector('.recording-state .state-off');
+        var probeEl = document.querySelector('.recording-state .state-probe');
         if (onEl && offEl) {
-            onEl.classList.toggle('hidden', !enabled);
-            offEl.classList.toggle('hidden', enabled);
+            onEl.classList.toggle('hidden', !enabled || unknown);
+            offEl.classList.toggle('hidden', enabled || unknown);
         }
+        if (probeEl) probeEl.classList.toggle('hidden', !unknown);
         var startBtn = $('recording-start-btn');
         var stopBtn = $('recording-stop-btn');
         if (startBtn) startBtn.disabled = enabled || !engineAlive;
@@ -627,7 +949,35 @@
         }
     }
 
+    // 13a. 仪表盘日志轮询（MID-2240）：loadLogs 原先只在切到仪表盘那一刻调一次，用户长时间停留时
+    // #log-stream 永远是打开页面时那 100 行，「实时日志」名不副实，排查「录制为什么没起来」时看到的是
+    // 几十分钟前的旧内容。节拍取 5s：日志面板本身不是秒级指标，而 /api/logs 是读文件、比 /api/status
+    // 更重，没必要跟状态轮询（2s）同频。可见性感知与弹幕轮询同型：页面隐藏即停。
+    var logTimer = null;
+    var logStopped = true;
+    var LOGS_POLL_INTERVAL = 5000;
+    function startLogsPolling() {
+        stopLogsPolling();
+        logStopped = false;
+        logTimer = setTimeout(function poll() {
+            loadLogs().then(function () {
+                if (!logStopped) {
+                    logTimer = setTimeout(poll, LOGS_POLL_INTERVAL);
+                }
+            });
+        }, LOGS_POLL_INTERVAL);
+    }
+    function stopLogsPolling() {
+        logStopped = true;
+        if (logTimer) {
+            clearTimeout(logTimer);
+            logTimer = null;
+        }
+    }
+
     // 13b. 弹幕监控：轮询 + 渲染（增量游标 since=seq，2 秒一次）
+    // 游标只前进（last_seq 大于 dmLastSeq 才赋值）：失败轮回的是原 since，用它覆盖会让已取到的序号倒退、
+    // 下一轮重复拉同一段消息。轮询只随进入/离开弹幕视图起停，与仪表盘两条轮询互不牵连。
     function startDanmakuPolling() {
         stopDanmakuPolling();
         dmStopped = false;
@@ -684,9 +1034,8 @@
             shown++;
         }
         if (!shown) {
-            // 2026-09-12 修复（CODE_REVIEW_FIX_1 F-21）：原在有消息但筛选不匹配时把
-            // 区域清空（''）——用户分不清「筛选条件选错了」和「真的没弹幕」，只能
-            // 逐个切换筛选去试。改为给出明确的「无匹配」提示。
+            // 2026-09-12 修复（CODE_REVIEW_FIX_1 F-21）：原在有消息但筛选不匹配时把区域清空（''）——
+            // 用户分不清「筛选条件选错了」和「真的没弹幕」，只能逐个切换筛选去试。改为给出明确的「无匹配」提示。
             el.textContent = dmMessages.length ? t('danmaku.noMatch') : t('danmaku.noData');
             return;
         }
@@ -699,6 +1048,16 @@
     // 渲染一次 /api/danmaku 响应：房间表 + 筛选下拉 + 增量消息
     function renderDanmaku(data) {
         if (!data) data = {};
+        // SEV-2228 后半：/api/danmaku 采样失败时后端回 HTTP 200 + {"rooms": [], "messages": [],
+        // "last_seq": <原 since>, "error": "danmaku_unavailable"}（见 src/web_api.py 的 _DANMAKU_ERROR_CODE）。
+        // 旧实现不看 error：空 rooms 会把房间表刷成「暂无监控数据」、筛选下拉重建为只剩「全部房间」并静默
+        // 丢掉当前选择——用户以为监控真断了或自己筛错了房间，真实原因却是一次内部异常。这里保留上一轮的表
+        // 与缓冲、只在消息流上说明取不到，也不推进游标（last_seq 本就等于 since，推进反而会跳过失败期间的消息）。
+        if (data.error === 'danmaku_unavailable') {
+            var streamEl = $('danmaku-stream');
+            if (streamEl) streamEl.textContent = t('danmaku.unavailable');
+            return;
+        }
         var rooms = data.rooms || [];
         var tbody = $('danmaku-rooms-tbody');
         if (tbody) {
@@ -979,14 +1338,13 @@
         }
     }
 
-    // 17. loadConfig —— GET /api/config 取 {section:{key:value}}，逐段逐键渲染为 input（敏感段用
-    // password 类型、旧键置灰只读、HTTPS 键与 SSL 平台列表键附动态提示）。渲染后把整份配置深拷贝进
+    // 17. loadConfig —— GET /api/config 取 {section:{key:value}}，逐段逐键渲染为 input（敏感项用
+    // password 类型、废弃旧键置灰只读、HTTPS 键与 SSL 平台列表键附动态提示）。渲染后把整份配置深拷贝进
     // configBackup，供 saveConfig 做「仅提交变更键」的 diff 比较，避免无谓回写。
-    // SSL/HTTPS 整合：「是否启用https录制」已合并原「是否强制启用https录制」与
-    // 「是否禁用SSL证书验证(是/否)」——开启=https 拉流并跳过证书校验；关闭=http
-    // 拉流并恢复默认证书校验。旧键标注为已废弃（只读置灰），整合语义在界面明示。
-    // FFmpeg 9.0 起 TLS 证书验证默认开启：「禁用SSL证书验证的平台」在 HTTP 录制模式
-    // （默认校验）下生效——列表内平台跳过证书校验；HTTPS 模式已全局跳过、列表冗余。
+    // SSL/HTTPS 整合：「是否启用https录制」已合并原「是否强制启用https录制」与「是否禁用SSL证书验证(是/否)」
+    // ——开启 = https 拉流并跳过证书校验，关闭 = http 拉流并恢复默认证书校验；旧键只读置灰并在界面明示
+    // 整合去向。FFmpeg 9.0 起 TLS 证书验证默认开启，故「禁用SSL证书验证的平台」只在 HTTP 模式（默认校验）
+    // 下生效，HTTPS 模式已全局跳过、该列表冗余（后端同一口径见 src/http_config.py::get_effective_ssl_verify）。
     var HTTPS_RECORD_KEY = '是否启用https录制';
     var DEPRECATED_CONFIG_KEYS = {
         '是否强制启用https录制': 'config.deprecated',
@@ -995,11 +1353,26 @@
     };
     var SSL_PLATFORM_KEY = '禁用SSL证书验证的平台(逗号分隔)';
 
+    // 布尔配置值 token 集，与后端 src/config_bool.py 的 TRUE_TOKENS/FALSE_TOKENS 同一口径（比较前 trim +
+    // 小写），两份集合必须同步改：跨语言相等性由 tests/frontend/test_quality_ui.mjs 的 MID-2263 用例逐
+    // token 双向断言，读取侧一律经 parseConfigBool 解析。
+    // [历史注 SEV-2210] 旧实现只比较 === '是'，用户按界面提示把值改成 true/false 后开关判定会静默翻转
+    // ——「是否启用https录制 = true」被判为「关」，SSL 提示文案与实际拉流协议相反。
+    var CONFIG_TRUE_TOKENS = { '是': 1, 'true': 1, 't': 1, 'yes': 1, 'y': 1, 'on': 1, '1': 1 };
+    var CONFIG_FALSE_TOKENS = { '否': 1, 'false': 1, 'f': 1, 'no': 1, 'n': 1, 'off': 1, '0': 1 };
+
+    function parseConfigBool(raw, fallback) {
+        var token = (raw === null || raw === undefined) ? '' : String(raw).trim().toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(CONFIG_TRUE_TOKENS, token)) return true;
+        if (Object.prototype.hasOwnProperty.call(CONFIG_FALSE_TOKENS, token)) return false;
+        return fallback;
+    }
+
     function httpsRecordingEnabled() {
         var inputs = document.querySelectorAll('#config-container input');
         for (var i = 0; i < inputs.length; i++) {
             if (inputs[i].getAttribute('data-key') === HTTPS_RECORD_KEY) {
-                return (inputs[i].value || '').trim() === '是';
+                return parseConfigBool(inputs[i].value, false);
             }
         }
         return false;
@@ -1027,7 +1400,11 @@
                 for (var key in items) {
                     if (!items.hasOwnProperty(key)) continue;
                     var val = items[key];
-                    var inputType = isSensitiveField(section, key) ? 'password' : 'text';
+                    // CR-10：值形态命中时同样按敏感字段渲染（password 框，不明文展示）
+                    var inputType = (isSensitiveField(section, key) || isSensitiveValue(val)) ? 'password' : 'text';
+                    // MID-37：后端把敏感项回显为掩码 '***'，渲染时打标，供 saveConfig 判定
+                    // 「这个框留空 = 用户要清空真实凭据」而不是「用户把值改成了空串」。
+                    var masked = String(val).trim() === SENSITIVE_MASK;
                     var hintHtml = '';
                     var rowClass = 'config-row';
                     var readOnly = '';
@@ -1041,10 +1418,14 @@
                     } else if (key === SSL_PLATFORM_KEY) {
                         hintHtml = '<div class="config-hint" id="ssl-platform-hint"></div>';
                     }
+                    if (masked) {
+                        hintHtml += '<div class="config-hint hint-masked">' + esc(t('config.hint.masked')) + '</div>';
+                    }
                     html += '<div class="' + rowClass + '">'
                         + '<label>' + esc(key) + '</label>'
                         + '<input type="' + inputType + '" data-section="' + esc(section) + '"'
-                        + ' data-key="' + esc(key) + '" value="' + esc(val) + '"' + readOnly + '>'
+                        + ' data-key="' + esc(key) + '" value="' + esc(val) + '"'
+                        + (masked ? ' data-masked="1"' : '') + readOnly + '>'
                         + hintHtml
                         + '</div>';
                 }
@@ -1064,33 +1445,144 @@
     }
 
     // 18. saveConfig
+    // 提交口径三条（缺一不可，MID-37 / 2026-09-20）：
+    //   ① 原样提交掩码 '***' → 视为未改动直接跳过（**写入侧唯一防线**，不得移除：否则掩码会覆盖真实凭据）；
+    //   ② 掩码字段被改成空串 → 必须经显式确认才提交（否则一次全选删除就静默抹掉 cookie/token，而
+    //      backup_config 副本本身已脱敏，没有回滚路径）；服务端此时也会回 400 兜底（见
+    //      src/web_api.py::update_config，其 detail 须原样显示给用户）；
+    //   ③ 单项写入失败即中止后续写入（半份配置落盘比整体失败更难排查），400 单独给「服务端拒绝」文案，
+    //      与网络类失败区分开，用户能直接看懂是被哪条规则挡住、下一步做什么。
+    // MIN-2239 配套：把保存失败的那一行标出来（含行内说明），并在回拉前统计还有多少行「改了没提交」；
+    // 两者都只依赖 DOM 结构（input 的 data-section/data-key 与 configBackup 快照），不引入新状态。
+    function markRowFailed(inp) {
+        var row = inp.closest ? inp.closest('.config-row') : null;
+        if (!row) return;
+        row.classList.add('row-failed');
+        inp.setAttribute('aria-invalid', 'true');
+    }
+
+    // MIN-2239 配套：常驻状态行（#config-save-status）。传空串即隐藏。
+    // 用它而不是 toast 的理由：toast 是单槽位且会自动消失，无法承担「配置与磁盘不一致」的持续提醒。
+    function showSaveStatus(text) {
+        var el = $('config-save-status');
+        if (!el) return;
+        if (text) {
+            el.textContent = text;
+            el.classList.remove('hidden');
+        } else {
+            el.textContent = '';
+            el.classList.add('hidden');
+        }
+    }
+
+    // 统计第 from 行起仍与快照不一致的行数，用于失败提示里的「第 m 项失败」：返回值不含当前失败行，
+    // 故 m = pending + 1。掩码行不算脏（它本就不提交，与 saveConfig 的口径 ① 同源）。
+    function countRemainingDirty(inputs, from) {
+        var n = 0;
+        for (var j = from; j < inputs.length; j++) {
+            var it = inputs[j];
+            if (it.value === SENSITIVE_MASK) continue;
+            var sec = it.getAttribute('data-section');
+            var k = it.getAttribute('data-key');
+            var old = (configBackup && configBackup[sec]) ? configBackup[sec][k] : undefined;
+            if (it.value !== old) n++;
+        }
+        return n;
+    }
+
     async function saveConfig() {
         var inputs = document.querySelectorAll('#config-container input');
         var count = 0;
-        try {
-            for (var i = 0; i < inputs.length; i++) {
-                var inp = inputs[i];
-                var section = inp.getAttribute('data-section');
-                var key = inp.getAttribute('data-key');
-                var newVal = inp.value;
-                if (newVal === '***') continue;
-                var oldVal = (configBackup && configBackup[section]) ? configBackup[section][key] : undefined;
-                if (newVal !== oldVal) {
-                    await api('/api/config', {
-                        method: 'PUT',
-                        body: { section: section, key: key, value: newVal },
-                    });
-                    count++;
+        var skippedBlank = 0;
+        var skippedAuth = 0;
+        var authReauth = '';
+        for (var i = 0; i < inputs.length; i++) {
+            var inp = inputs[i];
+            var section = inp.getAttribute('data-section');
+            var key = inp.getAttribute('data-key');
+            var newVal = inp.value;
+            if (newVal === SENSITIVE_MASK) continue;
+            var masked = inp.getAttribute('data-masked') === '1';
+            if (masked && !newVal.trim()) {
+                if (!confirm(t('config.clearSecretConfirm').replace('{k}', String(key)))) {
+                    skippedBlank++;
+                    continue;
                 }
             }
-            if (count > 0) {
-                toast(t('config.saved').replace('{n}', String(count)), 'success');
-            } else {
-                toast(t('config.noChanges'), 'info');
+            var oldVal = (configBackup && configBackup[section]) ? configBackup[section][key] : undefined;
+            if (newVal === oldVal) continue;
+            // MID-2241（2026-09-22）：web_auth_enable / web_password 此前走与「循环时间(秒)」完全相同的普通
+            // 写入通道，前后端都无二次确认——一次 PUT 即可关掉认证（回环监听下 SEV-04 不拦）或改口令（连带
+            // _tokens.clear() 踢掉全部会话）。前端对删除房间、清空掩码凭据都弹确认，唯独这两项零确认：持有
+            //（或被窃）bearer 的一方能把「需要凭据的面板」降级成「本机任意进程可操控的面板」，且该降级在 token
+            // 吊销后依然留存。这里补上确认步骤：文案点明后果，未确认即跳过并计入 skippedAuth，末尾单独提示
+            // 「已跳过 N 项认证相关改动」（不静默吞掉）。
+            if (section === 'Web' && (key === 'web_auth_enable' || key === 'web_password')) {
+                if (!confirm(t('config.authChangeConfirm').replace('{k}', String(key)))) {
+                    skippedAuth++;
+                    continue;
+                }
+                // MID-2241 后半（2026-09-23 定稿）：此处即时问一次口令并放进请求体 reauth_password，后端**已据
+                // 它做准入判定**——认证当前开启时，写 [Web] web_auth_enable / web_password 不带可验过的
+                // reauth_password 即 403（判据见 src/web_api.py::update_config 的 MID-2241 段）。故这里的 confirm
+                // + prompt 只挡手滑、不是唯一防线，但仍保留：直连接口的调用方由 403 挡住。取消（null）视为放弃。
+                // [历史注 2026-09-22 版曾写「后端不据它做准入判定、强复验已回退」，该状态已被推翻。]
+                authReauth = window.prompt(t('config.authChangeReauth'), '');
+                if (authReauth === null) {
+                    skippedAuth++;
+                    continue;
+                }
             }
+            try {
+                // MID-2241：按需附加 reauth_password —— 只在认证两键被确认后才带上，
+                // 其余配置键的请求体保持与改动前**逐字段一致**（既有回归锁按整体 deepEqual 断言请求体）。
+                var body = { section: section, key: key, value: newVal };
+                if (authReauth) body.reauth_password = authReauth;
+                await api('/api/config', {
+                    method: 'PUT',
+                    body: body,
+                });
+                count++;
+            } catch (e) {
+                if (e.status === 400) {
+                    toast(t('config.saveRejected') + (e.message || ''), 'error');
+                } else {
+                    toast(t('toast.saveFailed') + (e.message || ''), 'error');
+                }
+                // MIN-2239（2026-09-22）：此处原先直接 return，跳过头注释专门要防的「半份配置落盘更难排查」
+                // 的善后——后续行**保持用户刚输入的值、无任何未保存标记**，configBackup 停留在保存前快照。用户
+                // 看到「配置页仍是我填的样子」极可能直接切走，于是生效配置与界面显示长期不一致（例如分段时长写
+                // 进去了、认证开关没写进去）。现在：失败行标红 + #config-save-status 常驻明细（已应用 n / 第 m 项
+                // 失败 / 其余未提交），并回拉服务端真值，让界面必然回到磁盘上的真实状态。
+                // 注意**不额外 toast**：400 与非 400 那两条文案各有回归锁（tests/frontend/test_quality_ui.mjs 的
+                // 「服务端 400 的 detail 明确显示」与「MID-39：非 JSON 错误体回退本地化通用文案」两条用例钉住），
+                // 且 toast 是单槽位、会被下一条覆盖并自动消失，承担不了「常驻提醒」的职责。
+                markRowFailed(inp);
+                var pending = countRemainingDirty(inputs, i + 1);
+                showSaveStatus(t('config.partialSaved').replace('{n}', String(count)).replace('{m}', String(pending + 1)));
+                try {
+                    await loadConfig();
+                } catch (e2) { /* 回拉失败：保留行标红，至少不谎报已保存 */ }
+                return;
+            }
+        }
+        // 全部提交成功（含「无可提交项」）：清掉上一轮的常驻失败明细
+        showSaveStatus('');
+        if (count > 0) {
+            toast(t('config.saved').replace('{n}', String(count)), 'success');
+        } else if (skippedAuth > 0) {
+            // MID-2241：认证相关键被用户取消确认（优先级高于「掩码空值跳过」的说明——
+            // 关认证/改口令是能力降级，比「有一项没动」更需要被看见）
+            toast(t('config.authChangeSkipped').replace('{n}', String(skippedAuth)), 'info');
+        } else if (skippedBlank > 0) {
+            toast(t('config.secretSkipped').replace('{n}', String(skippedBlank)), 'info');
+        } else {
+            toast(t('config.noChanges'), 'info');
+        }
+        try {
             await loadConfig();
         } catch (e) {
-            toast(t('toast.saveFailed') + e.message, 'error');
+            toast(t('toast.saveFailed') + (e.message || ''), 'error');
         }
     }
 
@@ -1145,8 +1637,11 @@
     }
     window.loadFiles = loadFiles;
 
-    // 19b. downloadFile — 走认证头拉取二进制并触发下载（I1）
-    // 直接 fetch + .blob()，不经过 api() 包装（api() 返回 res.text() 会破坏二进制）。
+    // 19b. downloadFile — 走认证头拉取二进制并触发下载（I1）：直接 fetch + .blob()，不经过 api() 包装
+    //（api() 返回 res.text() 会破坏二进制）。MIN-2238（2026-09-22）：失败分支原先 `throw new Error(res.statusText)`
+    //——现代浏览器（HTTP/2 下连 HTTP/1.1 的 reason phrase 都不再收到）对 statusText 恒给空串，toast 渲染成
+    //「下载失败: 」，用户既不知是权限、路径还是文件被删，也拿不到可报障信息。改为与 api() 同源的 apiError：
+    // 先把错误体读成文本再解析 detail（成功分支仍是 blob）。
     window.downloadFile = function (path) {
         var headers = {};
         var token = getToken();
@@ -1158,7 +1653,11 @@
                     showLogin();
                     throw new Error(t('toast.loginExpired'));
                 }
-                if (!res.ok) throw new Error(res.statusText);
+                if (!res.ok) {
+                    return res.text().then(function (text) {
+                        throw apiError(res.status, text, '/api/files/download', t('toast.downloadFailed'));
+                    });
+                }
                 return res.blob();
             })
             .then(function (blob) {
@@ -1204,10 +1703,16 @@
 
     // 21. initTheme
     function initTheme() {
-        var theme = localStorage.getItem(THEME_KEY) || 'light';
-        document.body.dataset.theme = theme;
-        var btn = $('theme-toggle');
-        if (btn) btn.textContent = theme === 'light' ? '🌙' : '☀️';
+        // MID-2238：整段包 try/catch —— 它是 DOMContentLoaded 的第一条语句，
+        // 任何异常都会让后续所有监听器注册被跳过（面板变静态页）。
+        try {
+            var theme = safeGetItem(THEME_KEY) || 'light';
+            document.body.dataset.theme = theme;
+            var btn = $('theme-toggle');
+            if (btn) btn.textContent = theme === 'light' ? '🌙' : '☀️';
+        } catch (e) {
+            if (typeof console !== 'undefined' && console.warn) console.warn('[theme] init failed', e);
+        }
     }
 
     // 22. toggleTheme
@@ -1215,7 +1720,7 @@
         var cur = document.body.dataset.theme === 'dark' ? 'dark' : 'light';
         var next = cur === 'dark' ? 'light' : 'dark';
         document.body.dataset.theme = next;
-        localStorage.setItem(THEME_KEY, next);
+        safeSetItem(THEME_KEY, next);
         var btn = $('theme-toggle');
         if (btn) btn.textContent = next === 'light' ? '🌙' : '☀️';
     }
@@ -1241,8 +1746,14 @@
             }
         });
         $('logout-btn').addEventListener('click', function () {
-            setToken('');
-            showLogin();
+            // WD-09：调用服务端注销端点吊销当前 bearer（原实现只清 localStorage，服务端 token 在有效期
+            //（默认 24 小时）内依旧完全有效）。注销失败也必须清本地并回到登录页，不能把用户卡在面板里。
+            api('/api/logout', { method: 'POST' })
+                .catch(function () {})
+                .then(function () {
+                    setToken('');
+                    showLogin();
+                });
         });
         $('room-add-form').addEventListener('submit', function (e) {
             e.preventDefault();
@@ -1300,6 +1811,36 @@
             }
         });
 
+        // WD-10：页面可见性感知。隐藏时停掉状态/日志/弹幕三条轮询（后台标签页与最小化窗口原本会持续
+        // 请求），回到前台立即恢复并补拉一次，避免用户看到陈旧数据。SEV-2227：隐藏侧必须用 pauseSSE（保留
+        // sseWanted 意图）而不是 stopSSE——后者会把意图一起清掉；恢复分支则按「意图 && 当前已停」判断。
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) {
+                pauseSSE();
+                stopDanmakuPolling();
+                stopLogsPolling();
+            } else {
+                if (sseWanted && sseStopped) startSSE();
+                var visibleView = document.querySelector('.view:not(.hidden)');
+                if (visibleView && visibleView.id === 'danmaku-view') {
+                    startDanmakuPolling();
+                } else if (visibleView && visibleView.id === 'dashboard-view') {
+                    startLogsPolling();
+                }
+            }
+        });
+
+        // F-09 / WD-07：把「未启用认证」的风险显式呈现给用户。后端 /api/auth/status 一直返回 warning 字段
+        // 并专门为此放行了该端点，但前端从未消费——用户在无认证状态下使用面板时界面上没有任何提示，错失了
+        // 唯一的「让用户自己去打开认证」引导时机。
+        api('/api/auth/status')
+            .then(function (st) {
+                if (st && st.auth_required === false) {
+                    showAuthWarning(st.warning);
+                }
+            })
+            .catch(function () {});
+
         // 启动引导：尝试拉取状态，成功则进入仪表盘，否则显示登录
         (async function () {
             try {
@@ -1311,4 +1852,17 @@
             }
         })();
     });
+
+    // F-09：在顶栏下方插入一条风险横幅（仅在无认证时出现，随登录页一起隐去）。
+    // 纯文本赋值（textContent）+ 固定位置插入，不引入 XSS 面，也不影响既有事件委托。
+    function showAuthWarning(text) {
+        if (document.getElementById('auth-warning-banner')) return;
+        var topbar = document.querySelector('.topbar');
+        if (!topbar || !topbar.parentNode) return;
+        var bar = document.createElement('div');
+        bar.id = 'auth-warning-banner';
+        bar.className = 'auth-warning';
+        bar.textContent = text || '';
+        topbar.parentNode.insertBefore(bar, topbar.nextSibling);
+    }
 })();

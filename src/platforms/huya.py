@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 from typing import Any, Union
 
+import i18n
 from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType, spawn_danmaku_task
 from src.logger import logger
 from src.platforms._tars import TarsInputStream, TarsOutputStream

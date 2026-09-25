@@ -14,20 +14,23 @@
 #   - invalidate(url, proxy) / clear() : 失效与清空，供调试或强制刷新。
 #
 # ── 存储结构 ──
-#   _cookie_cache: dict[str, tuple[dict[str, str], float]]
-#       key   = _make_key(url, proxy)        # 归一化网址 + 代理地址
-#       value = (cookie_dict, expire_ts)     # 原始 cookie 字典 + 写入时刻(monotonic)
+#   _cookie_cache: dict[str, tuple[dict[str, str], float]]，key = _make_key(url, proxy)
+#   （归一化网址 + 代理地址），value = (原始 cookie 字典, 写入时刻 monotonic)。
 #   缓存的是「网址下发的原始访客 cookie 字典」，不做平台特定的字段裁剪，
 #   由各调用方按自己的需要提取（如 ttwid 取 "ttwid"，快手取 "did"/"didv"）。
 #
 # ── 失效策略 ──
-#   - TTL 失效：每个条目带写入时间戳，超过 ttl 秒后视为失效，下次访问重新拉取。
+#   - TTL 失效：条目带写入时间戳，超过 ttl 秒即失效、下次访问重新拉取。
 #     DEFAULT_TTL = 30 * 60（30 分钟），与 src/room.py 的 sec_uid 缓存保持一致，
 #     在「消除重复请求」与「cookie 失效后自愈」之间取得平衡（录制进程可能连续运行数天）。
 #   - 失败不缓存：拉取异常或返回空字典时一律不写入缓存，下次访问会重试，
 #     避免把「瞬时失败」固化成长期空值。
+#   - 世代号（MI-12）：invalidate() / clear() 递增 _cache_generation，在途拉取者写回前比对，
+#     期间发生过失效就丢弃本次结果。原实现只清结果字典、不动 _inflight 登记表，于是
+#     invalidate() 后立即重新 fetch_cookies() 若命中在途登记，又会拿到那份**已被判定过期**的
+#     cookie，平台风控作废后的自愈链被打断，直到 TTL（默认 30 分钟）自然过期为止。
 #   - 并发去重（singleflight）：threading.Lock 只保护「缓存字典 + 在途登记表」的同步
-#     读写，绝不在锁内 await——RLock 跨 await 持有时，同事件循环内的并发协程属于同一
+#     读写，绝不在锁内 await——锁跨 await 持有时，同事件循环内的并发协程属于同一
 #     线程、全部可重入该锁，互斥完全失效（多个协程会并发请求同一网址，恰恰是要消除
 #     的风控触发源）。每个房间线程各自 asyncio.run() 独立循环：抢到拉取权的协程负责
 #     拉取，等待者（同循环或跨循环）登记 future 复用同一份结果，跨循环交付经
@@ -38,7 +41,6 @@
 #   1) 动态获取并复用：cookies = await fetch_cookies("https://live.douyin.com/", proxy_addr=proxy)
 #   2) 仅复用不拉取：   cached  = get_cached("https://live.douyin.com/", proxy_addr=proxy)
 #   3) 取拼接字符串：   s      = await get_cookie_str("https://live.kuaishou.com/", proxy_addr=proxy)
-#   同网址的任意模块（抖音 ttwid、快手 did 等）共用同一份缓存，绝不会对同一网址重复发起请求。
 # pyright: reportImplicitStringConcatenation=none, reportUnknownArgumentType=none, reportUnknownMemberType=none, reportUnknownVariableType=none
 import asyncio
 import threading
@@ -60,6 +62,11 @@ _cookie_cache: dict[str, tuple[dict[str, str], float]] = {}
 _inflight: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Future[dict[str, str]]]]] = {}
 # 去重锁：只保护 _cookie_cache 与 _inflight 的同步读写（临界区内绝无 await）
 _cache_lock = threading.Lock()
+
+# MI-12：缓存世代号，invalidate() / clear() / invalidate_generic() 递增它，在途拉取者写回前
+# 比对，世代变了就丢弃本次结果（避免「刚失效就被在途请求回填」）。
+# fetch_cookies 与 singleflight 两层共用同一个计数器，语义必须保持一致。
+_cache_generation = 0
 # 等待其它线程在途拉取的超时余量（秒）：拉取线程若异常死亡（如 asyncio.run 被硬杀），
 # 等待者按 timeout + 余量 超时返回空结果，避免永久挂起
 _INFLIGHT_WAIT_MARGIN = 5.0
@@ -128,11 +135,11 @@ async def fetch_cookies(
     # 统一读取入口：命中缓存直接返回；未命中则加锁只拉取一次，并发调用复用同一结果。
     # 返回该网址下发的原始访客 cookie 字典（调用方按需提取字段）。
     #
-    # fetcher: 实际发起 HTTP 请求的可调用对象，默认使用本模块的 async_req。调用方应传入
-    # 自身命名空间下的 async_req（如 ttwid/spider 模块导入的 async_req），以便单测中对
-    # "src.<mod>.async_req" 打桩仍能拦截（各模块导入的是同一函数对象，但分属不同命名空间，
-    # 对模块命名空间打桩不影响本模块默认引用）。签名需兼容
-    # (url, *, proxy_addr, headers, return_cookies, timeout, http2) -> dict。
+    # fetcher: 实际发起 HTTP 请求的可调用对象，默认用本模块的 async_req。**调用方应传入自身
+    # 命名空间下的 async_req**（如 ttwid / spider 模块导入的那一个），否则单测对
+    # "src.<mod>.async_req" 打的桩拦不住这里的请求——各模块导入的是同一函数对象，但分属不同
+    # 命名空间，对模块命名空间打桩不会改动本模块的默认引用。这是一条测试设计契约，不是可选优化。
+    # 签名需兼容 (url, *, proxy_addr, headers, return_cookies, timeout, http2) -> dict。
     key = _make_key(url, proxy_addr)
     now = time.monotonic()
     do_fetch: Callable[..., Any] = fetcher if callable(fetcher) else async_req
@@ -142,8 +149,8 @@ async def fetch_cookies(
     if entry is not None and (now - entry[1]) < ttl:
         return entry[0]
 
-    # 未命中：锁内二次检查缓存（锁内绝无 await）。key 已在途则登记为等待者复用
-    # 同一份结果；否则本协程登记为拉取者，负责拉取一次
+    # 未命中：锁内二次检查缓存（锁内绝无 await）。key 已在途则登记为等待者复用同一份结果，
+    # 否则本协程登记为拉取者
     loop = asyncio.get_running_loop()
     waiter: asyncio.Future[dict[str, str]] | None = None
     with _cache_lock:
@@ -170,6 +177,8 @@ async def fetch_cookies(
             return {}
 
     # 本协程为拉取者：异常/空结果同样要交付等待者（失败语义与单协程路径一致）
+    with _cache_lock:
+        _gen_before = _cache_generation
     try:
         try:
             result = await do_fetch(
@@ -181,9 +190,15 @@ async def fetch_cookies(
                 http2=http2,
             )
         except Exception as e:
-            # 失败不缓存，下次访问会重试；带类型+URL 便于排查（Windows 下 e 的 str 可能为空）
+            # 失败不缓存、下次重试；带类型 + URL 便于排查（Windows 下 e 的 str() 可能为空）。
+            # WD-01：异常文本常内嵌完整请求 URL（含签名/鉴权查询串），必须一并脱敏
             logger.warning(
-                i18n.tr("动态获取 cookie 失败: {url} - {type_name}: {e}", url=url, type_name=type(e).__name__, e=e)
+                i18n.tr(
+                    "动态获取 cookie 失败: {url} - {type_name}: {e}",
+                    url=utils.mask_credentials(url),
+                    type_name=type(e).__name__,
+                    e=utils.mask_credentials(str(e)),
+                )
             )
             cookies = {}
         else:
@@ -202,10 +217,12 @@ async def fetch_cookies(
         for waiter_loop, waiter_fut in pending:
             _deliver(waiter_loop, waiter_fut, {})
         raise
-    # 仅缓存非空结果，空结果视为失败不固化，允许重试
+    # 仅缓存非空结果（空结果视为失败、不固化，下次可重试）；写回前比对世代号（MI-12），
+    # 期间被 invalidate()/clear() 失效过就丢弃本次结果
     if cookies:
         with _cache_lock:
-            _cookie_cache[key] = (cookies, time.monotonic())
+            if _gen_before == _cache_generation:
+                _cookie_cache[key] = (cookies, time.monotonic())
         logger.debug(
             i18n.tr(
                 "动态获取 cookie 成功并缓存: {masked_key}",
@@ -282,10 +299,13 @@ async def singleflight(
     # 等待者返回拉取者结果（拉取者异常/取消时返回 None）。
     now = time.monotonic()
 
-    # 快速路径（无锁）
-    entry = _generic_cache.get(key)
-    if entry is not None and (now - entry[1]) < ttl:
-        return entry[0]
+    # 快速路径（MI-13：纳入 _cache_lock）。原实现无锁读，与 invalidate_generic / clear
+    # 的持锁写不互斥——本模块其余所有字典访问都在锁内，口径不一致。
+    # 临界区只有一次 dict.get、无 await，加锁不会退化为锁内 await。
+    with _cache_lock:
+        entry = _generic_cache.get(key)
+        if entry is not None and (now - entry[1]) < ttl:
+            return entry[0]
 
     loop = asyncio.get_running_loop()
     waiter: asyncio.Future[Any] | None = None
@@ -311,7 +331,13 @@ async def singleflight(
             )
             return None
 
-    # 本协程为拉取者：锁外执行 factory（临界区内绝无 await）
+    # 本协程为拉取者：锁外执行 factory（临界区内绝无 await），写回前比对世代号——MI-12 的
+    # 机制与 fetch_cookies 共用同一个 _cache_generation，两层必须同口径：否则「凭据被平台拒绝
+    # → invalidate_generic(key)」与「同 key 在途拉取」并发时，已被判定作废的那份结果（如 B 站
+    # 软拒绝的随机 UUID buvid3）会在拉取结束后重新固化进缓存、直到 TTL（30 分钟）自然过期，
+    # 自愈链在 singleflight 侧断开（MID-40 修的正是这个，fetch_cookies 一侧早已修好）。
+    with _cache_lock:
+        _gen_before = _cache_generation
     try:
         try:
             value = await factory()
@@ -335,7 +361,11 @@ async def singleflight(
 
     if value or cache_falsy:
         with _cache_lock:
-            _generic_cache[key] = (value, time.monotonic())
+            # 世代变更（期间被 invalidate_generic / clear / invalidate 作废）则丢弃本次结果、
+            # 不回填缓存——与 fetch_cookies 的 MI-12 口径一致（那里同样静默丢弃，等待者仍拿
+            # 到本次值，但下一轮会重新走拉取，从而让「被拒凭据」不被固化 30 分钟）。
+            if _gen_before == _cache_generation:
+                _generic_cache[key] = (value, time.monotonic())
     with _cache_lock:
         pending = _generic_inflight.pop(key, [])
     for waiter_loop, waiter_fut in pending:
@@ -345,7 +375,9 @@ async def singleflight(
 
 def invalidate_generic(key: str | None = None) -> None:
     # 失效通用缓存（key 为 None 时清空全部）。供调试或凭据失效后强制刷新。
+    global _cache_generation
     with _cache_lock:
+        _cache_generation += 1
         if key is None:
             _generic_cache.clear()
             return
@@ -354,7 +386,10 @@ def invalidate_generic(key: str | None = None) -> None:
 
 def invalidate(url: str | None = None, proxy_addr: OptionalStr = None) -> None:
     # 失效指定网址（或整份）缓存。url 为 None 时清空全部。
+    global _cache_generation
     with _cache_lock:
+        # MI-12：递增世代，令在途拉取者放弃回填
+        _cache_generation += 1
         if url is None:
             _cookie_cache.clear()
             return
@@ -366,6 +401,8 @@ def clear() -> None:
     # 2026-09-12 审查 H-2：新增通用缓存后，若 clear() 只清 cookie 缓存，
     # 单测间会残留上一条用例的凭据（如 ttwid=fetched），导致下一条用例
     # 命中旧缓存而非本次打桩值——表现为"测试莫名失败且只在整包运行时出现"。
+    global _cache_generation
     with _cache_lock:
+        _cache_generation += 1
         _cookie_cache.clear()
         _generic_cache.clear()

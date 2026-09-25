@@ -14,12 +14,10 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 
 from .node_install import check_node
 
-# 包路径配置
 current_file_path = Path(__file__).resolve()
 current_dir = current_file_path.parent
 JS_SCRIPT_PATH = current_dir / "javascript"  # JavaScript 脚本目录（用于签名算法）
 
-# Node.js 环境配置
 # execute_dir 需指向项目根目录（主脚本所在目录），Node.js 安装在根目录下的 node/ 文件夹
 # 冻结后资源统一在 _internal/，故用 src.logger.script_path（即 _app_root() 的结果）统一收敛，
 # 复用 logger 已导出的公开符号，避免跨模块引用私有符号 _app_root
@@ -57,7 +55,6 @@ if TYPE_CHECKING:
 # 平台名 -> 弹幕类。平台名与 main.py 中的 platform 标识一致。
 # 注册表按需惰性构建，避免 `import src` 时即拉起 websockets/protobuf 等重依赖。
 def get_danmaku_class(platform: str) -> Optional[type[DanmakuBase]]:
-    # 返回该平台对应的弹幕类，不支持则返回 None。
     from src.platforms.bilibili import BilibiliDanmaku
     from src.platforms.douyin import DouyinDanmaku
     from src.platforms.douyu import DouyuDanmaku
@@ -82,11 +79,12 @@ def get_danmaku_collector(
     danmaku_args: Any,
     base_filename: str,
     segment_seconds: Optional[float] = 1800.0,
-    only_fans: bool = True,
+    # CR-04 修复：与 DanmakuCollector 口径统一为 None（不指定即不覆盖平台类默认值）。
+    # 旧默认值 True 在这里就已经把斗鱼刻意改为 False 的默认值顶掉了。
+    only_fans: Optional[bool] = None,
     room_name: Optional[str] = None,
     write_srt: bool = True,
 ) -> Optional["DanmakuCollector"]:
-    # 构造该平台的 DanmakuCollector，不支持该平台或缺少参数时返回 None。
     from src.collector import DanmakuCollector
 
     cls = get_danmaku_class(platform)

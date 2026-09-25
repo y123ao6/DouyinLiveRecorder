@@ -9,14 +9,15 @@ import hashlib
 import random
 
 XBOGUS_ALPHABET = "Dkdpgh4ZKsQB80/Mfvw36XI1R25+WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe"
+# 表内含 '+' 与 '/'：本端签名输出按上游行为**不做** percent-encode（F-13，理由与回归说明
+# 见 src/platforms/douyin.py 的 signature 拼接注释），勿「顺手加 quote()」。
 
 # emptyMd5Bytes = [0x45, 0x3f]（dart 原样）
 _EMPTY_MD5_BYTES = (0x45, 0x3F)
 
 
-# 用单字节密钥 key 对 data 做 RC4 原地异或加密（直接修改传入的 bytearray，无返回值）。
+# 用单字节密钥 key 对 data 做 RC4 加密（与 dart rc4Encrypt 一致；原地修改传入的 bytearray，无返回值）。
 def _rc4_encrypt(key: int, data: bytearray) -> None:
-    # RC4 单字节密钥加密（与 dart rc4Encrypt 一致）。
     s = list(range(256))
     j = 0
     for i in range(256):
@@ -38,10 +39,8 @@ def _rc4_encrypt(key: int, data: bytearray) -> None:
 
 # 把 data 按每 3 字节切成 4 个 6bit 值，用 X-Bogus 自定义字符表映射为字符串并返回。
 def _encode_base64(data: bytes) -> str:
-    # Standard base64 6-bit 分组, 直接用 X-Bogus 字符表对应字符（与 dart encodeBase64 一致）。
-    #
-    #    dart: alphabetLookup[standardAlphabet.codeUnitAt(v)] == xbogusAlphabet[v]，
-    #    即每组 6 bit 值 v 输出 xbogusAlphabet[v]。曾误用按 ASCII 码建的查表导致全 0（NUL）。
+    # 与 dart encodeBase64 一致：alphabetLookup[standardAlphabet.codeUnitAt(v)] == xbogusAlphabet[v]，
+    # 即每组 6 bit 值 v 直接输出 xbogusAlphabet[v]。曾误用按 ASCII 码建的查表导致全 0（NUL）。
     #
     # 2026-09-12 审查 6.4：原实现无条件取 data[i+1] / data[i+2]，输入长度非 3 的倍数时
     # 末组越界抛 IndexError（签名链路上游长度随 query 变化，不是固定值）。
@@ -59,20 +58,16 @@ def _encode_base64(data: bytes) -> str:
     return "".join(out)
 
 
-# 把 hex_str 还原为原始字节再做一次 md5，返回摘要的最后两个字节（列表，长度 2）。
+# 把 hex_str 还原为原始字节再做一次 md5，返回摘要的最后两个字节（列表，长度 2，与 dart md5Last2 一致）。
 def _md5_last2(hex_str: str) -> list:
-    # md5(decode(hexString)) 的最后两个字节（与 dart md5Last2 一致）。
     raw = bytes.fromhex(hex_str)
     digest = hashlib.md5(raw).digest()
     return [digest[14], digest[15]]
 
 
-# 生成 X-Bogus 字符串：ms_stub 为 32 位 md5 hex，counter 固定 1；
-# 组 10 字节载荷 -> 异或校验 -> RC4 加密 -> 前置头字节与随机盐 -> 自定义 base64，返回签名字符串。
+# 生成 X-Bogus 字符串：ms_stub 必须为 32 字符的 md5 hex（与 dart 一致，否则抛 ValueError），
+# counter 固定 1；组 10 字节载荷 -> 异或校验 -> RC4 加密 -> 前置头字节与随机盐 -> 自定义 base64。
 def generate_xbogus(ms_stub: str, counter: int = 1) -> str:
-    # 生成 X-Bogus 签名。
-    #
-    #    ms_stub 必须为 32 字符的 md5 hex 字符串（与 dart 一致，否则抛 ValueError）。
     if len(ms_stub) != 32:
         raise ValueError("ms_stub must be 32-char md5 hex string")
 
@@ -115,12 +110,9 @@ def generate_xbogus(ms_stub: str, counter: int = 1) -> str:
     return _encode_base64(bytes(final_data))
 
 
-# 由 room_id 与 unique_id 拼出固定顺序参数串，md5 后交给 generate_xbogus，
-# 返回抖音弹幕 WebSocket 握手所需的 signature 字符串。
+# 由 room_id 与 unique_id 拼出固定顺序参数串（逗号拼接 -> md5 -> generateXbogus(md5, 1)，
+# 与 dart getSignature 一致），返回抖音弹幕 WebSocket 握手所需的 signature 字符串。
 def danmaku_signature(room_id: str, unique_id: str) -> str:
-    # 抖音弹幕 WebSocket 的 signature 参数（与 dart getSignature 一致）。
-    #
-    #    params 按固定顺序逗号拼接 -> md5 -> generateXbogus(md5, 1)。
     params = [
         ("live_id", "1"),
         ("aid", "6383"),

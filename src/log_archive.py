@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import TextIO
 
 import i18n
-from src.danmaku_monitor import close_monitor_file
+from src.danmaku_monitor import close_monitor_file, resume_monitor_writes, suspend_monitor_writes
 from src.logger import (
     GUI_PARENT_ENV,
     add_file_sinks,
@@ -29,6 +29,12 @@ from src.logger import (
 # 边车文件经 DanmakuMonitorHub.close_file()、web_console 经流对象自身 flush+close()。
 # 归档全程不抛异常：单文件失败（如句柄被第三方进程占用）仅告警跳过，绝不中断停止录制流程；
 # 归档后日志链路立即恢复（loguru 重新 add 即创建全新同名文件），不影响现有日志写入逻辑。
+#
+# 两条 2026-09-22 补的失败形态（各自的细则见对应函数注释）：
+# - MID-2243：弹幕边车改名期间套一层「归档窗口抑制」（suspend_monitor_writes /
+#   resume_monitor_writes），否则延迟事件会把句柄抢回来、改名必然抛 PermissionError；
+# - MID-2258：web_console 改名后重开失败时回退到 os.devnull 并置 pending 标记，
+#   既不能让 print() 往已关闭对象上写，也要保证下一轮归档会把链路接回真实文件。
 
 
 # 参与归档的运行日志文件名（logs 目录下固定 ASCII 名，不含空格与非法字符）
@@ -45,6 +51,13 @@ _DISABLE_ENV = "DOUYIN_DISABLE_LOG_ARCHIVE"
 
 # 归档串行锁：Web 面板停止与进程退出（atexit）可能并发触发，避免同一文件被重复处理
 _archive_lock = threading.Lock()
+
+# web_console.log 句柄重建失败的一次性标记（MID-2258）：置位 = 改名后重开失败、sys.stdout/sys.stderr
+# 正落在 os.devnull 黑洞上。必须显式记这一位而非「等下次自然恢复」——devnull 的 name 不匹配
+# _streams_bound_to() 的判定，下一轮归档会认为「没有绑定本文件的标准流」从而永不重开，一次失败即把
+# 整个进程剩余生命周期的控制台输出丢进黑洞。有本标记后 _archive_web_console 每轮开头/结尾各再试一次，
+# 重开成功即清零；只在 _archive_lock 内读写，无需额外同步。
+_web_console_rebind_pending = False
 
 
 # 生成归档目标路径：原名_YYYYMMDD_HHMMSS.扩展名；目标已存在时依次追加 _1/_2 序号避免覆盖。
@@ -74,21 +87,41 @@ def _streams_bound_to(path: str) -> list[TextIO]:
 # 重建 web_console.log 句柄并重新接管 sys.stdout/sys.stderr 与 loguru 控制台 sink
 # （与 web.py::_enter_background_mode 同参数：追加写 + 行缓冲，保证后台日志实时落盘）。
 def _rebind_web_console(path: str) -> None:
+    global _web_console_rebind_pending
     try:
         stream = open(path, "a", encoding="utf-8", buffering=1)
+        _web_console_rebind_pending = False
     except OSError as e:
         logger.warning(i18n.tr("重建 web_console.log 句柄失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
-        return
+        # MID-2258：这里绝不能只告警后 return。_archive_web_console 在改名前已经把指向该
+        # 文件的原句柄 flush+close 掉，而 sys.stdout/sys.stderr 仍指向那个**已关闭对象**，
+        # 于是本进程剩余生命周期的每一次 print() 都抛 ValueError: I/O operation on closed
+        # file（表现为「点一次停止录制之后随机崩、Web 面板日志从此不再更新」）。
+        # 回退到 os.devnull 保证标准流一定可写，控制台 sink 照常重建（写丢弃但不抛），
+        # 同时置位 pending，由下一轮归档继续尝试把链路接回真实文件。
+        _web_console_rebind_pending = True
+        try:
+            stream = open(os.devnull, "w", encoding="utf-8")
+        except OSError as e2:
+            # 连 os.devnull 都打不开只可能是 fd/句柄耗尽这类进程级绝境，此时任何回退手段
+            # 同样会失败。留一条 error 线索并保留当前标准流，不再叠加第二次异常。
+            logger.error(i18n.tr("回退到 os.devnull 也失败: {type_name}: {e}", type_name=type(e2).__name__, e=e2))
+            return
     sys.stdout = stream
     sys.stderr = stream
     rebind_console_sink()
 
 
-# 归档 web_console.log：先关句柄再改名。该文件仅在 Web 后台模式下被重定向为
-# sys.stdout/sys.stderr（同一对象）；改名后立即重建句柄，后续输出写往全新的同名文件，
-# 避免任何线程向已关闭句柄写入。文件存在但未绑定标准流（历史遗留）时仅改名、不动标准流。
+# 归档 web_console.log（仅 Web 后台模式下被重定向为 sys.stdout/sys.stderr、且为同一对象）。
+# 改名后立即重建句柄，后续输出写往全新同名文件，避免线程向已关闭句柄写入；
+# 文件存在但未绑定标准流（历史遗留）时仅改名、绝不劫持当前 stdout。
 def _archive_web_console(logs_dir: str, ts: str, archived: list[str]) -> None:
     path = os.path.join(logs_dir, "web_console.log")
+    if _web_console_rebind_pending and not os.path.isfile(path):
+        # 上一轮重开失败（标准流还写在 devnull 黑洞上）且此刻原文件也不存在：
+        # 本轮只负责把链路接回来，不产生归档条目——刚 open 出来的空文件不该被改名。
+        _rebind_web_console(path)
+        return
     if not os.path.isfile(path):
         return
     bound = _streams_bound_to(path)
@@ -107,10 +140,12 @@ def _archive_web_console(logs_dir: str, ts: str, archived: list[str]) -> None:
         logger.warning(
             i18n.tr("日志归档失败(跳过): web_console.log - {type_name}: {e}", type_name=type(e).__name__, e=e)
         )
-        if bound:
+        if bound or _web_console_rebind_pending:
             _rebind_web_console(path)
         return
-    if bound:
+    if bound or _web_console_rebind_pending:
+        # 除「标准流确实被我们关过」外，额外允许 pending 分支：上一轮重开失败时标准流落在
+        # devnull 上、_streams_bound_to 匹配不到本文件，此处若不重建就成了永久黑洞。
         _rebind_web_console(path)
 
 
@@ -158,9 +193,18 @@ def archive_runtime_logs(*, reopen_streams: bool = True) -> list[str]:
             _rename_one(os.path.join(logs_dir, "streamget.log"), ts, archived)
             _rename_one(os.path.join(logs_dir, "PlayURL.log"), ts, archived)
 
-            # 弹幕监控边车文件：hub 自管句柄 flush+close，下一条事件写入时自动重开
-            close_monitor_file()
-            _rename_one(os.path.join(logs_dir, "danmaku_monitor.jsonl"), ts, archived)
+            # 弹幕监控边车文件：进入归档窗口（MID-2243）——先置位抑制标记再关句柄，
+            # 窗口内「已入队」与「新到达」的事件一律丢弃、不重开句柄。旧实现只 close 一次，
+            # 之后任何一条延迟事件（delay_default 最长 120s 仍在推）都会经写线程的惰性重开
+            # 重新持有该文件，Windows 下改名必抛 PermissionError，于是这个文件基本永不归档。
+            suspend_monitor_writes()
+            try:
+                close_monitor_file()
+                _rename_one(os.path.join(logs_dir, "danmaku_monitor.jsonl"), ts, archived)
+            finally:
+                # 改名成功或失败都要退出窗口：抑制只是为了争取一个「无人持有句柄」的改名窗口，
+                # 留在抑制态会让 GUI 监控页与 Web 弹幕面板永久停更。
+                resume_monitor_writes()
 
             if reopen_streams:
                 # 进程继续运行：重新注册文件 sink，loguru add() 即创建全新同名文件

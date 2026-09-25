@@ -24,53 +24,47 @@ from src.ffmpeg_proc import _get_error_line
 # 汇总录制引擎运行状态快照（版本号、监控数、正在录制列表及时长/画质、累计与窗口错误数、
 # 磁盘剩余空间、运行时长、引擎线程是否存活）；无入参，返回可直接 JSON 序列化的字典
 def get_status() -> dict[str, object]:
-    # 返回录制引擎状态快照（线程安全），供 Web API 调用。
-    #
-    #     注意：部分录制路径在未持有 record_state_lock 的情况下修改 recording /
-    #     recording_time_list（既有行为），因此即便持锁迭代仍可能触发
-    #     "Set changed size during iteration"。此处用有限次重试兜底。
-    #
+    # MI-10：原「5 次重试 + 失败兜底」依据「部分路径未持 record_state_lock 改 recording /
+    # recording_time_list」；核查全部写入点（main.py 录制增删、src/notify.py 计数更新）均在
+    # with main.record_state_lock 内 → 死逻辑，改为单次持锁快照；except 保留作无锁写入留痕。
     now = datetime.datetime.now()
-    # 既有代码存在未加锁的并发写，持锁迭代可能抛 RuntimeError，重试兜底
     recording_snapshot: list[str] = []
     recording_times: dict[str, dict[str, str]] = {}
     monitoring_val: int = main.monitoring
     running_val: list[str] = []
     error_val: int = main.error_count
-    snapshot_ok = False
-    for _attempt in range(5):
-        try:
-            with main.record_state_lock:
-                recording_snapshot = list(main.recording)
-                recording_times = {}
-                for _name, _info in main.recording_time_list.items():
-                    if _info and len(_info) > 1:
-                        # 兼容旧格式 [start, quality] 和新格式 [start, quality, actual_quality]
-                        _start = cast(datetime.datetime, _info[0])
-                        _quality = str(_info[1])
-                        _actual_q = str(_info[2]) if len(_info) > 2 else ""
-                        recording_times[_name] = {
-                            "start_time": _start.strftime("%Y-%m-%d %H:%M:%S"),
-                            "quality": _quality,
-                            "actual_quality": _actual_q,
-                            "duration": str(now - _start).split(".")[0],
-                        }
-                    else:
-                        recording_times[_name] = {
-                            "start_time": "",
-                            "quality": "",
-                            "actual_quality": "",
-                            "duration": "0:00:00",
-                        }
-                monitoring_val = main.monitoring
-                running_val = list(main.running_list)
-                error_val = main.error_count
-                snapshot_ok = True
-                break
-        except RuntimeError, IndexError:
-            continue
-    if not snapshot_ok:
-        logger.warning("获取录制状态失败（并发竞争），返回空快照")
+    try:
+        with main.record_state_lock:
+            recording_snapshot = list(main.recording)
+            recording_times = {}
+            for _name, _info in main.recording_time_list.items():
+                if _info and len(_info) > 1:
+                    # 兼容旧格式 [start, quality] 和新格式 [start, quality, actual_quality]
+                    _start = cast(datetime.datetime, _info[0])
+                    _quality = str(_info[1])
+                    _actual_q = str(_info[2]) if len(_info) > 2 else ""
+                    recording_times[_name] = {
+                        "start_time": _start.strftime("%Y-%m-%d %H:%M:%S"),
+                        "quality": _quality,
+                        "actual_quality": _actual_q,
+                        "duration": str(now - _start).split(".")[0],
+                    }
+                else:
+                    recording_times[_name] = {
+                        "start_time": "",
+                        "quality": "",
+                        "actual_quality": "",
+                        "duration": "0:00:00",
+                    }
+            monitoring_val = main.monitoring
+            running_val = list(main.running_list)
+            error_val = main.error_count
+    # 注：需要绑定异常对象时不能省括号（`except A, B as e:` 非法），此处保留括号写法
+    except (RuntimeError, IndexError) as e:
+        # 理论上不可达（写入点均已持锁）；一旦出现说明有新增路径漏锁，必须留痕
+        logger.warning(
+            i18n.tr("获取录制状态失败（疑似新增无锁写入路径），返回空快照: {type_name}", type_name=type(e).__name__)
+        )
     # 窗口口径错误数：error_window 由 max_request_lock 保护，持锁采样避免迭代期并发修改
     with main.max_request_lock:
         recent_errors_val = sum(main.error_window)
@@ -83,7 +77,10 @@ def get_status() -> dict[str, object]:
         engine_alive = True
     else:
         engine_alive = main._recorder_thread.is_alive()
-    uptime = str(now - main.start_display_time).split(".")[0] if main.start_display_time else "0:00:00"
+    # MI-09：用 process_start_time（进程启动即固定）而非 start_display_time——
+    # 后者被 display_info 每 5 秒重置为当前时刻，会让 uptime 恒定在 0~5 秒之间。
+    _proc_start = getattr(main, "process_start_time", None)
+    uptime = str(now - _proc_start).split(".")[0] if _proc_start else "0:00:00"
     return {
         "version": main.version,
         "monitoring": monitoring_val,
@@ -122,18 +119,50 @@ def _live_network_capacity() -> int:
     # （ConcurrencyScheduler | None，main.py），属性必然存在，无需 getattr 兜底。
     scheduler = main.scheduler
     if scheduler is not None:
-        return scheduler.network_semaphore.value
+        # 读 capacity（并发上限）而不是 value（剩余可用许可）：SEV-01 修复后二者分离，
+        # 有房间持槽时 value 会随瞬时占用下跌，显示出来就成了「空闲槽数」，同样误导——
+        # 用户要看到的是调度器设定的并发上限本身。
+        return scheduler.network_semaphore.capacity
     return main.max_request
+
+
+# display_info 的刷新节拍与异常退避（MID-31）：正常每 _DISPLAY_INTERVAL_SECONDS 秒刷一次，
+# 连续失败按 2^n 指数退避、封顶 _DISPLAY_BACKOFF_MAX_SECONDS（原实现唯一 sleep 在 try 体内、
+# except 无退避 → 异常路径零间隔重入，单核跑满 + 秒级灌满日志）。
+_DISPLAY_INTERVAL_SECONDS = 5.0
+_DISPLAY_BACKOFF_MAX_SECONDS = 300.0
+
+
+def _sleep(seconds: float) -> None:
+    # time.sleep 的模块内间接层（与 src/scheduler._sleep 同型）：供用例注入计数/停循环。
+    # 不得改为 monkeypatch recorder_status.time——那是 stdlib 模块本体，会波及同进程所有线程。
+    time.sleep(seconds)
+
+
+def _display_delay(consecutive_failures: int) -> float:
+    # 连续失败次数 → 下次休眠秒数：0 次为常规节拍，其后 5s×2^n（首次失败即 ≥2 倍常规节拍）
+    # 并封顶 _DISPLAY_BACKOFF_MAX_SECONDS。
+    # 指数上界钳到 16：本线程可能连续失败数天，没必要为此算 2^几千。
+    # 底数刻意写成 2.0：typeshed 里 int ** int 的返回类型是 Any（会经 warn_return_any 报
+    # no-any-return），float ** int 才是确定的 float。
+    if consecutive_failures <= 0:
+        return _DISPLAY_INTERVAL_SECONDS
+    return min(_DISPLAY_INTERVAL_SECONDS * (2.0 ** min(consecutive_failures, 16)), _DISPLAY_BACKOFF_MAX_SECONDS)
 
 
 # 守护线程主体：每 5 秒清屏并打印监控数/并发数/画质/格式/累计错误数及各房间已录时长；无入参，死循环不返回
 def display_info() -> None:
-    # 后台线程：刷新控制台状态显示
-    time.sleep(5)
+    _sleep(_DISPLAY_INTERVAL_SECONDS)
+    consecutive_failures = 0
     while True:
+        # 无控制台环境下 sys.stdout 就是 None（pythonw.exe / 冻结 console=False exe，见 AGENTS
+        # 「无控制台环境」条目），而 main.py 无条件启动本线程。必须在进入 try 之前判空：
+        # 否则每轮 AttributeError → logger.error → 紧循环，既占满一个核又把 streamget.log 灌满。
+        if sys.stdout is None:
+            _sleep(_DISPLAY_INTERVAL_SECONDS)
+            continue
         try:
             _ = sys.stdout.flush()
-            time.sleep(5)
             if sys.stdout.isatty():
                 _ = sys.stdout.write("\033[2J\033[H")
                 _ = sys.stdout.flush()
@@ -161,7 +190,7 @@ def display_info() -> None:
             print(i18n.tr("当前时间: {now}", now=now))
 
             if len(main.recording) == 0:
-                time.sleep(5)
+                _sleep(_DISPLAY_INTERVAL_SECONDS)
                 if main.monitoring == 0:
                     print("\r没有正在监测和录制的直播")
                 else:
@@ -199,7 +228,13 @@ def display_info() -> None:
                 # print('\n本软件已运行：'+str(now_time - start_display_time).split('.')[0])
                 print("x" * 60)
                 main.start_display_time = now_time
+            consecutive_failures = 0
         except Exception as e:
+            consecutive_failures += 1
             logger.error(
                 i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e))
             )
+        # 节拍控制放 try 之外（finally 亦可，根因见 MID-31）：flush 自身抛错（Web 后台模式下
+        # logs/web_console.log 被归档改名、句柄已关时抛 ValueError: I/O operation on closed
+        # file）或更早语句抛错都会跳过 try 内的 sleep → 零间隔重入，故按连续失败次数退避。
+        _sleep(_display_delay(consecutive_failures))

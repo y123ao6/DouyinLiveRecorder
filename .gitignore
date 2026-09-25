@@ -1,10 +1,10 @@
 # =============================================================================
 # DouyinLiveRecorder .gitignore
 # -----------------------------------------------------------------------------
-# 原则：忽略字节码 / 构建产物 / 虚拟环境 / 测试与覆盖率 / 敏感配置 /
-#       运行期产物（录制文件、日志、备份）与本地工具目录；
-#       保留：源码、编译好的 .mo 翻译（gettext 运行时必需）、StopRecording.vbs 等分发脚本。
-#       运行时资源 config/、ffmpeg/、node/ 与 exe 同级，但 config/*.ini 含敏感信息需忽略。
+# 原则：忽略字节码 / 构建产物 / 虚拟环境 / 测试与覆盖率 / 敏感配置 / 运行期产物
+#   （录制文件、日志、备份）与本地工具目录；保留源码、编译好的 .mo（gettext 运行时必需）、
+#   StopRecording.vbs 等分发脚本。
+# 运行时资源 config/、ffmpeg/、node/ 与 exe 同级，但 config/*.ini 含凭据信息需忽略。
 # =============================================================================
 
 # Byte-compiled / optimized / DLL files
@@ -54,11 +54,18 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+coverage.json
 *.cover
 *.py,cover
 .hypothesis/
 .pytest_cache/
 cover/
+
+# 排查 / 测试期的一次性临时脚本与其输出（仅兜底；收尾仍须按 AGENTS.md「测试收尾清理临时脚本」删除）
+*_tmp_*.py
+tmp_*.py
+*_tmp_*.txt
+tmp_*.txt
 
 # Translations
 *.pot
@@ -93,10 +100,17 @@ profile_default/
 ipython_config.py
 
 # ---------------- DouyinLiveRecorder 专用（运行时自动生成目录）----------------
-backup_config/        # 运行时配置自动备份（main.py 修改 config 时生成）
-logs/                 # 运行日志（logs/streamget.log 等，DEBUG/ERROR 落盘）
-node/                 # 运行时自动下载的 Node.js（Windows 专用，容器内改用 apt 安装）
-node-v*.zip           # Node.js 安装包
+# 注意（MID-2255，与 .dockerignore 同族修正）：本文件里 `#` **只有行首才是注释**，行内 `#` 会被
+# 当成模式字面量——原先四条带行内说明的写法各自变成一条永不匹配的长模式（`git check-ignore
+# node/foo` 不命中即为证），其中 node/ 与 node-v*.zip 再无其它兜底规则。忽略意图不变，只把注释移到独立行。
+# 运行时配置自动备份（main.py 修改 config 时生成）
+backup_config/
+# 运行日志（logs/streamget.log 等，DEBUG/ERROR 落盘）
+logs/
+# 运行时自动下载的 Node.js（Windows 专用，容器内改用 apt 安装）
+node/
+# Node.js 安装包
+node-v*.zip
 
 # pyenv
 # For a library or package, you might want to ignore these files since the code is
@@ -206,15 +220,18 @@ ffmpeg/ffprobe
 downloads/
 recordings/
 
-# 配置备份目录（运行时自动生成）
 backup_config/
 
 # 日志文件（含 logs/ 目录与根目录散落日志）
 logs/
 *.log
 *.log.*
+# 弹幕监控边车日志（logs/danmaku_monitor.jsonl；与 .dockerignore 同源维护）
+*.jsonl
 
-# 编译的翻译文件 .mo 随仓库分发（gettext 运行时必需，不忽略）；仅忽略临时编译脚本
+# .mo 编译翻译文件随仓库分发（gettext 运行时必需，不忽略）
+# 注：下面一条是空规则——compile_po.py 真身在 scripts/ 下，i18n/ 内从来没有该文件
+# （与 .dockerignore 侧 MID-2255 已删除的同名规则同源核对）
 i18n/**/compile_po.py
 
 # Windows 特定文件
@@ -255,14 +272,17 @@ desktop.ini
 .codebuddy/
 .trae/
 
-# 临时 / 过程性文档（CODE_WIKI*.md / CODE_REVIEW_FIX_1.md / DIAGNOSIS_*.md 是正式架构与审查记录，
-# 随仓库分发，不忽略；此处只兜底开发期随手记的临时笔记名）
+# 临时 / 过程性文档（只兜底开发期随手记的临时笔记名；CODE_WIKI*.md / CODE_REVIEW_FIX_1.md /
+# DIAGNOSIS_*.md 是正式架构与审查记录，随仓库分发、不忽略）
+# PROPOSAL_*.md（待审批的生产代码改动提案）同属正式记录，刻意**不在此处忽略**，只在
+# .dockerignore 里排除以免增大镜像；新增同类前缀时两处同改。
 CODE_CHANGES.md
 TRAE_AGENT_CODE_WIKI.md
 PERF_REVIEW_*.md
 
-# 本地工具 / 审查生成物（第三方编码代理 / 浏览器测试 / 插件源码等；与 .dockerignore 及 pyproject 各工具排除列表同源维护）
+# 本地工具 / 审查生成物（与 .dockerignore 及 pyproject 各工具排除列表同源维护）
 .qoder/
+.qoder-credits/
 .agents/
 .pnpm-store/
 .npm-cache/
@@ -282,3 +302,11 @@ pytest-cache-files-*/
 
 # isort 备份残留（格式化工具偶发生成的 .py.isorted，需清理避免误提交）
 *.isorted
+
+# 审查修复轮的临时产物（2026-09-22/23 新增形态；与 .dockerignore 同源维护）
+# _out_*.txt 为各组修复代理按简报约定的重定向输出（AGENTS.md「临时输出文件」命名），收尾须自行
+# 删除、此处仅兜底防误提交；_probe_*.py 为并行修复组新建的临时探针脚本，归属主会话裁定后再定去留。
+# 刻意**不**忽略 _FIX_BRIEF_*.md / _i18n_pending.json / _run.py —— 那三个由主会话在收尾统一处置，
+# 忽略会让「忘记删」变成永久静默。
+_out_*.txt
+_probe_*.py

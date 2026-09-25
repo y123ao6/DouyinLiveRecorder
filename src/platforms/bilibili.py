@@ -3,6 +3,9 @@
 # 协议：WebSocket wss://{serverHost}/sub，大头序 16B 帧头
 # [包长4][头长2=16][protover2][op4][seq4]。
 # protover=2 需 zlib 解压，=3 需 brotli 解压（依赖 brotli 包）。
+# buvid 获取链（进程缓存→登录 cookie→spi→首页 Set-Cookie→随机 UUID 兜底）与
+# AUTH_REPLY 显式校验的完整约定见 AGENTS.md「B站弹幕 buvid 必须真实」条目；本文件
+# 负责被拒侧：_reject_auth() 断开并使 spider 侧 buvid 缓存失效 + 看门狗兜底静默拒绝。
 
 from __future__ import annotations
 
@@ -18,16 +21,37 @@ from loguru import logger
 
 import i18n
 from src.base import DanmakuBase, DanmakuMessage, DanmakuMessageType, spawn_danmaku_task
-from src.ws_client import WsClient
+
+# MI-01：解压上限与带限长解压助手统一取自 ws_client
+from src.ws_client import _MAX_DECOMPRESSED_BYTES, WsClient, decompress_brotli_limited, decompress_limited
 
 HEADER_LEN = 16
+
+# SEV-2215（2026-09-22）：弹幕 WS 的连接主机完全取自 getDanmuInfo 的响应，而连接时
+# 会带上用户登录 Cookie（SESSDATA/DedeUserID）→ 响应可把凭据引向任意主机（凭据外泄 + SSRF）。
+# 真实 host 形如 broadcastlv.chat.bilibili.com / broadcastlv2.chat.bilibili.com；
+# 白名单按「精确等于或 . 后缀」判定，覆盖 B站官方域名族实际会出现的域。
+_BILI_DANMAKU_ALLOWED_HOST_SUFFIXES = (
+    "bilibili.com",
+    "bilivideo.com",
+    "bilivideo.cn",
+    "hdslb.com",
+)
+
+
+def _bili_danmaku_host_allowed(host: str) -> bool:
+    # 判定弹幕服务器 host 是否落在 B站官方域名族内。用「精确等于或 . 后缀」而非裸 endswith，
+    # 防 evil-bilibili.com / notbilibili.com 这类后缀伪装被放行。空/带端口/带 path 一律拒绝。
+    name = (host or "").strip().lower()
+    if not name or "/" in name or ":" in name:
+        return False
+    return any(name == suffix or name.endswith("." + suffix) for suffix in _BILI_DANMAKU_ALLOWED_HOST_SUFFIXES)
 
 
 # B站弹幕客户端：封装 WebSocket 连接、进房、心跳与消息解密。
 class BilibiliDanmaku(DanmakuBase):
     heartbeat_interval = 60.0  # 60s
 
-    # 初始化：调用父类并重置内部状态（参数、WS 连接、进房标志）。
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._args: dict = {}
@@ -48,9 +72,24 @@ class BilibiliDanmaku(DanmakuBase):
         hosts = [str(h) for h in (self._args.get("host_list") or []) if h]
         if server_host and server_host not in hosts:
             hosts.insert(0, server_host)
+        # SEV-2215：在建立连接（携带登录 Cookie）之前先按官方域白名单过滤。响应指定的 host
+        # 不落在白名单内即跳过并 WARNING——绝不向该 host 发凭据。原先所有候选被过滤掉时降级
+        # 为「只录视频不录弹幕」（on_close 通知，不建连），而非退回去连不可信 host。
+        _allowed: list[str] = []
+        for _h in hosts:
+            if _bili_danmaku_host_allowed(_h):
+                _allowed.append(_h)
+            else:
+                logger.warning(
+                    i18n.tr(
+                        "[B站弹幕]跳过非官方域弹幕服务器（可能被劫持，不发送凭据）: {host}",
+                        host=_h,
+                    )
+                )
+        hosts = _allowed
         if not hosts:
             if self._on_close:
-                self._on_close("无可用弹幕服务器")
+                self._on_close(i18n.tr("无可用弹幕服务器（host 均不在 B站官方域白名单内）"))
             self._session_ok = False
             return
 
@@ -94,11 +133,10 @@ class BilibiliDanmaku(DanmakuBase):
     async def _join_room(self) -> None:
         if self._ws is None:
             return
-        # 与 dart 一致：uid/buvid 匿名亦可，token 必须。
-        # uid 必须是观众自身 uid（匿名=0），不能传房间主的 uid（get_bilibili_danmaku_info
-        # 返回的 uid 是主播 uid）：真机对照探针证实 uid=主播uid 时弹幕服务器在 AUTH 后
-        # 立刻硬断连（1006 / "no close frame"），uid=0 则正常收到 AUTH_REPLY 与弹幕。
-        # 登录态 cookie（SESSDATA）携带 DedeUserID 时取其作为观众 uid。
+        # 与 dart 一致：uid/buvid 匿名亦可，token 必须。uid 必须是观众自身 uid（匿名=0），不能传
+        # 房间主的 uid（get_bilibili_danmaku_info 返回的 uid 是主播 uid）：真机对照探针证实
+        # uid=主播uid 时弹幕服务器在 AUTH 后立刻硬断连（1006 / "no close frame"），uid=0 则正常
+        # 收到 AUTH_REPLY 与弹幕。登录态 cookie（SESSDATA）携带 DedeUserID 时取其作为观众 uid。
         _m = re.search(r"DedeUserID=(\d+)", str(self._args.get("cookie") or ""))
         viewer_uid = int(_m.group(1)) if _m else 0
         join_body = json.dumps(
@@ -122,9 +160,8 @@ class BilibiliDanmaku(DanmakuBase):
     # 进房认证超时（秒）：AUTH 发出后该时长内未收到 code=0 回应视为被拒/异常
     _AUTH_TIMEOUT = 8.0
 
-    # 认证看门狗：进房包发出后限时未收到 AUTH_REPLY(code=0) 则按被拒处理。
-    # 部分拒绝形态下服务器不回 AUTH_REPLY（连接保持、静默不推弹幕），与 code!=0 的
-    # 软拒绝表现一致，靠看门狗兜底断开，避免"连接就绪"却 0 弹幕且无任何日志。
+    # 认证看门狗：进房包发出后限时未收到 AUTH_REPLY(code=0) 则按被拒处理（静默拒绝与 code!=0 的
+    # 软拒绝表现一致：连接保持、心跳照发，只能靠这里兜底；处置理由见 _reject_auth）。
     # ws 为发送进房包时的连接实例：若期间已切换到下一 host，本次看门狗作废。
     async def _auth_watchdog(self, ws: WsClient) -> None:
         await asyncio.sleep(self._AUTH_TIMEOUT)
@@ -140,13 +177,17 @@ class BilibiliDanmaku(DanmakuBase):
         )
         self._reject_auth()
 
-    # 认证被拒统一处理：置停止标志、关闭连接，并使 spider 侧 buvid 缓存失效——
-    # 兜底随机 UUID 被服务器拒绝后不可复用，失效后下一轮监测重新走真实获取链
-    # （cookie/spi/首页 Set-Cookie）。真实 buvid 被拒时重取亦无副作用。
+    # 认证被拒统一处理：置停止标志、关闭连接，并使 spider 侧 buvid 缓存失效——兜底随机 UUID
+    # 被服务器拒后不可复用，失效后下一轮监测重走真实获取链（cookie/spi/首页 Set-Cookie）；
+    # 真实 buvid 被拒时重取亦无副作用。
+    # MID-2245：这里必须走 WsClient.fail() 而不是 close()。close() 的语义是「调用方主动停止」，
+    # connect() 的两条 `if self._stopped: break` 出口都不回调 on_close，于是 collector 侧与
+    # room_connected 配对的 hub.room_closed() 永不发出，Web 弹幕监控页会把该房间永久停在
+    # 「已连接 / 0 条」——即本文件要消灭的「静默零弹幕无线索」。
     def _reject_auth(self) -> None:
         self._stopped = True
         if self._ws is not None:
-            asyncio.ensure_future(self._ws.close())
+            asyncio.ensure_future(self._ws.fail(i18n.tr("进房认证被拒（AUTH_REPLY 非 0 或超时未回应）")))
         try:
             from src import spider  # 懒加载：避免 platforms <-> spider 循环导入
 
@@ -159,7 +200,6 @@ class BilibiliDanmaku(DanmakuBase):
         if self._ws is not None:
             await self._ws.send(self._encode("", action=2))
 
-    # 停止：置停止标志并关闭 WebSocket 连接。
     async def stop(self) -> None:
         self._stopped = True
         if self._ws is not None:
@@ -219,10 +259,9 @@ class BilibiliDanmaku(DanmakuBase):
             return
 
         if operation == 8:
-            # 进房包（AUTH）回应：code==0 才会推送弹幕。非 0 时弹幕服务器软拒绝——连接保持
-            # 不断开也不推弹幕，此前完全无感知（表现为"连接就绪"但 0 弹幕）。显式校验并
-            # 主动断开（_reject_auth 同时使 buvid 缓存失效，下一轮重新获取），等待下一轮
-            # 监测重新取参数进房。
+            # 进房包（AUTH）回应：code==0 才会推弹幕。非 0 时服务器软拒绝——连接保持不断开也不推
+            # 弹幕（此前完全无感知），故显式校验并主动断开：_reject_auth 同时使 buvid 缓存失效，
+            # 等下一轮监测重取参数进房。
             try:
                 reply = json.loads(body.decode("utf-8", errors="ignore") or "{}")
             except Exception:
@@ -243,14 +282,17 @@ class BilibiliDanmaku(DanmakuBase):
             return  # 其他操作码忽略
 
         try:
+            # MI-01：三处解压都必须限长。zlib/brotli 的高压缩比会让几百 KB 的帧在内存里
+            # 展开成 GB 级对象（解压炸弹面），而本进程同时还跑着录制主流程。
             if proto_ver == 2:
-                payload = zlib.decompress(body)
+                payload = decompress_limited(body, _MAX_DECOMPRESSED_BYTES, wbits=15)
             elif proto_ver == 3:
-                payload = brotli.decompress(body)
+                # brotli 绑定无 max_output_size 参数，改用分块解压 + 累计限长
+                payload = decompress_brotli_limited(body, _MAX_DECOMPRESSED_BYTES)
             else:
                 payload = body
         except Exception:
-            return  # 解压失败丢弃
+            return  # 解压失败或超限丢弃
 
         # 解压后的包内多条 JSON 以控制字符（\x00-\x1f）分隔（与 dart split [\x00-\x1f] 一致），
         # 使用 splitlines 会把整包当一行导致 json.loads 失败，这里按控制字符切分

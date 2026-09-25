@@ -14,11 +14,12 @@
 #     故 pip 缓存 key 以这两个文件的 hash 为准。
 #   · 打包由根目录 build_exe.py（PyInstaller）承担，本地与 CI 行为一致。
 #
-# Job 拓扑（lint / type / test / build 六路并行，收尾串行汇总）：
+# Job 拓扑（lint / audit / type / test / build 七路并行，收尾串行汇总）：
 #
-#   setup ──┬── static             格式 / 导入序 / 版本一致性 / i18n po-mo 同步
+#   setup ──┬── static             格式 / 导入序 / 版本一致性 / 运行时钉定表结构 / i18n po-mo 同步
+#           ├── deps-audit         pip-audit 按 OSV 审计 requirements.txt（补-05）
 #           ├── typecheck          mypy（最低支持版本 3.14；范围取 pyproject [tool.mypy].files）
-#           ├── test               pytest 矩阵（3.14）+ 全局与逐模块覆盖率门禁
+#           ├── test               pytest 矩阵（3.14）+ 全局与逐模块覆盖率门禁 + Web 面板 HTTP 冒烟
 #           ├── concurrency-test   线程安全 / 跨事件循环锁 / 速率限制专项
 #           ├── integration-verify ffmpeg / node 真实环境探测验证
 #           └── build-verify       PyInstaller lite 打包 + CLI/Web/GUI 三入口冒烟
@@ -45,6 +46,20 @@
 #     （apt 自身网络重试）+ --no-install-recommends（免装推荐包，更快更省盘）。
 #
 # ---------------------------------------------------------------------------
+# 已接受的残余缺口（刻意不在本工作流覆盖，勿「顺手补」）
+# ---------------------------------------------------------------------------
+#   · tests/test_stop_recording_vbs.py 的 4 条 **cscript 行为锁**（:167/:178/:192/:201，
+#     skip 条件为 :27 的 `CSCRIPT = shutil.which("cscript")` 取不到）在本 workflow
+#     的全部 ubuntu job 上**永不执行**——它们验证的是 StopRecording.vbs 杀进程树的真实行为
+#     （按映像名/命令行/父进程三层匹配、先杀主进程后清孤儿 ffmpeg）。为它们加一个 Windows
+#     runner 的额度成本远高于收益（该脚本变更频率极低、且有静态锁在 ubuntu 上生效），
+#     故按「**仅本地执行、不属 required check**」处理：改动 StopRecording.vbs 时必须在
+#     Windows 上手动跑 `pytest tests/test_stop_recording_vbs.py` 并把结果写进更新日志
+#     （见 AGENTS.md「完成定义」第 2 步的 SKIP(原因) 口径）。
+#     同一文件里的静态/AST 类断言（编码为 UTF-16 LE、进程名清单与 build_exe.py 对齐等）
+#     在 ubuntu 上照常执行，本缺口仅指需要真起 cscript 进程的那 4 条。
+#
+# ---------------------------------------------------------------------------
 # 环境变量与 Secrets 说明
 # ---------------------------------------------------------------------------
 #   本工作流 **默认不需要自定义 secret**；仅 Codecov 上传为可选能力（见下文
@@ -60,6 +75,10 @@
 #                              且为最低支持版本」时运行；未配置则自动跳过，不阻断 CI。
 #                              公开仓库也可不配置（Codecov 可从 commit 关联推断），配置后
 #                              报告更可靠。使用浮动主版本 codecov/codecov-action@v7。
+#                              **传参口径（MIN-2263）**：该 secret 只以 step 级 env 出现在
+#                              「Detect Codecov token」与「Upload coverage to Codecov」两步，
+#                              test job 不再有 job 级 env——否则 token 会进入 pytest（执行
+#                              仓库测试代码）与 pip 安装的第三方包所在的整棵进程树。
 # =============================================================================
 
 name: CI
@@ -143,9 +162,15 @@ jobs:
             echo "mypy_version=2.3.1"
           } >> "$GITHUB_OUTPUT"
 
-      # 仅当 Python 源码 / 测试 / 项目配置 / 翻译目录变更时才跑重活；
-      # 纯文档（*.md）、前端静态资源（web/）变更不触发。
+      # 仅当 Python 源码 / 测试 / 项目配置 / 翻译目录 / 前端不变量 / 镜像与 workflow 变更时才跑重活；
+      # 纯文档（*.md）变更不触发。
       # i18n/** 必须触发：static job 的 compile_po --check 是 .po/.mo 同步的唯一 CI 门禁。
+      # web/** 必须触发：web/app.js 的 parseConfigBool + CONFIG_*_TOKENS 与 src/config_bool.py 是跨语言
+      #   布尔口径不变量（AGENTS.md「布尔配置项统一解析口径」条目），改任一侧都须由 test job 触发
+      #   tests/frontend/test_quality_ui.mjs 回归锁（pytest 包装见 tests/test_frontend_quality_ui.py）。
+      #   [2026-09-20 修订] 旧口径「前端静态资源（web/）变更不触发」已被证伪——web/ 并非纯静态资源。
+      # Dockerfile / docker-compose.yaml 必须触发：镜像 Python/Node 版本常量须与 pyproject 同步。
+      # .github/actions/** 必须触发：retry 复合动作被 ci.yml / build-release.yml 全线复用，接口变更波及所有 job。
       - name: Detect path changes
         uses: dorny/paths-filter@v4
         id: filter
@@ -156,23 +181,26 @@ jobs:
               - 'tests/**'
               - 'scripts/**'
               - 'i18n/**'
+              - 'web/**'
               - 'build_exe.py'
               - 'main.py'
               - 'gui.py'
-              - 'gui_legacy.py'
               - 'web.py'
               - 'i18n.py'
               - 'msg_push.py'
               - 'requirements.txt'
               - 'pyproject.toml'
               - '.coveragerc-concurrency'
+              - 'Dockerfile'
+              - 'docker-compose.yaml'
               - '.github/workflows/**'
+              - '.github/actions/**'
 
-  # ── 1. 静态检查（格式 / 导入序 / 版本一致性 / 翻译同步）─────────────────
-  # 四项检查都是「秒级、零运行时依赖」，合并进同一 job 可省去 3 次 runner 冷启动
+  # ── 1. 静态检查（格式 / 导入序 / 版本一致性 / 钉定表结构 / 翻译同步 / 注释规范）─
+  # 各项检查都是「秒级、零运行时依赖」，合并进同一 job 可省去多次 runner 冷启动
   # （约 30~60s），同时用独立 step 名保留清晰的失败归因。
   static:
-    name: Static Checks (black / isort / version / i18n / annotations)
+    name: Static Checks (black / isort / version / pins / i18n / annotations)
     needs: setup
     if: contains(fromJSON(needs.setup.outputs.filters), 'python')
     runs-on: ubuntu-latest
@@ -202,18 +230,49 @@ jobs:
 
       # 门禁显式传参（AGENTS.md 约定）：line-length / target-version / profile 不经
       # 配置文件隐式继承，必须写全；排除目录仍由 pyproject [tool.black].exclude /
-      # [tool.isort].extend_skip 声明，此处无需重复传参
+      # [tool.isort].extend_skip 声明，此处无需重复传参。
+      # PYTHONUTF8=1（MID-63）：非 UTF-8 locale 下 isort 会对含中文注释的文件抛
+      # 'gbk' codec 编码错误并**静默跳过**、同时返回 rc=0（Windows 中文环境实测 17 个
+      # 自有文件被跳过，含 main.py / src/spider.py），门禁查了个空气。Linux runner 默认
+      # UTF-8 不受影响，但仍与 AGENTS.md「格式化命令」块逐字对齐，避免「本地过、CI 红」
+      # 的反向漂移。
       - name: Run black --check
+        env:
+          PYTHONUTF8: "1"
         run: python -m black --check --diff --line-length 120 --target-version py314 .
 
       - name: Run isort --check
+        env:
+          PYTHONUTF8: "1"
         run: python -m isort --check-only --diff --profile black --line-length 120 .
+
+      # 「有告警即失败」（MID-63 第二条）：isort/black 的 Unable to parse file 走的是
+      # UserWarning 通道，rc 仍为 0，故必须在命令层把它转成硬失败。PYTHONUTF8 已消除
+      # 根因，这一层是防回归网（换机器/换 locale 也不会静默漏文件）。
+      - name: Gate isort/black silent-skip warnings
+        env:
+          PYTHONUTF8: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(python -m isort --check-only --profile black --line-length 120 . 2>&1 >/dev/null || true)
+          if printf '%s' "$out" | grep -q "Unable to parse file"; then
+            printf '::error::isort 静默跳过文件（门禁假绿）：\n%s\n' "$out"
+            exit 1
+          fi
+          echo "isort 未跳过任何文件"
 
       # 校验「版本号单一事实源」：pyproject.toml 为准，
       # main.py / src/web_api.py 动态读取、Dockerfile 经 APP_VERSION 注入
       # （纯标准库实现，无需安装项目依赖）
       - name: Check version consistency
         run: python scripts/check_version.py
+
+      # 运行时二进制钉定表的**结构**检查（SEV-10）：空表 / 缺平台 / 缺槽位 / 与发布矩阵
+      # 漂移即红。--strict（占位值也算失败）只在 build-release.yml 的 prepare 里跑，
+      # 否则每个 PR 都会因「官方哈希待人工核实」被弄红。
+      - name: Check runtime binary SHA256 pins (structure)
+        run: python scripts/check_runtime_pins.py
 
       # 校验 gettext 翻译同步：改 .po 忘记重编译 .mo 时拦截
       # （.mo 随仓库分发，gettext 运行时只读 .mo；纯标准库实现）
@@ -226,11 +285,89 @@ jobs:
       - name: Check annotation conventions
         run: python scripts/check_annotations.py
 
+  # ── 1.5 依赖漏洞审计（pip-audit，补-05）────────────────────────────────
+  # 本仓运行时清单刻意「只有下限、无上限」（唯一例外 protobuf<8），且 uv.lock 不参与
+  # 镜像/CI 安装，于是「声明区间内仍含已知受影响版本」这类问题在既有门禁里完全不可见
+  # （starlette 旧下限 0.49.1 就把 CVE-2026-48710 的 <=1.0.0 整段留在合法区间内）。
+  # pip-audit 直查 OSV：解析 requirements.txt 到临时环境后逐个比对公告。
+  # 刻意只装在本 job（**不进 requirements.txt / [project.dependencies]**：
+  # 它是审计工具、不是运行时依赖，与 pytest/black 同理归 dev 侧）。
+  # 独立成 job 而非塞进 static：static 只装两个秒级 lint 工具，pip-audit 要解析全部
+  # 运行时依赖（分钟级），混在一起会拖慢最常被看的格式门禁，且失败归因会含糊。
+  deps-audit:
+    name: Dependency audit (pip-audit)
+    needs: setup
+    if: contains(fromJSON(needs.setup.outputs.filters), 'python')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python ${{ needs.setup.outputs.python_min }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ needs.setup.outputs.python_min }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install pip-audit
+        uses: ./.github/actions/retry
+        with:
+          label: pip 安装 pip-audit
+          command: >-
+            python -m pip install --upgrade pip
+            && pip install pip-audit
+
+      # 审计对象 = 镜像与 CI 实际消费的那份清单（requirements.txt），
+      # 而非 pyproject 的 dev/gui/build extras：那些不进运行时。
+      # --strict 无需额外传：发现漏洞时 pip-audit 本身即以非 0 退出。
+      #
+      # PYTHONUTF8=1（与 MID-63 同源，2026-09-21 本地实测补）：pip-audit 解析清单走
+      # pip-requirements-parser 的 auto_decode()，它用的是 locale.getpreferredencoding(False)
+      # 而不是 UTF-8——非 UTF-8 locale 下会在读 requirements.txt 的中文注释时直接抛
+      # UnicodeDecodeError（本机 Windows/GBK 实测 rc=1、崩溃在 decode 而非漏洞判定）。
+      # ubuntu runner 默认 UTF-8 不受影响，但仍显式钉住，避免任何换 locale 后「门禁换个死法」。
+      - name: Audit runtime requirements against OSV
+        env:
+          PYTHONUTF8: "1"
+        run: pip-audit -r requirements.txt --progress-spinner off --timeout 120
+
+      # 下限复核（2026-09-21 补-05 的实测延伸，**不可删**）：上一步是「解析模式」，
+      # 只会把每条 >=X 解析到区间内**最新**版本再审计，因此对「下限自身落在受影响段」
+      # 完全失明。本地实测同一条 requirements.txt：解析模式 rc=0（No known vulnerabilities），
+      # 而逐项下限 + --no-deps 模式 rc=1，报出 starlette 1.0.1（PYSEC-2026-2280/2281/248/249）
+      # 与 protobuf 6.31.1（PYSEC-2026-1805）——正是本仓「只有下限」清单的风险形态。
+      # 本步把下限逐条钉成 == 再审计，才真正守住 AGENTS.md「安全下限」条目。
+      - name: Audit declared floors against OSV (no resolution)
+        env:
+          PYTHONUTF8: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          floors=$(mktemp)
+          trap 'rm -f "$floors"' EXIT
+          python - "$floors" <<'PY'
+          import re, sys
+          out = []
+          for line in open("requirements.txt", encoding="utf-8"):
+              spec = line.split("#", 1)[0].strip()
+              m = re.match(r"^([A-Za-z0-9_.\[\]-]+)\s*>?=\s*([0-9][0-9a-zA-Z.]*)", spec)
+              if m:
+                  out.append(f"{m.group(1)}=={m.group(2)}")
+          assert len(out) >= 20, f"下限条数异常（{len(out)}），清单形态可能已变更"
+          open(sys.argv[1], "w", encoding="utf-8").write("\n".join(out) + "\n")
+          print(f"复核 {len(out)} 条声明下限")
+          PY
+          pip-audit -r "$floors" --no-deps --progress-spinner off --timeout 120
+
   # ── 2. 静态类型检查 ──────────────────────────────────────────────────────
   # 按 pyproject [tool.mypy] python_version = "3.14" 使用最低支持版本运行，
   # 保证类型结论对最老解释器成立。
-  # ubuntu runner 默认即为 linux 平台，等价于本地双跑门禁中的
-  # `mypy --platform linux src/`（AGENTS.md 平台符号门控约定）。
+  # ubuntu runner 默认即为 linux 平台，等价于本地双跑门禁中的 `mypy --platform linux`
+  # （AGENTS.md 平台符号门控约定；两条命令均不带路径参数，范围取 [tool.mypy].files）。
   #
   # 检查范围**不再写在命令行**：pyproject [tool.mypy].files 是唯一事实源
   # （src/ + 根入口 main.py/gui.py/web.py/i18n.py/msg_push.py + build_exe.py +
@@ -276,8 +413,11 @@ jobs:
     if: contains(fromJSON(needs.setup.outputs.filters), 'python')
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    # MIN-2263：原先此处有 job 级 `env: CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}`，
+    # 而全 job 只有「Upload coverage to Codecov」一步消费它。job 级 env 会把该 secret
+    # 注入下面**整棵进程树**——包括 pytest 执行的仓库测试代码与 pip 刚装上的第三方包，
+    # 任何一个被劫持即可读到 token。现收敛为「消费点局部传参」（与本文件顶部 macOS brew
+    # 同一口径）：仅下面的探测步骤与上传步骤各自 step 级 env 拿得到，其余步骤看不到。
     strategy:
       fail-fast: false
       matrix:
@@ -295,6 +435,33 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
+
+      # MID-2264：前端用例（tests/frontend/*.mjs）由 tests/test_frontend_quality_ui.py
+      # 以子进程 `node --test` 驱动，Node 缺失时该模块整体 skip。而 ci-summary 只区分
+      # failure / cancelled，**skipped 与 passed 不可区分**——一旦 ubuntu 镜像不再附带
+      # node，面板侧断言（含 web/app.js 的 saveConfig 跳过 '***' 这条写入侧防线）会全部
+      # 消失而汇总仍绿。故本 job 显式装 node（版本与 build-release.yml 的 node_version
+      # 同源，取 setup job 的常量），并在下面用一条兜底步骤断言「该模块不得被跳过」。
+      - name: Setup Node.js ${{ needs.setup.outputs.node_version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ needs.setup.outputs.node_version }}
+          # 无 package.json / lock 文件，开启 npm 缓存会直接报错，故不设置 cache
+
+      # 可选能力的前置探测（MIN-2263）：只输出「是否配置了 token」这一布尔值，
+      # token 本体仅存在于本步骤进程与下面的上传步骤，不进入 pytest / pip 的进程树。
+      - name: Detect Codecov token
+        id: codecov
+        if: matrix.python-version == needs.setup.outputs.python_min
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        shell: bash
+        run: |
+          if [ -n "${CODECOV_TOKEN:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # ffmpeg：部分测试会探测 ffmpeg 可用性；apt 装轻量版即可（非打包用途）
       - name: Install ffmpeg (apt)
@@ -319,6 +486,51 @@ jobs:
       - name: Run pytest with coverage
         run: pytest --cov=src --cov-report=term-missing --cov-report=xml
 
+      # 「有告警即失败」pytest 侧（与上方 isort/black 兜底步骤同一形态）：
+      # pyproject filterwarnings 已忽略已知第三方告警，理论上 warnings summary 恒为空。
+      # 但若有人新增未过滤的告警、或第三方库升级引入新告警，summary 段会出现但 pytest rc 仍为 0
+      # （与 isort「Unable to parse file」走 UserWarning 通道、rc 恒 0 同理）。
+      # 注：pytest 的 warnings summary 走 stdout（非 stderr），故此处捕获 stdout。
+      - name: Gate pytest warnings summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(python -m pytest -q 2>/dev/null || true)
+          if printf '%s' "$out" | grep -q "= warnings summary ="; then
+            printf '::error::pytest warnings summary 非空（有告警被吞掉）：\n%s\n' "$out"
+            exit 1
+          fi
+          echo "pytest warnings summary 为空"
+
+      # MID-2264 的第二道防线：断言前端 .mjs 用例的 pytest 包装**真的执行过**（不是被整体 skip）。
+      # 两个包装模块（tests/test_frontend_quality_ui.py 驱动 test_quality_ui.mjs；
+      # tests/test_frontend_regression_gates.py 驱动 2026-09-22 组 G 回归锁 .mjs）在 node 缺失时
+      # 按「环境限制口径」整体 skip（AGENTS「前端用例」条目），而 ci-summary 分不清 skipped 与
+      # passed —— 面板侧断言（含 web/app.js 里 saveConfig 跳过 '***' 掩码这条写入侧唯一防线）会静默消失。
+      # 故本步显式跑这两条 node 驱动入口并断言无 skip。
+      # 用 node-id 精确选取而非整模块：test_frontend_quality_ui.py 里另有两条 tasklist 存活探针用例带
+      # `skipif(sys.platform != "win32")`，在 ubuntu 上必然 skip——整模块跑会让下面的「有 skip 即红」
+      # 判据被这两条平台专属用例误触发（本 job 全程跑在 ubuntu）。只点名这两条「装了 node 就该跑」
+      # 的入口，平台无关，判据才干净。
+      - name: Gate frontend tests not skipped
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          if ! out=$(python -m pytest \
+            tests/test_frontend_quality_ui.py::test_frontend_quality_ui \
+            tests/test_frontend_regression_gates.py::test_frontend_regression_gates \
+            -q -rs 2>&1); then
+            printf '::error::前端用例执行失败：\n%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          if printf '%s' "$out" | grep -qE '[0-9]+ skipped'; then
+            printf '::error::前端用例被跳过（node 不可用或沙箱限制），面板侧断言未执行：\n%s\n' "$out"
+            exit 1
+          fi
+          echo "前端用例已执行且无跳过"
+
       # 逐模块门禁（spider/stream/utils/ttwid/ab_sign/proxy）只需跑一次，
       # 固定在最低支持版本上执行，避免矩阵内重复且结论歧义。
       - name: Per-module coverage gate
@@ -334,18 +546,62 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # 可选能力：仅在仓库配置了 secrets.CODECOV_TOKEN 时运行（未配置自动跳过）。
+      # 可选能力：仅在仓库配置了 secrets.CODECOV_TOKEN 时运行（未配置自动跳过，判定来自
+      # 上面的 Detect Codecov token 步骤，见 MIN-2263）。
       # 固定在最低支持版本上执行一次，避免矩阵内重复上传；fail_ci_if_error: false
       # 保证 Codecov 服务异常时不会反噬 CI 门禁。使用浮动主版本 @v7
       # （v6 唯一破坏性变更是迁移 node24 运行时，ubuntu-latest 原生支持；inputs 无变化）。
       - name: Upload coverage to Codecov
-        if: matrix.python-version == needs.setup.outputs.python_min && env.CODECOV_TOKEN != ''
+        if: matrix.python-version == needs.setup.outputs.python_min && steps.codecov.outputs.available == 'true'
         uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
           slug: ihmily/DouyinLiveRecorder
+
+      # ── Web 面板 HTTP 冒烟（运行中的真实服务，非 TestClient）──────────────
+      # 动机：pytest 全程用 FastAPI TestClient 且注入了 fake main，从不监听端口——
+      # 「面板进程能否真的起来并应答」这条链路（import 期崩溃、路由未注册、鉴权中间件
+      # 误挡探活、静态资源目录缺失、uvicorn 绑定失败）此前完全没有门禁。
+      # 位置：排在覆盖率相关步骤之后（而非之前），避免冒烟变红时反而压制掉 coverage.xml / Codecov 上报。
+      # 与路径过滤同源（scripts/** 与 web.py 变更都会触发 python 过滤），不改变其它 job 的触发语义。
+      # 探活目标与断言形态：scripts/smoke_web.json（默认 http://127.0.0.1:8000 的 / 与
+      # /health，后者断言 {"status": "ok"}），与 README「Web/接口冒烟测试」章节一致。
+      # 启动/就绪等待/断言/收尾均在 scripts/_ci_web_smoke.sh 内，脚本以冒烟退出码退出；
+      # 失败时本步骤直接变红（= job 变红），retry 每一轮都会重跑脚本→从零起一个干净面板，
+      # 因此重试真能处理「冷启动慢 / 瞬时 HTTP 抖动」这类网络型原因，而不内联 for 循环。
+      # 两个环境变量直接写在命令前缀而非 step env：复合动作对调用方 step 级 env 的可见性
+      # 无官方保证（见本文件顶部 macOS brew 同理），行内赋值则确定传递给脚本及其 nohup 子进程。
+      #   DOUYIN_SKIP_RUNTIME_CHECK=1：导入期跳过 node 子进程检查/自动安装（与 tests/conftest.py
+      #     同一口径）。本 job 现已按 MID-2264 装了 Node.js，但该变量仍保留——它的目的不是
+      #     「没 node 才跳过」，而是**禁止导入期起子进程/自动下载**，让面板冒烟的失败原因
+      #     只有「面板本身起不来」一种。
+      #   DOUYIN_DISABLE_LOG_ARCHIVE=1：一次性进程，停止时不改名 logs/* 以免埋掉冒烟输出。
+      - name: Web panel smoke test
+        if: matrix.python-version == needs.setup.outputs.python_min
+        uses: ./.github/actions/retry
+        with:
+          label: Web 面板 HTTP 冒烟（启动 + 就绪等待 + 接口断言）
+          attempts: "2"
+          backoff: "5"
+          command: >-
+            DOUYIN_SKIP_RUNTIME_CHECK=1 DOUYIN_DISABLE_LOG_ARCHIVE=1
+            bash scripts/_ci_web_smoke.sh
+
+      # 无论冒烟通过与否都留一份机读报告（含实际状态码/耗时/错误行）与面板启动输出：
+      # if: always() 保证冒烟步骤变红时工件仍能上传（否则红了看不到断言细节）。
+      # 冒烟输出落在 logs/（已 gitignore，不污染工作区）；文件缺失时仅告警不反噬门禁。
+      - name: Upload web smoke artifacts
+        if: matrix.python-version == needs.setup.outputs.python_min && always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-smoke-artifacts-py${{ matrix.python-version }}
+          path: |
+            logs/web-smoke-report.json
+            logs/web-panel-smoke.log
+          if-no-files-found: warn
+          retention-days: 14
 
   # ── 4. 并发 / 线程安全专项测试 ───────────────────────────────────────────
   # 覆盖「每 room 独立事件循环」模型下的跨循环 asyncio.Lock、跨 await 持有的
@@ -387,6 +643,23 @@ jobs:
             tests/test_concurrency.py \
             tests/test_async_http_lock.py \
             --cov=src --cov-report=term-missing:skip-covered
+
+      # 并发测试同样跑 pytest，按同一口径纳入「有告警即失败」——
+      # 并发代码的协程/线程告警（如 "coroutine was never awaited"）尤其不应被静默吞掉。
+      - name: Gate pytest warnings summary (concurrency)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(python -m pytest -q \
+            tests/test_concurrency_rate_limit.py \
+            tests/test_concurrency.py \
+            tests/test_async_http_lock.py \
+            2>/dev/null || true)
+          if printf '%s' "$out" | grep -q "= warnings summary ="; then
+            printf '::error::并发测试 warnings summary 非空（有告警被吞掉）：\n%s\n' "$out"
+            exit 1
+          fi
+          echo "并发测试 warnings summary 为空"
 
   # ── 5. 运行时依赖探测验证（ffmpeg / node）────────────────────────────────
   # 验证 src/ffmpeg_install.py 与 src/node_install.py 的探测逻辑在真实环境成立。
@@ -510,6 +783,7 @@ jobs:
     needs:
       - setup
       - static
+      - deps-audit
       - typecheck
       - test
       - concurrency-test

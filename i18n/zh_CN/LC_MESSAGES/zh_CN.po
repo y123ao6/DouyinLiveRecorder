@@ -963,6 +963,15 @@ msgstr "....................................................."
 msgid "All download methods failed. Please manually install ffmpeg by yourself."
 msgstr "所有下载方式均失败，请手动安装 ffmpeg。"
 
+msgid "FFmpeg PATH 优先级：让位于系统原生 ffmpeg {system_ffmpeg}，不再前置包内目录 {bundled_dir}（包内为 x86_64 构建，Apple Silicon 需经 Rosetta 转译）"
+msgstr "FFmpeg PATH 优先级：让位于系统原生 ffmpeg {system_ffmpeg}，不再前置包内目录 {bundled_dir}（包内为 x86_64 构建，Apple Silicon 需经 Rosetta 转译）"
+
+msgid "FFmpeg PATH 优先级：Apple Silicon 上系统 PATH 未探测到 ffmpeg，仍前置包内目录 {bundled_dir}（包内为 x86_64 构建，需经 Rosetta 运行）"
+msgstr "FFmpeg PATH 优先级：Apple Silicon 上系统 PATH 未探测到 ffmpeg，仍前置包内目录 {bundled_dir}（包内为 x86_64 构建，需经 Rosetta 运行）"
+
+msgid "FFmpeg PATH 优先级：Apple Silicon 上系统 PATH 探测到的 {system_ffmpeg} 就是包内目录自身，仍前置包内目录 {bundled_dir}（没有原生 arm64 构建可让位）"
+msgstr "FFmpeg PATH 优先级：Apple Silicon 上系统 PATH 探测到的 {system_ffmpeg} 就是包内目录自身，仍前置包内目录 {bundled_dir}（没有原生 arm64 构建可让位）"
+
 msgid "FLV URL validation failed, trying record_url fallback"
 msgstr "FLV 地址校验失败，尝试 record_url 备选"
 
@@ -975,20 +984,11 @@ msgstr "FLV 为 h265 且 HLS 源校验失败，尝试其它 FLV 候选"
 msgid "FLV 为 h265 无法录制且 HLS 采集已关闭，尝试其它 FLV 候选"
 msgstr "FLV 为 h265 无法录制且 HLS 采集已关闭，尝试其它 FLV 候选"
 
-msgid "Failed to build download URL from lanzou response"
-msgstr "无法从蓝奏云响应构建下载地址"
-
 msgid "Failed to execute JS code. Please check if the Node.js environment"
 msgstr "执行 JS 代码失败，请检查 Node.js 环境"
 
-msgid "Failed to extract sign from lanzou page"
-msgstr "无法从蓝奏云页面提取签名"
-
 msgid "Failed to install EPEL repository"
 msgstr "安装 EPEL 软件源失败"
-
-msgid "Failed to obtain ffmpeg download address from lanzou"
-msgstr "无法从蓝奏云获取 ffmpeg 下载地址"
 
 msgid "Failed to retrieve the Node.js version page"
 msgstr "获取 Node.js 版本页面失败"
@@ -1016,9 +1016,6 @@ msgstr "正在为 Ubuntu 安装最新版 Node.js..."
 
 msgid "Installing the latest version of Node.js for macOS..."
 msgstr "正在为 macOS 安装最新版 Node.js..."
-
-msgid "Installing the latest version of ffmpeg from lanzou for Windows..."
-msgstr "正在为 Windows 从蓝奏云安装最新版 ffmpeg..."
 
 msgid "Installing the stable version of Node.js for Windows..."
 msgstr "正在为 Windows 安装稳定版 Node.js..."
@@ -1049,9 +1046,6 @@ msgstr "Node.js 安装成功，重启后生效。"
 
 msgid "Node.js is not installed."
 msgstr "未安装 Node.js。"
-
-msgid "Official source unavailable, falling back to lanzou download..."
-msgstr "官方源不可用，回退蓝奏云下载..."
 
 msgid "Please delete the ffmpeg and try to download and install again."
 msgstr "请删除 ffmpeg 目录后重新下载安装。"
@@ -1095,9 +1089,6 @@ msgstr "[抖音弹幕]无可用 cookie/ttwid，WS 握手可能被服务端拒绝
 msgid "apt command not found, unable to install ffmpeg. Please manually install ffmpeg by yourself"
 msgstr "未找到 apt 命令，无法安装 ffmpeg，请手动安装"
 
-msgid "ffmpeg (lanzou) installation was successful"
-msgstr "ffmpeg（蓝奏云）安装成功"
-
 msgid "ffmpeg (official) installation was successful"
 msgstr "ffmpeg（官方源）安装成功"
 
@@ -1118,9 +1109,6 @@ msgstr "ffmpeg 安装成功，重启后生效。"
 
 msgid "ffmpeg is not installed."
 msgstr "未安装 ffmpeg。"
-
-msgid "ffmpeg lanzou installation verification failed"
-msgstr "ffmpeg 蓝奏云安装校验失败"
 
 msgid "ffmpeg official installation verification failed"
 msgstr "ffmpeg 官方源安装校验失败"
@@ -1540,9 +1528,6 @@ msgstr "close_all_clients_sync 回退到引用清理: {e}"
 msgid "ffmpeg auto installation is not supported on this platform: {current_platform}. Please install ffmpeg manually."
 msgstr "当前平台不支持自动安装 ffmpeg: {current_platform}，请手动安装。"
 
-msgid "ffmpeg lanzou installation failed: {type_name} - {e}"
-msgstr "ffmpeg 蓝奏云安装失败: {type_name} - {e}"
-
 msgid "ffmpeg 进程 (PID: {pid}) 已清理"
 msgstr "ffmpeg 进程 (PID: {pid}) 已清理"
 
@@ -1722,6 +1707,12 @@ msgstr "流地址校验: {url} - CDN 探针退避中，跳过探针直接交由 
 
 msgid "流地址校验: {url} - CDN 探针退避中，跳过本轮探针、回退下一候选"
 msgstr "流地址校验: {url} - CDN 探针退避中，跳过本轮探针、回退下一候选"
+
+msgid "流地址形态不合规，已丢弃（不交给 ffmpeg -i）: {url}"
+msgstr "流地址形态不合规，已丢弃（不交给 ffmpeg -i）: {url}"
+
+msgid "流地址校验: {url} - 与本轮已探候选同址，复用结论并交由 ffmpeg 拉流"
+msgstr "流地址校验: {url} - 与本轮已探候选同址，复用结论并交由 ffmpeg 拉流"
 
 msgid "流地址校验: {url} - GET 复核重试通过({status_code})，先前拒绝为偶发"
 msgstr "流地址校验: {url} - GET 复核重试通过({status_code})，先前拒绝为偶发"
@@ -2035,20 +2026,11 @@ msgstr "ffmpeg SHA256 校验通过"
 msgid "Node.js SHA256 校验通过"
 msgstr "Node.js SHA256 校验通过"
 
-msgid "蓝奏云 SHA256 校验通过"
-msgstr "蓝奏云 SHA256 校验通过"
-
 msgid "首次下载 SHA256 已记录：{current_hash}"
 msgstr "首次下载 SHA256 已记录：{current_hash}"
 
 msgid "首次下载 Node.js SHA256 已记录：{current_hash}"
 msgstr "首次下载 Node.js SHA256 已记录：{current_hash}"
-
-msgid "蓝奏云 ffmpeg SHA256: {lanzou_hash}"
-msgstr "蓝奏云 ffmpeg SHA256: {lanzou_hash}"
-
-msgid "蓝奏云为非官方个人分发源，建议优先使用 gyan.dev 官方源。"
-msgstr "蓝奏云为非官方个人分发源，建议优先使用 gyan.dev 官方源。"
 
 msgid "ffmpeg 官方源 zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
 msgstr "ffmpeg 官方源 zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
@@ -2056,14 +2038,37 @@ msgstr "ffmpeg 官方源 zip SHA256 与上次记录不一致（{expected} vs {ac
 msgid "Node.js zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
 msgstr "Node.js zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。"
 
-msgid "蓝奏云 ffmpeg SHA256 与 FFMPEG_LANZOU_SHA256 不一致（{expected} vs {actual}）。拒绝安装。"
-msgstr "蓝奏云 ffmpeg SHA256 与 FFMPEG_LANZOU_SHA256 不一致（{expected} vs {actual}）。拒绝安装。"
-
 msgid "写入 SHA256 缓存失败（不影响本次安装）: {e}"
 msgstr "写入 SHA256 缓存失败（不影响本次安装）: {e}"
 
 msgid "读取 SHA256 缓存失败，跳过校验: {e}"
 msgstr "读取 SHA256 缓存失败，跳过校验: {e}"
+
+# P-1/P-1b（2026-09-22 运行期自动安装的官方哈希优先校验）：src/ffmpeg_install.py 与 src/node_install.py 的新增文案。
+# 占位符集合与调用方关键字实参逐字对齐（masked_url / type_name / err / official / actual / file_name / env）
+msgid "未取得 ffmpeg 官方 SHA256 文档: {masked_url} - {type_name}: {err}"
+msgstr "未取得 ffmpeg 官方 SHA256 文档: {masked_url} - {type_name}: {err}"
+msgid "ffmpeg 官方 SHA256 文档内容不是合法的 64 位十六进制摘要（上游形态可能已变更）: {masked_url}"
+msgstr "ffmpeg 官方 SHA256 文档内容不是合法的 64 位十六进制摘要（上游形态可能已变更）: {masked_url}"
+msgid "ffmpeg 官方源 zip 与官方公布的 SHA256 不一致，拒绝安装（官方 {official} vs 实际 {actual}）：{masked_url}。可能是 CDN/中间人替换，或下载期间上游又发了新构建（稍后重试即可）。"
+msgstr "ffmpeg 官方源 zip 与官方公布的 SHA256 不一致，拒绝安装（官方 {official} vs 实际 {actual}）：{masked_url}。可能是 CDN/中间人替换，或下载期间上游又发了新构建（稍后重试即可）。"
+msgid "ffmpeg 下载产物不是有效的 zip 压缩包，拒绝校验与安装（内容可能是人机验证页 / 错误页，而非构建产物）: {masked_url}"
+msgstr "ffmpeg 下载产物不是有效的 zip 压缩包，拒绝校验与安装（内容可能是人机验证页 / 错误页，而非构建产物）: {masked_url}"
+
+msgid "ffmpeg zip 已通过官方公布 SHA256 校验: {masked_url}"
+msgstr "ffmpeg zip 已通过官方公布 SHA256 校验: {masked_url}"
+msgid "未能取得 ffmpeg 官方公布的 SHA256，本次退回旁路基准/首次信任（TOFU）: {masked_url}"
+msgstr "未能取得 ffmpeg 官方公布的 SHA256，本次退回旁路基准/首次信任（TOFU）: {masked_url}"
+msgid "未取得 Node.js 官方 SHA256 文档: {masked_url} - {type_name}: {err}"
+msgstr "未取得 Node.js 官方 SHA256 文档: {masked_url} - {type_name}: {err}"
+msgid "Node.js 官方 SHA256 文档中没有 {file_name} 的条目（上游形态可能已变更）: {masked_url}"
+msgstr "Node.js 官方 SHA256 文档中没有 {file_name} 的条目（上游形态可能已变更）: {masked_url}"
+msgid "Node.js zip 与 nodejs.org 公布的 SHA256 不一致，拒绝安装（官方 {official} vs 实际 {actual}）：{masked_url}。可能是镜像被替换或下载期间上游发布了同名版本的新构建。"
+msgstr "Node.js zip 与 nodejs.org 公布的 SHA256 不一致，拒绝安装（官方 {official} vs 实际 {actual}）：{masked_url}。可能是镜像被替换或下载期间上游发布了同名版本的新构建。"
+msgid "Node.js zip 已通过 nodejs.org 公布的 SHA256 校验: {masked_url}"
+msgstr "Node.js zip 已通过 nodejs.org 公布的 SHA256 校验: {masked_url}"
+msgid "未能取得 Node.js 官方公布的 SHA256，本次退回旁路基准/首次信任（TOFU）: {masked_url}"
+msgstr "未能取得 Node.js 官方公布的 SHA256，本次退回旁路基准/首次信任（TOFU）: {masked_url}"
 
 msgid "原子写失败（已保留原文件）: {file_path} - {type_name}: {e}"
 msgstr "原子写失败（已保留原文件）: {file_path} - {type_name}: {e}"
@@ -2163,3 +2168,561 @@ msgstr "已清理零字节的直下残留文件: {save_path}"
 
 msgid "签名脚本 {name} 的 SHA256 与钉定值不符（期望 {expected}，实际 {actual}）；若你刚更新过该脚本请同步更新 utils._JS_SHA256_EXPECTED，否则请核查文件是否被篡改"
 msgstr "签名脚本 {name} 的 SHA256 与钉定值不符（期望 {expected}，实际 {actual}）；若你刚更新过该脚本请同步更新 utils._JS_SHA256_EXPECTED，否则请核查文件是否被篡改"
+
+msgid "\n正在安全退出..."
+msgstr "\n正在安全退出..."
+
+msgid "\r瞬时错误太多,延迟加60秒"
+msgstr "\r瞬时错误太多,延迟加60秒"
+
+msgid "GUI 启动失败"
+msgstr "GUI 启动失败"
+
+msgid "切换画质失败"
+msgstr "切换画质失败"
+
+msgid "正在转码为MP4格式\n"
+msgstr "正在转码为MP4格式\n"
+
+msgid "正在转码为MP4格式并重新编码为h264\n"
+msgstr "正在转码为MP4格式并重新编码为h264\n"
+
+msgid "配置文件已变更"
+msgstr "配置文件已变更"
+
+msgid "Acfun 游客签名参数获取失败，跳过本轮取流（visitor/login 未拿到三件套）"
+msgstr "Acfun 游客签名参数获取失败，跳过本轮取流（visitor/login 未拿到三件套）"
+
+msgid "[{record_name}] ffmpeg 退出码为 0 但产物为空（{size} 字节），按失败处理"
+msgstr "[{record_name}] ffmpeg 退出码为 0 但产物为空（{size} 字节），按失败处理"
+
+msgid "[{record_name}] 录制时长超过 {hours} 小时，判定为挂起并终止"
+msgstr "[{record_name}] 录制时长超过 {hours} 小时，判定为挂起并终止"
+
+msgid "[{record_name}] 输出文件连续 {minutes} 分钟无增长，判定为停滞并终止"
+msgstr "[{record_name}] 输出文件连续 {minutes} 分钟无增长，判定为停滞并终止"
+
+msgid "无法从控制台读取直播间网址（无可用标准输入），等待配置文件写入"
+msgstr "无法从控制台读取直播间网址（无可用标准输入），等待配置文件写入"
+
+msgid "直播间配置行解析失败（已跳过该行）: {line} - {err}"
+msgstr "直播间配置行解析失败（已跳过该行）: {line} - {err}"
+
+msgid "B站房间信息获取失败（下轮重试）: url={url} - {type_name}: {e}"
+msgstr "B站房间信息获取失败（下轮重试）: url={url} - {type_name}: {e}"
+
+msgid "B站接口返回异常 code={code}（疑似风控/签名失效），本轮跳过"
+msgstr "B站接口返回异常 code={code}（疑似风控/签名失效），本轮跳过"
+
+msgid "SMTP 服务器不支持 STARTTLS，本次将以明文发送邮箱授权码（存在被窃听风险，建议在配置中改为启用 SSL 加密）: {type_name}"
+msgstr "SMTP 服务器不支持 STARTTLS，本次将以明文发送邮箱授权码（存在被窃听风险，建议在配置中改为启用 SSL 加密）: {type_name}"
+
+msgid "YY 标题补取失败（不影响取流）: {type_name}"
+msgstr "YY 标题补取失败（不影响取流）: {type_name}"
+
+msgid "[{record_name}] 转码任务提交失败（{type_name}）: {e}"
+msgstr "[{record_name}] 转码任务提交失败（{type_name}）: {e}"
+
+msgid "[弹幕采集]SRT 关闭等待锁超时（{seconds}s），跳过本次关闭以免阻塞录制线程"
+msgstr "[弹幕采集]SRT 关闭等待锁超时（{seconds}s），跳过本次关闭以免阻塞录制线程"
+
+msgid "[弹幕采集]SRT 写入失败(继续采集): {type_name}: {e}（本窗口累计失败 {count} 条）"
+msgstr "[弹幕采集]SRT 写入失败(继续采集): {type_name}: {e}（本窗口累计失败 {count} 条）"
+
+msgid "[弹幕采集]SRT 写入队列已满，正在丢弃弹幕（累计 {count} 条）——请检查磁盘空间与写入性能"
+msgstr "[弹幕采集]SRT 写入队列已满，正在丢弃弹幕（累计 {count} 条）——请检查磁盘空间与写入性能"
+
+msgid "主播名写回 URL 配置失败（已忽略，下轮重试）"
+msgstr "主播名写回 URL 配置失败（已忽略，下轮重试）"
+
+msgid "写入配置文件失败（已保留原文件）: {err}"
+msgstr "写入配置文件失败（已保留原文件）: {err}"
+
+msgid "原子写失败（已保留原文件）: {file_path}"
+msgstr "原子写失败（已保留原文件）: {file_path}"
+
+msgid "弹幕发送超时（{seconds}s），判定连接已失效并触发重连"
+msgstr "弹幕发送超时（{seconds}s），判定连接已失效并触发重连"
+
+msgid "录制进程已结束但输出线程仍在收尾，直接重置 UI（不阻塞主线程）"
+msgstr "录制进程已结束但输出线程仍在收尾，直接重置 UI（不阻塞主线程）"
+
+msgid "未找到代理信息: {e}"
+msgstr "未找到代理信息: {e}"
+
+msgid "检测到残缺的 Node.js 压缩包缓存，删除后重新下载"
+msgstr "检测到残缺的 Node.js 压缩包缓存，删除后重新下载"
+
+msgid "淘宝 cookie 回写配置失败（已忽略）: {type_name}"
+msgstr "淘宝 cookie 回写配置失败（已忽略）: {type_name}"
+
+msgid "淘宝 mtop 返回的 ret 为空/非数组，本轮无结果"
+msgstr "淘宝 mtop 返回的 ret 为空/非数组，本轮无结果"
+
+msgid "淘宝响应不是合法 JSONP，本轮重试: {type_name}"
+msgstr "淘宝响应不是合法 JSONP，本轮重试: {type_name}"
+
+msgid "系统未启用代理"
+msgstr "系统未启用代理"
+
+msgid "获取录制状态失败（疑似新增无锁写入路径），返回空快照: {type_name}"
+msgstr "获取录制状态失败（疑似新增无锁写入路径），返回空快照: {type_name}"
+
+msgid "读取代理注册表项失败: {e}"
+msgstr "读取代理注册表项失败: {e}"
+
+msgid "读取系统代理时发生错误: {e}"
+msgstr "读取系统代理时发生错误: {e}"
+
+msgid "Douyu websec sign params incomplete: enc_data missing, skip getH5PlayV1 this round"
+msgstr "斗鱼 websec 签名参数不完整（缺少 enc_data），本轮跳过 getH5PlayV1"
+
+msgid "Twitch Client-Id unavailable (homepage extraction failed), skip GQL request this round"
+msgstr "Twitch Client-Id 不可用（首页提取失败），本轮跳过 GQL 请求"
+
+msgid "Huajiao substream response has no h264_url (API changed or risk control)"
+msgstr "花椒子流响应中没有 h264_url（接口变更或触发风控）"
+
+msgid "TikTok 解析失败，且本次使用的是内置游客 cookie（可能已过期）；请在 config.ini 的 [Cookie] tiktok_guest_cookie 配置有效访客 cookie（或设置环境变量 TIKTOK_GUEST_COOKIE）"
+msgstr "TikTok 解析失败，且本次使用的是内置游客 cookie（可能已过期）；请在 config.ini 的 [Cookie] tiktok_guest_cookie 配置有效访客 cookie（或设置环境变量 TIKTOK_GUEST_COOKIE）"
+
+msgid "[{record_name}] 达到单次录制时长上限（{limit}），结束本轮并分段续录"
+msgstr "[{record_name}] 达到单次录制时长上限（{limit}），结束本轮并分段续录"
+
+msgid "[后处理]删除本次生成的不完整产物失败: {out_path} - {type_name}: {e}"
+msgstr "[后处理]删除本次生成的不完整产物失败: {out_path} - {type_name}: {e}"
+
+msgid "[后处理]已删除本次生成的不完整产物，源文件已保留: {out_path} / {source_path}"
+msgstr "[后处理]已删除本次生成的不完整产物，源文件已保留: {out_path} / {source_path}"
+
+msgid "[弹幕监控]{where} 处理失败(忽略): {type_name}: {e}"
+msgstr "[弹幕监控]{where} 处理失败(忽略): {type_name}: {e}"
+
+msgid "[弹幕监控]边车写入队列已满，累计丢弃 {count} 条事件"
+msgstr "[弹幕监控]边车写入队列已满，累计丢弃 {count} 条事件"
+
+msgid "[弹幕采集]SRT 写线程收尾未完成（{reason}），尾部弹幕可能未落盘"
+msgstr "[弹幕采集]SRT 写线程收尾未完成（{reason}），尾部弹幕可能未落盘"
+
+msgid "[弹幕采集]{where} 异常(忽略): {type_name}: {e}"
+msgstr "[弹幕采集]{where} 异常(忽略): {type_name}: {e}"
+
+msgid "[斗鱼直播] rate={attempt} 拉流失败(error={err_code}{err_detail})，尝试更低档位 rate={next_rate}"
+msgstr "[斗鱼直播] rate={attempt} 拉流失败(error={err_code}{err_detail})，尝试更低档位 rate={next_rate}"
+
+msgid "[斗鱼直播] rate={attempt} 拉流失败(error={err_code}{err_detail})，已无更低档位"
+msgstr "[斗鱼直播] rate={attempt} 拉流失败(error={err_code}{err_detail})，已无更低档位"
+
+msgid "ffmpeg 官方源已发布新构建，已为新构建记录 SHA256 基准：{hash_file}（{actual}）。旧基准 {stale} 不再参与校验，确认无误后可删除。"
+msgstr "ffmpeg 官方源已发布新构建，已为新构建记录 SHA256 基准：{hash_file}（{actual}）。旧基准 {stale} 不再参与校验，确认无误后可删除。"
+
+msgid "ffmpeg 进程清理未在 {seconds} 秒总预算内全部确认，已放弃等待（未确认 {count} 个: {pids}）"
+msgstr "ffmpeg 进程清理未在 {seconds} 秒总预算内全部确认，已放弃等待（未确认 {count} 个: {pids}）"
+
+msgid "删除重复配置行失败: {origin_line}"
+msgstr "删除重复配置行失败: {origin_line}"
+
+msgid "弹幕发送后台任务堆积超过 {count} 个，本次发送已丢弃"
+msgstr "弹幕发送后台任务堆积超过 {count} 个，本次发送已丢弃"
+
+msgid "直下直播流响应体过小（{size} 字节），按失败处理: {masked_url}"
+msgstr "直下直播流响应体过小（{size} 字节），按失败处理: {masked_url}"
+
+msgid "若官方源是因 SHA256 基准校验被拒，请删除 {files} 后重试（该旁路文件与安装包同目录，其校验强度等同于目录权限）。"
+msgstr "若官方源是因 SHA256 基准校验被拒，请删除 {files} 后重试（该旁路文件与安装包同目录，其校验强度等同于目录权限）。"
+
+# ── 以下为 GUI 弹窗 / 高级设置外部改动检测（MID-55）文案：messagebox.* 与 log_callback
+# 不在 scripts/extract_i18n_strings.py 的扫描范围内（它只扫 print 常量、logger 首参与
+# tr 首参），缺失时提取器会长期报「0 缺失」的假绿，故此处手工登记（见 AGENTS.md
+# 「i18n 提取器扫不到彩色输出 / 对话框两条路径」条目）
+msgid "config.ini 在你打开本窗口之后已被外部修改（录制进程可能刚写入凭据、平台清单或补写了缺失键）。\n\n点击「是」仍按当前编辑内容保存：外部改动会被覆盖；\n点击「否」取消保存，可先复制外部改动或重新加载文件。"
+msgstr "config.ini 在你打开本窗口之后已被外部修改（录制进程可能刚写入凭据、平台清单或补写了缺失键）。\n\n点击「是」仍按当前编辑内容保存：外部改动会被覆盖；\n点击「否」取消保存，可先复制外部改动或重新加载文件。"
+
+msgid "⚠ config.ini 已被外部修改，而你有未保存的编辑；保存时会先询问是否覆盖"
+msgstr "⚠ config.ini 已被外部修改，而你有未保存的编辑；保存时会先询问是否覆盖"
+
+msgid "已取消保存：外部改动未被覆盖，可重新打开高级设置加载最新内容"
+msgstr "已取消保存：外部改动未被覆盖，可重新打开高级设置加载最新内容"
+
+msgid "config.ini 已被外部修改，已重新加载到编辑器"
+msgstr "config.ini 已被外部修改，已重新加载到编辑器"
+
+# 同族缺失（2026-09-21 对账时一并补齐）：URL 配置页的脏检查弹窗，同样落在提取器盲区
+msgid "URL_config.ini 已被外部修改，但编辑器中有未保存的更改。\n\n点击「是」放弃未保存的更改并重新加载；\n点击「否」保留当前编辑内容（稍后可手动保存）。"
+msgstr "URL_config.ini 已被外部修改，但编辑器中有未保存的更改。\n\n点击「是」放弃未保存的更改并重新加载；\n点击「否」保留当前编辑内容（稍后可手动保存）。"
+
+# ── MID-48（2026-09-21 国内平台批次）：src/spider.py::_warn_api_abnormal 的两条区分性告警。
+# 模板刻意把接口名/字段名作占位符实参传入（它们是端点标识、不参与翻译），四语目录共用同一
+# 组占位符 {api} / {field} / {code} / {msg}，调用方一律以关键字实参传入，不得凭空加 _2 后缀
+msgid "{api} 返回空响应（风控或网络失败）"
+msgstr "{api} 返回空响应（风控或网络失败）"
+
+msgid "{api} 响应缺少 {field} 字段（房间不存在/未开通 或 接口改版/风控页）: code={code} msg={msg}"
+msgstr "{api} 响应缺少 {field} 字段（房间不存在/未开通 或 接口改版/风控页）: code={code} msg={msg}"
+
+
+# ── 2026-09-23 中央合并（_tmp_i18n_merge.py）：_i18n_pending*.json 袋子 + 并行批次
+# （ffmpeg master / 凭据回写 / 弹幕监控 / Web 面板弹窗等）新增运行时模板，四语目录同批落盘。
+
+msgid "\n{anchor_name} {strftime} 直播录制出错,请检查网络\n"
+msgstr "\n{anchor_name} {strftime} 直播录制出错,请检查网络\n"
+
+msgid "\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n"
+msgstr "\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n"
+
+msgid "\r{anchor_name} 准备开始录制视频: {full_path}/{filename}"
+msgstr "\r{anchor_name} 准备开始录制视频: {full_path}/{filename}"
+
+msgid "\r{line} 本行包含未知链接.此条跳过"
+msgstr "\r{line} 本行包含未知链接.此条跳过"
+
+msgid "\r{record_name} 正在直播中..."
+msgstr "\r{record_name} 正在直播中..."
+
+msgid "Bark推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"
+msgstr "Bark推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"
+
+msgid "B站请求清晰度 {qn} 不可用，就近降级到 {actual_qn}"
+msgstr "B站请求清晰度 {qn} 不可用，就近降级到 {actual_qn}"
+
+msgid "Failed to fetch data from {masked_url}: {type_name}"
+msgstr "从 {masked_url} 获取数据失败: {type_name}"
+
+msgid "HLS 播放列表派生的地址与列表不同域，已剥离 Cookie 后继续探测: {url}"
+msgstr "HLS 播放列表派生的地址与列表不同域，已剥离 Cookie 后继续探测: {url}"
+
+msgid "Native arm64 ffmpeg unavailable, falling back to official x86_64 build (emulated under x64) ..."
+msgstr "原生 arm64 ffmpeg 不可用，回退到官方 x86_64 构建（以 x64 模拟方式运行） ..."
+
+msgid "Official gyan.dev source failed; trying BtbN master build fallback (TOFU, unverified) ..."
+msgstr "gyan.dev 官方源失败；尝试 BtbN master 构建兜底源（TOFU，未经校验） ..."
+
+msgid "PushPlus推送失败, Token：{masked_token}, 错误信息: {type_name}: {e}"
+msgstr "PushPlus推送失败, Token：{masked_token}, 错误信息: {type_name}: {e}"
+
+msgid "Shopee 房间链接未带 session 且无进行中的直播，本轮按未开播返回"
+msgstr "Shopee 房间链接未带 session 且无进行中的直播，本轮按未开播返回"
+
+msgid "Shopee 返回的 uid 会改变目标主机，已跳过配置回写: {record_url}"
+msgstr "Shopee 返回的 uid 会改变目标主机，已跳过配置回写: {record_url}"
+
+msgid "Shopee 返回的 uid 含不合法字符，已跳过配置回写: {record_url}"
+msgstr "Shopee 返回的 uid 含不合法字符，已跳过配置回写: {record_url}"
+
+msgid "The playback ticket of the cookie you provided was rejected, retrying with the sooplive account and password in the configuration file."
+msgstr "您提供的 Cookie 中的播放票据被拒绝，正在改用配置文件中的 sooplive 账号和密码重试。"
+
+msgid "URL 配置已保存成功！"
+msgstr "URL 配置已保存成功！"
+
+msgid "Windows on ARM detected; gyan.dev ships x86_64 only — trying native arm64 master build (TOFU) ..."
+msgstr "检测到 Windows on ARM；gyan.dev 仅提供 x86_64 构建 —— 尝试原生 arm64 master 构建（TOFU） ..."
+
+msgid "[B站弹幕]跳过非官方域弹幕服务器（可能被劫持，不发送凭据）: {host}"
+msgstr "[B站弹幕]跳过非官方域弹幕服务器（可能被劫持，不发送凭据）: {host}"
+
+msgid "[B站直播] 未知画质代码 {video_quality}，按 {select_code} 请求流地址"
+msgstr "[B站直播] 未知画质代码 {video_quality}，按 {select_code} 请求流地址"
+
+msgid "[B站直播]spi 两跳均未返回 buvid（疑似风控 200+空 body），改走首页 Set-Cookie 兜底"
+msgstr "[B站直播]spi 两跳均未返回 buvid（疑似风控 200+空 body），改走首页 Set-Cookie 兜底"
+
+msgid "[B站直播]弹幕信息获取失败: {type_name}: {e}"
+msgstr "[B站直播]弹幕信息获取失败: {type_name}: {e}"
+
+msgid "[web] ⚠️ 严重安全警告: Web 面板正以「无认证 + 非回环地址」运行，能访问该地址的任何人可执行：\n① 读写全部配置（仅「自定义脚本执行命令」被禁止）；② 读取 logs 下的运行日志；③ 遍历并下载 downloads 下全部录制文件；④ 增删改直播间并可提交任意地址（存在被用作内网探测跳板的风险）；⑤ 启停录制。\n建议立即在 config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password，然后删除环境变量 DOUYIN_WEB_ALLOW_INSECURE 并重启。"
+msgstr "[web] ⚠️ 严重安全警告: Web 面板正以「无认证 + 非回环地址」运行，能访问该地址的任何人可执行：\n① 读写全部配置（仅「自定义脚本执行命令」被禁止）；② 读取 logs 下的运行日志；③ 遍历并下载 downloads 下全部录制文件；④ 增删改直播间并可提交任意地址（存在被用作内网探测跳板的风险）；⑤ 启停录制。\n建议立即在 config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password，然后删除环境变量 DOUYIN_WEB_ALLOW_INSECURE 并重启。"
+
+msgid "[web] 清理 HTTP 连接池失败: {type_name}: {e}"
+msgstr "[web] 清理 HTTP 连接池失败: {type_name}: {e}"
+
+msgid "[web] 清理 ffmpeg 进程失败: {type_name}: {e}"
+msgstr "[web] 清理 ffmpeg 进程失败: {type_name}: {e}"
+
+msgid "[ws_client] 心跳回调超时 ({seconds}s),关闭连接以触发重连"
+msgstr "[ws_client] 心跳回调超时 ({seconds}s),关闭连接以触发重连"
+
+msgid "[{record_name}] 达到单次录制时长上限（{limit}），结束本轮并在下轮新开一个文件"
+msgstr "[{record_name}] 达到单次录制时长上限（{limit}），结束本轮并在下轮新开一个文件"
+
+msgid "[{record_name}]弹幕采集启动失败,不影响录制: {type_name}: {e}"
+msgstr "[{record_name}]弹幕采集启动失败,不影响录制: {type_name}: {e}"
+
+msgid "[后处理]失败后无法读取产物目录，半成品未清理: {out_path} - {type_name}: {e}"
+msgstr "[后处理]失败后无法读取产物目录，半成品未清理: {out_path} - {type_name}: {e}"
+
+msgid "[后处理]无法读取产物目录，本次跳过半成品清理: {out_path} - {type_name}: {e}"
+msgstr "[后处理]无法读取产物目录，本次跳过半成品清理: {out_path} - {type_name}: {e}"
+
+msgid "[弹幕监控]{where} 线程异常退出，将在下一条弹幕事件时重新拉起: {type_name}: {e}"
+msgstr "[弹幕监控]{where} 线程异常退出，将在下一条弹幕事件时重新拉起: {type_name}: {e}"
+
+msgid "[弹幕监控]归档窗口内丢弃 {count} 条边车事件"
+msgstr "[弹幕监控]归档窗口内丢弃 {count} 条边车事件"
+
+msgid "[弹幕采集]SRT 文件已关闭，后续到达的弹幕一律丢弃"
+msgstr "[弹幕采集]SRT 文件已关闭，后续到达的弹幕一律丢弃"
+
+msgid "[弹幕采集]{cls_name} SRT 写线程启动失败,放弃本次弹幕采集: {type_name}: {e}"
+msgstr "[弹幕采集]{cls_name} SRT 写线程启动失败,放弃本次弹幕采集: {type_name}: {e}"
+
+msgid "[弹幕采集]{cls_name} 采集线程启动失败,放弃本次弹幕采集: {type_name}: {e}"
+msgstr "[弹幕采集]{cls_name} 采集线程启动失败,放弃本次弹幕采集: {type_name}: {e}"
+
+msgid "[抖音直播] 未知画质键 {name}，无法映射为统一画质代码（按最低档参与排序与降级判定）"
+msgstr "[抖音直播] 未知画质键 {name}，无法映射为统一画质代码（按最低档参与排序与降级判定）"
+
+msgid "[时间字幕]写入失败，{retry}s 后重试打开；本窗口丢失 {lost} 条、累计 {total} 条: {out_path} - {type_name}: {e}"
+msgstr "[时间字幕]写入失败，{retry}s 后重试打开；本窗口丢失 {lost} 条、累计 {total} 条: {out_path} - {type_name}: {e}"
+
+msgid "[时间字幕]写入已恢复，故障期间共丢失 {total} 条: {out_path}"
+msgstr "[时间字幕]写入已恢复，故障期间共丢失 {total} 条: {out_path}"
+
+msgid "[花椒直播]房间页确认无有效直播数据，已注释该房间: {type_name}: {e}"
+msgstr "[花椒直播]房间页确认无有效直播数据，已注释该房间: {type_name}: {e}"
+
+msgid "[花椒直播]房间页返回空响应（网络失败或风控），未改动配置文件: {masked_url}"
+msgstr "[花椒直播]房间页返回空响应（网络失败或风控），未改动配置文件: {masked_url}"
+
+msgid "[花椒直播]短链重定向无响应（网络失败或风控），本轮按未开播重试: {masked_url}"
+msgstr "[花椒直播]短链重定向无响应（网络失败或风控），本轮按未开播重试: {masked_url}"
+
+msgid "[花椒直播]解析异常（非内容失效，未改动配置文件）: {type_name}: {e}"
+msgstr "[花椒直播]解析异常（非内容失效，未改动配置文件）: {type_name}: {e}"
+
+msgid "[虎牙直播]OD/BD/UHD app路径弹幕参数提取失败: {type_name}: {e}"
+msgstr "[虎牙直播]OD/BD/UHD app路径弹幕参数提取失败: {type_name}: {e}"
+
+msgid "[虎牙直播]弹幕参数提取失败: {type_name}: {e}"
+msgstr "[虎牙直播]弹幕参数提取失败: {type_name}: {e}"
+
+msgid "async_req 不接受同时传 data 与 json_data: {masked_url}"
+msgstr "async_req 不接受同时传 data 与 json_data: {masked_url}"
+
+msgid "async_req 可选依赖仍缺失（已告警过）: {masked_url} - {type_name}: {e} - 缺失模块 {module}"
+msgstr "async_req 可选依赖仍缺失（已告警过）: {masked_url} - {type_name}: {e} - 缺失模块 {module}"
+
+msgid "async_req 缺少可选依赖，请求根本没有发出（本轮按空响应返回，非风控）: {masked_url} - {type_name}: {e} - 缺失模块 {module}，请执行 pip install {install}"
+msgstr "async_req 缺少可选依赖，请求根本没有发出（本轮按空响应返回，非风控）: {masked_url} - {type_name}: {e} - 缺失模块 {module}，请执行 pip install {install}"
+
+msgid "config/URL_config.ini 中没有可录制的直播间地址。\n请先在「直播间配置」中添加至少一个地址，再启动录制。"
+msgstr "config/URL_config.ini 中没有可录制的直播间地址。\n请先在「直播间配置」中添加至少一个地址，再启动录制。"
+
+msgid "config/URL_config.ini 在你上次加载之后已被外部修改（录制进程可能刚回写过主播名、归一过地址或注释掉了失效房间）。\n\n点击「是」仍按当前编辑内容保存：外部改动会被覆盖；\n点击「否」取消保存，可先复制外部改动或重新加载文件。"
+msgstr "config/URL_config.ini 在你上次加载之后已被外部修改（录制进程可能刚回写过主播名、归一过地址或注释掉了失效房间）。\n\n点击「是」仍按当前编辑内容保存：外部改动会被覆盖；\n点击「否」取消保存，可先复制外部改动或重新加载文件。"
+
+msgid "detected arch: {a}"
+msgstr "检测到的架构: {a}"
+
+msgid "ffmpeg master ({arch}) 已从 {masked} 安装并验证: {dest}"
+msgstr "ffmpeg master ({arch}) 已从 {masked} 安装并验证: {dest}"
+
+msgid "ffmpeg master installation verification failed"
+msgstr "ffmpeg master 安装验证失败"
+
+msgid "ffmpeg master zip SHA256 与已缓存基准不一致（{expected} vs {actual}），可能 CDN 被替换或上游发了新构建。删除 {hash_file} 后重试，或手动下载校验: {masked}"
+msgstr "ffmpeg master zip SHA256 与已缓存基准不一致（{expected} vs {actual}），可能 CDN 被替换或上游发了新构建。删除 {hash_file} 后重试，或手动下载校验: {masked}"
+
+msgid "ffmpeg master zip 已通过 TOFU 基准校验: {masked}"
+msgstr "ffmpeg master zip 已通过 TOFU 基准校验: {masked}"
+
+msgid "ffmpeg master 下载 HTTP 错误: {e}"
+msgstr "ffmpeg master 下载 HTTP 错误: {e}"
+
+msgid "ffmpeg master 下载产物不是有效 zip（可能是验证页/错误页），拒绝安装: {masked}"
+msgstr "ffmpeg master 下载产物不是有效 zip（可能是验证页/错误页），拒绝安装: {masked}"
+
+msgid "ffmpeg master 下载失败: {type_name}: {e}"
+msgstr "ffmpeg master 下载失败: {type_name}: {e}"
+
+msgid "ffmpeg master 下载连接异常（第 {attempt}/{max} 次重试）: {type_name}: {e}"
+msgstr "ffmpeg master 下载连接异常（第 {attempt}/{max} 次重试）: {type_name}: {e}"
+
+msgid "ffmpeg master 下载重试 {max} 次后仍失败: {type_name}: {e}"
+msgstr "ffmpeg master 下载重试 {max} 次后仍失败: {type_name}: {e}"
+
+msgid "ffmpeg master 下载：检测到架构 {arch}，候选源 {n} 个"
+msgstr "ffmpeg master 下载：检测到架构 {arch}，候选源 {n} 个"
+
+msgid "ffmpeg master 候选源探测返回非 2xx: {status} {masked}"
+msgstr "ffmpeg master 候选源探测返回非 2xx: {status} {masked}"
+
+msgid "ffmpeg master 候选源探测连接失败（将换下一源）: {masked} - {type_name}: {e}"
+msgstr "ffmpeg master 候选源探测连接失败（将换下一源）: {masked} - {type_name}: {e}"
+
+msgid "ffmpeg master 候选源返回人机验证页，跳过（不可脚本化下载）: {masked}"
+msgstr "ffmpeg master 候选源返回人机验证页，跳过（不可脚本化下载）: {masked}"
+
+msgid "ffmpeg master 全部候选源不可用（均返回验证页或连接失败），请手动从 https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest 下载 ffmpeg-master-latest-{arch}-gpl.zip"
+msgstr "ffmpeg master 全部候选源不可用（均返回验证页或连接失败），请手动从 https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest 下载 ffmpeg-master-latest-{arch}-gpl.zip"
+
+msgid "ffmpeg master 安装后验证失败: {type_name}: {e}"
+msgstr "ffmpeg master 安装后验证失败: {type_name}: {e}"
+
+msgid "ffmpeg master 完整性校验失败: {type_name}: {e}"
+msgstr "ffmpeg master 完整性校验失败: {type_name}: {e}"
+
+msgid "ffmpeg master 源无权威哈希文档，本次为首次记录 SHA256（TOFU，无可比对的期望值，等同于未校验安装）: {hash_file} = {current}{stale}"
+msgstr "ffmpeg master 源无权威哈希文档，本次为首次记录 SHA256（TOFU，无可比对的期望值，等同于未校验安装）: {hash_file} = {current}{stale}"
+
+msgid "ffmpeg master 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制（读取异常不代表基准不存在，请人工核对或删除 {hash_file} 后重试）: {type_name}: {e} - {masked}"
+msgstr "ffmpeg master 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制（读取异常不代表基准不存在，请人工核对或删除 {hash_file} 后重试）: {type_name}: {e} - {masked}"
+
+msgid "ffmpeg master 解压失败: {type_name}: {e}"
+msgstr "ffmpeg master 解压失败: {type_name}: {e}"
+
+msgid "ffmpeg.exe not found in master package"
+msgstr "master 安装包中未找到 ffmpeg.exe"
+
+msgid "get_response_status 拒绝内网/保留目标（疑似被篡改的流地址）: {masked_url} - {reason}"
+msgstr "get_response_status 拒绝内网/保留目标（疑似被篡改的流地址）: {masked_url} - {reason}"
+
+msgid "ntfy推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"
+msgstr "ntfy推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"
+
+msgid "tg推送失败, 聊天ID：{chat_id}, 推送地址：{masked_url}, 错误信息: {type_name}: {e}"
+msgstr "tg推送失败, 聊天ID：{chat_id}, 推送地址：{masked_url}, 错误信息: {type_name}: {e}"
+
+msgid "{count} 个 ffmpeg 进程已保留在注册表中待下次清理（确认未能终止 {failed_count} 个、未确认 {unconfirmed_count} 个）"
+msgstr "{count} 个 ffmpeg 进程已保留在注册表中待下次清理（确认未能终止 {failed_count} 个、未确认 {unconfirmed_count} 个）"
+
+msgid "{env} 已开启：允许使用 BtbN master 构建作为 ffmpeg 兜底源。该源上游不公布 latest 别名的 SHA256，本次完整性仅为首次信任（TOFU，等同未校验安装），请在可信网络环境下核对产物。"
+msgstr "{env} 已开启：允许使用 BtbN master 构建作为 ffmpeg 兜底源。该源上游不公布 latest 别名的 SHA256，本次完整性仅为首次信任（TOFU，等同未校验安装），请在可信网络环境下核对产物。"
+
+msgid "{env} 未开启：跳过 BtbN master 兜底源（因其无官方公布的 SHA256，默认不作为自动安装路径）。Windows 仍只使用 gyan.dev 一条官方自动路径{arm_note}"
+msgstr "{env} 未开启：跳过 BtbN master 兜底源（因其无官方公布的 SHA256，默认不作为自动安装路径）。Windows 仍只使用 gyan.dev 一条官方自动路径{arm_note}"
+
+msgid "修剪 ffmpeg master 陈旧 SHA256 基准失败（不影响本次安装）: {file} - {type_name}: {e}"
+msgstr "修剪 ffmpeg master 陈旧 SHA256 基准失败（不影响本次安装）: {file} - {type_name}: {e}"
+
+msgid "写入 ffmpeg master SHA256 缓存失败（不影响本次安装）: {e}"
+msgstr "写入 ffmpeg master SHA256 缓存失败（不影响本次安装）: {e}"
+
+msgid "凭据回写失败（不影响本轮录制）: {type_name}: {e}"
+msgstr "凭据回写失败（不影响本轮录制）: {type_name}: {e}"
+
+msgid "分段目录不可读，跳过转换: {directory}"
+msgstr "分段目录不可读，跳过转换: {directory}"
+
+msgid "后处理线程池收尾失败: {type_name}: {e}"
+msgstr "后处理线程池收尾失败: {type_name}: {e}"
+
+msgid "启动时预热 ttwid 失败: {type_name}: {e}"
+msgstr "启动时预热 ttwid 失败: {type_name}: {e}"
+
+msgid "响应缺少 room 字段（房间不存在 / 接口改版 / WAF 页）"
+msgstr "响应缺少 room 字段（房间不存在 / 接口改版 / WAF 页）"
+
+msgid "回退到 os.devnull 也失败: {type_name}: {e}"
+msgstr "回退到 os.devnull 也失败: {type_name}: {e}"
+
+msgid "小红书短链落地页不可信，已忽略跳转: {url} ({reason})"
+msgstr "小红书短链落地页不可信，已忽略跳转: {url} ({reason})"
+
+msgid "小红书短链跳转到非白名单主机，已忽略跳转: {url}"
+msgstr "小红书短链跳转到非白名单主机，已忽略跳转: {url}"
+
+msgid "小红书解析失败，且本次使用的是内置会话 sid（可能已过期）；请在 config.ini 的 [Cookie] xhs_session_sid 配置有效 sid（或设置环境变量 XHS_SESSION_SID）"
+msgstr "小红书解析失败，且本次使用的是内置会话 sid（可能已过期）；请在 config.ini 的 [Cookie] xhs_session_sid 配置有效 sid（或设置环境变量 XHS_SESSION_SID）"
+
+msgid "已启用"
+msgstr "已启用"
+
+msgid "平台解析或凭据回写失败（本轮按未识别处理）: {record_url} - {type_name}: {e}"
+msgstr "平台解析或凭据回写失败（本轮按未识别处理）: {record_url} - {type_name}: {e}"
+
+msgid "录制已在运行中！"
+msgstr "录制已在运行中！"
+
+msgid "录制正在后台进行，确定要退出吗？"
+msgstr "录制正在后台进行，确定要退出吗？"
+
+msgid "录制线程启动失败，本轮跳过该房间（下轮会重试）: {url} {type_name}: {e}"
+msgstr "录制线程启动失败，本轮跳过该房间（下轮会重试）: {url} {type_name}: {e}"
+
+msgid "微信推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"
+msgstr "微信推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"
+
+msgid "恢复本进程控制台失败（GetLastError={last_error}），此后 GUI 的控制台输出可能不再显示；如需要查看控制台日志请重启程序"
+msgstr "恢复本进程控制台失败（GetLastError={last_error}），此后 GUI 的控制台输出可能不再显示；如需要查看控制台日志请重启程序"
+
+msgid "抖音 unique_id 接口失败（转 HTML 兜底）: {type_name}: {e} - {masked_url}"
+msgstr "抖音 unique_id 接口失败（转 HTML 兜底）: {type_name}: {e} - {masked_url}"
+
+msgid "斗鱼 betard 响应异常: rid={rid} reason={reason}"
+msgstr "斗鱼 betard 响应异常: rid={rid} reason={reason}"
+
+msgid "斗鱼 websec 签名参数不完整: enc_time 缺失或非数值，本轮跳过取流"
+msgstr "斗鱼 websec 签名参数不完整: enc_time 缺失或非数值，本轮跳过取流"
+
+msgid "斗鱼 websec 签名参数不完整: rand_str/key 缺失或类型异常，本轮跳过取流"
+msgstr "斗鱼 websec 签名参数不完整: rand_str/key 缺失或类型异常，本轮跳过取流"
+
+msgid "无可用弹幕服务器（host 均不在 B站官方域白名单内）"
+msgstr "无可用弹幕服务器（host 均不在 B站官方域白名单内）"
+
+msgid "未启用"
+msgstr "未启用"
+
+msgid "未安装 PyYAML，无法加载 YAML 格式翻译目录 {yaml_path}（该语言已回退为默认语言）"
+msgstr "未安装 PyYAML，无法加载 YAML 格式翻译目录 {yaml_path}（该语言已回退为默认语言）"
+
+msgid "未找到代理信息: {type_name}: {e}"
+msgstr "未找到代理信息: {type_name}: {e}"
+
+msgid "未找到分段文件（{extension}），跳过转换: {seg_pattern}"
+msgstr "未找到分段文件（{extension}），跳过转换: {seg_pattern}"
+
+msgid "没有正在运行的录制进程！"
+msgstr "没有正在运行的录制进程！"
+
+msgid "直播间状态更新：[直播间名称] 正在直播中，时间：[时间]"
+msgstr "直播间状态更新：[直播间名称] 正在直播中，时间：[时间]"
+
+msgid "直播间状态更新：[直播间名称] 直播已结束！时间：[时间]"
+msgstr "直播间状态更新：[直播间名称] 直播已结束！时间：[时间]"
+
+msgid "直播间配置编辑器中有尚未保存的更改，切换画质会重新加载文件并丢弃这些更改。\n\n点击「是」放弃未保存的更改并继续切换画质；\n点击「否」取消本次画质切换。"
+msgstr "直播间配置编辑器中有尚未保存的更改，切换画质会重新加载文件并丢弃这些更改。\n\n点击「是」放弃未保存的更改并继续切换画质；\n点击「否」取消本次画质切换。"
+
+msgid "磁盘剩余空间低于 {disk_space_limit} GB，暂停拉起新录制并等待现有录制结束"
+msgstr "磁盘剩余空间低于 {disk_space_limit} GB，暂停拉起新录制并等待现有录制结束"
+
+msgid "磁盘空间已恢复（剩余 {disk_free_gb} GB），解除录制暂停并继续按配置拉起房间"
+msgstr "磁盘空间已恢复（剩余 {disk_free_gb} GB），解除录制暂停并继续按配置拉起房间"
+
+msgid "空响应（风控或网络失败）"
+msgstr "空响应（风控或网络失败）"
+
+msgid "自动获取抖音 ttwid 失败: {type_name}: {e}"
+msgstr "自动获取抖音 ttwid 失败: {type_name}: {e}"
+
+msgid "若因 SHA256 基准校验被拒，请删除 {files} 后重试（该旁路文件与安装包同目录，其校验强度等同于目录权限；官方源用 _ffmpeg_official*，master 源用 _ffmpeg_master*）。"
+msgstr "若因 SHA256 基准校验被拒，请删除 {files} 后重试（该旁路文件与安装包同目录，其校验强度等同于目录权限；官方源用 _ffmpeg_official*，master 源用 _ffmpeg_master*）。"
+
+msgid "读取代理注册表项失败: {type_name}: {e}"
+msgstr "读取代理注册表项失败: {type_name}: {e}"
+
+msgid "读取系统代理时发生错误: {type_name}: {e}"
+msgstr "读取系统代理时发生错误: {type_name}: {e}"
+
+msgid "输出文件名模板含非法 %% 占位符，已剔除后继续录制: {name}"
+msgstr "输出文件名模板含非法 %% 占位符，已剔除后继续录制: {name}"
+
+msgid "进房认证被拒（AUTH_REPLY 非 0 或超时未回应）"
+msgstr "进房认证被拒（AUTH_REPLY 非 0 或超时未回应）"
+
+msgid "进程退出跳过 {count} 个非本线程/本循环的 AsyncClient（只丢引用）"
+msgstr "进程退出跳过 {count} 个非本线程/本循环的 AsyncClient（只丢引用）"
+
+msgid "邮件推送失败, 推送邮箱：{to_email}, 错误信息: {type_name}: {e}"
+msgstr "邮件推送失败, 推送邮箱：{to_email}, 错误信息: {type_name}: {e}"
+
+msgid "配置文件已保存！"
+msgstr "配置文件已保存！"
+
+msgid "重连超过最大次数，与服务器断开连接: {reason}"
+msgstr "重连超过最大次数，与服务器断开连接: {reason}"
+
+msgid "钉钉推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"
+msgstr "钉钉推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}"

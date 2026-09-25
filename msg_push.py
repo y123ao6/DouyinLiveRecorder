@@ -4,6 +4,7 @@ import base64
 import http.client
 import json
 import smtplib
+import ssl
 import urllib.error
 import urllib.request
 from email.header import Header
@@ -28,35 +29,40 @@ headers: dict[str, str] = {"Content-Type": "application/json"}
 
 # 脱敏密钥：保留前后各 2 位，其余以 * 遮挡，防日志泄露
 def _mask_secret(secret: str) -> str:
-    # 脱敏：仅保留前后各 2 位用于排查，其余以 * 遮挡，避免凭证泄露到日志。
     if not secret:
         return ""
     # 短密钥（<=6）整体遮蔽而非保留首尾：首尾保留后仅遮 1-2 位等同明文，无脱敏意义。
     if len(secret) <= 6:
-        # 短密钥（如测试 token）遮蔽 1-2 位形同虚设，整体遮蔽
         return "****"
     return f"{secret[:2]}{'*' * (len(secret) - 4)}{secret[-2:]}"
 
 
-# 脱敏推送地址：隐藏 query 与疑似密钥路径段，仅供日志展示
-def _mask_url(url: str) -> str:
-    # 脱敏推送地址：隐藏 query 中的 token 与疑似密钥的路径段，避免凭证泄露到日志。
-    # 仅用于日志展示，不影响实际请求。
+# 脱敏推送地址：隐藏 query 与疑似密钥路径段，仅供日志展示、不影响实际请求。
+# mask_last_segment=True：把「路径最后一段即凭据」的渠道（Bark / Server酱 / 息知 / ntfy）无条件
+# 遮蔽末段。MID-58：旧实现靠 hostname.endswith("day.app") 白名单命中 Bark 的 8 位短密钥，
+# 自建 / 反代 Bark（https://bark.example.com/<8字符key>）因此整串明文进 logs/streamget.log
+# （300KB 轮转、保留多份、求助时通常整包上传），拿到即可向用户手机无限推送——主机名从来不是
+# 判据，密钥的位置才是，故改由调用方按渠道声明。MIN-2251（2026-09-22）：ntfy 的
+# https://ntfy.sh/<topic> 同样「末段即频道口令」（拿到 topic 即可匿名订阅、也能抢先发假消息），
+# 三处失败日志曾漏传该参数、topic 明文进日志，已补齐；钉钉/TG/PushPlus 的凭据在 query 或
+# token 字段、末段非凭据，保持不传（`_mask_url` 本就会丢弃 query）。
+def _mask_url(url: str, *, mask_last_segment: bool = False) -> str:
     try:
         from urllib.parse import urlsplit, urlunsplit
 
         parts = urlsplit(url)
         segs = [s for s in parts.path.split("/") if s]
         masked_segs: list[str] = []
-        for seg in segs:
+        for idx, seg in enumerate(segs):
             if seg.startswith("bot") and len(seg) > 4:
                 masked_segs.append("bot****")  # Telegram token
             elif seg.endswith(".send") or seg.lower() in ("key", "sendmessage"):
                 masked_segs.append("****")
+            elif idx == len(segs) - 1 and mask_last_segment:
+                # Bark / Server酱 / 息知：密钥恒为最后一段，与主机名无关
+                masked_segs.append("****")
             elif len(seg) > 12 and "sendmessage" not in seg.lower():
                 masked_segs.append("****")  # 疑似长密钥（Server酱/Bark 末段）
-            elif parts.hostname and parts.hostname.endswith("day.app"):
-                masked_segs.append("****")  # Bark key（8 位短密钥，原规则漏遮蔽）
             else:
                 masked_segs.append(seg)
         masked_path = "/" + "/".join(masked_segs) if masked_segs else ""
@@ -67,9 +73,7 @@ def _mask_url(url: str) -> str:
 
 
 # 钉钉群机器人推送文本消息，支持 @手机号/全体，返回成功与失败地址列表
-# 钉钉群机器人推送文本消息，支持 @手机号/全体，返回成功与失败地址列表
 def dingtalk(url: str, content: str, number: str | None = None, is_atall: bool = False) -> dict[str, list[str | int]]:
-    # 钉钉群机器人推送
     success: list[str | int] = []
     error: list[str | int] = []
     api_list = url.replace("，", ",").split(",") if url.strip() else []
@@ -105,15 +109,22 @@ def dingtalk(url: str, content: str, number: str | None = None, is_atall: bool =
                 )
         except Exception as e:
             error.append(api)
+            # MID-2251：本仓硬约定「异常日志必带 type_name」——Windows 下 socket.timeout /
+            # TimeoutError 的 str() 是空串，且 urllib 包装后只剩 '<urlopen error >'，
+            # 只写 {e} 会让「DNS 失败 / TLS 校验失败 / 超时」三种故障打成同一行空白尾巴。
             logger.warning(
-                i18n.tr("钉钉推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(api), e=e)
+                i18n.tr(
+                    "钉钉推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}",
+                    masked_api=_mask_url(api),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
             )
     return {"success": success, "error": error}
 
 
 # 通过 Server酱/微信 推送消息（url 为推送地址，title/content 为内容）。
 def xizhi(url: str, title: str, content: str) -> dict[str, list[str | int]]:
-    # 微信推送（Server酱/WeChat）
     success: list[str | int] = []
     error: list[str | int] = []
     api_list = url.replace("，", ",").split(",") if url.strip() else []
@@ -135,14 +146,19 @@ def xizhi(url: str, title: str, content: str) -> dict[str, list[str | int]]:
                 logger.warning(
                     i18n.tr(
                         "微信推送失败, 推送地址：{masked_api}, 失败信息：{msg}",
-                        masked_api=_mask_url(api),
+                        masked_api=_mask_url(api, mask_last_segment=True),
                         msg=resp_data.get("msg", "未知错误"),
                     )
                 )
         except Exception as e:
             error.append(api)
             logger.warning(
-                i18n.tr("微信推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(api), e=e)
+                i18n.tr(
+                    "微信推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}",
+                    masked_api=_mask_url(api, mask_last_segment=True),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
             )
     return {"success": success, "error": error}
 
@@ -170,9 +186,19 @@ def send_email(
     smtp_port: str | None = None,
     open_ssl: bool = True,
 ) -> dict[str, list[str]]:
-    # 邮件推送（SMTP协议）
     receivers = to_email.replace("，", ",").split(",") if to_email.strip() else []
     smtp_obj: smtplib.SMTP | smtplib.SMTP_SSL | None = None
+
+    # SEV-2212 修复（2026-09-22）：两条 TLS 路径共用同一个**校验证书**的 context。
+    # 病史：原实现 `SMTP_SSL(host, port, timeout=10)` 与 `starttls()` 都不传 context，二者均回落
+    # `ssl._create_stdlib_context()`——而它**就是** `_create_unverified_context`（本机 CPython 3.14
+    # 实测 verify_mode=0 / check_hostname=False）：链路中间人呈递任意自签证书即可解密整段会话、
+    # 拿到 login_email / email_pass（授权码等同口令）；`open_ssl=True` 是默认值，465 默认分支同样不设防。
+    # 两条路径必须传同一个 ctx（F-12：「只改一条即出现口径分叉」）。确需放行自签证书应走显式配置项
+    # 并 logger.warning，不得默默放宽——本轮不加该开关，避免引入未经决策的放宽入口。
+    # 复核判据：tests/test_regression_2026_09_22_utils.py::TestSmtpBothPathsVerifyCertificates
+    # （断言 SSL 与 starttls 两分支各自收到 verify_mode == ssl.CERT_REQUIRED 的 context 且为同一对象）。
+    ctx = ssl.create_default_context()
 
     try:
         # 2026-09-12 审查 6.6：CRLF 注入校验前置。放行则攻击者可用含换行的主播名
@@ -198,13 +224,30 @@ def send_email(
                 port = int(smtp_port) if smtp_port else 465
             except ValueError:
                 port = 465
-            smtp_obj = smtplib.SMTP_SSL(email_host, port, timeout=10)
+            smtp_obj = smtplib.SMTP_SSL(email_host, port, timeout=10, context=ctx)
         else:
             try:
                 port = int(smtp_port) if smtp_port else 25
             except ValueError:
                 port = 25
             smtp_obj = smtplib.SMTP(email_host, port, timeout=10)
+            # MI-24 修复：非 SSL 分支原先直接 login，授权码在**明文链路**上传输。
+            # 邮箱授权码等同邮箱口令，可被同链路嗅探（公共 Wi-Fi / 透明代理）。
+            # 这里先尝试 STARTTLS 升级；服务器不支持时明确告警而非静默明文登录。
+            # SEV-2212 修复（2026-09-22）：starttls 必须显式传 context=ctx（见上），
+            # 否则回落不校验证书的 context，STARTTLS 升级成「已加密但未认证」的链路。
+            try:
+                _ = smtp_obj.ehlo()
+                _ = smtp_obj.starttls(context=ctx)
+                _ = smtp_obj.ehlo()
+            except smtplib.SMTPException as e:
+                logger.warning(
+                    i18n.tr(
+                        "SMTP 服务器不支持 STARTTLS，本次将以明文发送邮箱授权码（存在被窃听风险，"
+                        "建议在配置中改为启用 SSL 加密）: {type_name}",
+                        type_name=type(e).__name__,
+                    )
+                )
         assert smtp_obj is not None
         _ = smtp_obj.login(login_email, email_pass)
         _ = smtp_obj.sendmail(sender_email, receivers, message.as_string())
@@ -214,23 +257,43 @@ def send_email(
         logger.warning(i18n.tr("邮件推送被拒绝（疑似头注入）: {e}", e=e))
         return {"success": [], "error": receivers}
     except smtplib.SMTPException as e:
-        logger.warning(i18n.tr("邮件推送失败, 推送邮箱：{to_email}, 错误信息:{e}", to_email=to_email, e=e))
+        logger.warning(
+            i18n.tr(
+                "邮件推送失败, 推送邮箱：{to_email}, 错误信息: {type_name}: {e}",
+                to_email=to_email,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
         return {"success": [], "error": receivers}
     except Exception as e:
-        logger.warning(i18n.tr("邮件推送失败, 推送邮箱：{to_email}, 错误信息:{e}", to_email=to_email, e=e))
+        logger.warning(
+            i18n.tr(
+                "邮件推送失败, 推送邮箱：{to_email}, 错误信息: {type_name}: {e}",
+                to_email=to_email,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
         return {"success": [], "error": receivers}
     # 无论成功失败都主动 quit() 关闭 SMTP 会话，避免连接悬挂；quit 失败忽略（连接本就要丢弃）。
+    # MID-2252 修复（2026-09-22）：原先只吞 smtplib.SMTPException，但 quit() 走 docmd("QUIT") 等
+    # 221 响应、socket 带 timeout=10，服务端不回 221 时抛 socket.timeout（= TimeoutError，
+    # 是 **OSError** 子类而**不是** SMTPException）。在 finally 里穿出会**替换掉** try 块已算好的
+    # 成功返回值：邮件其实已发出，上层 push_message 却拿到未捕获异常、重试逻辑据此重发
+    # （用户表现为重复收到同一封开播通知）。ECONNRESET / EBADF 等其它 OSError 形态同理只是
+    # 「会话没优雅关闭」，不得改变已得出的结论。
+    # 复核判据：tests/test_regression_2026_09_22_utils.py::test_send_email_quit_timeout_does_not_replace_result
     finally:
         if smtp_obj:
             try:
                 _ = smtp_obj.quit()
-            except smtplib.SMTPException:
+            except smtplib.SMTPException, OSError:
                 pass
 
 
 # Telegram Bot 推送文本消息，返回成功与失败聊天ID列表
 def tg_bot(chat_id: str | int, token: str, content: str) -> dict[str, list[str | int]]:
-    # Telegram Bot 推送
     # url 在 try 外预绑定，避免构造 json_data 异常时 except 块引用未绑定变量触发 NameError
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
@@ -240,8 +303,7 @@ def tg_bot(chat_id: str | int, token: str, content: str) -> dict[str, list[str |
         with cast(http.client.HTTPResponse, opener.open(req, timeout=15)) as response:
             json_str = response.read().decode("utf-8")
         resp_data: dict[str, object] = cast(dict[str, object], json.loads(json_str))
-        # Telegram 即使返回 2xx，业务失败也会返回 {"ok": false, "description": "..."}
-        # Telegram 即便 HTTP 2xx 也可能业务失败（ok=false + description），须以 ok 字段判定，不能只看状态码。
+        # Telegram 即便 HTTP 2xx 也可能业务失败（ok=false + description），须以 ok 字段判定、不能只看状态码。
         if resp_data.get("ok") is True:
             return {"success": [str(chat_id)], "error": []}
         error_detail = resp_data.get("description", "未知错误")
@@ -257,9 +319,10 @@ def tg_bot(chat_id: str | int, token: str, content: str) -> dict[str, list[str |
     except Exception as e:
         logger.warning(
             i18n.tr(
-                "tg推送失败, 聊天ID：{chat_id}, 推送地址：{masked_url}, 错误信息:{e}",
+                "tg推送失败, 聊天ID：{chat_id}, 推送地址：{masked_url}, 错误信息: {type_name}: {e}",
                 chat_id=chat_id,
                 masked_url=_mask_url(url),
+                type_name=type(e).__name__,
                 e=e,
             )
         )
@@ -280,7 +343,6 @@ def bark(
     is_archive: int = 1,
     url: str = "",
 ) -> dict[str, list[str | int]]:
-    # Bark 推送（iOS 通知）
     success: list[str | int] = []
     error: list[str | int] = []
     api_list = api.replace("，", ",").split(",") if api.strip() else []
@@ -303,7 +365,6 @@ def bark(
             with cast(http.client.HTTPResponse, opener.open(req, timeout=10)) as response:
                 json_str = response.read().decode("utf-8")
             resp_data: dict[str, object] = cast(dict[str, object], json.loads(json_str))
-            # Bark 同样以响应体 code==200 判定成功（与 Server酱/息知一致，区别于钉钉 errcode）。
             # Bark 以响应体 code==200 判成功（与 Server酱/息知/PushPlus 一致，区别于钉钉 errcode）。
             if resp_data.get("code") == 200:
                 success.append(_api)
@@ -312,14 +373,19 @@ def bark(
                 logger.warning(
                     i18n.tr(
                         "Bark推送失败, 推送地址：{masked_api}, 失败信息：{message}",
-                        masked_api=_mask_url(_api),
+                        masked_api=_mask_url(_api, mask_last_segment=True),
                         message=resp_data.get("message", "未知错误"),
                     )
                 )
         except Exception as e:
             error.append(_api)
             logger.warning(
-                i18n.tr("Bark推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(_api), e=e)
+                i18n.tr(
+                    "Bark推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}",
+                    masked_api=_mask_url(_api, mask_last_segment=True),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
             )
     return {"success": success, "error": error}
 
@@ -340,7 +406,6 @@ def ntfy(
     email: str = "",
     call: str = "",
 ) -> dict[str, list[str | int]]:
-    # NTFY 推送（跨平台通知服务）
     success: list[str | int] = []
     error: list[str | int] = []
     api_list = api.replace("，", ",").split(",") if api.strip() else []
@@ -387,7 +452,7 @@ def ntfy(
                 logger.warning(
                     i18n.tr(
                         "ntfy推送失败, 推送地址：{masked_api}, 失败信息：{error}",
-                        masked_api=_mask_url(_api),
+                        masked_api=_mask_url(_api, mask_last_segment=True),
                         error=resp_data["error"],
                     )
                 )
@@ -403,21 +468,25 @@ def ntfy(
             logger.warning(
                 i18n.tr(
                     "ntfy推送失败, 推送地址：{masked_api}, 错误信息:{error_detail}",
-                    masked_api=_mask_url(_api),
+                    masked_api=_mask_url(_api, mask_last_segment=True),
                     error_detail=error_detail,
                 )
             )
         except Exception as e:
             error.append(_api)
             logger.warning(
-                i18n.tr("ntfy推送失败, 推送地址：{masked_api}, 错误信息:{e}", masked_api=_mask_url(_api), e=e)
+                i18n.tr(
+                    "ntfy推送失败, 推送地址：{masked_api}, 错误信息: {type_name}: {e}",
+                    masked_api=_mask_url(_api, mask_last_segment=True),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
             )
     return {"success": success, "error": error}
 
 
 # PushPlus 推送（token+title+content），返回成功与失败 token 列表
 def pushplus(token: str, title: str, content: str) -> dict[str, list[str | int]]:
-    # PushPlus 推送
     success: list[str | int] = []
     error: list[str | int] = []
     token_list = token.replace("，", ",").split(",") if token.strip() else []
@@ -449,7 +518,12 @@ def pushplus(token: str, title: str, content: str) -> dict[str, list[str | int]]
         except Exception as e:
             error.append(_token)
             logger.warning(
-                i18n.tr("PushPlus推送失败, Token：{masked_token}, 错误信息:{e}", masked_token=_mask_secret(_token), e=e)
+                i18n.tr(
+                    "PushPlus推送失败, Token：{masked_token}, 错误信息: {type_name}: {e}",
+                    masked_token=_mask_secret(_token),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
             )
 
     return {"success": success, "error": error}

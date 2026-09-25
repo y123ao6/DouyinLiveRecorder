@@ -31,7 +31,8 @@ if TYPE_CHECKING:
 # 仅 Windows 下启用托盘（其他平台缺少 conhost 窗口与托盘 API）
 ENABLED = sys.platform == "win32"
 
-# Windows 常量
+# Win32 API 常量（抄错即出现「托盘在但窗口没收起」的无异常视觉 bug，故由
+# tests/test_web_tray.py::test_module_constants_match_win32_api 断言源码字面值）
 GWL_EXSTYLE = -20
 WS_EX_APPWINDOW = 0x00040000
 WS_EX_TOOLWINDOW = 0x00000080
@@ -40,7 +41,7 @@ MF_BYCOMMAND = 0x0000
 MF_GRAYED = 0x0001
 SW_RESTORE = 9
 SW_SHOW = 5
-# SetWindowPos 标志
+# SetWindowPos 标志：只触发样式重评估，不动位置/尺寸/Z 序
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOZORDER = 0x0004
@@ -112,7 +113,7 @@ def _get_user32() -> "ctypes.CDLL | None":
 
 
 class WebConsoleTray:
-    # Web 控制台托盘管理器
+    # 托盘生命周期管理：start() 改写控制台窗口样式并起守护线程挂图标，stop() 拆图标
     host: str
     port: int
     server: "uvicorn.Server | None"
@@ -130,7 +131,7 @@ class WebConsoleTray:
         self._hwnd = None
 
     def start(self) -> None:
-        # 启动系统托盘（非阻塞，托盘图标运行在守护线程）
+        # 启动系统托盘（非阻塞，图标跑在守护线程）；非 Windows 时 ENABLED 为 False，直接返回
         if not ENABLED:
             return
         try:

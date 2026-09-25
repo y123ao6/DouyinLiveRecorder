@@ -1,33 +1,28 @@
 # =============================================================================
-# DouyinLiveRecorder 并发测试专用覆盖率配置（concurrency-test CI job）
-# -----------------------------------------------------------------------------
-# 用途：CI 的 concurrency-test job（tests/test_concurrency*.py、
-# test_async_http_lock.py 等）经 COVERAGE_RCFILE 环境变量指向本文件运行。
-# 并发回归测试天然只触及并发相关代码路径，覆盖率远低于全局阈值
-# （pyproject.toml [tool.coverage.report].fail_under = 50），故此处
-# fail_under = 0（不设下限），仅产出报告用于人工审查。
-# 其余配置与 pyproject.toml [tool.coverage.*] 保持一致（source / omit）。
-# 注：前端用例（tests/frontend/*.mjs，Node 内置 node:test）不产生 Python 覆盖率数据，
-#     不在本文件覆盖范围内；其 Python 包装用例只做子进程调用，亦不计入。
-#     omit 清单与 pyproject [tool.coverage.run].omit、.gitignore、.dockerignore 同源维护
-#     （本地工具生成目录漏一处即出现「未跟踪目录 / 误入镜像 / 工具误扫描」）。
+# DouyinLiveRecorder 并发测试专用覆盖率配置（CI 的 concurrency-test job）
+# 用途：该 job（tests/test_concurrency*.py、test_async_http_lock.py 等）经 COVERAGE_RCFILE
+#   指向本文件。并发回归天然只触及并发路径，覆盖率远低于全局阈值（pyproject
+#   [tool.coverage.report].fail_under = 50），故此处 fail_under = 0（不设下限），仅产出报告供人工审查。
+# 其余配置与 pyproject.toml [tool.coverage.*] 保持一致（source / omit）；omit 清单与
+#   pyproject [tool.coverage.run].omit、.gitignore、.dockerignore 同源维护，漏一处即出现
+#   「未跟踪目录 / 误入镜像 / 工具误扫描」。
+# 不在范围内：前端用例（tests/frontend/*.mjs，Node 内置 node:test）不产生 Python 覆盖率数据，
+#   其 Python 包装用例只做子进程调用，亦不计入。
 # =============================================================================
 
 [run]
-# source 固定为 src（与 pyproject 一致）——它既是覆盖率口径，也是隐私边界：
-# 放宽为 "." 会把 .codebuddy/ 等本地工具目录（含会话记忆 / 技能 / 本机绝对路径）
-# 扫进报告，而报告会随 CI artifact / Codecov 外发；下面的 omit 只是第二道兜底，
-# 不能被当作唯一防线。
+# source 固定为 src（与 pyproject 一致）——它既是覆盖率口径，也是隐私边界：放宽为 "." 会把
+# .codebuddy/ 等本地工具目录（含会话记忆 / 技能 / 本机绝对路径）扫进报告，而报告会随
+# CI artifact / Codecov 外发；下面的 omit 只是第二道兜底，不能被当作唯一防线。
 source = src
-# 并发用例的形态是「多线程各自 asyncio.run」，不涉及 multiprocessing / 子进程。
-# 显式写 thread 是钉死语义：留空时 coverage 走的是「concurrency 为空则隐式开启
-# 线程追踪」的内部分支（collector.py: if do_threading or not concurrency），
-# 一旦日后有人在此处或 pyproject 里加了别的并发项，线程内代码就会静默不计入覆盖率。
-# 若并发用例将来改用多进程，须改为 concurrency = multiprocessing 并同时打开
-# parallel = true 与 sigterm = true，否则子进程数据会整体丢失。
+# 并发用例的形态是「多线程各自 asyncio.run」，不涉 multiprocessing / 子进程；显式写 thread
+# 是为了钉死语义：留空时 coverage 走的是「concurrency 为空则隐式开启线程追踪」的内部分支
+# （collector.py: if do_threading or not concurrency），一旦日后在此处或 pyproject 里加了别的
+# 并发项，线程内代码就会静默不计入覆盖率。若将来改用多进程，须改为 concurrency = multiprocessing
+# 并同时打开 parallel = true 与 sigterm = true，否则子进程数据会整体丢失。
 concurrency = thread
-# 数据文件记相对路径：保证 .coverage 产物跨机器 / 容器可搬运，
-# 并与 scripts/check_coverage.py 的 "src/x.py" 相对路径匹配口径一致。
+# 数据文件记相对路径：使 .coverage 产物跨机器 / 容器可搬运，并与 scripts/check_coverage.py
+# 的 "src/x.py" 相对路径匹配口径一致。
 relative_files = true
 # 与 pyproject.toml [tool.coverage.run].omit 保持一致（本地工具生成目录同源维护）
 omit =
@@ -37,10 +32,12 @@ omit =
     */ffmpeg/*
     # 运行期产物目录（与 .gitignore/.dockerignore 同源维护）
     */downloads/*
+    */recordings/*
     */logs/*
     */backup_config/*
     */.mimosa/*
     */.qoder/*
+    */.qoder-credits/*
     */.agents/*
     */.workbuddy/*
     */.codebuddy/*
@@ -56,14 +53,13 @@ omit =
 
 [report]
 fail_under = 0
-# 用 exclude_also（追加）而不是 exclude_lines（替换）：后者会把 coverage 的三条
-# 默认排除规则整体丢掉——① `#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)`
-# （大小写 / 空格变体的 pragma）、② `...` 省略号函数体、③ `if (typing\.)?TYPE_CHECKING:`
-# ——使覆盖率被系统性低估。改为追加后，上述默认规则全部保留：
-#   · `if TYPE_CHECKING:` 无需再声明（默认规则已含 typing. 前缀写法）
-#   · `...` 占位体（Protocol / overload / TypedDict 桩）不再被算作未覆盖
-# 注：pyproject.toml [tool.coverage.report].exclude_lines 存在同一问题，建议同步改为
-# exclude_also，否则两个 job 的覆盖率口径会不一致。
+# 用 exclude_also（追加）而不是 exclude_lines（替换）：后者会把 coverage 的三条默认排除规则
+# 整体丢掉——① `#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)`（大小写 / 空格变体的 pragma）、
+# ② `...` 省略号函数体、③ `if (typing\.)?TYPE_CHECKING:`——使覆盖率被系统性低估。改为追加后
+# 三者均保留：`if TYPE_CHECKING:` 无需再声明（默认规则已含 typing. 前缀写法），`...` 占位体
+# （Protocol / overload / TypedDict 桩）不再被算作未覆盖。
+# 2026-09-16 同源收敛：pyproject.toml [tool.coverage.report] 已由 exclude_lines 改为 exclude_also，
+# 两个 job 口径现已逐条一致；改回去或单侧增删条目都会重新造成口径分叉。
 exclude_also =
     pragma: no cover
     def __repr__

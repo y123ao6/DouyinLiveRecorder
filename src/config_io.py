@@ -12,41 +12,38 @@ from loguru import logger
 import i18n
 import main
 from src import utils
+from src.config_bool import format_config_bool, parse_config_bool
 from src.ffmpeg_proc import _get_error_line
 
 # 配置文件与文件工具（独立模块）
 #
-# 负责：
-# - 安全更新 URL 配置文件内容（update_file）
-# - 从配置文件删除指定行（delete_line）
-# - 按 URL 更新配置行主播名字段（update_anchor_name，主播名自动同步）
-# - 从 config.ini 读取并兜底写回配置值（read_config_value）
-# - 配置数值安全转换（_safe_int / _safe_float）
-# - 配置文件备份（backup_file / backup_file_start）
+# 负责：URL 配置行的安全更新与去重（update_file）、删行（delete_line）、主播名自动同步
+# （update_anchor_name）、config.ini 读取 + 缺键补写（read_config_value / read_config_bool）、
+# 配置数值安全转换（_safe_int / _safe_float）、配置备份（backup_file / backup_file_start）。
 #
-# 需要读取/写入 main 的少量配置与文件锁全局变量
-# （config_file / url_config_file / backup_dir / text_encoding / file_update_lock / ini_URL_content），
-# 通过 `import main` 在运行时惰性读写，避免循环导入与 __main__ 二次执行。
+# 用到 main 的少量模块全局量（config_file / url_config_file / backup_dir / text_encoding /
+# file_update_lock / ini_URL_content），一律经 `import main` 在运行时惰性读写：
+# `from main import ...` 会形成循环导入，且冻结入口下 main 会被二次执行。
 
 
 # 段级精确替换（2026-09-12 审查 6.1）：old_str 仅在「等于整行（去行尾换行与首尾空白后）」
-# 或「等于行内某个半角/全角逗号分隔段（strip 后）」时才替换为 new_str。返回重写后的
-# 整行文本（保留原行尾与多逗号），未命中返回 None。
-# 原实现为整行 substring 替换（str.replace），URL 前缀重叠时（如 .../room1 与 .../room12）
-# 会把别的配置行静默改坏，滥用者只在下次“未生效”才会发现。
+# 或「等于行内某个半角/全角逗号分隔段（strip 后）」时才替换为 new_str；返回重写后的整行文本
+# （保留原行尾与多逗号），未命中返回 None。
+# 原实现是整行 str.replace，URL 前缀重叠时（.../room1 与 .../room12）会把别的配置行静默改坏，
+# 使用者只在下次「未生效」时才发现。
 def _rewrite_line_by_match(text_line: str, old_str: str, new_str: str) -> str | None:
     raw = text_line.rstrip("\r\n")
     eol = text_line[len(raw) :]
     target = old_str.strip()
     if not target:
         return None
-    # 整行匹配：raw.strip() 同时容忍首尾空白；new_str 的行尾须补 eol；
-    # whole-line 与 segment 两种情况下都需 rstrip 掉 new_str 的潜在换行以免双换行
+    # 整行匹配：raw.strip() 同时容忍首尾空白；两种命中形态都要 rstrip 掉 new_str 自带的
+    # 换行，否则与补上的 eol 拼成双换行
     cleaned_new = new_str.rstrip("\r\n")
     if raw.strip() == target:
         return f"{cleaned_new}{eol}"
-    # 段级匹配：按半角/全角逗号切分，保留分隔符。new_str 可含逗号（“new_url,主播: 名称”）
-    # 与原 substring 语义兼容，且不会误伤相似前缀行
+    # 段级匹配：按半角/全角逗号切分并保留分隔符。new_str 允许含逗号（"new_url,主播: 名称"），
+    # 与原 substring 语义兼容，又不会误伤相似前缀行
     parts = re.split(r"([,，])", raw)
     hit = False
     for i in range(0, len(parts), 2):
@@ -61,19 +58,16 @@ def _rewrite_line_by_match(text_line: str, old_str: str, new_str: str) -> str | 
 # 把 file_path 中所有 old_str 替换为 new_str（start_str 非空时给命中行加该前缀，如 "#" 注释掉），
 # 顺带去重相同行；返回实际生效的字符串（失败时返回 old_str）
 def update_file(file_path: str, old_str: str, new_str: str, start_str: str | None = None) -> str | None:
-    # 安全更新文件内容（加锁防止并发写入）
     if old_str == new_str and start_str is None:
         return old_str
     with main.file_update_lock:
         file_data: list[str] = []
-        # 2026-09-12 审查（低危 6.1）：原 list 成员判定为 O(n)，80+ 房间场景退化为 O(N²)；
-        # 换为 set 保持 O(1) 插入与判定，同时保留首次出现顺序（set 不保证，但「仅记录是否见过」
-        # 的用法重放为顺序 + 去重即可）
+        # 2026-09-12 审查（低危 6.1）：原先用 list 做成员判定是 O(n)，80+ 房间时退化为 O(N²)；
+        # 换 set 后仍是 O(1)，且「只记录是否见过」的用法天然保持首次出现顺序
         seen: set[str] = set()
         try:
-            # newline=""：读/写均不做换行符翻译，保留文件原有的 \n / \r\n 行尾风格，
-            # 配合下方的原子写实现字节级 round-trip（Windows 下的 CRLF 不会走 universal newlines
-            # 被错误转换为 LF）
+            # newline=""：读写均不做换行符翻译，保留文件原有的 \n / \r\n 风格，
+            # 配合下方原子写实现字节级 round-trip（Windows 的 CRLF 不会被 universal newlines 改成 LF）
             with open(file_path, "r", encoding=main.text_encoding, newline="") as f:
                 for text_line in f:
                     rewritten = _rewrite_line_by_match(text_line, old_str, new_str)
@@ -86,7 +80,7 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str | Non
             logger.error(
                 i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e))
             )
-            # 读取失败时尝试用初始内容恢复，避免文件被清空
+            # 读取失败时用导入期快照恢复，避免整份 URL 配置被写成空文件
             if main.ini_URL_content:
                 _ = _atomic_write_text(file_path, main.ini_URL_content)
                 return old_str
@@ -94,38 +88,28 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str | Non
         if not file_data:
             return old_str
         joined = "".join(file_data)
-        # 2026-09-12 审查 6.1：原 open(..., "w") 是 truncate+write 非原子，读方（主循环、GUI）
-        # 可能在写入窗口内读到空/半写文件；改同目录临时文件 + os.replace 原子写
+        # 2026-09-12 审查 6.1：原 open(..., "w") 是 truncate+write 的非原子写，读方（主循环、GUI）
+        # 可能在写入窗口里读到空/半写文件；改为同目录临时文件 + os.replace
         if not _atomic_write_text(file_path, joined):
             return old_str
-        # 更新快照为当前已落盘内容，使后续异常恢复只回滚到最近一次成功修改，而非整个循环开始时的旧内容
+        # 快照推进到本次已落盘内容：后续异常只回滚到最近一次成功修改，而非整个循环开始前的旧值
         main.ini_URL_content = joined
         return new_str
 
 
-# 原子写文本：同目录临时文件写完后 os.replace 覆盖，读方只会看到旧/新完整内容。
-# 返回是否成功落盘（False 表示在写临时文件 / replace 阶段发生 OSError）。
+# 原子写文本：同目录临时文件写完后 os.replace 覆盖，读方只会看到旧/新完整内容之一。
+# 返回是否成功落盘（False = 写临时文件或 replace 阶段抛 OSError）。
+# 真正的写入实现只有一处：src.utils.atomic_write_text；本函数是薄封装，沿用原有的 warning 级日志。
+# 可复核判据：
+#   grep -rn "mkstemp" src/            # 仅 src/utils.py 命中
+#   grep -rn "atomic_write_text" src/  # utils 定义 + config_io/web_config 两个薄封装
+#   [历史注] WD-15（2026-09-18）下沉为唯一实现；SEV-2211（2026-09-22）发现 web_config
+#   另持一份弱化副本并已删除，故「唯一实现」这一陈述如今才全仓成立。
 def _atomic_write_text(file_path: str, text: str) -> bool:
-    tmp = f"{file_path}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding=main.text_encoding, newline="") as f:
-            _ = f.write(text)
-        os.replace(tmp, file_path)
-    except OSError as e:
-        logger.warning(
-            i18n.tr(
-                "原子写失败（已保留原文件）: {file_path} - {type_name}: {e}",
-                file_path=file_path,
-                type_name=type(e).__name__,
-                e=e,
-            )
-        )
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        return False
-    return True
+    ok = utils.atomic_write_text(file_path, text, encoding=main.text_encoding)
+    if not ok:
+        logger.warning(i18n.tr("原子写失败（已保留原文件）: {file_path}", file_path=file_path))
+    return ok
 
 
 # 将 URL 配置文件中指定 URL 所在行的主播名字段更新为 new_name（行内无主播名字段时追加），
@@ -157,20 +141,20 @@ def update_anchor_name(url: str, new_name: str) -> bool:
         if not changed:
             return False
         joined = "".join(out_lines)
-        try:
-            with open(main.url_config_file, "w", encoding=main.text_encoding, newline="") as f:
-                _ = f.write(joined)
-            # 更新快照为当前已落盘内容（与 update_file 保持一致的异常恢复基线）
-            main.ini_URL_content = joined
-        except OSError as e:
-            logger.warning(i18n.tr("主播名写回 URL 配置失败（已忽略，下轮重试）: {e}", e=e))
+        # WD-15：原先的 open(..., "w") 直写（truncate+write）中途失败会把整份 URL_config.ini
+        # 截成空文件——所有房间配置一次丢失，且这条路径没有 ini_URL_content 的快照恢复兜底。
+        # 改原子写后，仅在落盘成功时才更新快照，避免「快照已更新但实际没写成功」让恢复基线失真。
+        if not _atomic_write_text(main.url_config_file, joined):
+            logger.warning(i18n.tr("主播名写回 URL 配置失败（已忽略，下轮重试）"))
             return False
+        # 与 update_file 保持一致的异常恢复基线
+        main.ini_URL_content = joined
         return True
 
 
 # 重写单行配置的主播名字段；行不匹配 URL 或已是目标名时返回 None（无需变更）
 def _rewrite_anchor_field(raw_line: str, url: str, new_name: str) -> str | None:
-    # 行格式: [画质,]URL[,主播: 名称]，# 前缀表示注释（禁用）——重写时全部保留
+    # 行格式: [画质,]URL[,主播: 名称]，行首 # 表示注释（禁用）——重写时两类前缀全部保留
     stripped = raw_line.rstrip("\r\n")
     eol = raw_line[len(stripped) :]
     # 分离注释前缀（保留原有 # 数量）
@@ -182,12 +166,12 @@ def _rewrite_anchor_field(raw_line: str, url: str, new_name: str) -> str | None:
         body = body[idx + 1 :]
     if not body.strip():
         return None
-    # 段级 URL 匹配：防止 URL 前缀相似（如 /1 与 /12）导致误改他行
+    # 段级 URL 匹配：防止前缀相似（如 /1 与 /12）的 URL 误改他行
     segments = [seg.strip() for seg in re.split(r"[,，]", body)]
     if url not in segments:
         return None
-    # 定位主播名字段：取最后一个「主播:」/「主播：」之后的尾段整体替换（名字可含空格）；
-    # 全角冒号行统一重写为半角格式（与 main.py 的行解析约定一致）
+    # 主播名字段取最后一个「主播:」/「主播：」之后的尾段整体替换（名字可含空格）；
+    # 全角冒号行统一重写为半角，与 main.py 的行解析约定一致
     idx = max(body.rfind("主播:"), body.rfind("主播："))
     if idx >= 0:
         head = body[:idx].rstrip()
@@ -200,40 +184,57 @@ def _rewrite_anchor_field(raw_line: str, url: str, new_name: str) -> str | None:
     return f"{comment_prefix}{rebuilt}{eol}"
 
 
-# 从 file_path 中删除与 del_line 完全相同的行，delete_all=True 时删除全部匹配行；无返回值
-def delete_line(file_path: str, del_line: str, delete_all: bool = False) -> None:
-    # 从文件中删除指定行
+# 从 file_path 中删除与 del_line 完全相同的行，delete_all=True 时删除全部匹配行；
+# 返回是否真的删除并落盘成功（False = 未命中 / 读失败 / 原子写失败）。
+# 返回值是 SEV-05 的一部分：调用方（main.py 的重复行清理、web_api 的「删除房间」端点）
+# 必须据此决定告警/500，否则删除失败会被回报成成功。
+def delete_line(file_path: str, del_line: str, delete_all: bool = False) -> bool:
     # delete_all=False 时仅删除第一个匹配行
     with main.file_update_lock:
         try:
-            with open(file_path, "r", encoding=main.text_encoding) as f:
+            # MI-11：补 newline=""，与 update_file 一致。默认 universal newlines 会把 \r\n
+            # 读成 \n，而写回走 newline="" 不做翻译，于是任意一次删行都会把整个文件的
+            # CRLF 行尾永久改成 LF。
+            with open(file_path, "r", encoding=main.text_encoding, newline="") as f:
                 lines = f.readlines()
         except (OSError, UnicodeDecodeError) as e:
             logger.error(i18n.tr("读取 URL 配置失败，跳过删除: {e}", e=e))
-            return
+            return False
+        # SEV-05（2026-09-20）：MI-11 只修了写侧，读侧留下反向缺口——本函数所有调用方
+        # （web_api 的 parse_url_config raw_line、main.py 的 origin_line）读文件时都没传
+        # newline=""，即传进来的 del_line 恒以 \n 结尾；此处按 newline="" 读原文，文件行是
+        # \r\n 结尾 → 整行精确比较在 CRLF 文件上**恒不成立**，删除退化为永久静默 no-op，
+        # 而旧实现无返回值、调用方无条件回报成功（面板点「删除」后房间仍在录）。
+        # 工作区实际形态即 CRLF（URL_config.ini 14/14 行），Windows 主平台必然命中。
+        # 现两侧先剥行尾再比较，写出时仍保留各行原始行尾（不做 LF/CRLF 翻译）。
+        target = del_line.rstrip("\r\n")
         deleted_one = False
         out: list[str] = []
         for txt_line in lines:
-            if del_line == txt_line and (delete_all or not deleted_one):
+            if txt_line.rstrip("\r\n") == target and (delete_all or not deleted_one):
                 deleted_one = True
                 continue
             out.append(txt_line)
         if not deleted_one:
-            return
-        # 2026-09-12 审查 6.5：原 r+truncate 式写中途崩溃会清空整个 URL_config.ini；
-        # 改临时文件 + os.replace 原子写（读方只见旧/新完整内容）
-        if not _atomic_write_text(file_path, "".join(out)):
-            return
-        # 同步更新 URL 配置快照，与 update_file 保持一致的异常恢复基线
+            # 未命中不写文件（省掉无谓的原子替换与快照更新）。此处刻意不打日志：新增 i18n
+            # 模板须同步四语目录，而「删除失败」的用户可见提示归调用方（web_api 端点 /
+            # main 主循环）所有，由它们按返回的 False 统一告警——本函数只交回可观测性。
+            return False
+        # 2026-09-12 审查 6.5：原 r+truncate 式写在崩溃时会清空整个 URL_config.ini
+        joined = "".join(out)
+        if not _atomic_write_text(file_path, joined):
+            return False
+        # 同步 URL 配置快照，与 update_file 保持一致的异常恢复基线
         if file_path == main.url_config_file:
-            main.ini_URL_content = "".join(out)
+            main.ini_URL_content = joined
+        return True
 
 
+# 从 config_parser 读取 section/option 的值；缺节或缺键时把 default_value 补写回配置文件
+# 并返回该默认值。返回值一律为字符串。
 def read_config_value(
     config_parser: configparser.RawConfigParser, section: str, option: str, default_value: str | int | float | bool = ""
-) -> str:  # 从 config_parser 读取 section/option 的配置值；缺节或缺键时用 default_value 补写回配置文件
-    # 并返回该默认值；返回值一律为字符串
-    # 读取配置文件指定节键值
+) -> str:
     try:
         if "录制设置" not in config_parser.sections():
             config_parser.add_section("录制设置")
@@ -253,17 +254,18 @@ def read_config_value(
             if section not in config_parser.sections():
                 config_parser.add_section(section)
             config_parser.set(section, option, str(default_value))
-            # 写回失败（瞬时占用 / 并发进程 / 编辑器锁 / 只读挂载）仅记 warning 并返回默认值，
-            # 不再抛出——避免「任何缺键 + 配置不可写」导致整个 app 在 import 阶段崩溃。
+            # 写回失败（瞬时占用 / 并发进程 / 编辑器锁 / 只读挂载）只记 warning 并返回默认值，
+            # 不再抛出——否则「任何缺键 + 配置不可写」会让整个 app 在 import 阶段崩溃；
             # 与 backup_file 的 best-effort 模式保持一致。
-            # 先在内存完整序列化、成功后才落盘：键名含 = / : 等 configparser 分隔符时
-            # write() 会抛 InvalidWriteError（Python 3.13+），直接写文件会把配置截断损坏；
-            # 失败时回滚内存态，避免坏键滞留解析器导致后续缺键写回连环失败。
+            # 先在内存里完整序列化、成功后才落盘：键名含 = / : 等 configparser 分隔符时
+            # write() 抛 InvalidWriteError（Python 3.14 起；3.13 是静默写成功），
+            # 直接写文件会把配置截断损坏。失败时回滚内存态，避免坏键滞留解析器
+            # 让后续缺键写回连环失败。
             try:
                 buffer = io.StringIO()
                 config_parser.write(buffer)
-                # 2026-09-12 审查 6.5：原 open(...,"w") 是 truncate+write 非原子；
-                # 改临时文件 + os.replace 原子写（与 update_file / delete_line 保持一致）
+                # 2026-09-12 审查 6.5：原 open(...,"w") 的 truncate+write 非原子；
+                # 原子写失败同样要回滚刚 set 进去的默认值
                 if not _atomic_write_text(main.config_file, buffer.getvalue()):
                     _ = config_parser.remove_option(section, option)
             except (OSError, configparser.Error) as e:
@@ -280,9 +282,23 @@ def read_config_value(
         return str(default_value)
 
 
+# 读取布尔型配置项（全仓统一入口）：语义 = read_config_value + parse_config_bool。
+# 键缺失时按 default 补写回配置文件（「是」/「否」，与 read_config_value 的自愈语义一致），
+# 已存在的值原样解析、不被覆写——识别 是/否、true/false、1/0、yes/no、on/off（大小写不敏感），
+# 无法识别的值返回 default。
+# 取代旧写法 `options.get(read_config_value(...), 兜底)`：那种字典查表对非「是/否」写法**静默**
+# 回落到硬编码兜底值（2026-09-17 实测致 8 项配置生效值漂移），本函数消除该路径。
+def read_config_bool(
+    config_parser: configparser.RawConfigParser, section: str, option: str, default: bool = False
+) -> bool:
+    # default 兼作「缺键时的补写值」与「无法识别时的返回值」
+    raw = read_config_value(config_parser, section, option, format_config_bool(default))
+    return parse_config_bool(raw, default)
+
+
 # 把配置项 value 安全转为 int；为空或非法时打印告警并返回 default
 def _safe_int(value: str | None, default: int) -> int:
-    # 配置数值安全转换：非法值记录告警并回退默认，避免 main() 主循环因 ValueError 崩溃
+    # 非法值必须告警后回退：直接 int() 抛 ValueError 会让 main() 主循环整体崩溃
     try:
         return int(str(value).strip())
     except TypeError, ValueError:
@@ -292,7 +308,6 @@ def _safe_int(value: str | None, default: int) -> int:
 
 # 把配置项 value 安全转为 float；为空或非法时打印告警并返回 default
 def _safe_float(value: str | None, default: float) -> float:
-    # 配置数值安全转换（浮点版）
     try:
         return float(str(value).strip())
     except TypeError, ValueError:
@@ -300,9 +315,57 @@ def _safe_float(value: str | None, default: float) -> float:
         return default
 
 
+# CR-07：备份内容的凭据脱敏开关。
+# 背景：config.ini 的 [Cookie]/[Authorization]/[账号密码] 三段是明文凭据，而备份线程每 10 分钟
+# 比对 MD5、一变就 shutil.copy2 整份文件到 backup_config/ 并保留 6 份——同一份凭据在磁盘上
+# 常驻 7 处，而备份目录恰是用户最容易整体打包/云同步/发给他人求助的地方。
+# 默认在副本里把敏感值替换为 ***（配置项仍在、便于对照排查；恢复时需重新填入凭据）。
+# 需要「备份含真实凭据」以完整还原的用户可设 DLR_BACKUP_KEEP_SECRETS=1 显式放行。
+def _backup_mask_secrets() -> bool:
+    return os.environ.get("DLR_BACKUP_KEEP_SECRETS", "").strip().lower() not in ("1", "true", "yes")
+
+
+# 备份内容的凭据脱敏：按「节/键名命中 **或** 值本身形如凭据」两道判据把敏感值替换为 ***，
+# 节名与键名保留；解析失败（非 ini / 编码异常）时返回原文本——不因脱敏失败而丢掉整份备份。
+# MID-N57（2026-09-21）：此前只接了 is_sensitive_item 一道判据，与面板侧 read_config_safe
+# （web_config.py CR-10）的双口径分叉——键名黑名单天然滞后于平台命名，仅值形态命中的键会明文
+# 进 backup_config/ 并常驻 6 份副本。
+# _looks_like_secret_value 必须从 src.web_config **同源导入**（勿复制第二份判据）：web_config 只依赖
+# stdlib 与 src.config_bool，且这里是函数内延迟导入，不构成导入环。
+def _redact_ini_secrets(text: str) -> str:
+    try:
+        from src.web_config import _looks_like_secret_value, is_sensitive_item
+    except ImportError:
+        return text
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        return text
+    out = io.StringIO()
+    for section in parser.sections():
+        _ = out.write(f"[{section}]\n")
+        for key, value in parser.items(section):
+            if value.strip() and (is_sensitive_item(section, key) or _looks_like_secret_value(value)):
+                _ = out.write(f"{key} = ***\n")
+            else:
+                _ = out.write(f"{key} = {value}\n")
+        _ = out.write("\n")
+    return out.getvalue()
+
+
+# 收紧文件权限为「仅属主可读写」（best-effort）：
+# Windows 不支持 POSIX 权限位，os.chmod 只影响只读属性，故失败一律忽略——
+# 该步骤是纵深防御，不应因权限设置失败而中断备份或写入流程。
+def _harden_permissions(path: str) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 # 备份配置文件到 backup_config 目录；异常内部吞掉，无返回值
 def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> None:
-    # 备份配置文件到 backup_config 目录
     try:
         if not os.path.exists(backup_dir_path):
             os.makedirs(backup_dir_path)
@@ -310,7 +373,19 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         backup_file_name = os.path.basename(file_path) + "_" + timestamp
         backup_file_path = os.path.join(backup_dir_path, backup_file_name).replace("\\", "/")
-        _ = shutil.copy2(file_path, backup_file_path)
+        # CR-07：默认先脱敏再落盘（见 _backup_mask_secrets 说明）
+        if _backup_mask_secrets():
+            try:
+                with open(file_path, "r", encoding=main.text_encoding, errors="replace") as src_f:
+                    content = src_f.read()
+                with open(backup_file_path, "w", encoding=main.text_encoding, newline="") as dst_f:
+                    _ = dst_f.write(_redact_ini_secrets(content))
+            except OSError:
+                # 读不到就退回原样复制，宁可留下明文备份也不要备份缺失
+                _ = shutil.copy2(file_path, backup_file_path)
+        else:
+            _ = shutil.copy2(file_path, backup_file_path)
+        _harden_permissions(backup_file_path)
 
         files = os.listdir(backup_dir_path)
         _files = [f for f in files if f.startswith(os.path.basename(file_path))]
@@ -330,9 +405,9 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
         logger.error(i18n.tr("\r备份配置文件 {file_path} 失败：{e}", file_path=file_path, e=e))
 
 
-# 守护线程主体：每 10 分钟比对 config.ini / URL_config.ini 的 MD5，仅在内容变化时备份；无入参，死循环不返回
+# 守护线程主体：每 10 分钟比对 config.ini / URL_config.ini 的 MD5，仅在内容变化时备份
+# （首轮 MD5 与初值 "" 必然不同，故启动即落一份备份）；无入参，死循环不返回
 def backup_file_start() -> None:
-    # 启动时备份文件（首次运行触发）
     config_md5 = ""
     url_config_md5 = ""
 

@@ -25,13 +25,14 @@ _COLOR_RE = re.compile(r"color=#([a-zA-Z0-9]{6});")
 
 # Twitch 弹幕客户端：基于 IRC over WebSocket 匿名进房并解析 PRIVMSG 聊天消息。
 class TwitchDanmaku(DanmakuBase):
-    heartbeat_interval = 40.0  # 默认 40s
+    heartbeat_interval = 40.0  # IRC 侧无服务端心跳，靠本端按时发 PONG 保活
 
     # 初始化：记录频道名与 WebSocket 客户端占位（真正连接在 start 中建立）。
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._channel: str = ""
         self._ws: WsClient | None = None
+        self._line_buf = ""  # MI-21：跨帧半行缓冲（见 decode_message）
 
     # 启动弹幕监听：args 支持 {"channel","proxy"} 字典或直接房间名字符串；
     # 解析频道名 -> 确定代理 -> 建立 WebSocket 长连接。无频道名时回调 on_close 并返回。
@@ -109,7 +110,14 @@ class TwitchDanmaku(DanmakuBase):
         else:
             text = data
 
-        for line in text.split("\n"):
+        # MI-21 修复：按行缓冲，跨帧的半行要拼回下帧再解析。
+        # WebSocket 的边界是**消息**而非行：高流量频道批量下发时服务端完全可能把一条
+        # IRC 消息切成两帧，原实现每帧独立 split("\n")，前半行与后半行各被当成独立行，
+        # _PRIVMSG_RE / _NAME_RE 双双匹配失败 → 弹幕静默丢失（连 debug 日志都没有）。
+        text = self._line_buf + text
+        _parts = text.split("\n")
+        self._line_buf = _parts.pop()  # 末段可能不完整，留到下帧
+        for line in _parts:
             line = line.strip("\r")
             if line.startswith("PING"):
                 if self._ws is not None:

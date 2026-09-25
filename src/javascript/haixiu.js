@@ -507,17 +507,10 @@ EnmoliSubmiter.prototype = {
         var i = new EnmoliParamter;
         return e += t,
         i.az(i.ax(i.ak(i.aj(i.ai(i.ah(i.af(i.ae(i.ad(i.ac(i.aa(e, e + "01" + t), e + "escape" + t), e + "same"), e + "visitor"), "anchor"), e + "person"), e + "ax" + t), "ae" + t), e + "ax" + t), e + "inspect" + t), "af" + t)
-    },
-    bnu: function(e, t) {
-        for (var i = e.split("&"), o = 0; o < i.length; o++) {
-            var n = i[o].split("=");
-            2 == n.length && (t[n[0]] = encodeURIComponent($.trim(n[1])).toString())
-        }
-    },
-    bn: function(e, t) {
-        for (var i in e)
-            "object" == typeof e[i] ? t[i] = encodeURIComponent($.trim(JSON.stringify(e[i]))).toString() : t[i] = encodeURIComponent($.trim(e[i])).toString()
     }
+    // MIN-N39 修复（2026-09-21，CODE_REVIEW_2026-09-21）：本原型对象原带 bnu / bn 两个方法，
+    // 属零调用点死代码（sign→bsq 实际链路只有 pf→as→brm→cls→pt），且两者函数体内引用 jQuery
+    // 的 $ ——本脚本在 Node 下执行、$ 不存在，一旦被复用即抛 ReferenceError，已整体删除，勿补回。
 }
 var enmoliSubmiter = new EnmoliSubmiter();
 
@@ -529,11 +522,14 @@ module.exports = {
     sign
 };
 
+// MIN-N39 修复（2026-09-21，CODE_REVIEW_2026-09-21）：此处原注释留有成套真实形态的
+// 调用样例（含疑似 accessToken 会话素材），本文件随源码对外分发，实值已全部替换为
+// 占位符；调试时用自建测试值，勿回填任何真实会话凭据。
 // const options = {
-//     "accessToken": "pLXSC%252FXJ0asc1I21tVL5FYZhNJn2Zg6d7m94umCnpgL%252BuVm31GQvyw%253D%253D",
-//     "tku": "3000006",
-//     "c": "10138100100000",
-//     "_st1": "1728621076958"
+//     "accessToken": "<REDACTED>",
+//     "tku": "<REDACTED>",
+//     "c": "<REDACTED>",
+//     "_st1": "<REDACTED>"
 // }
 // const cryptoJSPath = './crypto-js.min.js'
 // console.log(sign(options, cryptoJSPath))

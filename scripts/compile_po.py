@@ -7,6 +7,10 @@
 # Windows 开发机通常没有 gettext 工具链（msgfmt），故此处内置纯 Python 实现，
 # 输出与 GNU msgfmt 兼容的最小 .mo（按 msgid 排序、无哈希表）。
 #
+# 「.po 改了但 .mo 忘了重编译」由两处同源把守（都是字节级比对，不是抽样）：
+#   CI / 本地门禁块里的 `python scripts/compile_po.py --check`，以及
+#   tests/test_i18n.py::TestMoCatalog::test_po_and_mo_in_sync（直接 import 本模块重算一遍）。
+#
 # 用法：
 #   python scripts/compile_po.py            # 编译生成 .mo
 #   python scripts/compile_po.py --check    # 校验已提交的 .mo 与 .po 是否同步（CI 用，零副作用不写盘）
@@ -46,6 +50,8 @@ def _unescape(text: str) -> str:
 
 def parse_po(path: Path) -> dict[str, str]:
     # 解析 .po 文件为 {msgid: msgstr} 映射；重复 msgid 以最后一次为准并告警。
+    # 返回的字典**含** gettext 的头部空 msgid ""（元信息条目），故 len() 等于 .mo 头部 N，
+    # 比 JSON/YAML 目录的键数恰好多 1——往文档写条数时必须先说明用的是哪一种口径。
     entries: dict[str, str] = {}
     cur_id: list[str] | None = None
     cur_str: list[str] | None = None
@@ -120,6 +126,9 @@ def write_mo(entries: dict[str, str]) -> bytes:
 
 
 def main() -> int:
+    # .po 的 msgid/msgstr 全是中文，把条目打到控制台时若沿用 cp936 输出码页就会
+    # UnicodeEncodeError（i18n 三件套必须在 UTF-8 下跑，与 MID-63 同源）。
+    # 只在本进程内 reconfigure，不去改环境变量——那样会污染同一次调用里的其它子进程。
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         try:
             # sys.stdout/stderr 标准解释器下为 TextIOWrapper（含 reconfigure）；
@@ -133,10 +142,15 @@ def main() -> int:
         print(f"ERROR: 未找到 {PO_PATH}", file=sys.stderr)
         return 2
     entries = parse_po(PO_PATH)
+    # 下面打印的「条数」含头部空 msgid，即 .mo 头部的 N，比 en_US.json / zh_TW.yaml 的键数
+    # 恰大 1。往文档写目录条数时必须同时注明用的是哪种口径（两种不得互换，见 AGENTS.md）。
     # 先纯内存产出编译结果；--check 分支绝不触碰磁盘上的 .mo，否则读回自己刚写的
     # 文件必然相等，校验恒真、门禁形同虚设。
     fresh = write_mo(entries)
 
+    # 退出码：0 已同步；1 .mo 与 .po 不同步；2 门禁本身没数据可判（找不到 .po，
+    # 或 .po 连头部空 msgid 条目都没有——见 parse_po 的 sys.exit(2)，与 MIN-19 口径同族）。
+    # --check 比的是**完整字节流**而不是抽样：任何 .po 改动忘记重编译都会在这里变红。
     if "--check" in sys.argv:
         committed = MO_PATH.read_bytes() if MO_PATH.exists() else b""
         if committed != fresh:

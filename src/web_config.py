@@ -8,12 +8,18 @@ import configparser
 import functools
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import secrets
+import socket
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Iterable, cast
+
+from src.config_bool import parse_config_bool
+from src.utils import atomic_write_text
 
 # 与 main.py 保持一致的文本编码
 TEXT_ENCODING = "utf-8-sig"
@@ -58,7 +64,6 @@ CLEAN_URL_HOST_LIST = (
 # 默认画质（对齐 main.py）
 DEFAULT_QUALITY = "原画"
 
-# Web 配置默认值
 WEB_DEFAULTS: dict[str, str | int | bool] = {
     "web_host": "127.0.0.1",
     "web_port": 8000,
@@ -69,6 +74,10 @@ WEB_DEFAULTS: dict[str, str | int | bool] = {
     "web_minimize_to_tray": True,
     # 可信代理列表（逗号分隔）：仅当直连对端在列表中才信任 X-Forwarded-For
     "web_trusted_proxy": "",
+    # MID-36：除回环/监听地址外，还允许哪些 Host/Origin 访问面板（逗号分隔）。
+    # 仅在把 web_host 绑到 0.0.0.0/:: 并以域名（而非 IP）访问面板时才需要配置；
+    # 未列出的**多级域名** Host 会被拒绝，以阻断 DNS 重绑定（attacker.tld → 127.0.0.1）。
+    "web_allowed_hosts": "",
 }
 
 
@@ -123,10 +132,20 @@ def parse_url_config(file_path: str | Path) -> list[dict[str, str | bool]]:
                 else:
                     quality = _normalize_quality(parts[0].strip())
                     url = parts[1].strip()
+            elif _is_url(parts[0]):
+                # MID-2235：3 段以上且首段就是网址 → **未写画质**，第二段起全是主播名。与 main.py
+                # 主循环行解析的同名分支逐字同规则（该处 `elif contains_url(split_line[0])` →
+                # `url = split_line[0]; name = "，".join(split_line[1:])`）。修复前这里无条件按
+                # 「画质,URL,名称」定序，于是中文主播名里带 `,`/`，`（「张三，李四」这类并列写法极
+                # 常见）的一行会被拆成 quality=网址、url=「主播: 张三」，经 normalize_url 补成
+                # `https://主播: 张三` —— 面板渲染出一条**根本不存在的假房间**，而 DELETE / PUT
+                # quality 都按规范化 URL 精确匹配真实那一行，于是真房间既改不了也删不掉。
+                url = parts[0].strip()
+                name = "，".join(p.strip() for p in parts[1:])
             else:
                 quality = _normalize_quality(parts[0].strip())
                 url = parts[1].strip()
-                name = " ".join(p.strip() for p in parts[2:])
+                name = "，".join(p.strip() for p in parts[2:])
 
             if name.startswith("主播:"):
                 name = name[len("主播:") :].strip()
@@ -164,15 +183,37 @@ def _reject_newline(kind: str, value: str) -> None:
         raise ValueError(f"{kind} 含换行符，禁止写入配置文件")
 
 
+def _reject_list_separator(kind: str, value: str) -> None:
+    # MID-2235 写侧配套：主播名不得含 `,` / `，`。
+    # 行格式「[画质,]URL[,主播: 名称]」以逗号（含全角）为**字段分隔符**，名字里带逗号会让
+    # 这一行在读取侧多出一段：main.py 与本模块都只能靠「首段是不是网址」猜定序（见
+    # parse_url_config 的 3+ 段分支），猜出来的名字还会与写入时的原文不同（并列名被拆成
+    # 多段后以「，」重连）。与其让两端各猜一次，不如在唯一写入口直接拒绝，
+    # 把「同一行在两处解析成不同房间」这条缝隙从源头堵掉。
+    # 只挡主播名：URL 段的逗号由 normalize_url/查询串承载（?a=1,2 是合法地址形态），
+    # 画质段是白名单值、本就无逗号，放宽它们等于无谓地砍掉可用房间。
+    if value and ("," in value or "，" in value):
+        raise ValueError(f"{kind} 含逗号（半角或全角），逗号是配置行的字段分隔符，请改用其他写法")
+
+
 def format_url_line(url: str, quality: str | None = None, name: str | None = None) -> str:
     # 格式化一行 URL_config.ini 内容（不含换行）。
     # - 仅 URL：返回 url
     # - 画质+URL：返回 "画质,url"
     # - 全部：返回 "画质,url,主播: 名称"
     # quality 为空或默认"原画"时省略画质段（与 main.py 风格一致）。
+    #
+    # SEV-02 修复：校验**下沉**到本函数（URL_config.ini 的唯一写入口）。
+    # 旧结构是「各端点各自先调 validate_room_target 再调本函数」，于是漏调一次即留一条
+    # 无校验的写入口（PUT /api/rooms 即如此，SSRF/任意 scheme 防线被同组接口绕过）。
+    # 现在新增/改写两条路径必然经过同一裁决，接口层再显式调用只是冗余的第二道。
+    validate_room_target(url, quality, name)
     _reject_newline("URL", url)
     _reject_newline("画质", quality or "")
     _reject_newline("主播名", name or "")
+    # MID-2235：与 validate_room_target 同一判据的第二道（本函数是 URL_config.ini 唯一写入口，
+    # 与 SEV-02 把校验下沉到这里是同一个理由：任何调用方漏调一次都不该写出坏行）
+    _reject_list_separator("主播名", name or "")
     url = normalize_url(url)
     parts: list[str] = []
     q = (quality or "").strip()
@@ -188,6 +229,314 @@ def format_url_line(url: str, quality: str | None = None, name: str | None = Non
 def validate_config_target(section: str, key: str, value: str) -> None:
     # 校验 /api/config 写入目标：值含换行即拒绝（同换行注入防护，避免伪造配置行）
     _reject_newline(f"配置项 [{section}] {key} 的值", value)
+    # MID-N45：再叠一层「出站目标」收口（仅对下表白名单内的 URL 类键生效）。
+    # 落点在 validate_config_target 而不是各端点里：它是 config.ini 写侧唯一的校验入口
+    # （PUT /api/config 与画质选项 PUT 都过这里），房间侧的教训（SEV-02「漏调一次即留一条
+    # 无校验写入口」）在这里同样成立，故把裁决绑进入口而非调用方。
+    _validate_outbound_target_value(key, value)
+
+
+# CR-09 修复：直播间地址的 scheme / 目标校验。
+# 旧实现只挡换行，而 main.py 分发表的末项 `_match_stream_suffix(".m3u8", ".flv")` 用
+# **子串包含**判定，形如 http://127.0.0.1:8080/manager/x?a=.flv 、
+# http://169.254.169.254/latest/meta-data/?x=.m3u8 都会被判成「自定义录制直播」，
+# 原始 URL 原样进入 ffmpeg 的 -i —— 即服务端可被驱动去请求攻击者指定的内网地址（盲 SSRF），
+# 成败还能通过回读 streamget.log 区分（可回显侧信道）。此处收紧入口。
+#
+# SEV-03 重写：旧实现是「字符串前缀黑名单」（host.startswith("127.") / "10." / "192.168."…），
+# 实测 7 条载荷中 5 条穿透——十进制 2130706433、八进制 0177.0.0.1、带端口的 IPv6
+# [fe80::1]:8080（`":" in host and not parsed.port` 使整个分支被跳过）、CGNAT 100.64.0.1、
+# 阿里云元数据 100.100.100.200 全部放行。现改为 ipaddress 语义 + DNS 解析双道判定。
+_ALLOWED_ROOM_SCHEMES = frozenset(("http", "https"))
+
+# Python 3.14 的 ipaddress 按 IANA 特别用途注册表判定 is_private，**100.64.0.0/10
+# （CGNAT，RFC 6598）不再算私网**（实测 ip_address("100.64.0.1").is_private 为 False），
+# 故共享地址空间等「不是私网但同样不该被录制链路访问」的网段必须显式列出。
+_EXTRA_BLOCKED_V4_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT/共享地址空间（阿里云元数据 100.100.100.200 落于其中）
+    ipaddress.ip_network("0.0.0.0/8"),  # 「本机」语义，含 0.x 缩写形态
+    ipaddress.ip_network("198.18.0.0/15"),  # 基准测试段
+    ipaddress.ip_network("192.0.0.0/24"),  # IETF 协议分配段
+)
+
+# IPv6 过渡技术前缀：is_private 为真但**不得**据此拦截（理由见 _internal_ip_reason）
+_V6_TRANSITION_NETWORKS = (
+    ipaddress.ip_network("2001::/32"),  # Teredo
+    ipaddress.ip_network("2002::/16"),  # 6to4
+)
+
+# 云厂商元数据端点：即使所在网段已被上面的判定覆盖，也单列一份以给出准确告警文案。
+_CLOUD_METADATA_IPS = frozenset(
+    (
+        "169.254.169.254",  # AWS / OpenStack / GCP 通用
+        "169.254.170.2",  # AWS ECS 容器凭据
+        "100.100.100.200",  # 阿里云（落在 100.64.0.0/10 内，但 3.14 起该段不算私网）
+        "169.254.0.4",  # 腾讯云（元数据 IP 形态）
+    )
+)
+
+# 内部/保留用途域名后缀（无需 DNS 即可定罪，保证离线环境与 DNS 被污染时同样拦截）
+_INTERNAL_NAME_SUFFIXES = (
+    ".localhost",
+    ".local",
+    ".internal",  # RFC 6762 私有解析 + AWS 的 *.ec2.internal，覆盖 metadata.google.internal
+    ".home.arpa",  # RFC 8375 家庭网络域
+    ".localdomain",
+    ".invalid",
+    ".test",
+    ".onion",
+    ".i2p",
+)
+_INTERNAL_NAME_EXACT = frozenset(
+    (
+        "localhost",
+        "metadata",
+        "metadata.tencentyun.com",  # 腾讯云元数据的域名形态（公网侧解析亦指向链路本地）
+        "ip6-localhost",
+        "ip6-loopback",
+    )
+)
+
+# MID-N45：allow_local_targets=True 时豁免的「本机」名字（代理/SMTP 写成 localhost:7890 合法，
+# 见 _host_internal_reason 同名参数注释）。刻意**不含** metadata 族与 *.local / *.internal。
+_LOCAL_NAME_EXACT = frozenset(("localhost", "ip6-localhost", "ip6-loopback"))
+_LOCAL_NAME_SUFFIX = ".localhost"
+
+
+def _strip_host_port(value: str) -> str:
+    # 去掉 IPv6 方括号与 :端口，返回纯主机名（小写）。用 rsplit 而非 urlparse，
+    # 因为调用方给的可能只是 Host 头（含端口、无 scheme）而非完整 URL。
+    h = value.strip().lower()
+    if h.startswith("["):
+        end = h.find("]")
+        if end > 0:
+            return h[1:end]
+    if h.count(":") == 1:
+        h = h.rsplit(":", 1)[0]
+    return h.strip().rstrip(".")
+
+
+def _parse_aton_part(part: str) -> int | None:
+    # inet_aton 的段解析：0x 前缀为十六进制、0 前缀为八进制、其余十进制；空段/非数字返回 None
+    if not part:
+        return None
+    low = part.lower()
+    if low.startswith("0x"):
+        digits, base, allow = part[2:], 16, "0123456789abcdef"
+    elif part[0] == "0" and len(part) > 1:
+        digits, base, allow = part[1:], 8, "01234567"
+    else:
+        digits, base, allow = part, 10, "0123456789"
+    if not digits or any(ch not in allow for ch in digits.lower()):
+        return None
+    try:
+        return int(digits, base)
+    except ValueError:
+        return None
+
+
+def _ipv4_from_aton(host: str) -> ipaddress.IPv4Address | None:
+    # 把 inet_aton 允许但 ipaddress 拒绝的缩写形态（2130706433 / 0177.0.0.1 / 127.1 /
+    # 0x7f.0.0.1）还原成规范 IPv4。这些形态正是 SEV-03 前缀黑名单的绕过载荷：
+    # 它们最终都会被 glibc/Windows 的解析器还原为 127.0.0.1，所以必须在**本层**同款归一，
+    # 不能指望「看起来不像 IP 就交给 DNS」——那会先被当作主机名放行。
+    parts = host.split(".")
+    n = len(parts)
+    if not 1 <= n <= 4:
+        return None
+    last_index = n - 1
+    total = 0
+    for i, part in enumerate(parts):
+        value = _parse_aton_part(part)
+        if value is None:
+            return None
+        if i < last_index:
+            # 非末段各占一个字节（大端序），末段可独占剩余 1~4 个字节
+            if value > 255:
+                return None
+            total |= value << (8 * (3 - i))
+        elif value >= 1 << (8 * (5 - n)):
+            return None
+        else:
+            total |= value
+    try:
+        return ipaddress.IPv4Address(total)
+    except ValueError:
+        return None
+
+
+def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    # 主机名为 IP 字面量时返回可判定的地址对象，否则返回 None（交给 DNS）
+    name = _strip_host_port(host)
+    if not name:
+        return None
+    # 去掉 IPv6 的 %zone（fe80::1%eth0 与 fe80::1 是同一目标）
+    name = name.split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(name)
+    except ValueError:
+        return _ipv4_from_aton(name)
+
+
+def _in_always_blocked_v4_network(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    # 「即使允许本机/内网目标也仍然拒绝」的 v4 段（0.0.0.0/8 的本机语义、基准测试段、
+    # IETF 协议分配段）。CGNAT 100.64.0.0/10 在 3.14 已不算私网，走函数末尾的同一条分支，
+    # 因此不需要在这里重复列出，但它同样属于「恒拒绝」。
+    return isinstance(addr, ipaddress.IPv4Address) and any(addr in net for net in _EXTRA_BLOCKED_V4_NETWORKS)
+
+
+def _internal_ip_reason(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address, *, allow_local_targets: bool = False
+) -> str | None:
+    # 返回 None 表示该地址可放行；否则给出拒绝理由（写进 422 文案，只含地址不含本地信息）
+    #
+    # MID-N45 新增 allow_local_targets：代理地址 / SMTP 服务器两类配置项的「本机与私网」目标
+    # 是主流合法形态（src/sync_http.py 的 MID-27 注释记录：用户普遍把代理写成 127.0.0.1:7890），
+    # 按房间地址那套内网收口判会把它们全部误杀。置 True 时只放行 **回环 + RFC1918 私网** 两类，
+    # 链路本地 / 云元数据 / 未指定 / 组播 / 保留 / CGNAT 仍一律拒绝——那些不是任何人的代理，
+    # 且正是 SSRF 的 payoff 目标。回环族的**域名**形态（localhost / *.localhost）同步放行，
+    # 见 _host_internal_reason 的同名参数。
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        # ::ffff:127.0.0.1 这类 IPv4 映射地址必须按其承载的 v4 判定，否则 v6 侧一律「公网」
+        return _internal_ip_reason(mapped, allow_local_targets=allow_local_targets)
+    text = str(addr)
+    if text in _CLOUD_METADATA_IPS:
+        return f"云厂商元数据端点: {text}"
+    if addr.is_loopback:
+        if allow_local_targets:
+            return None
+        return f"回环地址: {text}"
+    if addr.is_unspecified:
+        return f"未指定地址(0.0.0.0/::): {text}"
+    if addr.is_link_local:
+        return f"链路本地地址(含 169.254.0.0/16): {text}"
+    if addr.version == 6 and any(addr in net for net in _V6_TRANSITION_NETWORKS):
+        # IPv6 过渡技术前缀（Teredo 2001::/32、6to4 2002::/16）在 IANA 特别用途注册表里
+        # 「不是全局可聚合」，于是 Python 3.14 把 is_private 判成 True——但真实公共服务确实
+        # 会把 AAAA 发在这段（本机实测 www.youtube.com → 2001::1）。把它们当内网拦截会
+        # 直接砍掉可用的海外房间，而攻击者也无法借这两段指向目标机的回环地址
+        # （需要 Teredo/6to4 中继，且 Teredo 内嵌的是客户端自己的公网 IPv4）。
+        return None
+    if addr.is_private:
+        # MID-N45：allow_local_targets 只放行「用户自己网络」那部分私网（RFC1918 / ULA），
+        # 0.0.0.0/8「本机」语义段与基准测试段等仍拒绝——它们既不是任何人的代理，
+        # 又是缩写/绕路写法常见的落点（判定与函数末尾的 _EXTRA_BLOCKED_V4_NETWORKS 同源）。
+        if allow_local_targets and not _in_always_blocked_v4_network(addr):
+            return None
+        return f"私网地址: {text}"
+    if addr.is_multicast:
+        return f"组播地址: {text}"
+    if addr.is_reserved:
+        return f"保留地址: {text}"
+    if isinstance(addr, ipaddress.IPv4Address) and any(addr in net for net in _EXTRA_BLOCKED_V4_NETWORKS):
+        return f"共享/保留网段(CGNAT 等): {text}"
+    return None
+
+
+def _resolve_host_ips(host: str) -> list[str]:
+    # DNS 解析 seam：单列成函数便于用例打桩（测试不依赖真实网络，见 tests/test_web_config.py）。
+    # 同时查 A/AAAA（family=AF_UNSPEC），任一结果指向内部即整体拒绝。
+    infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    return [_strip_host_port(cast(str, info[4][0])) for info in infos]
+
+
+def _host_internal_reason(host: str, *, allow_local_targets: bool = False) -> str | None:
+    # 判定主机名是否指向本机/内网/保留目标，返回拒绝理由或 None（可放行）。
+    #
+    # 顺序：IP 字面量（含缩写形态）→ 内部用途域名后缀（离线即可定罪）→ DNS 解析结果。
+    # **DNS 重绑定无法由本层挡住**：这里解析的是「写入配置那一刻」的 A/AAAA 记录，
+    # 而真正发起连接的是稍后独立解析的 ffmpeg。攻击者把 TTL=0 的域名先解析到公网 IP
+    # 通过校验、录制时再解析到 127.0.0.1，即可绕过本函数——那需要在出站网络层
+    # （防火墙/egress 代理）按目标地址收口，或在拉流前二次校验，不能在本层假装闭合。
+    # 同理，sslip.io / nip.io 这类「把 IP 编码进域名」的服务只能靠解析结果识别。
+    #
+    # MID-N45 的 allow_local_targets：代理 / SMTP 类配置项放行回环与 RFC1918（含 localhost 的
+    # 域名形态），但 metadata / metadata.tencentyun.com / *.internal / *.local 这类
+    # 「内部用途名字」**不**跟着放行——它们从来不是代理或邮件服务器的合法写法，
+    # 而 *.local / *.internal 正是集群内元数据服务的常用名字。
+    literal = _parse_ip_literal(host)
+    if literal is not None:
+        return _internal_ip_reason(literal, allow_local_targets=allow_local_targets)
+    name = _strip_host_port(host)
+    if not name:
+        return "直播间地址缺少主机名"
+    if allow_local_targets and (name in _LOCAL_NAME_EXACT or name.endswith(_LOCAL_NAME_SUFFIX)):
+        return None
+    if name in _INTERNAL_NAME_EXACT or any(name.endswith(suffix) for suffix in _INTERNAL_NAME_SUFFIXES):
+        return f"本机/内部用途域名: {name}"
+    try:
+        addresses = _resolve_host_ips(name)
+    except OSError:
+        # 解析失败（NXDOMAIN / 无 DNS）：一律拒绝。放行等于让录制链路去撞一个不可达目标，
+        # 且会把「拼错的地址」伪装成「已通过的校验」，比拒绝更难排查
+        return f"主机名无法解析: {name}"
+    if not addresses:
+        return f"主机名无解析结果: {name}"
+    for ip_text in addresses:
+        parsed = _parse_ip_literal(ip_text)
+        if parsed is None:
+            continue
+        reason = _internal_ip_reason(parsed, allow_local_targets=allow_local_targets)
+        if reason is not None:
+            return f"主机名 {name} 解析到{reason}"
+    return None
+
+
+def _check_url_target(
+    raw_url: str,
+    *,
+    kind: str,
+    allowed_schemes: frozenset[str],
+    default_scheme: str | None,
+    allow_local_targets: bool,
+    hint: str = "",
+) -> None:
+    # MID-N45 抽出的共用内核：房间地址（_validate_room_url_target）与推送/SMTP/代理类配置键
+    # （validate_config_target → _validate_outbound_target_value）此前各写一份「scheme + 目标网段」
+    # 判定就是两条写入口分叉的成因（SEV-02 在房间侧修过同一形态）。现在两处共用本函数，
+    # 差异只以参数表达，任何一侧收紧都会同时作用于另一侧：
+    #   kind                文案前缀（"直播间地址" / f"配置项「{key}」"）
+    #   allowed_schemes     允许的协议集合
+    #   default_scheme      省略协议时按哪个协议判定；None = 必须显式写出协议
+    #                       （房间地址允许省略并补 https、代理地址允许裸 ip:port 并补 http，
+    #                        二者都有既有实现兜底；推送地址会被原样交给 urllib.request.Request，
+    #                        缺协议时它本来就抛 ValueError，故此处不再替用户猜协议）
+    #   allow_local_targets 是否放行回环/私网目标（见 _host_internal_reason 同名参数）
+    #   hint                追加到拒绝文案尾部的「怎么办」
+    from urllib.parse import urlparse
+
+    u = raw_url.strip()
+    if not u:
+        return
+    if "://" in u:
+        probe = u
+    elif default_scheme:
+        probe = f"{default_scheme}://{u}"
+    else:
+        probe = u
+    parsed = urlparse(probe)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in allowed_schemes:
+        raise ValueError(f"{kind}协议不允许: {scheme or '(空)'}（仅支持 {'/'.join(sorted(allowed_schemes))}）")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError(f"{kind}缺少主机名")
+    # 拒绝内网/本机/链路本地/云元数据地址（含 userinfo、端口、缩写 IPv4 与 IPv6 形态）
+    reason = _host_internal_reason(host, allow_local_targets=allow_local_targets)
+    if reason is not None:
+        raise ValueError(f"{kind}{reason}，禁止写入{hint}")
+
+
+def _validate_room_url_target(raw_url: str) -> None:
+    # 房间地址侧的薄封装：参数即「本仓对直播间地址的既有口径」，勿在此另立规则。
+    _check_url_target(
+        raw_url,
+        kind="直播间地址",
+        allowed_schemes=_ALLOWED_ROOM_SCHEMES,
+        default_scheme="https",  # 允许省略协议（normalize_url 会补 https），按 host 段校验
+        allow_local_targets=False,
+    )
 
 
 def validate_room_target(url: str, quality: str | None = None, name: str | None = None) -> None:
@@ -195,6 +544,113 @@ def validate_room_target(url: str, quality: str | None = None, name: str | None 
     _reject_newline("URL", url)
     _reject_newline("画质", quality or "")
     _reject_newline("主播名", name or "")
+    # MID-2235 写侧第二道。此前 format_url_line 里的同名调用带着一条注释声称「与 validate_room_target
+    # 同一判据」，而本函数并没有该调用——注释描述的是设计意图而非事实，于是「先 validate 再自行拼行」
+    # 的调用方（不经过 format_url_line）仍能写出含逗号的主播名。判据必须落在**公共入口**上才成立：
+    # 这里补上后两处调用点各自都挡得住（幂等，不会重复报错）。
+    _reject_list_separator("主播名", name or "")
+    # CR-09：追加 scheme 与目标网段校验（见 _validate_room_url_target 说明）
+    _validate_room_url_target(url)
+    # SEV-02：画质白名单从 change_room_quality 上移到公共校验入口——
+    # 录制引擎对白名单外的档位名会**静默回退成原画**，写进去就是一个永不生效的档位；
+    # 三个写入口（新增/改写/切画质）必须共用同一份裁决，否则又会出现「某个接口漏校验」。
+    q = (quality or "").strip()
+    if q and q not in BUILTIN_QUALITIES:
+        raise ValueError(f"未知画质档位: {q}")
+
+
+# ─── MID-N45：推送 / SMTP / 代理地址类配置键的出站目标收口（2026-09-21） ───────
+# 这些键的值不走录制链路，而是被**本进程自己**发出去：
+#   钉钉/微信/bark/ntfy 的接口地址 → msg_push.py 逐段 opener.open(Request(url))，
+#   且 dingtalk/xizhi/bark/ntfy 四个函数都会先 api.replace("，", ",").split(",")
+#   （多目标批量推送）；smtp邮件服务器 → smtplib 连接；代理地址 → 全部出站请求的落地主机。
+# 于是它们与「房间地址」是**同一条信任边界上的第二条出口**：房间侧的 SEV-03 收口
+# 对这里完全无效。而且这些全局量在 main.py 的热重载循环里每轮重读（见 main.py 的
+# 推送配置 / 代理地址读取段），改一次即持续生效、无需重启——写入口的严重性由此放大。
+
+# 推送类：值必须是公网可达的 http(s) 接口地址（多目标逗号分隔，逐段判定）
+_PUSH_URL_KEYS = frozenset({"钉钉推送接口链接", "微信推送接口链接", "bark推送接口链接", "ntfy推送地址"})
+# 代理 / SMTP：值可以落在用户自己的网络里（见下方 _allow_internal_outbound_target 的说明）
+_PROXY_ADDR_KEYS = frozenset({"代理地址"})
+_SMTP_HOST_KEYS = frozenset({"smtp邮件服务器"})
+# 代理协议集合：requests/httpx 支持的形态；裸 ip:port 由 http 兜底补前缀，
+# 与 utils.handle_proxy_addr / sync_http 的 MID-27 归一同源（不得收紧成只允许 http/https，
+# 那会把 socks5:// 这种本仓支持的写法判成非法）。
+_PROXY_SCHEMES = frozenset(("http", "https", "socks4", "socks4a", "socks5", "socks5h"))
+
+_INTERNAL_TARGET_HINT = (
+    "；确需指向本机/内网自建服务（如与录制器同机部署的 ntfy），"
+    "请设置环境变量 DOUYIN_WEB_ALLOW_INTERNAL_TARGET=1 后重启本进程"
+)
+
+
+def _allow_internal_outbound_target() -> bool:
+    # MID-N45 的破例通道。刻意**不复用** DOUYIN_WEB_ALLOW_INSECURE：后者语义是
+    # 「明知风险仍要把无认证面板暴露到局域网」，web.py 启动检查与鉴权中间件都在读它。
+    # 若把本守卫挂在同一枚开关上，所有「只是想看局域网面板」的用户会在没有任何额外动作的
+    # 情况下连带失去「推送地址不得指向内网」这条防线——那是静默放宽，与 AGENTS.md
+    # 「不得用兜底/掩码把症状压进静默」的口径相反。单列一枚需显式设置、且每次判定时
+    # 现读（不缓存、不在导入期固化）的开关，把「开放面板」与「允许指向内网的目标」两件事解耦。
+    return os.environ.get("DOUYIN_WEB_ALLOW_INTERNAL_TARGET", "").strip().lower() in ("1", "true", "yes")
+
+
+def _key_matches(key: str, table: frozenset[str]) -> bool:
+    # 键名判定必须大小写不敏感：configparser 的 option 本就 casefold（见 AGENTS.md
+    # 「配置键审计须先归一化大小写」），而写入侧的行匹配带 IGNORECASE，
+    # 只按规范写法精确比较等于给 BARK推送接口链接 / SMTP邮件服务器 留一条绕过路径。
+    folded = key.strip().casefold()
+    return any(folded == candidate.casefold() for candidate in table)
+
+
+def _validate_outbound_target_value(key: str, value: str) -> None:
+    # config.ini 写侧的「值会被本进程发出去」类键校验；不在表内的键直接返回。
+    # 抛 ValueError 由 web_api 统一转成 422 + 中文文案（与房间地址同一口径），
+    # 故这里的每条消息都是面板可见的、必须回答「为什么 + 怎么办」。
+    stripped = value.strip()
+    if not stripped:
+        # 空值 = 未启用（不配代理 / 不推送），与房间地址「占位行」同口径放行；
+        # 敏感键的空值另有 web_api 的 MID-37 守卫在前面拦成 400。
+        return
+    kind = f"配置项「{key.strip()}」"
+    if _key_matches(key, _PUSH_URL_KEYS):
+        # 逗号分隔多目标必须**逐段**校验：msg_push 对每一段都发一次请求，
+        # 只要有一段指向内网，整串就仍是一条可用的 SSRF 出口（只判首段等于没判）。
+        # 拆分复用 _split_multi_value（含全角逗号归一），与推送侧的拆分口径逐字一致，
+        # 避免出现「校验按 A 口径拆、发送按 B 口径拆」的缝隙。
+        for segment in _split_multi_value(stripped):
+            _check_url_target(
+                segment,
+                kind=kind,
+                allowed_schemes=_ALLOWED_ROOM_SCHEMES,
+                default_scheme=None,  # 推送地址缺协议时 urllib 本就报错，要求显式 http(s)://
+                allow_local_targets=_allow_internal_outbound_target(),
+                hint=_INTERNAL_TARGET_HINT,
+            )
+        return
+    if _key_matches(key, _PROXY_ADDR_KEYS):
+        # 代理地址按 allow_local_targets=True 判定：本仓文档与 src/sync_http.py 的 MID-27
+        # 注释都记着「用户普遍写 127.0.0.1:7890」，按房间口径会把合法写法整体误杀。
+        # 本层能收口的是协议（拒绝 file/gopher/dict 之类）与目标类别（链路本地 / 云元数据 /
+        # 0/8 / 组播 / 保留 / CGNAT 一律拒绝）；「回环代理指向 Redis」这类同机端口探测
+        # 无法在本层区分合法代理与内网服务，须在出站网络层收口，不在此假装闭合。
+        _check_url_target(
+            stripped,
+            kind=kind,
+            allowed_schemes=_PROXY_SCHEMES,
+            default_scheme="http",  # 裸 ip:port 写法（handle_proxy_addr 同款归一）
+            allow_local_targets=True,
+        )
+        return
+    if _key_matches(key, _SMTP_HOST_KEYS):
+        # SMTP 值是裸主机名（可带端口）：smtplib.SMTP(host, port) 直接吃它。
+        # 必须先把入参形态钉住再判主机——否则 "http://127.0.0.1:6379/" 会被 _strip_host_port
+        # 打成一根认不出也不是 IP 的怪串（冒号不止一个 → 端口不剥），从而蒙过全部网段判定。
+        if "://" in stripped or any(ch.isspace() for ch in stripped):
+            raise ValueError(f"{kind}应填主机名或 IP（可带 :端口），不得含协议前缀或空白")
+        host = _strip_host_port(stripped)
+        reason = _host_internal_reason(host, allow_local_targets=True) if host else "缺少主机名"
+        if reason is not None:
+            raise ValueError(f"{kind}{reason}，禁止写入")
 
 
 # ─── 画质选项（WEB 下拉 / GUI 切换菜单共用，落地 config.ini） ────────────────
@@ -343,20 +799,26 @@ def update_room_quality(url_config_file: str | Path, url: str, quality: str | No
     return True
 
 
-# 原子写文本：同目录临时文件写完后 os.replace 覆盖，读方只会看到旧/新完整内容
-def _atomic_write_text(path: Path, text: str) -> None:
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    with tmp.open("w", encoding=TEXT_ENCODING, newline="") as f:
-        _ = f.write(text)
-    try:
-        os.replace(tmp, path)
-    except OSError:
-        # 覆盖失败（文件被占用 / 只读）时清理临时文件，避免残留垃圾
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+# 原子写文本：同目录临时文件写完后 os.replace 覆盖，读方只会看到旧/新完整内容。
+#
+# SEV-2211（2026-09-22）：本函数原为**第二份独立实现**（`{name}.{pid}.tmp` + open("w") +
+# os.replace），相对 src.utils.atomic_write_text 缺四项加固、三者中只有它是「弱化副本」：
+#   ① 不保留原文件 mode —— os.replace 后目标继承临时文件模式（open("w") 按 umask 0644），于是每次
+#      PUT /api/config 都把 utils.update_config 对 config.ini 的 os.chmod(0o600) 收紧静默还原一次，
+#      含全部平台口令/cookie 的配置变为同机任意本地用户可读；Windows 上 chmod 仅影响只读位，故
+#      本地主平台看不出差异（本地绿、容器里漏）。
+#   ② 无 fsync —— close() 只把数据交给页缓存，掉电可留「新目录项 + 空数据页」的 0 字节配置。
+#   ③ 临时名只含 pid —— 同进程两线程写同一目标共用同一 tmp，open("w") 互相截断。
+#   ④ f.write 抛 OSError（磁盘满）时异常穿出 with、跳过 unlink，永久残留 `.tmp`。
+# 修法（与报告一致）：删除本地副本、改调 src.utils.atomic_write_text（唯一实现）。依赖方向实测无环：
+# web_config 原先只依赖 stdlib + src.config_bool，而 src.utils → src.logger → src.config_bool 不
+# 反向依赖 web_config，故 `from src.utils import atomic_write_text` 不构成导入环。返回值为 bool：
+# 上层只关心是否落盘（旧实现靠异常传播，调用点均未接返回值）。
+# 回归锁：tests/test_regression_2026_09_22_utils.py::TestWebConfigDelegatesToUtilsAtomicWrite
+# ::test_web_config_write_is_the_same_implementation（AST 判据：本模块的可执行调用点不得再出现
+# mkstemp / os.replace，文档性注释里的同名字样不算）。
+def _atomic_write_text(path: Path, text: str) -> bool:
+    return atomic_write_text(str(path), text, encoding=TEXT_ENCODING)
 
 
 # 按主播名反查直播间地址（GUI 画质监控行以主播名为键，写回配置需要 URL）。
@@ -387,7 +849,9 @@ def read_web_config(config_file: str | Path) -> dict[str, str | int | bool]:
             continue
         raw = parser.get("Web", key, fallback=str(default))
         if isinstance(default, bool):
-            result[key] = raw.strip().lower() in ("true", "1", "yes", "是")
+            # 与 main.py / logger.py 共用同一解析口径（是/否、true/false、1/0、yes/no、on/off）；
+            # 原实现只认 "true"/"1"/"yes"/"是"，与「是否启用https录制」等录制侧键的写法判断不一致
+            result[key] = parse_config_bool(raw, default)
         elif isinstance(default, int):
             try:
                 result[key] = int(raw)
@@ -401,38 +865,262 @@ def read_web_config(config_file: str | Path) -> dict[str, str | int | bool]:
 SENSITIVE_SECTIONS = {"Cookie", "账号密码", "Authorization"}
 SENSITIVE_MASK = "***"
 
-# 敏感键名模式（跨节生效）：仅靠节名白名单会漏掉「推送配置」节的 tgapi令牌 /
-# 发件人密码(授权码) / pushplus推送token，以及各平台节内的 popkontv_token 等独立凭据
-# ——它们会被 read_config_safe 原样明文返回给面板（前端再按节名用 text 输入框渲染）。
-_SENSITIVE_KEY_PATTERN = re.compile(r"令牌|密码|授权码|token|secret|passwd|password|api[_-]?key", re.IGNORECASE)
-# 例外：含 expiry/timeout/有效期 的键是数值型运维参数（如 web_token_expiry 的秒数），
-# 脱敏会挡住面板编辑且无保密意义，故显式排除。
+# ─── MID-36：Host / Origin 允许名单（防 DNS 重绑定穿透 SOP + CSRF） ───────────
+# 旧实现把 Origin 与**请求自带的** Host 头比较：攻击者把自身域名的 A 记录 TTL=0 指到
+# 127.0.0.1，用户浏览器访问 http://attacker.tld:8000/ 时二者相同 → 判定通过，
+# 于是同源校验与 CSRF 校验同时失效（SEV-02/03 的投递通道就此打开）。
+# 现改为与**服务端配置**推导出的允许名单比较，Host 头本身不再参与「是否可信」的判定。
+_WILDCARD_BIND_HOSTS = frozenset(("0.0.0.0", "::", "*", ""))
+
+
+def is_loopback_bind_host(host: str) -> bool:
+    # 判断监听/访问地址是否仅本机可达（回环）。用于「非回环 + 无认证」不变量：
+    # 0.0.0.0 / :: / 局域网 IP 一律算非回环。127.0.0.53 这类整段 127/8 也是回环，
+    # 故按 ipaddress 语义判定而非字符串比较。
+    name = _strip_host_port(host)
+    if not name:
+        return False
+    if name in ("localhost", "ip6-localhost", "ip6-loopback"):
+        return True
+    addr = _parse_ip_literal(name)
+    return bool(addr is not None and addr.is_loopback)
+
+
+def get_allowed_hosts(cfg: Mapping[str, str | int | bool]) -> set[str]:
+    # 服务端推导的允许 Host 名单：配置的监听地址 + 显式登记的额外域名。
+    # 绑到 0.0.0.0/:: 时监听地址本身不是可用的 Host 值，故不入名单（改由 IP 字面量规则兜底）。
+    allowed = {"localhost"}
+    for raw in (str(cfg.get("web_host", "") or ""), str(cfg.get("web_allowed_hosts", "") or "")):
+        for item in raw.replace("，", ",").split(","):
+            name = _strip_host_port(item)
+            if name and name not in _WILDCARD_BIND_HOSTS:
+                allowed.add(name)
+    return allowed
+
+
+def is_host_allowed(value: str, cfg: Mapping[str, str | int | bool]) -> bool:
+    # 判定 Host（或 Origin 的 netloc）是否可接受。三条放行路径：
+    # ① 命中 get_allowed_hosts；② 是 IP 字面量（含端口者已被剥掉）——攻击者无法用
+    #    DNS 把「一个 IP」重绑定到别处，故以 IP 访问面板（0.0.0.0 部署下的局域网 IP）不受影响；
+    # ③ **无点号的单标签名**——DNS 重绑定需要一个注册域名，而注册域名必然至少两级；
+    #    单标签名只能由本机 hosts/内网解析得到，测试桩的 "testserver" 亦属此类。
+    # 多级域名一律要求显式登记，未登记即拒绝（400），并在 web.py 侧同源生效。
+    name = _strip_host_port(value)
+    if not name:
+        return False
+    if name in get_allowed_hosts(cfg):
+        return True
+    if _parse_ip_literal(name) is not None:
+        return True
+    if "." not in name:
+        return True
+    # 允许名单里的「*.example.com」式通配登记（以 . 或 *. 开头表示后缀匹配）
+    for allowed in get_allowed_hosts(cfg):
+        if allowed.startswith("*.") and (name == allowed[2:] or name.endswith(allowed[1:])):
+            return True
+    return False
+
+
+# ─── MID-N42 ｜ Origin 同源判定：与 Host 头**刻意不同**的一套口径（2026-09-21） ──
+# is_host_allowed 为 Host 头设计的三条宽松规则（放行任何 IP 字面量、放行任何无点单标签名、
+# 且 _strip_host_port 把端口丢掉）在 Host 语境下都成立：DNS 重绑定需要一个注册域名，
+# 而「以 IP 直接访问面板」是 0.0.0.0 部署的常态。
+# 把同一套规则拿去判 Origin 就把 CSRF 的最后一道防线打开了：Origin 表达的是
+# 「发起这次写请求的那个页面」，于是局域网里任意设备的网页（http://192.168.1.47/）、
+# 本机任意 dev server（http://localhost:3000/）都因「是 IP / 是无点名」且端口被丢掉而判为同源。
+# 认证关闭（出厂默认）时这条判定是写接口唯一的防线，故 Origin 单独判定：
+# **host 与端口都必须命中服务端推导的期望集合**，不复用上面两条宽松规则。
+# Host 那条保持原状（两套装不下一个函数，硬合并会让 MID-36 的重绑定防线退化）。
+_ORIGIN_TEST_SENTINEL_HOSTS = frozenset(("testserver",))
+_ORIGIN_SCHEME_PORTS: dict[str, int] = {"http": 80, "https": 443}
+
+
+def _as_port(value: object) -> int:
+    # 端口取值：web_port 经 read_web_config 已是 int，但调用方也可能塞进未解析的原始串
+    # （用例里手写的 cfg dict）。解析不出来按 0（= 未知）返回，交由调用侧拒绝而不是猜一个。
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return 0
+
+
+def _origin_authority(origin: str) -> tuple[str, int, bool] | None:
+    # 把 Origin 拆成 (主机名, 生效端口, 端口是否显式给出)；任何不合法形态返回 None（判否）。
+    # 刻意不用 urlparse：它对 "http://u@h"、"http://a:1:2" 这类畸形值会给出「看起来能用」的
+    # hostname，而浏览器发出的 Origin 恒为 scheme://host[:port]（无 path、无 userinfo）。
+    # 按「不认识的形态一律拒绝」处理，不给解析差异留可利用的空间。
+    scheme, sep, rest = origin.strip().partition("://")
+    if not sep:
+        return None
+    default_port = _ORIGIN_SCHEME_PORTS.get(scheme.lower())
+    if default_port is None:
+        return None
+    # Origin 的序列化恒为 scheme://host[:port]，**从不含 path/query**（斜杠之后什么都没有）。
+    # 旧写法 `rest.split("/", 1)[0]` 会把 "http://127.0.0.1:8000/任意尾巴" 也当成合法主机，
+    # 于是「以本站开头的一串字符串」被接受——按不认识的形态一律拒绝处理。
+    authority, slash, tail = rest.partition("/")
+    if slash or tail or not authority:
+        return None
+    if authority.startswith("["):
+        # IPv6 形态：[::1]:8000 / [::1]（zone id 无意义，剥掉）
+        end = authority.find("]")
+        if end <= 0:
+            return None
+        host = authority[1:end].split("%", 1)[0]
+        tail = authority[end + 1 :]
+        if tail and not tail.startswith(":"):
+            return None
+        port_text = tail[1:] if tail else ""
+    else:
+        if authority.count(":") > 1:
+            return None  # 裸 IPv6（未加方括号）不是浏览器会发出的 Origin 形态
+        host, _, port_text = authority.partition(":")
+    if not host or any(ch in authority for ch in "@?#\\"):
+        # userinfo / query / fragment / 反斜杠（WHATWG 下等价于 /）都不是 Origin 的组成部分；
+        # 显式列出而不是依赖下游解析的宽容度，避免「两种解析器各看到一个不同主机」的缝隙。
+        return None
+    host = host.strip().lower().rstrip(".")
+    if not host:
+        return None
+    if not port_text:
+        return host, default_port, False
+    if not port_text.isdigit():
+        return None
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return None
+    return host, port, True
+
+
+def get_origin_allowed_hosts(cfg: Mapping[str, str | int | bool]) -> dict[str, int | None]:
+    # web_allowed_hosts 的 Origin 侧解释：host → 登记的端口（None = 未写端口，按实际绑定端口判）。
+    # 与 get_allowed_hosts 的两点差别正是本条防线的要点：
+    # ① **保留端口**（Host 那条把它丢掉，Origin 这条恰恰要靠它区分「本站页面」与
+    #    「本机/局域网里另一台服务器上的页面」）；
+    # ② 不做 *. 后缀通配（同源是按「那一台主机」成立的，把 *.example.com 判成同源
+    #    等于接受任意/被签发的子域，与 MID-36 拒绝重绑定的初衷相反）。
+    result: dict[str, int | None] = {}
+    for item in _split_multi_value(str(cfg.get("web_allowed_hosts", "") or "")):
+        parsed = _origin_authority(item if "://" in item else f"http://{item}")
+        if parsed is None:
+            continue
+        host, port, explicit = parsed
+        result[host] = port if explicit else None
+    return result
+
+
+def is_origin_allowed(
+    origin: str,
+    cfg: Mapping[str, str | int | bool],
+    *,
+    bind_host: str = "",
+    bind_port: int = 0,
+) -> bool:
+    # MID-N42：Origin 是否可作为「同源」放行。bind_host / bind_port 是**进程实际绑定**的
+    # 地址与端口（由 web.py 接线，见 src/web_api.create_app）；未接线时调用侧回落到
+    # 配置值，回落口径与理由见 web_api._guard_bind_host 的注释。
+    parsed = _origin_authority(origin)
+    if parsed is None:
+        return False
+    host, port, explicit_port = parsed
+    # 测试桩豁免，边界写在这里：Starlette TestClient 的默认 base_url 是 http://testserver
+    # （无端口），那是 httpx 侧写死的一个哨兵字符串，不是任何浏览器能交付的本站地址形态。
+    # 豁免严格限定为「名字恰好等于该哨兵 **且** Origin 里没有显式端口」这一种组合，因此
+    # ① 不放开「任意无点单标签名」（is_host_allowed 的第③条在这里依然不生效）；
+    # ② 不放开任意 IP 字面量；③ Origin 一旦带端口（含 testserver:8000）立即回到
+    # host+端口双判。真机部署里真有一个叫 testserver 的主机时，其端口仍须等于绑定端口。
+    if not explicit_port and host in _ORIGIN_TEST_SENTINEL_HOSTS:
+        return True
+    expected_port = bind_port or _as_port(cfg.get("web_port"))
+    registered = get_origin_allowed_hosts(cfg)
+    if host in registered:
+        want = registered[host]
+        if want is not None:
+            # 登记项自带端口：按登记端口判（反代 https://panel.example/ 这类入口端口
+            # 与应用绑定端口不同的合法部署，登记即放行，不必把 web_host 改成公网名）
+            return want == port
+        return expected_port > 0 and port == expected_port
+    if expected_port <= 0 or port != expected_port:
+        return False
+    if bind_host:
+        bound = _strip_host_port(bind_host)
+        if bound and bound not in _WILDCARD_BIND_HOSTS and bound == host:
+            return True
+    # 回环族恒可（端口已在上面校过）：面板的出厂访问路径就是 http://localhost:8000 /
+    # http://127.0.0.1:8000，且回环端口只能被本机进程占用，能给出该 Origin 的页面必出自本机。
+    # 注意这条**不放端口**——http://localhost:3000/（本机 dev server）正是本条要拦的形态。
+    return is_loopback_bind_host(host)
+
+
+# 敏感判定是「节白名单 SENSITIVE_SECTIONS + 键名正则」两道并联（见 is_sensitive_item），缺一不可：
+# 仅靠节名白名单会漏掉「推送配置」节的 tgapi令牌 / 发件人密码(授权码) / pushplus推送token，以及各
+# 平台节内的 popkontv_token 等独立凭据——它们会被 read_config_safe 原样明文返回给面板
+# （前端再按节名用 text 输入框渲染）。
+# CR-10 修复：补端点型键名。此前只匹配「键名含凭据关键词」，而「凭据嵌在值里」的键（钉钉/微信/bark
+# 推送接口链接、ntfy 推送地址、代理地址）完全绕过脱敏，会被明文返回并以普通 text 输入框渲染。
+_SENSITIVE_KEY_PATTERN = re.compile(
+    r"令牌|密码|授权码|token|secret|passwd|password|api[_-]?key|推送接口链接|推送地址|代理地址",
+    re.IGNORECASE,
+)
+
+# CR-10 修复：值形态检测——键名不含凭据关键词、但值本身就是凭据的情形。
+# 典型：企业微信/钉钉 webhook（?key= / access_token=）、bark 设备 key、
+# 带账密的代理地址（http://user:pass@host:port）。
+# 黑名单式键名匹配天然滞后于平台命名，值形态检测是第三道兜底。
+_SECRET_VALUE_QUERY_RE = re.compile(r"(access[_-]?token|token|key|secret|pwd|passwd|password|auth)=", re.IGNORECASE)
+_URL_VALUE_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+
+
+def _looks_like_secret_value(value: str) -> bool:
+    # 判断配置「值」本身是否携带凭据（与键名无关），供 read_config_safe 兜底脱敏。
+    # 仅对 URL 形态生效：普通文本不做启发式判定，避免误伤正常配置。
+    v = value.strip()
+    if not _URL_VALUE_RE.match(v):
+        return False
+    parts = v.split("/", 3)
+    if len(parts) > 2 and "@" in parts[2]:
+        return True  # userinfo（http://user:pass@host）
+    return bool(_SECRET_VALUE_QUERY_RE.search(v))
+
+
+# 反向例外表：含 expiry/timeout/过期/有效期 的键是数值型运维参数（如 web_token_expiry 的秒数），
+# 脱敏会挡住面板编辑且无保密意义，故显式排除。判敏感 = 键名正则命中 **且** 不落在本表内。
 _KEY_NOT_SECRET_PATTERN = re.compile(r"expiry|timeout|有效期|过期", re.IGNORECASE)
 
 
 def is_sensitive_key(key: str) -> bool:
-    # 判断配置键名是否属敏感字段（不依赖所属节，供脱敏与前端渲染类型复用）
+    # 判断配置键名是否属敏感字段（不依赖所属节，供脱敏与前端渲染类型复用）。
+    # 反向例外表先判：命中 _KEY_NOT_SECRET_PATTERN（expiry/timeout/过期/有效期）即放行。
     if _KEY_NOT_SECRET_PATTERN.search(key):
         return False
     return bool(_SENSITIVE_KEY_PATTERN.search(key))
 
 
 def is_sensitive_item(section: str, key: str) -> bool:
-    # 敏感判定：节白名单命中，或键名模式命中（后者覆盖「推送配置」等非白名单节内的凭据）
+    # 敏感判定的唯一入口：节白名单命中 **或** 键名模式命中（后者覆盖「推送配置」等非白名单节内的
+    # 独立凭据）。读写两侧都必须走它——web_api 的写侧守卫即直接复用本函数与 _looks_like_secret_value。
     return section in SENSITIVE_SECTIONS or is_sensitive_key(key)
 
 
 def read_config_safe(config_file: str | Path) -> dict[str, dict[str, str]]:
-    # 读取 config.ini 全部节键值，敏感节非空值脱敏为 '***'。
-    # 用于 API 返回前端展示；写入仍用 utils.update_config。
+    # 读取 config.ini 全部节键值，敏感节非空值脱敏为 '***'，用于 API 返回前端展示。
     # Web 节单独对 web_password 脱敏（其他 Web 键需可编辑，故不整节脱敏）。
+    #
+    # 写入口是谁（判「写入口」一律 grep 调用点，别信注释）：PUT /api/config
+    # （src/web_api.py::update_config）走的是**本模块**的 update_config_line（行级替换，保留注释/节序/
+    # 行内注释）+ _atomic_write_text（委托 src.utils.atomic_write_text）；utils.update_config 只在
+    # 录制引擎侧的热加载写回里出现。
+    # [历史注] 此处旧陈述「写入仍用 utils.update_config」于 2026-09-23 被实测证伪并就地改正：SEV-2211
+    # 排查「原子写四项加固是否齐备」时就是按它去核 utils.update_config，因而漏看 web_config 自己的
+    # 写入面（mode 回灌缺失、临时名只含 pid），把一个 P0 级缺陷留在暗处。
     parser = configparser.ConfigParser(interpolation=None)
     _ = parser.read(config_file, encoding=TEXT_ENCODING)
     result: dict[str, dict[str, str]] = {}
     for section in parser.sections():
         items: dict[str, str] = {}
         for key, value in parser.items(section):
-            if is_sensitive_item(section, key) and value.strip():
+            # CR-10：键名命中或值本身形如凭据，统一脱敏
+            if value.strip() and (is_sensitive_item(section, key) or _looks_like_secret_value(value)):
                 items[key] = SENSITIVE_MASK
             else:
                 items[key] = value
@@ -476,7 +1164,6 @@ def update_config_line(config_file: str | Path, section: str, key: str, value: s
         new_lines: list[str] = []
         for line in lines:
             stripped = line.strip()
-            # section header: [name]
             if stripped.startswith("[") and stripped.endswith("]"):
                 cur_section = stripped[1:-1].strip()
                 in_target = cur_section == section
@@ -487,16 +1174,12 @@ def update_config_line(config_file: str | Path, section: str, key: str, value: s
                 if m:
                     prefix = m.group(1)  # "key = " 部分
                     old_tail = m.group(2)  # 原值（可能含行内注释）
-                    # 检测行内注释：首个 " #" 或 " ;"（前置空白），保留注释部分
-                    #
-                    # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-23）：引号优先。
-                    # 原实现一律按首个 " #" / " ;" 切分——值本身含该串时会被当成注释，
-                    # 写回后变成「新值 + 半个原值」，配置被静默截断。典型受害者：
-                    # 颜色值、含井号的密码/token、URL 锚点（如 `key = "a#b" # 说明`，
-                    # 原逻辑会在 "a#b" 内部的 " #"... 之前先命中 a 与 # 之间无空格故不中，
-                    # 但 `key = "v" # x` 之后的任意含 " #" 值都会错位）。
-                    # 引号包裹的值其注释必在**闭合引号之后**，按此切分可精确定界；
-                    # 引号未闭合（畸形行）或值无引号时回落原启发式，行为不退化。
+                    # 检测行内注释：首个 " #" 或 " ;"（前置空白），保留注释部分。
+                    # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-23）：改为**引号优先**。原实现一律按首个
+                    # " #" / " ;" 切分——值本身含该串时会被当成注释，写回后变成「新值 + 半个原值」，
+                    # 配置被静默截断；典型受害者是颜色值、含井号的密码/token、URL 锚点（`key = "v" # x`
+                    # 之后任何含 " #" 的值都会错位）。引号包裹的值其注释必在**闭合引号之后**，按此切分
+                    # 可精确定界；引号未闭合（畸形行）或值无引号时回落原启发式，行为不退化。
                     inline_comment = ""
                     _stripped_tail = old_tail.lstrip()
                     if _stripped_tail[:1] in ('"', "'"):
@@ -578,6 +1261,23 @@ def update_or_append_config_line(config_file: str | Path, section: str, key: str
 # 落地配置只保存哈希，不保存明文；历史明文配置在首次登录时自动升级。
 _PBKDF2_ALGO = "pbkdf2_sha256"
 _PBKDF2_ITERATIONS = 200_000
+# MID-35：迭代次数取自存储串（用户可直接编辑的 config.ini），旧实现按原值直接喂给
+# hashlib.pbkdf2_hmac → 把 200k 改成 2e7 就能让**每次登录**烧掉十几秒 CPU，
+# 而登录端点在事件循环线程里跑 → 面板级 CPU DoS。此处给出硬上下界：
+# 上界 1e6（约 0.7s）足够容纳未来一次有意的强度升级，下界取本模块自身的默认值，
+# 低于默认值的历史哈希一律判失败（宁可让人重设密码，也不给降级攻击留门）。
+_PBKDF2_MAX_ITERATIONS = 1_000_000
+
+
+def clamp_pbkdf2_iterations(raw: object) -> int:
+    # 把存储串里的迭代次数收敛到 [_PBKDF2_ITERATIONS, _PBKDF2_MAX_ITERATIONS]。
+    # 无法解析（非数字/为空）→ 返回默认值，由调用方的 compare_digest 自然判失败，不抛异常。
+    try:
+        value = int(cast("str", raw))
+    except TypeError, ValueError:
+        # 注：需要绑定异常对象时不能省括号（`except A, B as e:` 非法）
+        return _PBKDF2_ITERATIONS
+    return max(_PBKDF2_ITERATIONS, min(value, _PBKDF2_MAX_ITERATIONS))
 
 
 def hash_web_password(plaintext: str) -> str:
@@ -601,7 +1301,7 @@ def verify_web_password(plaintext: str, stored: str) -> bool:
             _, iters_s, salt_b64, hash_b64 = stored.split("$")
             salt = base64.b64decode(salt_b64)
             expected = base64.b64decode(hash_b64)
-            dk = hashlib.pbkdf2_hmac("sha256", plaintext.encode("utf-8"), salt, int(iters_s))
+            dk = hashlib.pbkdf2_hmac("sha256", plaintext.encode("utf-8"), salt, clamp_pbkdf2_iterations(iters_s))
         except ValueError:
             # 哈希串损坏/迭代数非法（base64.b64decode 的 binascii.Error 亦为 ValueError 子类）：
             # 视为校验失败而非崩溃
