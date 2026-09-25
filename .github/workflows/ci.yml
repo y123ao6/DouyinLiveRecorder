@@ -125,6 +125,7 @@ jobs:
       black_version: ${{ steps.consts.outputs.black_version }}
       isort_version: ${{ steps.consts.outputs.isort_version }}
       mypy_version: ${{ steps.consts.outputs.mypy_version }}
+      pytest_version: ${{ steps.consts.outputs.pytest_version }}
       # —— 路径过滤结果 ——
       filters: ${{ steps.filter.outputs.changes }}
     steps:
@@ -156,10 +157,13 @@ jobs:
           # 静态检查工具**固定版本**：black / isort 的新大版本会改变格式化结果，
           # 不固定会导致「代码未改动却突然 CI 变红」。此处集中声明便于统一升级
           # （dependabot 不会更新 workflow 内联的 pip 版本，需人工随 pyproject 一起 bump）。
+          # pytest 同属此类：typecheck job 靠它把 tests/ 里的 pytest.* 按真实类型检查，
+          # 版本漂移会直接改变类型结论（与 black / isort 同一「代码未改动却 CI 变红」形态）。
           {
             echo "black_version=26.5.1"
             echo "isort_version=9.0.1"
             echo "mypy_version=2.3.1"
+            echo "pytest_version=9.1.1"
           } >> "$GITHUB_OUTPUT"
 
       # 仅当 Python 源码 / 测试 / 项目配置 / 翻译目录 / 前端不变量 / 镜像与 workflow 变更时才跑重活；
@@ -339,7 +343,8 @@ jobs:
       # 只会把每条 >=X 解析到区间内**最新**版本再审计，因此对「下限自身落在受影响段」
       # 完全失明。本地实测同一条 requirements.txt：解析模式 rc=0（No known vulnerabilities），
       # 而逐项下限 + --no-deps 模式 rc=1，报出 starlette 1.0.1（PYSEC-2026-2280/2281/248/249）
-      # 与 protobuf 6.31.1（PYSEC-2026-1805）——正是本仓「只有下限」清单的风险形态。
+      # 与 protobuf 6.31.1（PYSEC-2026-1805）、h2 4.3.0（PYSEC-2026-3628，2026-09-26 抓出）
+      # ——正是本仓「只有下限」清单的风险形态：三次都是「下限自身落在受影响段」，解析模式全瞎。
       # 本步把下限逐条钉成 == 再审计，才真正守住 AGENTS.md「安全下限」条目。
       - name: Audit declared floors against OSV (no resolution)
         env:
@@ -394,13 +399,18 @@ jobs:
             requirements.txt
             pyproject.toml
 
+      # pytest 必须一并装：[tool.mypy].files 含 tests/，缺 pytest 时 `import pytest` 解析为
+      # Any——tests/ 里的 pytest.* 全部免检不说，连 pytest.fail() 的 NoReturn 都会丢失，
+      # mypy 会把「声明了非 None 返回类型、却以 pytest.fail() 收尾」的辅助函数判成 [return]
+      # （2026-09-26 实测：tests/test_proto_runtime_compat.py:33 只在 CI 红、本机装了 pytest 恒绿）。
+      # 固定版本而非跟随最新版：pytest 的类型标注变化会让 tests/ 在代码未改动时突然转红。
       - name: Install dependencies
         uses: ./.github/actions/retry
         with:
-          label: pip 安装依赖（requirements + mypy）
+          label: pip 安装依赖（requirements + mypy + pytest）
           command: >-
             python -m pip install --upgrade pip
-            && pip install -r requirements.txt "mypy==${{ needs.setup.outputs.mypy_version }}"
+            && pip install -r requirements.txt "mypy==${{ needs.setup.outputs.mypy_version }}" "pytest==${{ needs.setup.outputs.pytest_version }}"
 
       - name: Run mypy
         # 不带路径参数：范围由 pyproject [tool.mypy].files 定义（本地同款命令）
@@ -474,13 +484,27 @@ jobs:
 
       # pytest-asyncio 由 pyproject [tool.pytest.ini_options] asyncio_mode = "auto" 驱动；
       # pytest-cov 必装：scripts/check_coverage.py 依赖其产出的 .coverage 数据文件。
+      #
+      # black / isort / mypy 同装（版本取 setup job 常量，与 static / typecheck 两个 job 同值）：
+      # 门禁脚本的两条回归锁**真起子进程**调用它们——
+      #   · tests/test_regression_2026_09_22_gates.py::test_run_gates_fatal_patterns_reach_stderr_channel
+      #     要用真实 isort 复现「非 UTF-8 源文件 → Unable to parse file 走 UserWarning、rc 仍为 0」；
+      #   · tests/test_run_gates.py::test_check_executables_accepts_module_fallback_without_path_scripts
+      #     要求 black / mypy 在当前解释器里 importable（验证裸 console-script 不在 PATH 时
+      #     run_gates 的 `python -m` 兜底不误报 rc=3）。
+      # 缺装时的症状是 `No module named isort` → rc=1 → 用例红（2026-09-26 CI 实测两条红）。
+      # 刻意**不**改成「工具缺失就 skip」：那与 MID-2264 同形——skipped 与 passed 在汇总里
+      # 不可区分，两条锁会在 ubuntu 上静默消失；装工具才能让它们真的在 CI 上执行。
       - name: Install dependencies
         uses: ./.github/actions/retry
         with:
-          label: pip 安装依赖（requirements + pytest）
+          label: pip 安装依赖（requirements + pytest + 门禁工具）
           command: >-
             python -m pip install --upgrade pip
             && pip install -r requirements.txt pytest pytest-asyncio pytest-cov
+            "black==${{ needs.setup.outputs.black_version }}"
+            "isort==${{ needs.setup.outputs.isort_version }}"
+            "mypy==${{ needs.setup.outputs.mypy_version }}"
 
       # 全局覆盖率下限 fail_under = 50 由 pyproject [tool.coverage.report] 强制
       - name: Run pytest with coverage

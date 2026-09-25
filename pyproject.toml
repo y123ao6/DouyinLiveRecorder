@@ -57,7 +57,11 @@ dependencies = [
     # 触发点已回源到 httpx 源码：h2 来自 httpx._client.Client.__init__ 的 `if http2: import h2`
     #   （本仓 http2 默认为 True）；socksio 来自 httpx._transports.default 的
     #   `socks5/socks5h` 分支 `import socksio`（本仓支持 socks5:// 代理写法）。
-    "h2>=4.3.0",
+    # h2 下限 >=4.4.1（2026-09-26 deps-audit「下限复核」抓出）：PYSEC-2026-3628 /
+    #   GHSA-6hr6-w5qg-qmwg（重复 Host 头 → 请求走私）OSV 区间 introduced=0 / fixed=4.4.1，
+    #   旧下限 4.3.0 自身即在受影响段内（它只修了同源的 PYSEC-2026-1435）。
+    #   现装与 uv.lock 均已是 4.4.1，抬下限不改变解析集合。
+    "h2>=4.4.1",
     "socksio>=1.0.0",
     "exejs>=1.0.1",
     "PyExecJS>=1.5.1",

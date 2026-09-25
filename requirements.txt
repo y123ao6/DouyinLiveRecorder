@@ -40,7 +40,10 @@ httpx[http2]>=0.28.1      # 异步 HTTP 客户端（含 HTTP/2，src/async_http.
 # 下限取「本机可解析且不低于 2026-09-23 安全基线」的值，不设上限（与全库口径一致，protobuf 例外）。
 # 维护锁：tests/test_regression_2026_09_22_gates.py 断言本文件与 pyproject [project.dependencies]
 #   的包名集合逐项一致——单侧遗漏（正是本次的形态）会被该用例直接抓红。
-h2>=4.3.0                 # httpx http2=True 的运行期依赖（httpx Client.__init__ 内 `import h2`）
+# [2026-09-26 deps-audit 下限复核] 4.3.0 → 4.4.1：PYSEC-2026-3628 / GHSA-6hr6-w5qg-qmwg
+#   （重复 Host 头致请求走私）OSV 区间 introduced=0 / fixed=4.4.1，旧下限 4.3.0 自身落在受影响段
+#   （它只修了同源的 PYSEC-2026-1435）。现装与 uv.lock 均已是 4.4.1，抬下限不改解析集合。
+h2>=4.4.1                 # httpx http2=True 的运行期依赖（httpx Client.__init__ 内 `import h2`）
 socksio>=1.0.0            # httpx SOCKS 代理（socks5/socks5h）的运行期依赖（httpx 传输层内 `import socksio`）
 
 # ---------- 日志 ----------

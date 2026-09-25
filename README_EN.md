@@ -954,7 +954,7 @@ This project is open-sourced under the [MIT License](LICENSE). Stars and Forks a
 - **The bundled ffmpeg directory is no longer unconditionally prepended on Apple Silicon**: users who installed a native arm64 ffmpeg (e.g. via Homebrew) will now have recording subprocesses use that system copy instead (its version / build options may differ).
 - **Dynamic concurrency floor 8 → 1**: the network concurrency allowance is no longer lifted to 8 under low load.
 - **Boolean config semantics changed**: keys previously written as `true/false`, `1/0`, … were **silently ignored** (falling back to a default); after upgrading they take effect literally — if your config depended on the old wrong fallback value, the effective value changes. Please re-check the 8 affected settings after upgrading.
-- **Runtime dependencies 20 → 23**: newly declared explicitly — `urllib3>=2.7.0` (CVE-2026-44431), `h2>=4.3.0` and `socksio>=1.0.0` (httpx runtime deps for HTTP/2 and SOCKS); `starlette` lower bound `>=0.49.1` → **`>=1.3.1`** (CVE-2026-48710 plus PYSEC-2026-2280/2281/248/249); `protobuf` keeps its `<8` cap (gencode compatibility guardrail).
+- **Runtime dependencies 20 → 23**: newly declared explicitly — `urllib3>=2.7.0` (CVE-2026-44431), `h2>=4.4.1` (PYSEC-2026-3628) and `socksio>=1.0.0` (httpx runtime deps for HTTP/2 and SOCKS); `starlette` lower bound `>=0.49.1` → **`>=1.3.1`** (CVE-2026-48710 plus PYSEC-2026-2280/2281/248/249); `protobuf` keeps its `<8` cap (gencode compatibility guardrail).
 - **Build time**: the `build-release.yml` prepare job now blocks unpinned runtime binaries via `check_runtime_pins.py --strict`.
 
 **🛠️ Repo Maintenance & Quality Gates**
