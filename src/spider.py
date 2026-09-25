@@ -5,7 +5,6 @@ import json
 import os
 import random
 import re
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -46,7 +45,9 @@ import i18n
 #   - 平台接口极易风控：空响应体（200+空 body）、-352、-3001/-3002/-3004 等错误码多为
 #     风控或登录态缺失，函数内已尽量带「重试一次再定罪」与回退，调用方需透传 cookies/proxy。
 #   - 本文件使用 Python 3.14 的 PEP 758 异常语法 `except A, B:`（不带括号），这是语法特性
-#     而非笔误，严禁改成 `except (A, B):`，否则会被误判为需要回溯兼容并破坏 3.14 语义。
+#     而非笔误；两种写法 black 均接受，本项目统一写无括号（约定见 AGENTS.md「代码风格」章节）。
+#     唯一例外：需要 as 绑定时必须回退为加括号写法——无括号写法配 as 是语法错误。
+#     [历史注] 旧版本条称「加括号会破坏 3.14 语义、即违反 black 门禁」，2026-09-17 实测推翻。
 #   - 严格类型检查（pyright）在此对动态 JSON 放宽，见下列 report* 指令。
 
 # 爬虫模块大量解析动态 JSON（json.loads 返回 Any、嵌套异构结构），
@@ -64,9 +65,11 @@ except ImportError:
     import execjs  # type: ignore[no-redef]
     from execjs import ProgramError  # type: ignore[no-redef]
 
-from . import JS_SCRIPT_PATH, http_config, utils
+from . import JS_SCRIPT_PATH, http_config, utils, web_config
 from .async_http import async_req
+from .cookie_cache import DEFAULT_TTL as _CREDENTIAL_TTL
 from .cookie_cache import fetch_cookies as _cache_fetch_cookies
+from .cookie_cache import invalidate_generic as _cache_invalidate_generic
 from .cookie_cache import singleflight as _cache_singleflight
 from .logger import logger, script_path
 from .room import UnsupportedUrlError, get_sec_user_id, get_unique_id, is_user_homepage_url
@@ -85,6 +88,36 @@ _cached_ttwid: str = ""
 # 提取），平台解析每房间每轮多次触发。预编译后省去重复编译，匹配语义不变。
 _BANDWIDTH_PATTERN = re.compile(r"BANDWIDTH=(\d+)")
 _DOUYIN_HEVC_FLV_PATTERN = re.compile(r'(https?://[^\s"\']*stream-\d{10,}(?!_[a-z0-9]+)\.flv(?:[^"\']|\\u0026)+)')
+
+# WD-17：PopkonTV 应用级固定 API 凭据（非用户私人凭据，嵌入于其客户端、无法从主页动态获取）。
+# 原先同一串 64 字符凭据以 `Basic` 与 `Client` 两种前缀**分别写死在两个函数里**，
+# 任一处更新都会漏掉另一处（本仓已多次出现此类「改一处漏 N 处」），
+# 表现为「登录 OK 但取流 401」或反之。收敛为单一常量供两处引用。
+# 轮换方式：与 _read_haixiu_token_override 同理支持环境变量覆盖，无需改代码即可替换。
+_POPKONTV_APP_CREDENTIAL = "FpAhe6mh8Qtz116OENBmRddbYVirNKasktdXQiuHfm88zRaFydTsFy63tzkdZY0u"
+
+
+def _popkontv_credential() -> str:
+    # 读取 PopkonTV 应用凭据：优先环境变量覆盖（平台轮换时无需改代码），否则用内置缺省值
+    return os.environ.get("POPKONTV_APP_CREDENTIAL", "").strip() or _POPKONTV_APP_CREDENTIAL
+
+
+# MI-16：Shopee 站点后缀解析的唯一实现。
+# 取「去掉首段后的完整 TLD」：live.shopee.co.id → "co.id"（rsplit 取最后一段会得到
+# "id"，拼出 live.shopee.id 这样的无效域名）。解析异常时回退 "com"（Shopee 主站）。
+# SEV-06 修复（2026-09-20）：原实现漏了「先剥 live. 首段」这一步——对真实路由形态
+# live.shopee.sg，split(".", 1)[-1] 得到 "shopee.sg"，拼出 https://live.shopee.shopee.sg
+# 这样的非法 host，请求必失败 → 装饰器兜成未开播，即所有可路由的 Shopee 链接永久解析失败。
+# 唯一不命中的输入（shopee.co.id/live 无 live. 前缀）恰好不被 main.py 的 "live.shopee" 分发命中。
+def _shopee_host_suffix(url: str) -> str:
+    try:
+        host = url.split("/")[2]
+    except IndexError:
+        return "com"
+    # 剥掉 live. 子域首段后再取 shopee 之后的完整后缀（co.id / com.my / sg 均正确）
+    host = re.sub(r"^live\.", "", host)
+    parts = host.split(".", maxsplit=1)
+    return parts[-1] if len(parts) > 1 and parts[-1] else "com"
 
 
 def _safe_extract_id(url: str, default: str = "") -> str:
@@ -106,12 +139,63 @@ async def _ensure_ttwid(proxy_addr: OptionalStr = None) -> str:
 
 
 # 各平台自动获取凭据的缓存，避免每次请求都重新获取
+# MID-33 修复（2026-09-20）：以下两组「模块全局非空即永久返回」的凭据缓存补充了
+# 写入时间戳与 TTL 判定（对齐 cookie_cache.DEFAULT_TTL 与 src/room.py 的 sec_uid 缓存——
+# 后者是全仓唯一按 TTL 判定的正确实现）。原实现对平台侧作废凭据（快手风控重置 did、
+# Twitch 轮换 Client-Id）永不重试，直到进程重启；现按 TTL 过期后重取，并提供
+# invalidate_* 钩子供「凭据被平台拒绝」时主动失效（镜像 invalidate_bili_buvid_cache）。
+# ts==0.0 且值非空仅可能来自测试/外部直接注入全局（生产写入点恒与 ts 同点赋值），
+# 此时按有效处理、与旧行为一致。
 _cached_kuaishou_did: str = ""
+_cached_kuaishou_did_ts: float = 0.0
+# 记录当前缓存值产生时使用的代理上下文：generic singleflight 键含 proxy，
+# 失效钩子需据此清对正确的通用缓存键
+_cached_kuaishou_did_proxy: str = ""
 _cached_twitch_client_id: str = ""
+_cached_twitch_client_id_ts: float = 0.0
+_cached_twitch_client_id_proxy: str = ""
 # 凭据获取的互斥锁 + 二次检查：多房间线程并发首轮请求时只拉取一次，
 # 避免重复打平台接口（触发风控）与凭据互相覆盖
 _kuaishou_did_lock = threading.Lock()
 _twitch_client_id_lock = threading.Lock()
+
+# Twitch Web 端统一 UA（MID-50b）：主页 Client-Id 提取、GQL、usher 三处请求共用一份，
+# 与 AGENTS「UA 双端一字不差 / 全库统一基准（Firefox/148）」一致。browser_version 由同一
+# 常量派生——usher 查询参数原先写死 124.0 与 UA 的 148 自相矛盾（风控按不一致指纹识别）。
+_TWITCH_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
+_TWITCH_BROWSER_VERSION = _TWITCH_WEB_UA.split("rv:", 1)[-1].split(")", 1)[0]  # -> "148.0"
+
+
+def invalidate_kuaishou_did_cache(proxy_addr: OptionalStr = None) -> None:
+    # 使进程内快手 did 缓存失效（MID-33）：平台侧作废 did 时由调用方主动失效，
+    # 同时清 cookie_cache 通用缓存中本凭据的 singleflight 键（TTL 30 分钟，
+    # 只清模块全局会被通用缓存继续喂回同一份被拒值——与 bili buvid 同型问题）。
+    global _cached_kuaishou_did, _cached_kuaishou_did_ts, _cached_kuaishou_did_proxy
+    with _kuaishou_did_lock:
+        _cached_kuaishou_did = ""
+        _cached_kuaishou_did_ts = 0.0
+        recorded = _cached_kuaishou_did_proxy
+        _cached_kuaishou_did_proxy = ""
+    keys = {recorded}
+    if proxy_addr is not None:
+        keys.add(proxy_addr or "")
+    for k in keys:
+        _cache_invalidate_generic(f"kuaishou_did|{k}")
+
+
+def invalidate_twitch_client_id_cache(proxy_addr: OptionalStr = None) -> None:
+    # 使进程内 Twitch Client-Id 缓存失效（MID-33，同 invalidate_kuaishou_did_cache 口径）
+    global _cached_twitch_client_id, _cached_twitch_client_id_ts, _cached_twitch_client_id_proxy
+    with _twitch_client_id_lock:
+        _cached_twitch_client_id = ""
+        _cached_twitch_client_id_ts = 0.0
+        recorded = _cached_twitch_client_id_proxy
+        _cached_twitch_client_id_proxy = ""
+    keys = {recorded}
+    if proxy_addr is not None:
+        keys.add(proxy_addr or "")
+    for k in keys:
+        _cache_invalidate_generic(f"twitch_client_id|{k}")
 
 
 async def _ensure_kuaishou_did(proxy_addr: OptionalStr = None) -> str:
@@ -124,8 +208,10 @@ async def _ensure_kuaishou_did(proxy_addr: OptionalStr = None) -> str:
     # 其它房间线程执行到 with 会同步阻塞整个事件循环（多房间冷启动全部串行卡顿）。
     # 改为经 cookie_cache.singleflight 统一去重：临界区内仅做字典读写，网络拉取在锁外，
     # 等待者经 future 复用同一份结果（跨循环经 call_soon_threadsafe 交付）。
-    global _cached_kuaishou_did
-    if _cached_kuaishou_did:
+    global _cached_kuaishou_did, _cached_kuaishou_did_ts, _cached_kuaishou_did_proxy
+    if _cached_kuaishou_did and (
+        not _cached_kuaishou_did_ts or (time.monotonic() - _cached_kuaishou_did_ts) < _CREDENTIAL_TTL
+    ):
         return _cached_kuaishou_did
 
     async def _fetch() -> str:
@@ -151,27 +237,32 @@ async def _ensure_kuaishou_did(proxy_addr: OptionalStr = None) -> str:
     got = await _cache_singleflight(key=f"kuaishou_did|{proxy_addr or ''}", factory=_fetch, timeout=10)
     if isinstance(got, str) and got:
         _cached_kuaishou_did = got
+        _cached_kuaishou_did_ts = time.monotonic()
+        _cached_kuaishou_did_proxy = proxy_addr or ""
+    elif _cached_kuaishou_did and (time.monotonic() - _cached_kuaishou_did_ts) >= _CREDENTIAL_TTL:
+        # TTL 已过期且本轮重取失败：旧值不再返回（原行为是永久返回旧值），回空串交调用方下轮重试
+        _cached_kuaishou_did = ""
+        _cached_kuaishou_did_ts = 0.0
     return _cached_kuaishou_did
 
 
 async def _ensure_twitch_client_id(proxy_addr: OptionalStr = None) -> str:
-    # 从 Twitch 主页动态提取 Web 端公开 Client-Id（替代硬编码值，避免后续变更失效）
-    # 该 Client-Id 是 Twitch 网页客户端使用的公共标识，非用户私人凭据，
-    # 但仍改为动态提取以避免 Twitch 更换后导致功能失效
+    # 从 Twitch 主页动态提取 Web 端公开 Client-Id（替代硬编码值，避免 Twitch 更换后功能失效）。
+    # 它是网页客户端使用的公共标识、非用户私人凭据。
     #
     # 2026-09-12 审查 H-2：同 _ensure_kuaishou_did，原为锁内 await 反模式，
     # 改经 cookie_cache.singleflight 去重（锁内零 await）
-    global _cached_twitch_client_id
-    if _cached_twitch_client_id:
+    global _cached_twitch_client_id, _cached_twitch_client_id_ts, _cached_twitch_client_id_proxy
+    if _cached_twitch_client_id and (
+        not _cached_twitch_client_id_ts or (time.monotonic() - _cached_twitch_client_id_ts) < _CREDENTIAL_TTL
+    ):
         return _cached_twitch_client_id
-
-    fallback_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
 
     async def _fetch() -> str:
         html = await async_req(
             url="https://www.twitch.tv/",
             proxy_addr=proxy_addr,
-            headers={"User-Agent": fallback_ua, "Accept-Language": "en-US"},
+            headers={"User-Agent": _TWITCH_WEB_UA, "Accept-Language": "en-US"},
             timeout=10,
         )
         html = _get_str_response(html)
@@ -185,6 +276,12 @@ async def _ensure_twitch_client_id(proxy_addr: OptionalStr = None) -> str:
     got = await _cache_singleflight(key=f"twitch_client_id|{proxy_addr or ''}", factory=_fetch, timeout=10)
     if isinstance(got, str) and got:
         _cached_twitch_client_id = got
+        _cached_twitch_client_id_ts = time.monotonic()
+        _cached_twitch_client_id_proxy = proxy_addr or ""
+    elif _cached_twitch_client_id and (time.monotonic() - _cached_twitch_client_id_ts) >= _CREDENTIAL_TTL:
+        # TTL 过期且重取失败：不再返回过期旧值（同 _ensure_kuaishou_did 口径）
+        _cached_twitch_client_id = ""
+        _cached_twitch_client_id_ts = 0.0
     return _cached_twitch_client_id
 
 
@@ -209,11 +306,16 @@ def _loads_dict(text: object) -> dict[str, object]:
     # 将 async_req 文本响应安全解析为 dict[str, object]，消除 json.loads 的 Any 传播
     # 空串/非 JSON/非 dict 一律回 {} 而非 None，保证调用方始终能 .get() 而不必先判空，
     # 否则上游取 stream_url/origin 时会因 None 触发 AttributeError 崩主循环。
+    #
+    # CR-12 修复：原实现用裸 json.loads(s)，只挡住了空串——平台在风控/改版时返回
+    # HTML（WAF 拦截页、302 落地页、Cloudflare 挑战页、被截断的 JSON）会抛
+    # JSONDecodeError，与「非 JSON 一律回 {}」的注释承诺相反。该函数在本文件有上百处
+    # 调用，任一处抛错都会被 @trace_error_decorator 吞成 {"is_live": False}，
+    # 表现为「明明在播却持续漏录」且日志看不出原因。改走异常安全版 _safe_loads。
     s = _get_str_response(text)
     if not s:
         return {}
-    parsed = cast(object, json.loads(s))
-    return parsed if isinstance(parsed, dict) else {}
+    return _safe_loads(s) or {}
 
 
 def _safe_loads(text: str) -> Optional[dict[str, object]]:
@@ -229,17 +331,85 @@ def _safe_loads(text: str) -> Optional[dict[str, object]]:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _dig(data: object, *keys: str | int) -> object:
+    # MID-48（2026-09-21 国内平台批次）：深层链式索引 `json_data["a"]["b"][0]["c"]` 的安全下钻版。
+    # 旧写法在接口改版 / 返回 WAF 页 / 房间不存在时抛 KeyError·TypeError·IndexError，三种成因
+    # 一律被 @trace_error_decorator 吞成 {"is_live": False}，与「主播真未开播」完全不可区分
+    # （用户侧只见持续的「网址内容获取失败」）。本函数任一环缺失或类型不符即回 None，
+    # 由调用方显式判空后决定「按未开播返回」还是「留线索后再抛错」。
+    # 返回值仍是 object：字符串字段走 _dig_str，需要继续下钻就继续用 _dig。
+    current: object = data
+    for key in keys:
+        if isinstance(key, int):
+            if not isinstance(current, list) or not -len(current) <= key < len(current):
+                return None
+            current = current[key]
+        elif isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            return None
+    return current
+
+
+def _dig_str(data: object, *keys: str | int) -> str:
+    # _dig 的字符串专用版：非 str（缺失 / null / 数字 / dict）一律回 ""。
+    # 主播名与标题会流到 main.py 的 clean_name()（只接受 str，见 MID-43 同类坑），
+    # 直接返回 object 会让下游 AttributeError 并把该轮记成熔断成功样本。
+    value = _dig(data, *keys)
+    return value if isinstance(value, str) else ""
+
+
+def _dig_list(data: object, *keys: str | int) -> list[object]:
+    # _dig 的列表专用版：非 list 一律回 []，使调用方 for 循环恒安全。
+    # 「键缺失」与「空数组」在此不区分——需要归因时先判 _dig(data, *keys) is None。
+    value = _dig(data, *keys)
+    return cast(list[object], value) if isinstance(value, list) else []
+
+
+def _warn_api_abnormal(json_str: str, api_name: str, field: str, data: dict[str, object]) -> None:
+    # MID-48：把「接口响应不符合预期」的成因分开落日志，替代原先「静默 KeyError → 未开播」。
+    # ① 空响应：async_req 失败/被风控时归一为 ""（见 _get_str_response 注释）→ 网络或风控信号；
+    # ② 非空但缺字段：可能是真「房间不存在/未开通」，也可能是接口改版；其中 WAF/HTML 形态
+    #    在 _loads_dict→_safe_loads 处已额外留过一条「JSON 解析失败」告警，两条相邻即可判定
+    #    是拦截页而非业务空数据。
+    # 另把接口自身的 code/message 原样带出——多数平台用它区分「房间不存在」，这是离线环境下
+    # 唯一能进一步归因的信息（具体取值需真机核对）。
+    if not json_str:
+        logger.warning(i18n.tr("{api} 返回空响应（风控或网络失败）", api=api_name))
+        return
+    # 各平台错误信封的键名不一（B站/猫耳用 code、AcFun/快手系用 errorCode/resultCode、
+    # 京东用 code 字符串），逐个试到第一个非 None 为止。
+    code: object = None
+    for key in ("code", "status", "errorCode", "resultCode"):
+        code = _dig(data, key)
+        if code is not None:
+            break
+    msg: object = None
+    for key in ("message", "msg", "errorMsg"):
+        msg = _dig(data, key)
+        if msg:
+            break
+    logger.warning(
+        i18n.tr(
+            "{api} 响应缺少 {field} 字段（房间不存在/未开通 或 接口改版/风控页）: code={code} msg={msg}",
+            api=api_name,
+            field=field,
+            code=code if code is not None else "",
+            msg=msg if msg is not None else "",
+        )
+    )
+
+
 def _is_safe_http_url(url: str) -> bool:
-    # 平台 URL 白名单校验：仅放行 http(s) 协议。防用户在 URL_config.ini 写入
-    # file:// / gopher:// / ftp:// 等协议造成 SSRF（虽然本项目无 request 直接
-    # fetch 的攻击面，但 stream_select 校验和后续解析链路仍会按 URL 触发请求，
-    # 收紧 scheme 边界是最低成本的防御）。允许 webcal/ws(s) 等平台专用协议放行
-    # （弹幕 wsclient 仍需 ws://）。
+    # 平台 URL 白名单校验：仅放行 http(s)，另允许 webcal/ws(s) 等平台专用协议
+    # （弹幕 wsclient 仍需 ws://）。防用户在 URL_config.ini 写入 file:// / gopher:// /
+    # ftp:// 造成 SSRF——本项目虽无直接 fetch 面，但 stream_select 校验与后续解析链路
+    # 都会按 URL 触发请求，收紧 scheme 边界是最低成本的防御。
     #
-    # 2026-09-12 审查 6.3：实现已上移到 src/utils.is_safe_http_url（本函数仅保留
-    # 为薄封装，供既有测试与调用点继续引用）。上移原因——原先定义在此处时，真正
-    # 的请求入口（async_http / sync_http）在依赖链更底层，无法反向 import spider
-    # （循环依赖），导致该函数零生产调用、退化成纸面防御；上移后已接入请求入口。
+    # 本函数是 src/utils.is_safe_http_url 的薄封装，spider.py 内已无生产调用点、仅为兼容 tests/ 保留；
+    # 新代码直接用 utils.is_safe_http_url，别因这里有同名函数就以为 spider 仍在它上面做 URL 校验。
+    # [历史注] MI-15（2026-09-12 审查 6.3）把实现上移到 utils：原定义在此处时，更底层的
+    # async_http / sync_http 无法反向 import spider（循环依赖），校验退化成纸面防御，上移后才接入请求入口。
     return utils.is_safe_http_url(url)
 
 
@@ -281,14 +451,19 @@ async def get_play_url_list(
     # 获取M3U8播放列表中的所有清晰度URL并按带宽排序
     # 响应非字符串（请求失败/被风控）直接回 []，调用方据此判定无多清晰度源、回退单地址；
     # 仅当带宽标记数量与 URL 数量一致才按带宽降序，否则保留 m3u8 原始顺序，避免错位映射选错画质。
+    # **返回值可能混合绝对与相对地址**（2026-09-12 审查放宽：http(s):// 绝对行原样收，
+    # `//host/path` 按清单自身协议补全，其余以 .m3u8 结尾的行按相对收）。
+    # 因此调用方**不得**再假定「全是相对路径」而做前缀字符串拼接——那会把绝对条目拼成
+    # `https://host/path/https://cdn/x.m3u8` 这种坏候选（MID-2222 在 ShowRoom/CHZZK 的实际形态）。
+    # 需要统一成绝对地址的调用方一律用 urllib.parse.urljoin(m3u8, line)（见 SOOP 的写法），
+    # 它对相对/绝对/带参三形态都正确。
     resp = await async_req(url=m3u8, proxy_addr=proxy, headers=header, abroad=abroad)
     if not isinstance(resp, str):
         return []
     play_url_list: list[str] = []
-    # 2026-09-12 审查（低危）：原只认 "https://" 前缀。部分自建/内网 HLS 源与个别
-    # CDN 的分片清单用 http:// 或协议相对（//host/path）写法，会被整条跳过 →
-    # 多清晰度列表为空，上层回退到单地址、用户选不了画质（表现为「画质下拉只有一项」）。
-    # 改为同时接受 http:// 与 https://，并把 "//host/..." 按清单自身协议补全。
+    # 2026-09-12 审查（低危）：此前只认 "https://" 前缀，部分自建/内网 HLS 源与个别
+    # CDN 用 http:// 或协议相对写法会被整条跳过 → 多清晰度列表为空、上层回退单地址
+    # （用户侧表现为「画质下拉只有一项」）。三形态的具体收法见本函数头部注释。
     _m3u8_scheme = urllib.parse.urlparse(m3u8).scheme or "https"
     for i in resp.split("\n"):
         line = i.strip()
@@ -311,7 +486,8 @@ async def get_play_url_list(
 def _extract_room_data_from_html(html_str: str) -> dict[str, object]:
     # 从抖音直播间HTML页面提取房间数据（作为API失败时的回退方案）
     # 这是 web/enter 接口彻底失败后的兜底：HTML 内联了状态 JSON，但其结构随页面改版极不稳定，
-    # 一旦正则失配就落到末尾 except 返回 {}，上游会据此判定「未开播/房间不存在」而反复重试。
+    # 正则失配即直接返回 {}、结构层级变化才落到末尾 except 返回 {}，两条路径在上游都表现为
+    # 「未开播/房间不存在」并反复重试。
     if not html_str:
         return {}
     try:
@@ -466,6 +642,11 @@ async def get_douyin_web_stream_data(
 
         room_data: dict[str, object] | None = None
         api_error: Exception | None = None
+        # MIN-2202 修复（2026-09-22）：兜底抓到的 HTML 提到循环外复用——原先兜底成功后又在下方
+        # 对**同一 url** 再发一次请求只为取 hevc_flv_url，而被风控（200+空 body）是每个抖音房间的
+        # 常态，等于每轮多下载约 1MB 页面（正是下方重试注释想「省去」的开销）；两次抓取之间页面还可能
+        # 变化，导致 ORIGIN 与 hevc 地址来自不同快照。仅在其为空（未走兜底、或兜底抓取失败）时才再抓一次。
+        html_str = ""
         # 抖音 web/enter 接口偶发返回 10002 等软拒绝（多为瞬时风控），先静默重试一次，
         # 成功则直接返回、跳过 HTML 回退（省去一次约 1MB 的兜底 HTML 抓取）；
         # 两次都失败才记 WARNING 并回退 HTML 抓取。
@@ -500,9 +681,10 @@ async def get_douyin_web_stream_data(
                     "app to share the link for recording."
                 )
             stream_url = cast(dict[str, object], room_data["stream_url"])
-            # web/enter 的响应里不含 HEVC 的 flv 地址，只能再从直播间 HTML 内联数据里抠，
-            # 故即便 API 已给流，仍要再抓一次页面专门取 hevc_flv_url。
-            html_str = _get_str_response(await async_req(url=url, proxy_addr=proxy_addr, headers=headers))
+            # web/enter 的响应里不含 HEVC 的 flv 地址，只能再从直播间 HTML 内联数据里抠。
+            # MIN-2202：复用上面兜底抓到的同一份快照，仅在其为空时才另抓一次（理由见循环外那条注释）。
+            if not html_str:
+                html_str = _get_str_response(await async_req(url=url, proxy_addr=proxy_addr, headers=headers))
             hevc_flv_url = extract_douyin_hevc_flv_url(html_str)
             live_core_sdk_data = cast(dict[str, object], stream_url.get("live_core_sdk_data") or {})
             pull_datas = cast(dict[str, object], stream_url.get("pull_datas") or {})
@@ -551,24 +733,34 @@ async def get_douyin_web_stream_data(
                 if json_str:
                     parsed_data = cast(dict[str, object], _loads_dict(json_str).get("data") or {})
                     if "origin" in parsed_data:
+                        # MID-2214（2026-09-23）：原为 `cast(dict, cast(dict, parsed_data["origin"])["main"])`
+                        # 双层裸下标。抖音 pull_data 的 origin 已出现 full/sdk 等变体，「有 origin 但无
+                        # main」是真实形态，KeyError 会被最外层 except 吞成 {"anchor_name": ""}，
+                        # 把**已经解析好的 room_data（含主播名与全部流地址）**整体作废 → 该房间
+                        # 此后每轮固定「网址内容获取失败」、永久不录。
+                        # 与同文件姊妹实现 get_douyin_app_stream_data 同写法（.get("main") or {}），
+                        # 并在取不到时**整体跳过** ORIGIN 注入：不能只把 origin_url_list 置空，
+                        # 否则下面的 {**origin_m3u8, **hls_pull_url_map} 会注入
+                        # `ORIGIN: "&codec="` 这类坏条目，让选源逻辑多试一次必失败的候选。
                         origin_url_list = cast(
-                            dict[str, object], cast(dict[str, object], parsed_data["origin"])["main"]
+                            dict[str, object], cast(dict[str, object], parsed_data["origin"]).get("main") or {}
                         )
-                        sdk_raw = origin_url_list.get("sdk_params", "")
-                        sdk_params = _loads_dict(sdk_raw if isinstance(sdk_raw, str) else "")
-                        vcodec = sdk_params.get("VCodec")
-                        origin_hls_codec = vcodec if isinstance(vcodec, str) else ""
+                        if origin_url_list:
+                            sdk_raw = origin_url_list.get("sdk_params", "")
+                            sdk_params = _loads_dict(sdk_raw if isinstance(sdk_raw, str) else "")
+                            vcodec = sdk_params.get("VCodec")
+                            origin_hls_codec = vcodec if isinstance(vcodec, str) else ""
 
-                        hls_v = origin_url_list.get("hls", "")
-                        flv_v = origin_url_list.get("flv", "")
-                        hls_s = hls_v if isinstance(hls_v, str) else ""
-                        flv_s = flv_v if isinstance(flv_v, str) else ""
-                        origin_m3u8 = {"ORIGIN": hls_s + "&codec=" + origin_hls_codec}
-                        origin_flv = {"ORIGIN": flv_s + "&codec=" + origin_hls_codec}
-                        hls_pull_url_map = cast(dict[str, object], stream_url.get("hls_pull_url_map") or {})
-                        flv_pull_url = cast(dict[str, object], stream_url.get("flv_pull_url") or {})
-                        stream_url["hls_pull_url_map"] = {**origin_m3u8, **hls_pull_url_map}
-                        stream_url["flv_pull_url"] = {**origin_flv, **flv_pull_url}
+                            hls_v = origin_url_list.get("hls", "")
+                            flv_v = origin_url_list.get("flv", "")
+                            hls_s = hls_v if isinstance(hls_v, str) else ""
+                            flv_s = flv_v if isinstance(flv_v, str) else ""
+                            origin_m3u8 = {"ORIGIN": hls_s + "&codec=" + origin_hls_codec}
+                            origin_flv = {"ORIGIN": flv_s + "&codec=" + origin_hls_codec}
+                            hls_pull_url_map = cast(dict[str, object], stream_url.get("hls_pull_url_map") or {})
+                            flv_pull_url = cast(dict[str, object], stream_url.get("flv_pull_url") or {})
+                            stream_url["hls_pull_url_map"] = {**origin_m3u8, **hls_pull_url_map}
+                            stream_url["flv_pull_url"] = {**origin_flv, **flv_pull_url}
                     if hevc_flv_url:
                         stream_url["hevc_flv_url"] = hevc_flv_url
     # 任何解析异常都吞掉并回 {"anchor_name": ""}：不让单房间解析崩溃主循环，
@@ -686,33 +878,33 @@ async def get_douyin_app_stream_data(
                 if json_str:
                     parsed_data = cast(dict[str, object], _loads_dict(json_str).get("data") or {})
                     if "origin" in parsed_data:
-                        pull_data2 = cast(dict[str, object], live_core_sdk_data.get("pull_data") or {})
-                        stream_data_raw = pull_data2.get("stream_data", "")
-                        stream_data = stream_data_raw if isinstance(stream_data_raw, str) else ""
-                        if stream_data:
-                            try:
-                                sd_data = cast(dict[str, object], _loads_dict(stream_data).get("data") or {})
-                                sd_origin = cast(dict[str, object], sd_data.get("origin") or {})
-                                origin_data = cast(dict[str, object], sd_origin.get("main") or {})
-                            except json.JSONDecodeError, TypeError:
-                                origin_data = {}
-                            sdk_params_raw = origin_data.get("sdk_params", "{}")
-                            sdk_params = _loads_dict(sdk_params_raw if isinstance(sdk_params_raw, str) else "{}")
-                            vcodec = sdk_params.get("VCodec")
-                            origin_hls_codec = vcodec if isinstance(vcodec, str) else ""
+                        # MID-41 修复（2026-09-20）：ORIGIN 候选与 codec 原先取**第二次解析**的
+                        # live_core_sdk_data.pull_data.stream_data，与刚解析出的 json_str 候选无关——
+                        # 现代 app 响应只有 pull_datas 而无 pull_data → stream_data 为空 → 整段注入被
+                        # 跳过、原画（ORIGIN）候选丢失；两者都在时又会把 pull_data 的 VCodec 标到
+                        # pull_datas 的地址上（codec 标注错位 → _is_h265 判错 → -c copy 不安全）。
+                        # 现与同文件姊妹实现 get_douyin_web_stream_data 对齐：直接用
+                        # parsed_data["origin"]["main"]，删除冗余的二次解析。
+                        origin_url_list = cast(
+                            dict[str, object], cast(dict[str, object], parsed_data["origin"]).get("main") or {}
+                        )
+                        sdk_raw = origin_url_list.get("sdk_params", "")
+                        sdk_params = _loads_dict(sdk_raw if isinstance(sdk_raw, str) else "")
+                        vcodec = sdk_params.get("VCodec")
+                        origin_hls_codec = vcodec if isinstance(vcodec, str) else ""
 
-                            origin_url_list = origin_data
-                            hls_v = origin_url_list.get("hls")
-                            flv_v = origin_url_list.get("flv")
-                            if hls_v and flv_v:
-                                hls_s = hls_v if isinstance(hls_v, str) else ""
-                                flv_s = flv_v if isinstance(flv_v, str) else ""
-                                origin_m3u8 = {"ORIGIN": hls_s + "&codec=" + origin_hls_codec}
-                                origin_flv = {"ORIGIN": flv_s + "&codec=" + origin_hls_codec}
-                                hls_pull_url_map = cast(dict[str, object], stream_url.get("hls_pull_url_map") or {})
-                                flv_pull_url = cast(dict[str, object], stream_url.get("flv_pull_url") or {})
-                                stream_url["hls_pull_url_map"] = {**origin_m3u8, **hls_pull_url_map}
-                                stream_url["flv_pull_url"] = {**origin_flv, **flv_pull_url}
+                        hls_v = origin_url_list.get("hls", "")
+                        flv_v = origin_url_list.get("flv", "")
+                        hls_s = hls_v if isinstance(hls_v, str) else ""
+                        flv_s = flv_v if isinstance(flv_v, str) else ""
+                        # 把 VCodec 拼进地址的 &codec= 查询参数，供后续 h265 判定与 ffmpeg 选流使用；
+                        # ORIGIN 线路合并到已有线路之前、优先于其它线路（与 web 端实现同语义）。
+                        origin_m3u8 = {"ORIGIN": hls_s + "&codec=" + origin_hls_codec}
+                        origin_flv = {"ORIGIN": flv_s + "&codec=" + origin_hls_codec}
+                        hls_pull_url_map = cast(dict[str, object], stream_url.get("hls_pull_url_map") or {})
+                        flv_pull_url = cast(dict[str, object], stream_url.get("flv_pull_url") or {})
+                        stream_url["hls_pull_url_map"] = {**origin_m3u8, **hls_pull_url_map}
+                        stream_url["flv_pull_url"] = {**origin_flv, **flv_pull_url}
     # 任何解析异常都吞掉并回 {"anchor_name": ""}：不让单房间解析崩溃主循环，
     # 但副作用是「解析失败」与「未开播」被上游同样视作「需重试的不可录」，可能空转。
     except Exception as e:
@@ -720,6 +912,15 @@ async def get_douyin_app_stream_data(
         logger.error(i18n.tr("Error message: {e} Error line: {tb_lineno}", e=e, tb_lineno=tb_lineno))
         room_data = cast(dict[str, object], {"anchor_name": ""})
     return room_data
+
+
+# 内置 TikTok 游客 cookie（MID-46：提为常量，供「是否用了内置缺省」判定与失败告警复用）。
+# 第三段 epoch 1761302831 解为 2025-10-24——该值会随时间过期，未配置覆盖的默认安装
+# 拿到的就是过期凭据，解析必失败且被装饰器伪装成「未开播」，故失败路径有专属告警。
+_TIKTOK_BUILTIN_GUEST_COOKIE = (
+    "1%7Cz7FKki38aKyy7i-BC9rEDwcrVvjcLcFEL6QIeqldoy4%7C1761302831%7C6c1461e9f1f980cbe0404c5190"
+    "5177d5d53bbd822e1bf66128887d942c9c3e2f"
+)
 
 
 def _read_tiktok_guest_cookie() -> str:
@@ -739,10 +940,7 @@ def _read_tiktok_guest_cookie() -> str:
         cfg_value = None
     if cfg_value and cfg_value.strip():
         return cfg_value.strip()
-    return (
-        "1%7Cz7FKki38aKyy7i-BC9rEDwcrVvjcLcFEL6QIeqldoy4%7C1761302831%7C6c1461e9f1f980cbe0404c5190"
-        "5177d5d53bbd822e1bf66128887d942c9c3e2f"
-    )
+    return _TIKTOK_BUILTIN_GUEST_COOKIE
 
 
 @trace_error_decorator
@@ -752,12 +950,27 @@ async def get_tiktok_stream_data(
     # 获取 TikTok 直播数据。TikTok 的房间状态写在 <script id="SIGI_STATE"> 的 SIGI_STATE 里，
     # 必须整页 HTML 抓回再正则抠 JSON，不能用接口直取。下面默认内置一个游客 cookie，
     # 仅用于绕过「未登录即拦截」，有 cookies 参数时以传入为准。
+    guest_cookie = cookies or _read_tiktok_guest_cookie()
+    # MID-46（2026-09-20）：内置游客 cookie 已过期（epoch 1761302831 ≈ 2025-10-24）时，
+    # 未配置覆盖的默认安装拿到的是过期凭据，解析失败被装饰器伪装成「未开播」、
+    # 没有任何指向性提示。解析失败且本轮用的正是内置缺省时，先落一条可动作告警再抛错。
+    using_builtin_guest = guest_cookie == _TIKTOK_BUILTIN_GUEST_COOKIE
+
+    def _warn_if_builtin_guest() -> None:
+        if using_builtin_guest:
+            logger.warning(
+                i18n.tr(
+                    "TikTok 解析失败，且本次使用的是内置游客 cookie（可能已过期）；"
+                    "请在 config.ini 的 [Cookie] tiktok_guest_cookie 配置有效访客 cookie（或设置环境变量 TIKTOK_GUEST_COOKIE）"
+                )
+            )
+
     headers = {
         "referer": "https://www.tiktok.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
         + "Chrome/141.0.0.0 Safari/537.36",
         # F-10：调用方 cookies > 环境变量/config 覆盖 > 内置缺省（见 _read_tiktok_guest_cookie）
-        "cookie": cookies or _read_tiktok_guest_cookie(),
+        "cookie": guest_cookie,
     }
 
     # 最多重试 3 次：TikTok 偶发返回半截 HTML（含 UNEXPECTED_EOF_WHILE_READING 截断标记），
@@ -786,9 +999,11 @@ async def get_tiktok_stream_data(
                     raise ConnectionError("Please check if your network can access the TikTok website normally")
                 json_str = json_str_matches[0]
             except Exception:
+                _warn_if_builtin_guest()
                 raise ConnectionError("Please check if your network can access the TikTok website normally")
             return _loads_dict(json_str)
 
+    _warn_if_builtin_guest()
     raise ConnectionError(
         "Failed to retrieve TikTok data after 3 retries, please check if your network can access "
         + "the TikTok website normally"
@@ -806,14 +1021,22 @@ async def get_kuaishou_stream_data(
     }
     if cookies:
         headers["Cookie"] = cookies
-    # 该路径无重试：抓取 HTML 一旦抛异常（网络抖动/超时）就直接按「未开播」返回，
-    # 不会区分「真离线」与「临时拉取失败」，主循环下一轮会再试。
-    try:
-        html_str = _get_str_response(await async_req(url=url, proxy_addr=proxy_addr, headers=headers))
-    except Exception as e:
-        # 用 print 而非 logger：抓取失败必须始终暴露到控制台（即使 logger 被静默/重定向），
-        # 否则网络抖动会被静默吞掉、房间永久按「未开播」空转。直接回未开播，主循环下轮重试。
-        logger.error(i18n.tr("Failed to fetch data from {url}.{e}", url=url, e=e))
+    # 该路径无重试：抓取 HTML 一旦拿不到内容就直接按「未开播」返回，主循环下一轮会再试。
+    # MID-2217（2026-09-23）：原先这里包着 try/except Exception，但 async_req 已在内部
+    # 吞尽传输层异常并返回 ""（见 src/async_http.py 的 async_req 尾部 except，且只在
+    # debug 级留一行），该 except 分支**永不可达**；而注释声称「用 print 而非 logger」，
+    # 与代码（logger.error）相反。于是网络抖动的真实走向是 html_str="" → 正则失配 →
+    # ValueError → 被下一层捕获并打印「Failed to parse JSON data」，把**网络成因**归因成
+    # **解析成因**，真正的抓取线索永不出现。现删死分支，改为对空响应显式归因。
+    html_str = _get_str_response(await async_req(url=url, proxy_addr=proxy_addr, headers=headers))
+    if not html_str:
+        logger.error(
+            i18n.tr(
+                "Failed to fetch data from {masked_url}: {type_name}",
+                masked_url=utils.mask_credentials(url),
+                type_name="EmptyResponse",
+            )
+        )
         return {"type": 1, "is_live": False}
 
     try:
@@ -831,7 +1054,7 @@ async def get_kuaishou_stream_data(
     except (AttributeError, IndexError, json.JSONDecodeError) as e:
         # 只捕获「结构解析」类异常（页面改版/字段缺失/JSON 坏），按未开播返回；
         # 其它异常（如超时已由上层兜住）不在此吞掉，避免把非解析错误也误判成未开播而静默丢失根因。
-        logger.error(i18n.tr("Failed to parse JSON data from {url}. Error: {e}", url=url, e=e))
+        logger.error(i18n.tr("Failed to parse JSON data from {url}. Error: {e}", url=utils.mask_credentials(url), e=e))
         return {"type": 1, "is_live": False}
 
     result: dict[str, object] = {"type": 2, "is_live": False}
@@ -843,7 +1066,11 @@ async def get_kuaishou_stream_data(
         title = error_type.get("title", "")
         content = error_type.get("content", "")
         error_msg = (title if isinstance(title, str) else "") + (content if isinstance(content, str) else "")
-        logger.error(i18n.tr("Failed URL: {url} Error message: {error_msg}", url=url, error_msg=error_msg))
+        logger.error(
+            i18n.tr(
+                "Failed URL: {url} Error message: {error_msg}", url=utils.mask_credentials(url), error_msg=error_msg
+            )
+        )
         return result
 
     live_stream = cast(dict[str, object], play_list.get("liveStream") or {})
@@ -859,14 +1086,34 @@ async def get_kuaishou_stream_data(
     play_urls_obj = live_stream.get("playUrls")
     if play_urls_obj:
         play_url_list: object
-        # 新接口 playUrls 为分 codec 的字典（h264 支路为主），无 adaptationSet 说明字段缺失，
-        # 按未开播返回；下方 else 是 2024-11-28 起已失效的旧 list 结构（保留作兜底，基本不会命中）。
-        if isinstance(play_urls_obj, dict) and "h264" in play_urls_obj:
-            h264 = cast(dict[str, object], cast(dict[str, object], play_urls_obj)["h264"])
-            if "adaptationSet" not in h264:
+        # 新接口 playUrls 为分 codec 的字典。SEV-2204 修复（2026-09-22）：原实现只认 "h264" 一个键，
+        # 两种真实形态会**完全静默**地漏录：
+        #   ① HEVC-only 房间的 playUrls 只含 "h265"（本仓其它平台明确支持 h265 选流）→ 落入
+        #      下面那条 2024-11-28 起已失效的 list 死分支 → play_url_list 恒 [] → is_live 保持 False；
+        #   ② "h264": null（键在值为空，快手常见降级形态）→ `"adaptationSet" not in None` 抛 TypeError
+        #      → 被 @trace_error_decorator 吞成未开播。
+        # 现按 codec 优先级遍历 play_urls_obj 中**实际存在**的键（h264 优先、缺失取 h265），
+        # 每个候选都先做 isinstance 判空再取 adaptationSet。
+        if isinstance(play_urls_obj, dict):
+            play_urls_dict = cast(dict[str, object], play_urls_obj)
+            play_url_list = []
+            for codec_key in ("h264", "h265"):
+                codec_block = play_urls_dict.get(codec_key)
+                if not isinstance(codec_block, dict):
+                    continue
+                adaptation = cast(dict[str, object], codec_block.get("adaptationSet") or {})
+                if not isinstance(adaptation, dict):
+                    continue
+                # 显式补 `or []`：与下方旧 list 分支口径一致，避免 representation 缺失时把 None
+                # 与 is_live=True 一起返回（flv_url_list=None 会让上层遍历候选时炸掉）。
+                play_url_list = adaptation.get("representation") or []
+                if play_url_list:
+                    break
+            if not play_url_list:
+                # 已判有 liveStream/playUrls 却拿不到任何候选（键改名/结构改版/风控降级）：
+                # 按无源返回并留线索，不再静默当成「未开播」。
+                _warn_api_abnormal(json.dumps(play_urls_dict, ensure_ascii=False), "快手 playUrls", codec_key, {})
                 return result
-            adaptation = cast(dict[str, object], h264["adaptationSet"])
-            play_url_list = adaptation.get("representation")
         else:
             # TODO: Old version which not working at 20241128, could be removed if not working confirmed
             play_urls_list = cast(list[object], play_urls_obj) if isinstance(play_urls_obj, list) else []
@@ -944,7 +1191,11 @@ async def get_kuaishou_stream_data2(
     # 注意即使本路径已拿到流地址，只要 anchor_name 为空也会触发这次回退，可能重复解析。
     except Exception as e:
         logger.error(
-            i18n.tr("{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.", e=e, url=url)
+            i18n.tr(
+                "{e}, Failed URL: {url}, preparing to switch to a backup plan for re-parsing.",
+                e=e,
+                url=utils.mask_credentials(url),
+            )
         )
     return await get_kuaishou_stream_data(url, cookies=cookies, proxy_addr=proxy_addr)
 
@@ -992,15 +1243,25 @@ async def get_huya_app_stream_url(
         headers["Cookie"] = cookies
     # 微信小程序接口按纯数字 roomid 取流；URL 里可能是字母房间号（短链/主播号），
     # 需先抓页面用 ProfileRoom 正则反查出数字 roomid，否则直接报错要求用户换数字链接。
-    room_id = url.split("?")[0].rsplit("/", maxsplit=1)[-1]
+    # rstrip("/") 不可省：URL 以 / 结尾时 rsplit 得到空串，非数字空串会一路拼进
+    # roomid= 参数、白发一次必败请求（MIN-2201）。
+    room_id = url.split("?")[0].rstrip("/").rsplit("/", maxsplit=1)[-1]
 
     if any(char.isalpha() for char in room_id):
+        # MIN-2201（2026-09-23）：正则与孪生副本 scripts/douyin_live_recorder_standalone.py 的
+        # _HUYA_PROFILE_ROOM_RE **逐字一致**（以键名的起始引号作锚点，避免命中页面里其他
+        # 同名子串）。此前主实现缺该锚点，是「副本比主实现更严」的反向漂移。
         html_str = _get_str_response(await async_req(url, proxy_addr=proxy_addr, headers=headers))
-        room_id_match = re.search('ProfileRoom":(.*?),"sPrivateHost', html_str)
+        room_id_match = re.search('"ProfileRoom":(.*?),"sPrivateHost', html_str)
         if room_id_match:
-            room_id = room_id_match.group(1)
-        else:
-            raise Exception('Please use "https://www.huya.com/+room_number" for recording')
+            # 页面内联 JSON 的 "ProfileRoom" 有数字（:6030242）与字符串（:"6030242"）两种形态，
+            # 非贪婪捕获对后者会把引号一并收进来 → 原先直接拼出 roomid=%226030242%22，
+            # 接口恒返回空房间、所有字母号虎牙房间静默按未开播。剥引号后一律走 isdigit 判定。
+            room_id = room_id_match.group(1).strip().strip('"')
+    # 非数字（含「URL 尾斜杠 → 空串」「页面改版 → 正则未命中」两条路径）一律早抛，
+    # 绝不把坏 roomid 发出去。回归锁 tests/test_regression_2026_09_22_spider.py::TestHuyaLetterRoomId。
+    if not room_id.isdigit():
+        raise Exception('Please use "https://www.huya.com/+room_number" for recording')
 
     # mp.huya.com 小程序接口参数：m=Live/do=profileRoom 固定；showSecret=1 要求返回防盗链参数。
     params = {
@@ -1033,7 +1294,12 @@ async def get_huya_app_stream_url(
             s_flv_url = i.get("sFlvUrl")
             s_hls_url = i.get("sHlsUrl")
             hls_anti_code = i.get("sHlsAntiCode")
-            if not (stream_name and flv_anti_code):
+            # MIN-2202（2026-09-23）：整条 entry 的有效性只由 sStreamName 裁决。
+            # 旧判据 `not (stream_name and flv_anti_code)` 用 **FLV 票据** 的有无去裁决整条
+            # 候选，而 HLS 地址只依赖 sHlsUrl + sHlsAntiCode —— 房间只下发 HLS 票据（或该
+            # CDN 线路本就不承载 FLV）时连 HLS 候选都被砍掉，全部线路如此即落到
+            # 「在播但零候选」，与「虎牙 FLV-first + HLS 回退」的设计意图相悖。
+            if not stream_name:
                 continue
 
             # 直接使用小程序接口返回的原始防盗链参数（sHlsAntiCode/sFlvAntiCode），
@@ -1049,7 +1315,12 @@ async def get_huya_app_stream_url(
 
             m3u8_url = _normalize(s_hls_url, hls_anti_code, "m3u8")
             flv_url = _normalize(s_flv_url, flv_anti_code, "flv")
-            play_url_list.append({"cdn_type": cdn_type, "m3u8_url": m3u8_url, "flv_url": flv_url})
+            # 两路地址按各自票据的非空性分别产出（_normalize 缺一即回 ""），但**整条候选**
+            # 至少要有一路可用才入列：否则 play_url_list 非空而 m3u8_url_list/flv_url_list
+            # 全空，会返回「is_live=True 且无任何线路」的坏结果（原实现靠 FLV 票据判据顺带
+            # 挡住了这种 entry，去掉该判据后必须在此补回，见 MIN-2202 注释）。
+            if m3u8_url or flv_url:
+                play_url_list.append({"cdn_type": cdn_type, "m3u8_url": m3u8_url, "flv_url": flv_url})
 
         if not play_url_list:
             return {"anchor_name": anchor_name, "is_live": True}
@@ -1134,12 +1405,35 @@ async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> di
             return {}
         enc_key = cast(dict[str, object], key_data.get("data") or {})
         ts = int(time.time())
+        # MID-2215 修复（2026-09-22）：原实现「非预期类型即取空串/0」，三字段任一异常都**零日志**降级：
+        #   - rand_str/key 缺失/非 str → 空串，产物 auth 恒被拒，调用方却只见「无流」；
+        #   - enc_time 若以字符串 "2" 下发 → isinstance(int) 为假 → 退化为 0 次迭代，同样必被拒。
+        # 现 int(...) 容错解析 + min(..., 32) 上界：enc_time 是**响应驱动**的，异常大数值会在房间
+        # 事件循环里跑无上限 md5 链，阻塞同循环的弹幕协程。
+        # 三字段任一缺失即 warning 并 return {}（get_douyu_stream_data 已对 enc_data 这么做，另三个此前漏了）。
         rand_str_v = enc_key.get("rand_str")
-        auth = rand_str_v if isinstance(rand_str_v, str) else ""
         key_v = enc_key.get("key")
-        key = key_v if isinstance(key_v, str) else ""
-        enc_time_v = enc_key.get("enc_time", 0)
-        enc_time = enc_time_v if isinstance(enc_time_v, int) else 0
+        if not isinstance(rand_str_v, str) or not rand_str_v or not isinstance(key_v, str) or not key_v:
+            logger.warning(
+                i18n.tr("斗鱼 websec 签名参数不完整: rand_str/key 缺失或类型异常，本轮跳过取流"),
+            )
+            return {}
+        auth = rand_str_v
+        key = key_v
+        # MIN-2204 后半（2026-09-23）：enc_time 缺失/非数值**不得**再静默退化成 0 次迭代——
+        # 0 次迭代产出的 auth 必被服务端拒，调用方只见「无流」，与 rand_str/key 同属
+        # 「签名参数不完整」，须走同一条 warning + return {}（兑现上方注释的承诺）。
+        # 原实现取 `enc_key.get("enc_time", 0)` 并以 `enc_time = 0` 兜住异常，两形态均零日志。
+        # 容错解析保留：字符串 "2" 必须被当成 2（而非退化为 0 次迭代），故先 str() 再 int()。
+        try:
+            enc_time = int(str(enc_key.get("enc_time")))
+        except TypeError, ValueError:
+            logger.warning(
+                i18n.tr("斗鱼 websec 签名参数不完整: enc_time 缺失或非数值，本轮跳过取流"),
+            )
+            return {}
+        # 响应驱动的迭代次数必须夹上界：异常大数值会跑无上限 md5 链，阻塞本房间事件循环。
+        enc_time = min(max(enc_time, 0), 32)
         # is_special==1 表示该房间走特殊签名分支，无需拼接 rid+ts 的待签串；
         # 普通房间则把 rid+ts 作为待签内容参与 md5 链，漏拼会导致 auth 校验失败被拒。
         sign_str = "" if enc_key.get("is_special") == 1 else f"{rid}{ts}"
@@ -1183,8 +1477,17 @@ async def get_douyu_info_data(
         if not json_str_matches:
             raise ValueError("Failed to find vike_pageContext")
         json_str = json_str_matches[0]
-        json_data = json.loads(json_str)
-        rid = json_data["pageProps"]["room"]["roomInfo"]["roomInfo"]["rid"]
+        # MID-48（2026-09-20）：vike_pageContext 与 betard 两处裸 json.loads + 深层链式索引改为
+        # _loads_dict + .get——平台返回 HTML 拦截页/截断 JSON 时不再抛 JSONDecodeError/KeyError
+        # 被装饰器整体吞成「未开播」，而是留明确线索。
+        json_data = _loads_dict(json_str)
+        page_props = cast(dict[str, object], json_data.get("pageProps") or {})
+        room_wrap = cast(dict[str, object], page_props.get("room") or {})
+        room_info = cast(dict[str, object], room_wrap.get("roomInfo") or {})
+        inner_room = cast(dict[str, object], room_info.get("roomInfo") or {})
+        if inner_room.get("rid") is None:
+            raise ValueError("Failed to find rid in vike_pageContext (WAF page? truncated JSON?)")
+        rid = str(inner_room["rid"])
 
     # 抓 vike_pageContext 时用 ios UA（移动端页面模板），真正取房间信息切回桌面 Firefox UA：
     # betard 接口按桌面端返回结构解析，UA 不对会拿到不同的页面骨架导致字段取不到。
@@ -1192,14 +1495,32 @@ async def get_douyu_info_data(
     url2 = f"https://www.douyu.com/betard/{rid}"
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    result: dict[str, object] = {"anchor_name": json_data["room"]["nickname"], "is_live": False}
+    json_data = _loads_dict(json_str)
+    room = cast(dict[str, object], json_data.get("room") or {})
+    if not room:
+        # MID-48：区分两种成因落日志——「空响应」是风控/网络信号（async_req 失败已归一为 ""），
+        # 「非空但缺 room」是房间不存在/接口改版/WAF 页。原实现两者都抛 KeyError 被装饰器
+        # 静默吞成 {"is_live": False}，日志上完全不可分辨（用户只见持续「网址内容获取失败」）。
+        #
+        # MID-2214（2026-09-22）：原写法用字符串**拼接**做首参（"Douyu betard abnormal for rid=" + str(rid)
+        # + ": " + reason）——全仓唯一一条拼接式形参日志，既进不了 zh_CN.po 也进不了四语目录
+        # （提取器与测试判据都只看 JoinedStr 子树）。改为 i18n.tr 模板 + 具名参数。
+        reason = (
+            i18n.tr("空响应（风控或网络失败）")
+            if not json_str
+            else i18n.tr("响应缺少 room 字段（房间不存在 / 接口改版 / WAF 页）")
+        )
+        logger.warning(i18n.tr("斗鱼 betard 响应异常: rid={rid} reason={reason}", rid=rid, reason=reason))
+        raise ValueError("douyu betard response has no room info: " + reason)
+    nickname_v = room.get("nickname")
+    result: dict[str, object] = {"anchor_name": nickname_v if isinstance(nickname_v, str) else "", "is_live": False}
     # 斗鱼「show_status==1 且 videoLoop==0」才视为真开播：videoLoop!=0 多为轮播/回放，
     # 不应被当作直播录制（否则录到循环播放的录像）。
-    if json_data["room"]["videoLoop"] == 0 and json_data["room"]["show_status"] == 1:
-        result["title"] = json_data["room"]["room_name"].replace("&nbsp;", "")
+    if room.get("videoLoop") == 0 and room.get("show_status") == 1:
+        room_name_v = room.get("room_name")
+        result["title"] = room_name_v.replace("&nbsp;", "") if isinstance(room_name_v, str) else ""
         result["is_live"] = True
-        result["room_id"] = json_data["room"]["room_id"]
+        result["room_id"] = room.get("room_id")
     return result
 
 
@@ -1208,11 +1529,11 @@ async def get_douyu_stream_data(
     rid: str, rate: str = "-1", proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
     # 获取斗鱼直播间流地址
-    # did 是固定的游客设备标识（非登录态），斗鱼 websec 签名依赖它；签名失败（sign_params 为空）
-    # 时返回 {error:-1,...} 让调用方显式中断，而非静默 None（None 会被误判为「未开播」空转）。
-    # 直接透传接口原始 json（含 code/msg），由调用方按 code 决定重试或回退。
-    # 斗鱼对游客态的 websec 签名要求一个固定写死的 did（非真实设备号，来自抓包）；
-    # 服务端对游客宽容、不校验 duid 真伪，用固定值即可正常签名，改了反而可能触发风控。
+    # did 是写死的游客设备标识（来自抓包、非真实设备号，也非登录态）：斗鱼服务端对游客宽容、
+    # 不校验其真伪，用固定值即可正常签名，改了反而可能触发风控；斗鱼的 websec 签名依赖它。
+    # 签名失败（sign_params 为空）时返回 {error:-1,...} 让调用方显式中断，而非静默返回 None
+    # （None 会被误判为「未开播」空转）。本函数直接透传接口原始 json（含 code/msg），
+    # 由调用方按 code 决定重试或回退。
     did = "10000000000000000000000000003306"
     sign_params = await get_token_js(rid, did, proxy_addr=proxy_addr)
     if not sign_params:
@@ -1226,18 +1547,31 @@ async def get_douyu_stream_data(
     if cookies:
         headers["Cookie"] = cookies
 
-    post_data = (
-        f"enc_data={sign_params['enc_data']}"
-        f"&tt={sign_params['ts']}"
-        f"&did={sign_params['did']}"
-        f"&auth={sign_params['auth']}"
-        f"&cdn=&rate={rate}&hevc=0&fa=0&ive=0"
-    )
+    # MID-49 修复（2026-09-20）：原实现把 enc_data 等值手工拼接进 f-string 表单体——
+    # enc_data 是 base64 序列化产物，其中的 & / = / + / % 会直接破坏表单字段结构
+    # （服务端解析到的 enc_data 被截断）；且接口 error==0 但缺 enc_data 时，body 会
+    # 变成字面量 enc_data=None，斗鱼返回接口错误、被上层伪装成「无流」。
+    # 改为传 dict 交给 async_http 的 data=dict 分支（httpx 统一 urlencode 编码），
+    # enc_data 缺失时直接返回 {} 走调用方（stream.get_douyu_stream_url）的取流失败告警分支。
+    enc_data_raw = sign_params.get("enc_data")
+    if not isinstance(enc_data_raw, str) or not enc_data_raw:
+        logger.warning("Douyu websec sign params incomplete: enc_data missing, skip getH5PlayV1 this round")
+        return {}
+    post_data = {
+        "enc_data": enc_data_raw,
+        "tt": str(sign_params["ts"]),
+        "did": str(sign_params["did"]),
+        "auth": str(sign_params["auth"]),
+        "cdn": "",
+        "rate": rate,
+        "hevc": "0",
+        "fa": "0",
+        "ive": "0",
+    }
     app_api = f"https://www.douyu.com/lapi/live/getH5PlayV1/{rid}"
     json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers, data=post_data)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    return cast(dict[str, object], json_data)
+    return _loads_dict(json_str)
 
 
 @trace_error_decorator
@@ -1283,7 +1617,24 @@ async def get_yy_stream_data(
     url2 = f"https://stream-manager.yy.com/v3/channel/streams?{urllib.parse.urlencode(params)}"
     json_str = await async_req(url=url2, data=data_bytes, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-21）：裸 json.loads → _loads_dict。WAF/HTML 页此前抛 JSONDecodeError
+    # 被装饰器吞成 {"is_live": False}，与「主播未开播」不可区分（YY 未开播时响应正常、
+    # 只是不含 avp_info_res，由 stream.get_yy_stream_url 判离线）。故只在「整个响应解析不出
+    # 对象」时告警，avp_info_res 缺失本身是正常离线形态、不刷日志。
+    json_data = _loads_dict(json_str)
+    if not json_data:
+        _warn_api_abnormal(json_str, "YY stream-manager", "avp_info_res", json_data)
+        # MID-2215（2026-09-23）评审项**未按建议改动**，留此说明避免下次重复排查：
+        # 建议形态是「空响应分支显式返回 {"type": 1, "is_live": False}（不带 anchor_name）」，
+        # 让 main.py 走 `not port_info["anchor_name"]` 的 record_error 分支。但
+        # ① 该契约已被 tests/test_spider_hardening.py::TestYyHardening.check_offline
+        #    锁死（「昵称来自第一段页面正则，异常响应不得把它一起吞掉」，断言 abnormal
+        #    用例的 anchor_name == 页面昵称），去掉即变红；
+        # ② 语义上也站不住：anchor_name 来自**主播页**（host 即 record_url 的 www.yy.com），
+        #    本轮该 host 的请求是成功的；失败的是 stream-manager.yy.com **另一个 host**，
+        #    而 PlatformBreaker 的键是 record_url 的 host（main.start_record 的 record_host），
+        #    把失败记到 www.yy.com 反而会在「主播页正常、只是取流接口被限」时误熔断整站房间。
+        # 结论：保持返回带 anchor_name 的未开播结构（与既有锁一致）。
     # stream-manager 响应只含流地址、不含主播名（昵称来自前面页面正则抠取），
     # 手动把 anchor_name 塞进返回结构，供下游统一按 key 取用。
     json_data["anchor_name"] = anchor_name
@@ -1296,11 +1647,23 @@ async def get_yy_stream_data(
         "ssid": cid,
         "_": int(time.time() * 1000),
     }
+    # MI-18 修复：标题接口是**独立的第二次请求**且只用于装饰文件名，原实现却没做任何判空——
+    # detail 接口返回错误页/空 body 时 json.loads 抛 JSONDecodeError，返回体无 data.roomName
+    # 时抛 KeyError/TypeError，两者都会被外层 @trace_error_decorator 降级为
+    # {"is_live": False}，把前面 stream-manager 已经成功取到的流地址一并作废：
+    # YY 直播间在 detail 接口抖动时「在播却漏录」，而标题本不值得让整路录制失败。
     detail_api = f"https://www.yy.com/live/detail?{urllib.parse.urlencode(params)}"
-    json_str2 = await async_req(detail_api, proxy_addr=proxy_addr, headers=headers)
-    json_str2 = _get_str_response(json_str2)
-    json_data2 = json.loads(json_str2)
-    json_data["title"] = json_data2["data"]["roomName"]
+    try:
+        json_str2 = await async_req(detail_api, proxy_addr=proxy_addr, headers=headers)
+        json_str2 = _get_str_response(json_str2)
+        json_data2 = _loads_dict(json_str2)
+        _detail_data = json_data2.get("data")
+        if isinstance(_detail_data, dict):
+            json_data["title"] = _detail_data.get("roomName") or json_data.get("title", "")
+    except Exception as e:
+        # 标题拿不到不影响取流：留一条 warning 便于定位，然后用空标题继续返回
+        logger.warning(i18n.tr("YY 标题补取失败（不影响取流）: {type_name}", type_name=type(e).__name__))
+        json_data["title"] = json_data.get("title", "")
     return cast(dict[str, object], json_data)
 
 
@@ -1325,9 +1688,14 @@ async def get_bilibili_room_info_h5(url: str, proxy_addr: OptionalStr = None, co
     api = f"https://api.live.bilibili.com/xlive/web-room/v1/index/getH5InfoByRoom?room_id={room_id}"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    room_info = json.loads(json_str)
-    title = room_info["data"]["room_info"].get("title") if room_info.get("data") else ""
-    return title
+    # MID-48：`room_info["data"]["room_info"]` 在接口返回 HTML/截断 JSON 时抛 JSONDecodeError、
+    # 在 data 为 null 时抛 TypeError，两者都被本函数的 _or_none 装饰器变成 None，
+    # 与「房间无标题」不可区分。改为 _loads_dict + .get 链：取不到即空串（上层 `or ""` 兜底），
+    # data 整体缺失（风控信封 / 解析失败）时留一条区分性告警。
+    room_info = _loads_dict(json_str)
+    if _dig(room_info, "data") is None:
+        _warn_api_abnormal(json_str, "B站 getH5InfoByRoom", "data.room_info.title", room_info)
+    return _dig_str(room_info, "data", "room_info", "title")
 
 
 @trace_error_decorator
@@ -1350,22 +1718,44 @@ async def get_bilibili_room_info(
             f"https://api.live.bilibili.com/room/v1/Room/room_init?id={room_id}", proxy_addr=proxy_addr, headers=headers
         )
         json_str = _get_str_response(json_str)
-        room_info = json.loads(json_str)
-        uid = room_info["data"]["uid"]
-        live_status = True if room_info["data"]["live_status"] == 1 else False
+        # MID-48（2026-09-21）：room_init / master/info 两处裸 json.loads + 四级链式索引改为
+        # _loads_dict + _dig。B站对不存在/未开通的房间回 code!=0 且不含 data，此前与
+        # 「接口改版 / WAF 页」同样抛 KeyError → 落到下方那条笼统告警，用户无从分辨。
+        room_info = _loads_dict(json_str)
+        uid = _dig(room_info, "data", "uid")
+        if uid is None:
+            _warn_api_abnormal(json_str, "B站 room_init", "data.uid", room_info)
+            return {"anchor_name": "", "live_status": False, "room_url": url}
+        live_status = _dig(room_info, "data", "live_status") == 1
 
         api = f"https://api.live.bilibili.com/live_user/v1/Master/info?uid={uid}"
         json_str2 = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
         json_str2 = _get_str_response(json_str2)
-        anchor_info = json.loads(json_str2)
-        anchor_name = anchor_info["data"]["info"]["uname"]
+        anchor_info = _loads_dict(json_str2)
+        anchor_name = _dig_str(anchor_info, "data", "info", "uname")
+        if not anchor_name:
+            _warn_api_abnormal(json_str2, "B站 master/info", "data.info.uname", anchor_info)
+            return {"anchor_name": "", "live_status": False, "room_url": url}
 
         title = await get_bilibili_room_info_h5(url, proxy_addr, cookies)
         return {"anchor_name": anchor_name, "live_status": live_status, "room_url": url, "title": title}
     except Exception as e:
-        # 房间信息抓取失败（房间不存在/风控/网络）一律静默返回空名+未开播，交由主循环下轮重试，
+        # 房间信息抓取失败（房间不存在/风控/网络）一律返回空名+未开播，交由主循环下轮重试，
         # 不中断整体监控；anchor_name 用 "" 保证下游拼接标题时不会因 None 而 TypeError。
-        logger.info(e)
+        # WD-19 修复：原用 logger.info 只记异常对象——级别低于 warning，常规日志级别下
+        # 这条**唯一线索**会被直接过滤掉；且不带 URL 与异常类型，无法区分 cookie 失效、
+        # -352 风控、房间真不存在还是网络问题，与同文件其它错误路径的口径也不一致。
+        # MID-2219（2026-09-23）：url 必须过脱敏——用户可粘贴带 token 查询参数的地址，
+        # 而该行走 logger 文件 sink（300 KB 轮转保留多份 = 凭据长期落盘）。同文件其余
+        # url= 实参（快手两条解析路径等）早已这么脱敏，此处曾是唯一漏网的一个。
+        logger.warning(
+            i18n.tr(
+                "B站房间信息获取失败（下轮重试）: url={url} - {type_name}: {e}",
+                url=utils.mask_credentials(url),
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
         return {"anchor_name": "", "live_status": False, "room_url": url}
 
 
@@ -1389,10 +1779,15 @@ async def get_bilibili_stream_data(
     play_api = f"https://api.live.bilibili.com/room/v1/Room/playUrl?{urllib.parse.urlencode(params)}"
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-20）：旧 playUrl 分支裸 json.loads + 深索引改为 _loads_dict + .get。
+    # 该接口被风控时常返回 WAF 页/空 body，原实现在此处抛 JSONDecodeError/KeyError 被装饰器
+    # 直接吞掉，**绕过了下方 getRoomPlayInfo 回退与其「-352 一眼可见」告警路径**；
+    # 解析失败回 {} 后 code 判定自然落入 else 分支，补救链恢复可用。
+    json_data = _loads_dict(json_str)
     # B站 get_play_url 仅 code==0 返回有效 durl，否则无源
-    if json_data and json_data["code"] == 0:
-        durl_list = json_data["data"].get("durl", [])
+    if json_data.get("code") == 0:
+        play_data = cast(dict[str, object], json_data.get("data") or {})
+        durl_list = cast(list[dict[str, object]], play_data.get("durl", []))
         # durl 为空即无可用清晰度，返回 None
         if not durl_list:
             return None
@@ -1400,9 +1795,11 @@ async def get_bilibili_stream_data(
         target_url = None
         # 优先挑含 "d1--cn-gotcha" 子串的 CDN 地址（B站某可用线路 host 特征），
         # 没有命中再退回列表末位；是经验性的线路优选，非官方保证。
+        # [历史注] 2026-09-20 删掉了相邻一条把优选方向说反（「跳过 gotcha、优先真实 CDN」）的注释。
         for i in durl_list:
-            # 跳过 d1--cn-gotcha 这类中转/防盗链节点，优先选真实 CDN
-            if "d1--cn-gotcha" in i.get("url", ""):
+            # durl_list 经 _loads_dict 解析后值为 object，子串匹配前统一转 str
+            # （URL 恒为字符串；None 转成 "None" 也不会命中 gotcha 子串，无副作用）。
+            if "d1--cn-gotcha" in str(i.get("url", "")):
                 target_url = i["url"]
                 break
         if not target_url:
@@ -1426,19 +1823,43 @@ async def get_bilibili_stream_data(
         api = f"https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?{urllib.parse.urlencode(params)}"
         json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
-        # live_status==0 表示未开播（1 为开播），此时 playurl_info 不存在，按未开播返回 None。
-        if json_data["data"]["live_status"] == 0:
-            logger.error("The anchor did not start broadcasting.")
-            # stream_list 字段缺失即无可用流，返回 None
+        json_data = _loads_dict(json_str)
+        # WD-19 修复：先判 code，再判 data 是否为空。
+        # B 站在 -352（风控 / wbi 签名失效）时返回 {"code": -352, "data": null}，
+        # 此时 json_data["data"] 为 None、None["live_status"] 直接抛 TypeError，
+        # 被装饰器吞成 {"is_live": False}，日志丢失 -352 这一关键判据，
+        # 排障时极易误判成「主播没开播」（本文件其余字段都做了判空，唯独顶层 data 没做）。
+        # MID-2216（2026-09-23）：原判据 `not in (0, None)` 把 None 划进「正常」侧，而 None
+        # 恰恰是「空 body / 响应不是 JSON（WAF 壳页）」经 _loads_dict 归一后的形态——
+        # 最需要线索的那一类落到 data_obj={} → live_status!=0 → stream_list=[] → 整轮零日志，
+        # 与「主播没开播」完全不可区分（正是 WD-19 要消灭的形态）。现拆开两种语义：
+        # 整体为空 → 归因告警；带非 0 code → 原样告警。
+        if not json_data:
+            _warn_api_abnormal(json_str, "B站 getRoomPlayInfo", "code + data", json_data)
             return None
-        playurl_info = json_data["data"]["playurl_info"]
-        stream_list = playurl_info["playurl"].get("stream", [])
-        # format_list 字段缺失即无可用流，返回 None
+        if json_data.get("code") is not None and json_data.get("code") != 0:
+            logger.warning(
+                i18n.tr("B站接口返回异常 code={code}（疑似风控/签名失效），本轮跳过", code=json_data.get("code"))
+            )
+            return None
+        data_obj = json_data.get("data") or {}
+        if not isinstance(data_obj, dict):
+            return None
+        # live_status==0 表示未开播（1 为开播），此时 playurl_info 不存在，按未开播返回 None。
+        if data_obj.get("live_status") == 0:
+            logger.info("The anchor did not start broadcasting.")
+            return None
+        playurl_info = data_obj.get("playurl_info") or {}
+        if not isinstance(playurl_info, dict):
+            return None
+        # WD-19：playurl 同样可能缺失（风控/未开播竞态），改为 get 链式取值
+        _playurl = playurl_info.get("playurl") or {}
+        stream_list = _playurl.get("stream", []) if isinstance(_playurl, dict) else []
+        # stream_list 字段缺失即无可用流，返回 None
         if not stream_list:
             return None
         format_list = stream_list[0].get("format", [])
-        # stream_data_list 字段缺失即无可用流，返回 None
+        # format_list 字段缺失即无可用流，返回 None
         if not format_list:
             return None
         stream_data_list = format_list[0].get("codec", [])
@@ -1449,11 +1870,24 @@ async def get_bilibili_stream_data(
             stream_data_list, key=itemgetter("current_qn"), reverse=True
         )
         # qn 字符串到「选择下标」的映射：10000=原画、400=蓝光、250=超清、150=高清、80=流畅。
-        # 用 min(映射值, qn_count-1) 防止请求的清晰度超出实际可用档位导致下标越界，
-        # 请求档位不存在时回退到最高可用清晰度。
+        # MIN-2201 修复（2026-09-22）：原注释写「回退到**最高**可用清晰度」，但 min(映射值, qn_count-1)
+        # 的实际语义是**就近向下取档**——sorted_stream_list 已按 current_qn 降序，映射下标越大档位越低，
+        # 请求档位不在可用集合时 min 取到的是 qn_count-1，即**最低**可用档（房间只有 [10000,80] 时请求
+        # 蓝光 400 → 取下标 1 → 80 流畅），与注释相反且无降级告警（虎牙/斗鱼分支都有，B站没有）。
+        # 现保持「就近向下」的既有行为不变（避免改动线上已习惯的选档结果），仅改正注释并在
+        # 实际落入的档位与请求档位不一致时落一条 WARNING，与 get_huya_stream_url 的降级告警口径对齐。
         video_quality_options = {"10000": 0, "400": 1, "250": 2, "150": 3, "80": 4}
         qn_count = len(sorted_stream_list)
-        select_stream_index = min(video_quality_options.get(qn, 0), qn_count - 1)
+        requested_index = video_quality_options.get(qn, 0)
+        select_stream_index = min(requested_index, qn_count - 1)
+        if select_stream_index != requested_index:
+            logger.warning(
+                i18n.tr(
+                    "B站请求清晰度 {qn} 不可用，就近降级到 {actual_qn}",
+                    qn=qn,
+                    actual_qn=sorted_stream_list[select_stream_index].get("current_qn", ""),
+                )
+            )
         stream_data: dict[str, object] = sorted_stream_list[select_stream_index]
         base_url = cast(str, stream_data["base_url"])
         url_info = stream_data.get("url_info", [])
@@ -1569,16 +2003,31 @@ _bili_buvid_cached = ""
 # 弹幕服务器对未注册 buvid 的 AUTH 会软拒绝；客户端收到拒绝后经
 # invalidate_bili_buvid_cache() 清除缓存，下一轮监测重新走真实获取链。
 _bili_buvid_is_fallback = False
+# MID-40：记录当前缓存值产生时使用的代理上下文——通用 singleflight 键含 proxy，
+# 失效时须按同一形态清对键（调用方未显式传参时也能清掉刚缓存被拒的那份）。
+_bili_buvid_cached_proxy = ""
 
 
-def invalidate_bili_buvid_cache() -> None:
+def invalidate_bili_buvid_cache(proxy_addr: OptionalStr = None) -> None:
     # 使进程内 buvid 缓存失效（不清 cookie_cache 的首页 Set-Cookie TTL 缓存——那里存的
     # 是真实注册标识，可继续复用）。触发方为弹幕 AUTH 被拒：兜底 UUID 被服务器拒绝后
     # 不可复用，必须重新获取；真实 buvid 被拒时重取亦无副作用。
-    global _bili_buvid_cached, _bili_buvid_is_fallback
+    # MID-40 修复（2026-09-20）：只清模块全局是**半条自愈链**——承载它的
+    # cookie_cache.singleflight 通用缓存（键 f"bili_buvid3|{proxy}"、TTL 30 分钟）里
+    # 仍留着被拒值，下一轮全局为空 → singleflight 命中 → 又被喂回同一份被拒 UUID，
+    # 循环到 TTL 自然过期。故必须同时 invalidate_generic 该键；proxy 以形参透传，
+    # 未传时按缓存写入时记录的代理清（覆盖 platforms/bilibili.py 的无参调用点）。
+    global _bili_buvid_cached, _bili_buvid_is_fallback, _bili_buvid_cached_proxy
     with _bili_buvid_lock:
         _bili_buvid_cached = ""
         _bili_buvid_is_fallback = False
+        recorded_proxy = _bili_buvid_cached_proxy
+        _bili_buvid_cached_proxy = ""
+    keys = {recorded_proxy}
+    if proxy_addr is not None:
+        keys.add(proxy_addr or "")
+    for k in keys:
+        _cache_invalidate_generic(f"bili_buvid3|{k}")
 
 
 async def get_bilibili_danmaku_info(
@@ -1602,24 +2051,24 @@ async def get_bilibili_danmaku_info(
     # 1) room_init 取真实 room_id 与 uid（短号房间 URL 的 path id 可能是短号，需转换）
     real_room_id = room_id
     uid = 0
-    try:
-        init_str = await async_req(
-            f"https://api.live.bilibili.com/room/v1/Room/room_init?id={room_id}",
-            proxy_addr=proxy_addr,
-            headers=headers,
-        )
-        init_data = _loads_dict(_get_str_response(init_str))
-        init_room: dict[str, object] = {}
-        if isinstance(init_data, dict):
-            d = init_data.get("data")
-            if isinstance(d, dict):
-                init_room = d
-        real_room_id = str(init_room.get("room_id") or room_id)
-        _uid = init_room.get("uid")
-        uid = int(_uid) if isinstance(_uid, int) else 0
-    except Exception as e:
-        logger.warning(i18n.tr("[B站直播]room_init 失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
-
+    init_api = f"https://api.live.bilibili.com/room/v1/Room/room_init?id={room_id}"
+    # MID-2217（2026-09-23，同型第二处）：原先这三步包在 try/except Exception 里并打
+    # 「room_init 失败」告警，但 async_req 吞尽传输层异常回 ""、_loads_dict 解析失败回 {}，
+    # 中间每一步都不抛错 → 该告警**永不触发**。room_init 被风控时 real_room_id 静默沿用
+    # URL 里的短号、uid 静默为 0（短号房间的弹幕连接因此建不起来），却没有任何线索指向这一步。
+    # 现删死分支，改为对结果显式判空并按 MID-48 的统一口径归因（空响应 vs 缺字段带 code/msg）。
+    init_str = _get_str_response(await async_req(init_api, proxy_addr=proxy_addr, headers=headers))
+    init_data = _loads_dict(init_str)
+    init_room: dict[str, object] = {}
+    if isinstance(init_data, dict):
+        d = init_data.get("data")
+        if isinstance(d, dict):
+            init_room = d
+    if not init_room:
+        _warn_api_abnormal(init_str, "B站 room_init", "data.room_id + data.uid", init_data)
+    real_room_id = str(init_room.get("room_id") or room_id)
+    _uid = init_room.get("uid")
+    uid = int(_uid) if isinstance(_uid, int) else 0
     # 2) nav 取 wbi_img（img_key/sub_key）
     img_key = ""
     sub_key = ""
@@ -1660,7 +2109,7 @@ async def get_bilibili_danmaku_info(
     #   ② 同一事件循环内两个协程并发进入即互等，构成死锁。
     # 改为 cookie_cache.singleflight 去重：临界区仅做字典读写，网络请求全在锁外。
     # 兜底 UUID 仍缓存（is_fallback 标记），与原语义一致。
-    global _bili_buvid_cached, _bili_buvid_is_fallback
+    global _bili_buvid_cached, _bili_buvid_is_fallback, _bili_buvid_cached_proxy
 
     async def _fetch_buvid() -> str:
         # 单条获取链（不含进程缓存层，由 singleflight 负责去重与缓存）
@@ -1671,6 +2120,12 @@ async def get_bilibili_danmaku_info(
                 b = _m.group(1).strip()
                 logger.debug(i18n.tr("[B站直播]使用 cookie 中的 buvid3: {buvid}", buvid=b))
         if not b:
+            # MIN-2203 修复（2026-09-22）：原实现两次请求**零间隔**连击同一路径（对 CDN 探针有
+            # _throttle_probe，对 spi 没有）；且 on-exception 的 except 分支在风控主形态下**永不执行**
+            # ——「200+空 body」时 async_req 与 _loads_dict 都不抛，只是 b 仍为空，于是真正需要告警的
+            # 「两跳皆空」反而无任何日志。现：空结果与异常两条路径都在重试前插入 0.5~1.0s 抖动退避
+            # （与 stream_select._recheck_delay 同思路：固定节奏是风控指纹，抖动打散节奏），
+            # 并在「两跳皆空」时落一条 warning 取代原先永不执行的 except。
             for _attempt in range(2):
                 try:
                     spi_str = await async_req(
@@ -1685,6 +2140,13 @@ async def get_bilibili_danmaku_info(
                     b = str(spi_d.get("b_3") or spi_d.get("buvid") or "")
                     if b:
                         break
+                    if _attempt == 0:
+                        # 空响应（多为风控 200+空 body）：抖动退避后再试一次，避免零间隔连击
+                        await asyncio.sleep(0.5 + random.random() * 0.5)
+                    else:
+                        logger.warning(
+                            i18n.tr("[B站直播]spi 两跳均未返回 buvid（疑似风控 200+空 body），改走首页 Set-Cookie 兜底")
+                        )
                 except Exception as e:
                     if _attempt == 0:
                         logger.debug(
@@ -1692,6 +2154,7 @@ async def get_bilibili_danmaku_info(
                                 "[B站直播]buvid 获取失败(将重试): {type_name}: {e}", type_name=type(e).__name__, e=e
                             )
                         )
+                        await asyncio.sleep(0.5 + random.random() * 0.5)
                     else:
                         logger.warning(
                             i18n.tr("[B站直播]buvid 获取失败: {type_name}: {e}", type_name=type(e).__name__, e=e)
@@ -1744,6 +2207,8 @@ async def get_bilibili_danmaku_info(
             buvid = str(uuid.uuid4())
             _bili_buvid_is_fallback = True
     _bili_buvid_cached = buvid
+    # MID-40：随缓存值记录其代理上下文，供无参失效钩子清对 generic 键（见 invalidate_bili_buvid_cache）
+    _bili_buvid_cached_proxy = proxy_addr or ""
 
     # 4) getDanmuInfo（wbi 签名）；无 wbi 则跳过签名，由调用方 -352 风控日志体现
     danmu_params: dict[str, str] = {"id": real_room_id, "type": "0", "web_location": "444.8"}
@@ -1793,6 +2258,46 @@ async def get_bilibili_danmaku_info(
     }
 
 
+_XHS_BUILTIN_SESSION_SID = "session.1722166379345546829388"
+
+# SEV-2214（2026-09-22）：xhslink 短链解出的落地页 URL 由**响应**决定，而后续请求会带上
+# 用户 Cookie 与 xy-common-params（含会话 sid）。若不校验落地页 host，一条恶意 xhslink
+# 链接即可把登录凭据递送到任意 http(s) host:port（凭据外泄 + 内网 SSRF）。
+# 白名单取 XHS 实际会用到的三个域族：主站/短链/CDN。命中即带凭据，否则剥凭据再请求。
+_XHS_ALLOWED_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhscdn.com")
+
+
+def _xhs_is_allowed_host(url: str) -> bool:
+    # 落地页 host 是否落在 XHS 域族内。用「精确等于或 . 后缀」判定，防 evil-xiaohongshu.com
+    # 这类后缀伪装（endswith 裸判定会把 notxiaohongshu.com 也放行）。
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+    return any(host == suffix or host.endswith("." + suffix) for suffix in _XHS_ALLOWED_HOST_SUFFIXES)
+
+
+def _read_xhs_sid() -> str:
+    # XHS 会话 sid 的外部覆盖值（MID-50a）：优先环境变量 XHS_SESSION_SID，其次
+    # config.ini 的 [Cookie] xhs_session_sid，最后回落内置缺省。
+    # 背景：内置 sid 前 10 位为 epoch（1722166379 ≈ 2024-07-28，约两年前的会话串），
+    # 与本仓对 TikTok 游客 cookie（F-10）、嗨秀 accessToken（CR-12）同型的「写死外部会话」
+    # 形态——原先唯独此处没有覆盖入口，一旦 XHS 校验 sid 时效，平台侧坏掉只能等发版改代码。
+    # MID-2218（2026-09-23）：该键此前**从未登记**进 config.ini / README 模板，而
+    # utils.read_ini_value 对「节在键不在」刻意发 warning（MI-19：凭据键缺失是用户求助时的
+    # 关键线索）→ 每个小红书房间每 ~120s 刷一条「Key [xhs_session_sid] does not exist」，
+    # 正踩 AGENTS「正常轮次刻意保持静默」。键已补进 [Cookie] 节与两份 README 模板。
+    override = os.environ.get("XHS_SESSION_SID", "").strip()
+    if override:
+        return override
+    try:
+        cfg_value = utils.read_ini_value(f"{script_path}/config/config.ini", "Cookie", "xhs_session_sid")
+    except Exception:
+        cfg_value = None
+    if cfg_value and cfg_value.strip():
+        return cfg_value.strip()
+    return _XHS_BUILTIN_SESSION_SID
+
+
 @trace_error_decorator
 async def get_xhs_stream_url(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
@@ -1800,11 +2305,26 @@ async def get_xhs_stream_url(
     # 获取小红书直播流地址
     # 解析链路：xhslink 短链先解重定向 → 抠 host_id/user_id → __INITIAL_STATE__（undefined 替换 null 后解析）；
     # 返回 is_live + flv/m3u8 + record_url；标题含「回放」视为非实时不取流；未开播仍回抠到的 anchor_name。
+    sid_value = _read_xhs_sid()
+    # MID-2218（2026-09-23）：镜像 TikTok 的 _warn_if_builtin_guest（见 get_tiktok_stream_data）。
+    # MID-50a 只补了 sid 覆盖入口、没补「用了内置缺省且本轮失败」的告警，于是 sid 被平台判失效
+    # 时用户只看到与「主播没开播」无法区分的静默失败，线索指不到凭据上（内置值年代见 _read_xhs_sid）。
+    using_builtin_sid = sid_value == _XHS_BUILTIN_SESSION_SID
+
+    def _warn_if_builtin_sid() -> None:
+        if using_builtin_sid:
+            logger.warning(
+                i18n.tr(
+                    "小红书解析失败，且本次使用的是内置会话 sid（可能已过期）；"
+                    "请在 config.ini 的 [Cookie] xhs_session_sid 配置有效 sid（或设置环境变量 XHS_SESSION_SID）"
+                )
+            )
+
     headers = {
         "User-Agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
-        # xy-common-params 是 XHS 固定内置的「平台+会话」头，sid 是一段写死的 session 串，
-        # app 端接口以此头鉴权，缺省会被拒；不要随意改写该值。
-        "xy-common-params": "platform=iOS&sid=session.1722166379345546829388",
+        # xy-common-params 是 XHS 固定内置的「平台+会话」头，app 端接口以此头鉴权，缺省会被拒。
+        # sid 现走 env → config.ini → 内置缺省三级覆盖（见 _read_xhs_sid）。
+        "xy-common-params": "platform=iOS&sid=" + sid_value,
         "referer": "https://app.xhs.cn/",
     }
     # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
@@ -1815,12 +2335,46 @@ async def get_xhs_stream_url(
     if "xhslink.com" in url:
         url_result = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
         if isinstance(url_result, str):
-            url = url_result
+            # SEV-2214（2026-09-22）：落地页由**响应**决定，其后无 host 判定就用同一份 headers 再请求，
+            # 等于把用户 Cookie 与会话 sid 递送给任意 http(s) host:port。两道闸：
+            #   ① 落地页 host 必须落在 XHS 域族白名单内（_xhs_is_allowed_host）；
+            #   ② 落地页不得解析到内网/回环/云元数据（复用仓内既有判定 web_config._host_internal_reason，
+            #      不自造——它已覆盖 inet_aton 缩写 IP、CGNAT、metadata 域名等绕过形态）。
+            # 任一条不满足即丢弃跳转结果、保留原始 xhslink url（原请求是用户自己填的合法短链宿主，
+            # 不会把凭据送往响应指定的目标），并对该落地页剥离 Cookie / xy-common-params。
+            _landing = url_result
+            if _xhs_is_allowed_host(_landing):
+                try:
+                    # DNS 判定；web_config._host_internal_reason 解析失败（NXDOMAIN）也返回拒绝理由。
+                    _landing_host = (urllib.parse.urlparse(_landing).hostname or "").lower()
+                    _internal_reason = (
+                        web_config._host_internal_reason(_landing_host) if _landing_host else "缺少主机名"
+                    )
+                except Exception as e:
+                    _internal_reason = f"内网判定异常: {type(e).__name__}"
+                if _internal_reason is None:
+                    url = _landing
+                else:
+                    logger.warning(
+                        i18n.tr(
+                            "小红书短链落地页不可信，已忽略跳转: {url} ({reason})",
+                            url=utils.mask_credentials(_landing),
+                            reason=_internal_reason,
+                        )
+                    )
+            else:
+                logger.warning(
+                    i18n.tr(
+                        "小红书短链跳转到非白名单主机，已忽略跳转: {url}",
+                        url=utils.mask_credentials(_landing),
+                    )
+                )
 
     host_id = get_params(url, "host_id")
     user_id_match = re.search("/user/profile/(.*?)(?=/|\\?|$)", url)
     user_id = user_id_match.group(1) if user_id_match else host_id
     result: dict[str, object] = {"anchor_name": "", "is_live": False}
+    # 走到这里 url 已保证落在 XHS 白名单域内（原始短链宿主或可信落地页），故带凭据安全。
     html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
     html_str = _get_str_response(html_str)
     # 内联 __INITIAL_STATE__ 里混有 JS 的 undefined（非法 JSON 字面量），先替换为 null 再解析。
@@ -1828,16 +2382,24 @@ async def get_xhs_stream_url(
 
     if match_data:
         json_str = match_data.group(1).replace("undefined", "null")
-        json_data = json.loads(json_str)
+        # MID-48：__INITIAL_STATE__ 被截断（页面尺寸限制 / CDN 半截响应）时裸 json.loads 抛
+        # JSONDecodeError → 装饰器 → 连下方「补主播名」的兜底路径都走不到。改为解析失败即
+        # 落到 profile 兜底补 anchor_name，is_live 保持 False；并留一条区分性告警。
+        json_data = _loads_dict(json_str)
+        if not json_data:
+            _warn_api_abnormal(json_str, "小红书 __INITIAL_STATE__", "liveStream", json_data)
 
-        if json_data.get("liveStream"):
-            stream_data = json_data["liveStream"]
+        if _dig(json_data, "liveStream"):
+            stream_data = _dig(json_data, "liveStream")
             # liveStatus=="success" 才是开播；标题含「回放」视为非实时直播，跳过取流。
-            if stream_data.get("liveStatus") == "success":
-                room_info = stream_data["roomData"]["roomInfo"]
-                title = room_info.get("roomTitle")
+            if _dig(stream_data, "liveStatus") == "success":
+                room_info = _dig(stream_data, "roomData", "roomInfo")
+                if not isinstance(room_info, dict):
+                    _warn_api_abnormal(json_str, "小红书 __INITIAL_STATE__", "roomData.roomInfo", json_data)
+                    return result
+                title = _dig_str(room_info, "roomTitle")
                 if title and "回放" not in title:
-                    live_link = room_info["deeplink"]
+                    live_link = _dig_str(room_info, "deeplink")
                     anchor_name = get_params(live_link, "host_nickname")
                     flv_url = get_params(live_link, "flvUrl")
                     if not flv_url:
@@ -1859,6 +2421,14 @@ async def get_xhs_stream_url(
                         "record_url": flv_url,
                     }
                     return result
+    else:
+        # MID-2218：内联状态**整段**缺失 = 页面本身不合预期（风控壳页 / sid 被拒 / 页面改版）；
+        # 离线房间的页面照样带 __INITIAL_STATE__（只是不含 liveStream），不会落到这里，
+        # 故不违反「未开播等正常轮次刻意保持静默」。空响应走 MID-48 的统一归因，
+        # 拿到页面却无内联状态时才补「内置 sid 可能过期」这条可动作提示。
+        _warn_api_abnormal(html_str, "小红书 房间页", "__INITIAL_STATE__", {})
+        if html_str:
+            _warn_if_builtin_sid()
 
     # 内联状态未命中直播（未开播/分享页无 liveStream）时，退到用户主页仅补全 anchor_name，
     # 不影响录制判定（is_live 保持 False）；http 直链里抠不到昵称则留空返回。
@@ -1912,15 +2482,25 @@ async def get_bigo_stream_url(
     url2 = "https://ta.bigo.tv/official_website/studio/getInternalStudioInfo"
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["data"]["nick_name"]
-    live_status = json_data["data"]["alive"]
+    # MID-48（2026-09-21 海外批次）：该接口对风控/拦截页返回 HTML，裸 json.loads 抛 JSONDecodeError
+    # 后与「房间不存在」一起被装饰器吞成「未开播」，日志无任何区分线索。改为安全下钻 + 区分性告警。
+    json_data = _loads_dict(json_str)
+    studio_info = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(studio_info, "alive") is None:
+        _warn_api_abnormal(json_str, "Bigo getInternalStudioInfo", "data.alive", json_data)
+        return {"anchor_name": _dig_str(studio_info, "nick_name"), "is_live": False}
+    anchor_name = _dig_str(studio_info, "nick_name")
+    live_status = _dig(studio_info, "alive")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
 
     # alive==1 才是开播；hls_src 同时作为 m3u8 与 record_url（bigo 仅 HLS 一路）。
     if live_status == 1:
-        live_title = json_data["data"]["roomTopic"]
-        m3u8_url = json_data["data"]["hls_src"]
+        m3u8_url = _dig_str(studio_info, "hls_src")
+        if not m3u8_url:
+            # 已判开播却无流地址（改版/风控降级）：与「未开播」区分，按无源返回而非崩
+            _warn_api_abnormal(json_str, "Bigo getInternalStudioInfo", "data.hls_src", json_data)
+            return result
+        live_title = _dig_str(studio_info, "roomTopic")
         result["m3u8_url"] = m3u8_url
         result["record_url"] = m3u8_url
         result |= {"title": live_title, "is_live": True, "m3u8_url": m3u8_url, "record_url": m3u8_url}
@@ -1968,15 +2548,46 @@ async def get_blued_stream_url(
         raise ValueError("Failed to find json string")
     json_str = json_str_match.group(1)
     json_str = urllib.parse.unquote(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["userInfo"]["name"]
-    live_status = json_data["userInfo"]["onLive"]
+    # MID-48：页面内联串经 unquote 后同样可能是 WAF 页 / 截断产物，裸 json.loads + 二级链式
+    # 索引失败时被装饰器伪装成「未开播」。改为 _loads_dict + _dig，并在结构确实不合预期时
+    # 落一条区分性告警（HTML 形态另有 _safe_loads 那条「JSON 解析失败」相邻可比对）。
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "userInfo") is None:
+        _warn_api_abnormal(json_str, "blued 页面内联数据", "userInfo", json_data)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(json_data, "userInfo", "name")
+    live_status = _dig(json_data, "userInfo", "onLive")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
 
     if live_status:
-        m3u8_url = json_data["liveInfo"]["liveUrl"]
+        m3u8_url = _dig_str(json_data, "liveInfo", "liveUrl")
+        if not m3u8_url:
+            # onLive 为真却取不到 liveUrl：多为接口改版或风控降级，不是「未开播」
+            _warn_api_abnormal(json_str, "blued 页面内联数据", "liveInfo.liveUrl", json_data)
+            return result
         result |= {"is_live": True, "m3u8_url": m3u8_url, "record_url": m3u8_url}
     return result
+
+
+# SOOP 房间链接里 bj_id 前面的路径前缀段（形如 /play/<bj>、/channel/<bj>、/live/<bj>）。
+_SOOP_BJ_LEAD_SEGMENTS = ("play", "channel", "live")
+
+
+def _soop_bj_id_from_url(url: str) -> str:
+    # 从 SOOP 房间链接取主播 bj_id。MIN-2210（2026-09-23）：此前 get_sooplive_tk /
+    # _fetch_web_stream_data_global / get_sooplive_stream_data 三处各自复制了同一条
+    # 「按 '/' 切段后 len<6 取 [3]、否则取 [5]」的**段数**启发式——它对
+    # https://www.sooplive.co.kr/play/<bj>（切成 5 段）命中 <6 分支、取到字面量 "play"，
+    # 于是拼出 .../live/play/master.m3u8，该形态**永久**解析失败；且改一处必漏另两处。
+    # 现按 urlparse 的 path 段做**语义**判定：首段是路径前缀（play/channel/live）时取其后
+    # 一段，否则首段即 bj_id；尾斜杠与空段一并被过滤，不再影响下标。
+    # 畸形 URL（无 path）返回空串，由调用方沿用既有的「取不到即按未开播返回」分支，不抛错。
+    segments = [seg for seg in urllib.parse.urlparse(url).path.split("/") if seg]
+    if not segments:
+        return ""
+    if segments[0].lower() in _SOOP_BJ_LEAD_SEGMENTS and len(segments) > 1:
+        return segments[1]
+    return segments[0]
 
 
 @trace_error_decorator_or_none
@@ -2034,8 +2645,11 @@ async def get_sooplive_cdn_url(
     broad_no: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
     # 获取 SOOP(原AfreecaTV) 平台 CDN 流地址
-    # 返回接口原始 json（含 CDN 候选列表），由调用方解析；abroad=True 不可省——
-    # 该分配接口走境外域名 livestream-manager.sooplive.co.kr，不走代理会直连超时。
+    # 返回接口原始 json（含 CDN 候选列表），由调用方解析。
+    # 境外能否连通完全由 **proxy_addr** 决定：async_http.async_req 内 `_ = (abroad, content_encoding)`，
+    # abroad 只是与 sync_req 的签名兼容位、异步实现不读它。保留 abroad=True 只为与同步侧调用形态
+    # 一致，删它零行为变化；删 proxy_addr 才会真的直连超时——排障盯 proxy_addr，别盯 abroad。
+    # [历史注] 2026-09-23 MIN-2216 推翻了本段旧说法「abroad=True 不可省，不走代理会直连超时」。
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
         "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
@@ -2057,13 +2671,16 @@ async def get_sooplive_cdn_url(
         "time": "8361.086329376785",
     }
 
-    # abroad=True：SOOP CDN 分配接口走境外域名，必须走与解析阶段相同的代理，否则直连超时。
+    # 境外域名必须带 proxy_addr 才走代理（abroad 不生效，见本函数头部 MIN-2216 说明）。
     url2 = "http://livestream-manager.sooplive.co.kr/broad_stream_assign.html?" + urllib.parse.urlencode(params)
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-
-    return cast(dict[str, object], json_data)
+    # MID-48（2026-09-21 海外批次）：该境外分配接口常返回 HTML 拦截页/截断体，裸 json.loads 抛错后
+    # 与「线路不存在」同样被上层装饰器吞成「未开播」。改为 _loads_dict + 缺字段归因。
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "view_url") is None:
+        _warn_api_abnormal(json_str, "SOOP broad_stream_assign", "view_url", json_data)
+    return json_data
 
 
 @trace_error_decorator_or_none
@@ -2082,10 +2699,8 @@ async def get_sooplive_tk(
     if cookies:
         headers["Cookie"] = cookies
 
-    split_url = url.split("/")
-    # SOOP 房间 URL 两种形态：短链/分享链（段数<6，如 /{bj}/...）取 [3]；完整 play 链接
-    # （段数≥6，如 /play/sooplive/.../{bj}/...）取 [5]。取错段会得到非 bjid、tk 接口直接 404。
-    bj_id = split_url[3] if len(split_url) < 6 else split_url[5]
+    # bj_id 一律经 _soop_bj_id_from_url 判定（取错段会得到非 bjid、tk 接口直接 404）。
+    bj_id = _soop_bj_id_from_url(url)
     room_password = get_params(url, "pwd")
     if not room_password:
         room_password = ""
@@ -2105,15 +2720,23 @@ async def get_sooplive_tk(
     url2 = f"https://live.sooplive.co.kr/afreeca/player_live_api.php?bjid={bj_id}"
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-21 海外批次）：CHANNEL 缺失既可能是「房间不存在」也可能是风控壳页。
+    # 本函数取回的是 AID/BNO 票据，归因日志只带接口的 code/message，**绝不打印票据值**。
+    json_data = _loads_dict(json_str)
+    channel_info = cast(dict[str, object], _dig(json_data, "CHANNEL") or {})
+    needed_keys = ("AID",) if rtype == "aid" else ("BJNICK", "BJID", "BNO")
+    if any(_dig(channel_info, key) is None for key in needed_keys):
+        _warn_api_abnormal(json_str, "SOOP player_live_api", "CHANNEL." + "/".join(needed_keys), json_data)
+        raise RuntimeError("Failed to get sooplive CHANNEL data")
 
     if rtype == "aid":
-        token = json_data["CHANNEL"]["AID"]
+        token = _dig(channel_info, "AID")
         return cast(str, token)
     else:
-        bj_name = json_data["CHANNEL"]["BJNICK"]
-        bj_id = json_data["CHANNEL"]["BJID"]
-        return f"{bj_name}-{bj_id}", cast(str, json_data["CHANNEL"]["BNO"])
+        bj_name = _dig(channel_info, "BJNICK")
+        # 不复用上面的 bj_id（那是从 URL 段里抠的 str，此处是接口回包里的对象）
+        bj_id_value = _dig(channel_info, "BJID")
+        return f"{bj_name}-{bj_id_value}", cast(str, _dig(channel_info, "BNO"))
 
 
 def get_soop_headers(cookies: OptionalStr = None) -> dict[str, str]:
@@ -2139,9 +2762,16 @@ async def _get_soop_channel_info_global(bj_id: str, proxy_addr: OptionalStr = No
     api = "https://api.sooplive.com/v2/channel/info/" + str(bj_id)
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    nickname = json_data["data"]["streamerChannelInfo"]["nickname"]
-    channelId = json_data["data"]["streamerChannelInfo"]["channelId"]
+    # MID-48（2026-09-21 海外批次）：v2/channel/info 对不存在/已注销频道返回不含 streamerChannelInfo
+    # 的信封（或被风控换成 HTML），原四级链式索引抛错后被上层装饰器吞成「未开播」。此处降级为
+    # 空昵称（调用点 `anchor_name or ""` 已容忍），并留一条区分性告警。
+    json_data = _loads_dict(json_str)
+    channel_info = _dig(json_data, "data", "streamerChannelInfo")
+    if _dig(channel_info, "nickname") is None or _dig(channel_info, "channelId") is None:
+        _warn_api_abnormal(json_str, "SOOP channel/info", "data.streamerChannelInfo", json_data)
+        return ""
+    nickname = _dig(channel_info, "nickname")
+    channelId = _dig(channel_info, "channelId")
     anchor_name = f"{nickname}-{channelId}"
     return anchor_name
 
@@ -2156,18 +2786,24 @@ async def _get_soop_stream_info_global(
     api = "https://api.sooplive.com/v2/stream/info/" + str(bj_id)
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    status = json_data["data"]["isStream"]
-    title = json_data["data"]["title"]
-    return status, title
+    # MID-48（2026-09-21 海外批次）：本函数返回 (status, title) 二元组且调用点直接解包，
+    # 因此结构异常时必须回「未开播 + 空标题」而不是 None（解包 None 会抛 TypeError 并被
+    # 上层装饰器伪装成未开播、彻底丢失成因）。isStream 缺失即响应不合预期，落告警。
+    json_data = _loads_dict(json_str)
+    stream_info = _dig(json_data, "data")
+    status = _dig(stream_info, "isStream")
+    if status is None:
+        _warn_api_abnormal(json_str, "SOOP stream/info", "data.isStream", json_data)
+        return False, ""
+    return cast(bool, status), _dig_str(stream_info, "title")
 
 
 async def _fetch_web_stream_data_global(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
     # 抓取 Web 端直播流数据（内部通用方法）
-    split_url = url.split("/")
-    bj_id = split_url[3] if len(split_url) < 6 else split_url[5]
+    # bj_id 判定见 _soop_bj_id_from_url（MIN-2210：三处共用同一实现，不得再各自复制段数启发式）
+    bj_id = _soop_bj_id_from_url(url)
     anchor_name = await _get_soop_channel_info_global(bj_id, proxy_addr=proxy_addr, cookies=cookies)
     result: dict[str, object] = {"anchor_name": anchor_name or "", "is_live": False, "live_url": url}
     status, title = await _get_soop_stream_info_global(bj_id, proxy_addr=proxy_addr, cookies=cookies)
@@ -2177,8 +2813,8 @@ async def _fetch_web_stream_data_global(
 
         async def _get_url_list(m3u8: str) -> list[str]:
             # 从直播流数据中提取 URL 列表（内部方法）
-            # m3u8 内相对路径（非 # 开头）需拼回 url_prefix（域名前三段），否则 ffmpeg 取到相对地址无法拉流；
-            # 未匹配到带宽的 URL 排序时置 0 兜底，避免 KeyError 导致整轮取流失败。
+            # m3u8 内相对路径（非 # 开头）行须按清单自身地址解析为绝对地址，否则 ffmpeg 取到
+            # 相对地址无法拉流；未匹配到带宽的 URL 排序时置 0 兜底，避免 KeyError 导致整轮取流失败。
             headers = {
                 "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
@@ -2188,14 +2824,18 @@ async def _fetch_web_stream_data_global(
             resp = await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers)
             resp = _get_str_response(resp)
             play_url_list = []
-            url_prefix = "/".join(m3u8.split("/")[0:3])
+            # MID-47 修复（2026-09-20）：原实现 url_prefix = "/".join(m3u8.split("/")[0:3]) 缺尾斜杠，
+            # 相对行 "1080/index.m3u8" 被拼成 https://global-media.sooplive.com1080/index.m3u8，
+            # 且该损坏串会经 play_url_list 成为 record_url（main→stream.get_stream_url spec=True）；
+            # 绝对地址行又会被前缀污染。改用 urljoin 对相对/绝对/带参三形态一律正确，
+            # 语义与同文件韩国侧姊妹实现（rsplit 目录前缀 + 拼接）对齐且更稳健。
             for i in resp.split("\n"):
-                if not i.startswith("#") and i.strip():
-                    play_url_list.append(url_prefix + i.strip())
+                line = i.strip()
+                if not line.startswith("#") and line:
+                    play_url_list.append(urllib.parse.urljoin(m3u8, line))
             bandwidth_pattern = _BANDWIDTH_PATTERN
             bandwidth_list = bandwidth_pattern.findall(resp)
             url_to_bandwidth = {purl: int(bandwidth) for bandwidth, purl in zip(bandwidth_list, play_url_list)}
-            # 未匹配到带宽的 URL 置 0，避免排序时 KeyError
             play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth.get(purl, 0), reverse=True)
             return play_url_list
 
@@ -2218,8 +2858,10 @@ async def get_sooplive_stream_data(
     password: OptionalStr = None,
 ) -> dict[str, object]:
     # 获取 SOOP(原AfreecaTV) 平台直播流数据
-    # 解析链路：先 _get_soop_channel_info_global 拿 bj_id，再 _get_soop_stream_info_global 取流；
-    # 返回 is_live + m3u8；账号受限/未开播统一走 get_sooplive_cdn_url 兜底，失败抛错由装饰器重试。
+    # 解析链路：sooplive.com 域名先转 _fetch_web_stream_data_global（全球区走 channel/stream 两个接口）；
+    # 韩国区经 api.m.sooplive.co.kr/broad/a/watch 一次拿 user_nick / broad_no / hls_authentication_key，
+    # 公开房直接拼 m3u8；无昵称时按 data.code 分流（-3002/-3004 走登录 + get_sooplive_tk 取 AID 票据，
+    # -3001 刚下播、-6001 地址错误按未开播返回）。两条路径最终都经 get_sooplive_cdn_url 取 view_url。
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
         "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
@@ -2233,8 +2875,8 @@ async def get_sooplive_stream_data(
     if "sooplive.com" in url:
         return await _fetch_web_stream_data_global(url, proxy_addr, cookies)
 
-    split_url = url.split("/")
-    bj_id = split_url[3] if len(split_url) < 6 else split_url[5]
+    # bj_id 判定见 _soop_bj_id_from_url（MIN-2210：三处共用同一实现，不得再各自复制段数启发式）
+    bj_id = _soop_bj_id_from_url(url)
 
     data = {
         "bj_id": bj_id,
@@ -2249,15 +2891,20 @@ async def get_sooplive_stream_data(
 
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-21 海外批次）：broad/a/watch 对受限房/风控返回不含 data 的信封或 HTML，
+    # 原 `json_data["data"]`（下面还按 data.code 分支）抛错后被装饰器吞成「未开播」，
+    # 与「直播刚结束」「房间地址错误」等既有可诊断形态混成同一条。改为安全下钻。
+    json_data = _loads_dict(json_str)
+    watch_data = cast(dict[str, object], _dig(json_data, "data") or {})
 
     # 公开直播间接口才会在 data 里带 user_nick；bj_id 后缀用于唯一标识房间
     # （不同主播可能复用同一 bj_id 段，加昵称前缀避免录制串台）。无 user_nick 视为
     # 受限/未公开房间，anchor_name 留空走下方登录或报错分支。
-    if "user_nick" in json_data["data"]:
-        anchor_name = json_data["data"]["user_nick"]
-        if "bj_id" in json_data["data"]:
-            anchor_name = f"{anchor_name}-{json_data['data']['bj_id']}"
+    if _dig(watch_data, "user_nick") is not None:
+        anchor_name = _dig_str(watch_data, "user_nick")
+        bj_id_value = _dig(watch_data, "bj_id")
+        if bj_id_value is not None:
+            anchor_name = f"{anchor_name}-{bj_id_value}"
     else:
         anchor_name = ""
 
@@ -2279,8 +2926,8 @@ async def get_sooplive_stream_data(
         # bandwidth_list 与 play_url_list 较短的一侧截断，两者长度不一致时（部分
         # 清晰度行缺 BANDWIDTH 或格式变体）尾部 URL 不在字典里 → KeyError，
         # 被外层 trace_error_decorator 吞成"未开播"，表现为明明在播却漏录。
-        # 同文件 2110 行 zip(play_url_list) 分支已有长度守卫的正确写法，此处对齐；
-        # 取 0 兜底使缺带宽的 URL 排序落到末尾，不至于整条链路失败。
+        # 本文件另一处 get_play_url_list 用的是「数量一致才按带宽排序」的长度守卫，
+        # 与此处是两种等效的不抛错写法：取 0 兜底让缺带宽的 URL 排到末尾、链路不失败。
         play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth.get(purl, 0), reverse=True)
         return play_url_list
 
@@ -2300,13 +2947,22 @@ async def get_sooplive_stream_data(
             # 抓取直播数据
             aid_token = await get_sooplive_tk(url, rtype="aid", proxy_addr=proxy_addr, cookies=cookie)
             _info = await get_sooplive_tk(url, rtype="info", proxy_addr=proxy_addr, cookies=cookie)
-            if isinstance(_info, tuple) and len(_info) == 2:
-                _anchor_name, _broad_no = _info
-            else:
-                raise RuntimeError("Failed to get sooplive info")
+            # MID-2210（2026-09-23）：get_sooplive_tk 挂的是 trace_error_decorator_or_none，
+            # 票据失败时返回 **None**，而 `cast(str, aid_token)` 只骗过类型检查、不做运行时转换，
+            # 于是下面 `"?aid=" + None` 抛 TypeError → 被最外层 @trace_error_decorator 吞成
+            # 「未开播」，把已经拿到的主播名/线路号连同那条真正的归因日志一起冲掉
+            # （游客路径与 _info 都判了空，此处口径原本不一致）。
+            # 现与两处对齐：判空即按未开播返回 _result（anchor_name 为空 → main 记失败样本），
+            # 且**移到 CDN 分配请求之前**——拿不到 aid 时 view_url 也用不上，别白烧一次请求。
+            # 归因由 get_sooplive_tk 的 _warn_api_abnormal 与装饰器 guard 各自落过，此处不重复刷。
+            if not isinstance(aid_token, str) or not aid_token:
+                return _result
+            if not (isinstance(_info, tuple) and len(_info) == 2):
+                return _result
+            _anchor_name, _broad_no = _info
             _view_url_data = await get_sooplive_cdn_url(_broad_no, proxy_addr=proxy_addr)
             _view_url = cast(str, _view_url_data.get("view_url", ""))
-            _m3u8_url = _view_url + "?aid=" + cast(str, aid_token)
+            _m3u8_url = _view_url + "?aid=" + aid_token
             _result |= {
                 "anchor_name": _anchor_name,
                 "is_live": True,
@@ -2317,12 +2973,20 @@ async def get_sooplive_stream_data(
             return _result
 
         # SOOP 网关错误码：-3001 直播刚结束；-3002 成人房需 19+ 登录；-3004 需登录态 cookie；
-        # -6001 房间地址错误。-3002/-3004 都触发登录流程（-3004 优先复用已传入 cookie，避免重复登录）。
-        if json_data["data"]["code"] == -3001:
+        # -6001 房间地址错误。-3002/-3004 都触发登录流程，区别只在 -3004 先复用调用方透传的
+        # cookie（避免每轮重复登录），票据仍被拒时才用账号密码登录一次并重试（MID-2211）。
+        soop_code = _dig(watch_data, "code")
+        if soop_code is None:
+            # 无 user_nick 又无网关 code：既不是已知「刚结束/需登录/地址错误」任一形态，
+            # 只能是响应整体不合预期（风控壳页 / 接口改版），落线索后按未开播返回。
+            _warn_api_abnormal(json_str, "SOOP broad/a watch", "data.code", json_data)
+            return result
+
+        if soop_code == -3001:
             logger.error("sooplive live stream failed to retrieve, the live stream just ended.")
             return result
 
-        elif json_data["data"]["code"] == -3002:
+        elif soop_code == -3002:
             logger.error("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
             logger.warning(
                 "Attempting to log in to the sooplive live streaming platform with your account and password, "
@@ -2333,23 +2997,41 @@ async def get_sooplive_stream_data(
                 return await fetch_data(new_cookie, result)
             raise RuntimeError("sooplive login failed, please check if the account and password are correct")
 
-        elif json_data["data"]["code"] == -3004:
-            if cookies and len(cookies) > 0:
-                return await fetch_data(cookies, result)
-            else:
-                raise RuntimeError("sooplive login failed, please check if the account and password are correct")
-        elif json_data["data"]["code"] == -6001:
+        elif soop_code == -3004:
+            # MID-2211（2026-09-23）：原实现只复用调用方透传的 cookie，票据被拒时每轮拿同一份
+            # 坏 cookie 反复失败，配置里的 [账号密码] sooplive账号/密码 **永不被使用**，
+            # 用户只能手工删项。现与 -3002 的语义收敛：先复用（避免每轮重复登录触发风控），
+            # 复用后 fetch_data 仍取不到票据（回未开播）才登录一次并重试。
+            # fetch_data 原地改写并返回同一个 _result，失败时 is_live 仍为 False，可直接作判据。
+            if cookies:
+                reused = await fetch_data(cast(str, cookies), result)
+                if reused.get("is_live"):
+                    return reused
+                logger.warning(
+                    "The playback ticket of the cookie you provided was rejected, retrying with the "
+                    "sooplive account and password in the configuration file."
+                )
+            new_cookie = await handle_login()
+            if new_cookie and len(new_cookie) > 0:
+                return await fetch_data(new_cookie, result)
+            raise RuntimeError("sooplive login failed, please check if the account and password are correct")
+        elif soop_code == -6001:
             logger.error("error message：Please check if the input sooplive live room address " "is correct.")
             return result
     # result==1 且已有 anchor_name：公开可观看的直播间。hls_authentication_key 即 CDN 的 aid 票据，
     # 必须作为 ?aid= 拼到 m3u8 地址后，缺失该票据 CDN 会直接 403（同样的票据也用于登录态的 AID）。
-    if json_data["result"] == 1 and anchor_name:
-        broad_no = json_data["data"]["broad_no"]
-        hls_authentication_key = json_data["data"]["hls_authentication_key"]
-        view_url_data = await get_sooplive_cdn_url(cast(str, broad_no), proxy_addr=proxy_addr)
-        view_url = cast(str, view_url_data.get("view_url", ""))
-        m3u8_url = view_url + "?aid=" + cast(str, hls_authentication_key)
-        result |= {"is_live": True, "m3u8_url": m3u8_url, "play_url_list": await get_url_list(m3u8_url)}
+    if _dig(json_data, "result") == 1 and anchor_name:
+        broad_no = _dig(watch_data, "broad_no")
+        hls_authentication_key = _dig(watch_data, "hls_authentication_key")
+        if broad_no is None or hls_authentication_key is None:
+            # 已判开播却拿不到线路号或 CDN 票据（接口改版 / 风控降级）：与「未开播」区分。
+            # 归因只带 code/message，票据值绝不入日志。
+            _warn_api_abnormal(json_str, "SOOP broad/a watch", "data.broad_no + hls_authentication_key", json_data)
+        else:
+            view_url_data = await get_sooplive_cdn_url(cast(str, broad_no), proxy_addr=proxy_addr)
+            view_url = cast(str, view_url_data.get("view_url", ""))
+            m3u8_url = view_url + "?aid=" + cast(str, hls_authentication_key)
+            result |= {"is_live": True, "m3u8_url": m3u8_url, "play_url_list": await get_url_list(m3u8_url)}
     # 仅在未通过登录获取新 cookie 时置 None，避免覆盖 fetch_data 中设置的 cookie
     result.setdefault("new_cookies", None)
     return result
@@ -2383,18 +3065,27 @@ async def get_netease_stream_data(
     if not json_str_match:
         raise ValueError("Failed to find __NEXT_DATA__")
     json_str = json_str_match.group(1)
-    json_data = json.loads(json_str)
-    room_data = json_data["props"]["pageProps"]["roomInfoInitData"]
-    live_data = room_data["live"]
+    # MID-48：__NEXT_DATA__ 命中但内容被截断 / 换成风控壳页时，裸 json.loads 与随后
+    # ["props"]["pageProps"]["roomInfoInitData"]["live"] 的四级索引都会抛错并被装饰器
+    # 吞成 {"is_live": False}——连「房间存在但未开播」都读不出来。改为安全下钻 + 显式归因。
+    json_data = _loads_dict(json_str)
+    room_data = _dig(json_data, "props", "pageProps", "roomInfoInitData")
+    live_data = _dig(room_data, "live")
+    if not isinstance(live_data, dict):
+        _warn_api_abnormal(json_str, "网易CC __NEXT_DATA__", "roomInfoInitData.live", json_data)
+        return {"anchor_name": _dig_str(room_data, "nickname"), "is_live": False}
+    live_data = cast(dict[str, object], live_data)
     result: dict[str, object] = {"is_live": False}
     # 网易 CC 用 status==1 表示开播（0/2 为未播/轮播），只有开播才取流；
     # sharefile 即 m3u8 地址、quickplay 为清晰度列表，缺失时上游按无源处理、不报错。
     live_status = live_data.get("status") == 1
-    result["anchor_name"] = live_data.get("nickname", room_data.get("nickname"))
+    # 原写法 live_data.get("nickname", room_data.get("nickname")) 在 nickname 显式为 null 时
+    # 会把 None 交给下游 clean_name()（MID-43 同类），改为 _dig_str 后一律回 str。
+    result["anchor_name"] = _dig_str(live_data, "nickname") or _dig_str(room_data, "nickname")
     if live_status:
         result |= {
             "is_live": True,
-            "title": live_data["title"],
+            "title": _dig_str(live_data, "title"),
             "stream_list": live_data.get("quickplay"),
             "m3u8_url": live_data.get("sharefile"),
         }
@@ -2481,11 +3172,17 @@ async def get_pandatv_stream_data(
         "https://api.pandalive.co.kr/v1/member/bj", proxy_addr=proxy_addr, headers=headers, data=data, abroad=True
     )
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    if "bjInfo" not in json_data:
-        raise RuntimeError(json_data.get("message", "Unknown error"))
-    anchor_id = json_data["bjInfo"]["id"]
-    anchor_name = f"{json_data['bjInfo']['nick']}-{anchor_id}"
+    # MID-48（2026-09-21 海外批次）：member/bj 对「用户不存在」回合法 JSON + message，对风控回
+    # HTML/空体——两者此前都变成「未开播」。bjInfo 缺失仍按既有语义抛错（上层装饰器 → 离线，
+    # 且既有测试锁定 {"is_live": False} 契约），只在响应整体解析不出对象时补一条区分性告警。
+    json_data = _loads_dict(json_str)
+    bj_info = _dig(json_data, "bjInfo")
+    if bj_info is None:
+        _warn_api_abnormal(json_str, "PandaTV member/bj", "bjInfo", json_data)
+        raise RuntimeError(cast(str, json_data.get("message", "Unknown error")))
+    anchor_id = _dig(bj_info, "id")
+    anchor_nick = _dig(bj_info, "nick")
+    anchor_name = f"{anchor_nick}-{anchor_id}"
     result["anchor_name"] = anchor_name
     # PandaTV 用 "media" 字段是否存在来表示是否在播：有 media 才是开播态，否则只是离线主播页。
     live_status = "media" in json_data
@@ -2493,17 +3190,23 @@ async def get_pandatv_stream_data(
     if live_status:
         json_str = await async_req(url2, proxy_addr=proxy_addr, headers=headers, data=data2, abroad=True)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
+        json_data = _loads_dict(json_str)
         # errorData 出现表示观看受限：needAdult 是成人房需登录态 cookie；其它 code 原样抛出。
-        if "errorData" in json_data:
-            if json_data["errorData"]["code"] == "needAdult":
+        error_data = _dig(json_data, "errorData")
+        if error_data is not None:
+            error_code = _dig(error_data, "code")
+            if error_code == "needAdult":
                 raise RuntimeError(
                     f"{url} The live room requires login and is only accessible to adults. Please "
                     f"correctly fill in the login cookie in the configuration file."
                 )
             else:
-                raise RuntimeError(json_data["errorData"]["code"], json_data["message"])
-        play_url = json_data["PlayList"]["hls"][0]["url"]
+                raise RuntimeError(cast(object, error_code), _dig(json_data, "message"))
+        play_url = _dig_str(json_data, "PlayList", "hls", 0, "url")
+        if not play_url:
+            # 已判在播却取不到 HLS（改版 / 风控降级）：与「未开播」区分，按无源返回
+            _warn_api_abnormal(json_str, "PandaTV live/play", "PlayList.hls[0].url", json_data)
+            return result
         play_url_list = await get_play_url_list(m3u8=play_url, proxy=proxy_addr, header=headers, abroad=True)
         result |= {"is_live": True, "m3u8_url": play_url, "play_url_list": play_url_list}
     return result
@@ -2531,20 +3234,33 @@ async def get_maoerfm_stream_url(
 
     json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-
-    anchor_name = json_data["info"]["creator"]["username"]
-    live_status = False
-    # room 字段缺失表示离线主播页（无 broadcasting 标记），live_status 保持 False
-    if "room" in json_data["info"]:
-        live_status = json_data["info"]["room"]["status"]["broadcasting"]
+    # MID-48：猫耳的错误信封是 {code, msg}（不含 info），房间不存在/已下线与接口改版此前
+    # 都表现为 `json_data["info"]` 的 KeyError → 装饰器 → 「未开播」，日志零线索。
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "info") is None:
+        _warn_api_abnormal(json_str, "猫耳FM api/v2/live", "info", json_data)
+        return {"anchor_name": "", "is_live": False}
+    info = _dig(json_data, "info")
+    anchor_name = _dig_str(info, "creator", "username")
+    if not anchor_name:
+        _warn_api_abnormal(json_str, "猫耳FM api/v2/live", "info.creator.username", json_data)
+    live_status: object = False
+    # room 字段缺失表示离线主播页（无 broadcasting 标记），live_status 保持 False。
+    # 原写法先判 `"room" in info` 再四级下钻，room 显式为 null 时抛 TypeError；改为 or {}
+    # 收敛后统一按 falsy 走离线分支。
+    room = cast(dict[str, object], _dig(info, "room") or {})
+    if room:
+        live_status = _dig(room, "status", "broadcasting")
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": live_status}
     if live_status:
-        stream_list = json_data["info"]["room"]["channel"]
-        m3u8_url = stream_list["hls_pull_url"]
-        flv_url = stream_list["flv_pull_url"]
-        title = json_data["info"]["room"]["name"]
+        m3u8_url = _dig_str(room, "channel", "hls_pull_url")
+        flv_url = _dig_str(room, "channel", "flv_pull_url")
+        title = _dig_str(room, "name")
+        if not flv_url and not m3u8_url:
+            # broadcasting 为真却没有任何拉流地址：接口改版/风控降级，不是「未开播」
+            _warn_api_abnormal(json_str, "猫耳FM api/v2/live", "room.channel", json_data)
+            return {"anchor_name": anchor_name, "is_live": False}
         result |= {"is_live": True, "title": title, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -2576,10 +3292,17 @@ async def get_winktv_bj_info(
     info_api = "https://api.winktv.co.kr/v1/member/bj"
     json_str = await async_req(url=info_api, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-21 海外批次）：与 PandaTV 同族接口，风控壳页/截断体此前抛 JSONDecodeError，
+    # 被 _or_none 装饰器吞成 None，调用点只看到「拿不到主播信息」。补区分性告警后再交装饰器兜底。
+    json_data = _loads_dict(json_str)
     live_status = "media" in json_data
-    anchor_id = json_data["bjInfo"]["id"]
-    anchor_name = f"{json_data['bjInfo']['nick']}-{anchor_id}"
+    bj_info = _dig(json_data, "bjInfo")
+    if bj_info is None:
+        _warn_api_abnormal(json_str, "WinkTV member/bj", "bjInfo", json_data)
+        raise RuntimeError(cast(str, json_data.get("message", "Unknown error")))
+    anchor_id = _dig(bj_info, "id")
+    anchor_nick = _dig(bj_info, "nick")
+    anchor_name = f"{anchor_nick}-{anchor_id}"
     return anchor_name, live_status
 
 
@@ -2612,7 +3335,14 @@ async def get_winktv_stream_data(
         "shareLinkType": "",
     }
 
-    anchor_name, live_status = await get_winktv_bj_info(url=url, proxy_addr=proxy_addr, cookies=cookies)
+    # MID-44（2026-09-20，CR-12 契约）：get_winktv_bj_info 是 _or_none 装饰（visitor 接口
+    # 风控/HTML 拦截页时返回 None），必须显式判空后再解包——原实现直接解包 None 抛
+    # TypeError，被本函数自己的装饰器二次吞掉，与「真未开播」不可区分且 anchor_name 永不回传。
+    # 同仓 get_popkontv_stream_data / get_acfun_sign_params 均已按此口径修过，此处为漏改点。
+    bj_info = await get_winktv_bj_info(url=url, proxy_addr=proxy_addr, cookies=cookies)
+    if not bj_info:
+        return {"anchor_name": "", "is_live": False}
+    anchor_name, live_status = bj_info
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": live_status}
     if live_status:
         play_api = "https://api.winktv.co.kr/v1/live/play"
@@ -2622,16 +3352,26 @@ async def get_winktv_stream_data(
         # 故必须做文本包含判断，而非只看状态码；命中即说明该出口 IP 已被拉黑。
         if "403: Forbidden" in json_str:
             raise ConnectionError(f"Your network has been banned from accessing WinkTV ({json_str})")
-        json_data = json.loads(json_str)
-        if "errorData" in json_data:
-            if json_data["errorData"]["code"] == "needAdult":
+        json_data = _loads_dict(json_str)
+        # MID-48（2026-09-21 海外批次）：与 PandaTV live/play 同族实现，加固口径保持一致
+        # （详见 get_pandatv_stream_data 内 MID-48 注释）。
+        error_data = _dig(json_data, "errorData")
+        if error_data is not None:
+            error_code = _dig(error_data, "code")
+            if error_code == "needAdult":
                 raise RuntimeError(
                     f"{url} The live stream is only accessible to logged-in adults. Please ensure that "
                     f"the cookie is correctly filled in the configuration file after logging in."
                 )
             else:
-                raise RuntimeError(json_data["errorData"]["code"], json_data["message"])
-        m3u8_url = json_data["PlayList"]["hls"][0]["url"]
+                raise RuntimeError(cast(object, error_code), _dig(json_data, "message"))
+        m3u8_url = _dig_str(json_data, "PlayList", "hls", 0, "url")
+        if not m3u8_url:
+            # 已判在播却取不到 HLS（改版 / 风控降级）：改按无源返回并留线索，
+            # 不再让 KeyError 被装饰器伪装成「未开播」而丢掉主播名。
+            _warn_api_abnormal(json_str, "WinkTV live/play", "PlayList.hls[0].url", json_data)
+            result["is_live"] = False
+            return result
         play_url_list = await get_play_url_list(m3u8=m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
         result["m3u8_url"] = m3u8_url
         result["play_url_list"] = play_url_list
@@ -2713,7 +3453,14 @@ async def get_flextv_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
             raise ConnectionError(
                 "Failed to retrieve FlexTV live streaming data, please switch to a different proxy and try again."
             )
-        return cast(dict[str, object], json.loads(json_str))
+        # MID-48（2026-09-21 海外批次）：streams 接口对风控返回 HTML 时裸 json.loads 抛错，
+        # 会被上层 get_flextv_stream_data 的宽 except 记成「拉取失败」而看不出成因；
+        # 改走 _loads_dict，sources 整个键缺失（风控壳页 / 改版）才留线索——
+        # {"sources": []} 是「频道存在但未开播」的常态，不得刷告警。
+        json_data = _loads_dict(json_str)
+        if _dig(json_data, "sources") is None:
+            _warn_api_abnormal(json_str, "TTingLive channels/stream", "sources", json_data)
+        return json_data
 
     json_data = await fetch_data(cookies)
     sources = json_data.get("sources")
@@ -2758,11 +3505,17 @@ async def get_flextv_stream_data(
         if not json_str_match:
             raise ValueError("Failed to find __NEXT_DATA__")
         json_str = json_str_match.group(1)
-        json_data = json.loads(json_str)
-        channel_data = json_data["props"]["pageProps"]["channel"]
+        # MID-48（2026-09-21 海外批次）：__NEXT_DATA__ 命中但内容被截断/换成风控壳页时，
+        # 裸 json.loads 与随后的四级链式索引都抛错，被本函数的宽 except 记成一句「拉取失败」。
+        # 改为安全下钻：结构不合预期时落区分性告警（异常仍按既有路径收敛，不外逸）。
+        json_data = _loads_dict(json_str)
+        channel_data = _dig(json_data, "props", "pageProps", "channel")
+        if not isinstance(channel_data, dict):
+            _warn_api_abnormal(json_str, "TTingLive channel 页(__NEXT_DATA__)", "props.pageProps.channel", json_data)
+            raise ValueError("Failed to get FlexTV channel data")
         # 成人/登录限定房：频道页 message 含韩文「로그인후 이용이 가능합니다.」(需登录)，
         # 此时必须走登录流程换 cookie，否则拿不到流；下方触发 login_flextv 重试整页抓取。
-        login_need = "message" in channel_data and "로그인후 이용이 가능합니다." in channel_data.get("message")
+        login_need = "로그인후 이용이 가능합니다." in _dig_str(channel_data, "message")
         if login_need:
             logger.error(
                 "FlexTV live stream retrieval failed [not logged in]: 19+ live streams are only available for "
@@ -2790,14 +3543,27 @@ async def get_flextv_stream_data(
             if not json_str_match:
                 raise ValueError("Failed to find __NEXT_DATA__")
             json_str = json_str_match.group(1)
-            json_data = json.loads(json_str)
-            channel_data = json_data["props"]["pageProps"]["channel"]
+            json_data = _loads_dict(json_str)
+            channel_data = _dig(json_data, "props", "pageProps", "channel")
+            if not isinstance(channel_data, dict):
+                # 登录后的二次抓取仍拿不到频道对象：多为登录态失效/风控，与首抓同样归因
+                _warn_api_abnormal(
+                    json_str, "TTingLive channel 页(__NEXT_DATA__)", "props.pageProps.channel", json_data
+                )
+                raise ValueError("Failed to get FlexTV channel data")
 
         # 频道页若带 message 字段说明是未开播/受限占位页，无 message 才是真实在播频道。
-        live_status = "message" not in channel_data
+        live_status = _dig(channel_data, "message") is None
         if live_status:
-            anchor_id = channel_data["owner"]["loginId"]
-            anchor_name = f"{channel_data['owner']['nickname']}-{anchor_id}"
+            anchor_id = _dig(channel_data, "owner", "loginId")
+            if anchor_id is None:
+                # 已判在播却无 owner：接口改版/风控降级，与「未开播」区分
+                _warn_api_abnormal(
+                    json_str, "TTingLive channel 页(__NEXT_DATA__)", "props.pageProps.channel.owner", json_data
+                )
+                raise ValueError("Failed to get FlexTV owner data")
+            anchor_nick = _dig(channel_data, "owner", "nickname")
+            anchor_name = f"{anchor_nick}-{anchor_id}"
             result["anchor_name"] = anchor_name
             play_url = await get_flextv_stream_url(url=url, proxy_addr=proxy_addr, cookies=cookies)
             if play_url:
@@ -2883,10 +3649,13 @@ def get_looklive_secret_data(text: str | dict[str, str]) -> tuple[str, str]:
     return enc_text.decode(), enc_sec_key
 
 
+# CR-12 修复：与其余 50+ 平台入口保持一致，补兜底装饰器。缺失时该平台的任意异常
+# （含下方 room_id 正则失配）都会穿透到 main.py 计入 host 熔断失败样本。
+@trace_error_decorator
 async def get_looklive_stream_url(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
-    # 通过PC网页端的接口获取完整直播源，只有params和encSecKey这两个加密请求参数。
+    # 获取网易 Look 直播流地址（PC 网页端接口，签名细节见下方 get_looklive_secret_data 调用处）
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
@@ -2900,7 +3669,10 @@ async def get_looklive_stream_url(
     if cookies:
         headers["Cookie"] = cookies
 
-    room_id_match = re.search("live\\?id=(.*?)&", url)
+    # MI-17 修复：原正则尾部写死 `&`，以 id 结尾的分享链接
+    # （https://look.163.com/live?id=32108888，无后续参数）必然匹配失败 →
+    # ValueError → 该直播间永久解析失败。改为字符类终止，覆盖 & ? # 与串尾。
+    room_id_match = re.search(r"live\?id=([^&?#]+)", url)
     if not room_id_match:
         raise ValueError("Failed to find room id in url")
     room_id = room_id_match.group(1)
@@ -2911,29 +3683,54 @@ async def get_looklive_stream_url(
     api = "https://api.look.163.com/weapi/livestream/room/get/v3"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers, data=request_data)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["data"]["anchor"]["nickName"]
-    live_status = json_data["data"]["liveStatus"]
+    # MID-48（2026-09-21 海外批次）：weapi 接口对风控/参数失效返回 HTML 或不含 data 的信封，
+    # 原 `["data"]["anchor"]["nickName"]` 三级索引抛错后被装饰器伪装成「未开播」。
+    json_data = _loads_dict(json_str)
+    room_block = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(room_block, "liveStatus") is None:
+        _warn_api_abnormal(json_str, "Look 房间接口 room/get/v3", "data.liveStatus", json_data)
+        return {"anchor_name": _dig_str(room_block, "anchor", "nickName"), "is_live": False}
+    anchor_name = _dig_str(room_block, "anchor", "nickName")
+    live_status = _dig(room_block, "liveStatus")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # liveStatus==1 为开播；liveType==1 是纯音频直播（无视频流，无法录视频，仅提示不报错）。
     if live_status == 1:
         result["is_live"] = True
+        room_info = cast(dict[str, object], _dig(room_block, "roomInfo") or {})
         # liveType==1 是纯音频直播：无视频流可录，仅提示不取 play_url
-        if json_data["data"]["roomInfo"]["liveType"] == 1:
+        if _dig(room_info, "liveType") == 1:
             logger.info("Look live currently only supports audio live streaming, not video live streaming!")
         else:
-            play_url_list = json_data["data"]["roomInfo"]["liveUrl"]
-            live_title = json_data["data"]["roomInfo"]["title"]
+            play_url_list = cast(dict[str, object], _dig(room_info, "liveUrl") or {})
+            live_title = _dig_str(room_info, "title")
+            flv_url = _dig_str(play_url_list, "httpPullUrl")
+            m3u8_url = _dig_str(play_url_list, "hlsPullUrl")
+            # MID-2212（2026-09-22）：原 `if not flv_url or not m3u8_url` 把「FLV 与 HLS 同时存在」
+            # 当开播必要条件，与上层 stream_select 的「hls/flv/record_url 三通道各自可空、按可用性
+            # 回退」设计相反——只下发单路的房间每轮被判未开播，且「未开播」轮次刻意静默，用户与
+            # 日志都无线索。改为两路皆空才判无源，否则只写实际拿到的那一路。
+            if not flv_url and not m3u8_url:
+                # 已判开播却两路皆无（改版 / 风控降级）：按无源返回并留线索
+                _warn_api_abnormal(json_str, "Look 房间接口 room/get/v3", "data.roomInfo.liveUrl", json_data)
+                result["is_live"] = False
+                return result
             result |= {
                 "title": live_title,
-                "flv_url": play_url_list["httpPullUrl"],
-                "m3u8_url": play_url_list["hlsPullUrl"],
-                "record_url": play_url_list["hlsPullUrl"],
+                "flv_url": flv_url,
+                "m3u8_url": m3u8_url,
             }
+            # MID-2212：record_url 恒取可用的一路（HLS 优先、退 FLV），与上方判据同向放宽。
+            result["record_url"] = m3u8_url or flv_url
     return result
 
 
-@trace_error_decorator
+# SEV-07 修复（2026-09-20，CR-12 契约收口）：本函数返回二元组 (token, partnerCode)，
+# 原先挂 trace_error_decorator（失败值 {"is_live": False}）——调用点 `new_access_token,
+# new_partner_code = await login_popkontv(...)` 解包 dict 抛 ValueError，被调用方自己的
+# 装饰器二次吞掉，函数内三条路径（E4010 / HTTPStatusError / 网络异常）raise 的
+# 「账号密码错误」这一用户可自助修复的提示彻底丢失。改用 _or_none：失败回 None，
+# 原始异常信息由装饰器 guard 落 error 日志，调用点显式判空后再解包。
+@trace_error_decorator_or_none
 async def login_popkontv(
     username: str, password: str, proxy_addr: OptionalStr = None, code: OptionalStr = "P-00001"
 ) -> tuple[str, str]:
@@ -2942,7 +3739,7 @@ async def login_popkontv(
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
         # 应用级固定 API 凭据（非用户私人凭据），嵌入于 PopkonTV 客户端，无法从主页动态获取
-        "Authorization": "Basic FpAhe6mh8Qtz116OENBmRddbYVirNKasktdXQiuHfm88zRaFydTsFy63tzkdZY0u",
+        "Authorization": "Basic " + _popkontv_credential(),
         "Content-Type": "application/json",
         "Origin": "https://www.popkontv.com",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
@@ -2985,7 +3782,10 @@ async def login_popkontv(
         raise
 
 
-@trace_error_decorator
+# CR-12 修复：本函数返回二元组，失败时必须回 None 而不是 {"is_live": False}——
+# 后者会让下方 `anchor_name, room_info = await get_popkontv_stream_data(...)` 抛
+# ValueError，该错误又被调用方自己的装饰器二次吞没，根因彻底丢失。
+@trace_error_decorator_or_none
 async def get_popkontv_stream_data(
     url: str,
     proxy_addr: OptionalStr = None,
@@ -3007,7 +3807,11 @@ async def get_popkontv_stream_data(
     if cookies:
         headers["Cookie"] = cookies
     if "mcid" in url:
-        anchor_id_match = re.search("mcid=(.*?)&", url)
+        # MID-45（2026-09-20，MI-17 收口）：原正则 "mcid=(.*?)&" 要求参数后必有 &，
+        # 形如 https://www.popkontv.com/channel/notices?mcid=XXXX 的分享链接（参数位于串尾）
+        # 恒匹配失败 → ValueError → 装饰器伪装未开播、永久解析失败。
+        #  lookahead 兼收 & / # / 串尾三形态，与同文件 rid= / castId= 已修写法一致。
+        anchor_id_match = re.search("mcid=(.*?)(?=&|#|$)", url)
     else:
         anchor_id_match = re.search("castId=(.*?)(?=&|$)", url)
     if not anchor_id_match:
@@ -3023,18 +3827,24 @@ async def get_popkontv_stream_data(
     api = "https://www.popkontv.com/api/proxy/broadcast/v1/search/all"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers, json_data=data, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-21 海外批次）：search/all 对不存在的 castId 返回不含 data 的信封（或被
+    # 风控换成 HTML），原 `["data"]["broadCastList"]` + 循环内三重索引任一抛错都被 _or_none
+    # 装饰器吞成 None，调用点只报「未开播」。改为安全下钻 + 缺字段归因（仍按既有语义返回 None 契约）。
+    json_data = _loads_dict(json_str)
+    search_data = _dig(json_data, "data")
+    if search_data is None:
+        _warn_api_abnormal(json_str, "PopkonTV search/all", "data.broadCastList", json_data)
+        raise RuntimeError("Failed to retrieve popkontv broadcast list")
 
     partner_code: str | None = ""
     anchor_name = "Unknown"
-    for item in json_data["data"]["broadCastList"]:
-        if item["mcSignId"] == anchor_id:
-            mc_name = item["nickName"]
+    for item in _dig_list(search_data, "broadCastList"):
+        if _dig(item, "mcSignId") == anchor_id:
+            mc_name = _dig(item, "nickName")
             anchor_name = f"{mc_name}-{anchor_id}"
-            partner_code = cast(str | None, item["mcPartnerCode"]) if item else None
+            partner_code = cast(str | None, _dig(item, "mcPartnerCode")) if item else None
             break
 
-    # 搜索接口没带出 partnerCode 时，从 URL 抠或退回默认 code，并补抓 notices 页拿昵称
     if not partner_code:
         # 搜索接口未带出 partnerCode 时，优先从 URL 抠（mcPartnerCode/partnerCode），都没有则用默认 code；
         # 再抓 notices 页用正则抠出 mcNickName 补全主播名（搜索结果里没昵称时的兜底）。
@@ -3057,16 +3867,28 @@ async def get_popkontv_stream_data(
     if not json_str2_match:
         return anchor_name, None
     json_str2 = json_str2_match.group(1)
-    json_data2 = json.loads(json_str2)
-    if "mcData" in json_data2["props"]["pageProps"]:
-        room_data = json_data2["props"]["pageProps"]["mcData"]["data"]
-        is_private = room_data["mc_isPrivate"]
-        cast_start_date_code = room_data["mc_castStartDate"]
-        mc_sign_id = room_data["mc_signId"]
-        cast_type = room_data["castType"]
-        return anchor_name, [cast_start_date_code, partner_code, mc_sign_id, cast_type, is_private]
-    else:
+    # MID-48（2026-09-21 海外批次）：view 页的 __NEXT_DATA__ 命中但内容被截断/换成风控壳页时，
+    # 裸 json.loads 与后续四级链式索引抛错，与「房间存在但未开播」（无 mcData）混成同一条。
+    # 未开播形态（pageProps 里没有 mcData）保持既有静默返回。
+    json_data2 = _loads_dict(json_str2)
+    page_props = _dig(json_data2, "props", "pageProps")
+    if page_props is None:
+        _warn_api_abnormal(json_str2, "PopkonTV live/view(__NEXT_DATA__)", "props.pageProps", json_data2)
+        raise RuntimeError("Failed to retrieve popkontv live view page data")
+    if _dig(page_props, "mcData") is None:
         return anchor_name, None
+    room_data = _dig(page_props, "mcData", "data")
+    room_keys = ("mc_isPrivate", "mc_castStartDate", "mc_signId", "castType")
+    if not isinstance(room_data, dict) or any(_dig(room_data, key) is None for key in room_keys):
+        # mcData 在但四个开播字段任一缺失/为 null：原实现同样在此抛 KeyError/ValueError 被
+        # _or_none 吞成 None，只是没有线索；补一条区分性告警后维持同一返回契约。
+        _warn_api_abnormal(json_str2, "PopkonTV live/view(__NEXT_DATA__)", "props.pageProps.mcData.data", json_data2)
+        raise RuntimeError("Failed to retrieve popkontv room data")
+    is_private = _dig(room_data, "mc_isPrivate")
+    cast_start_date_code = _dig(room_data, "mc_castStartDate")
+    mc_sign_id = _dig(room_data, "mc_signId")
+    cast_type = _dig(room_data, "castType")
+    return anchor_name, [cast_start_date_code, partner_code, mc_sign_id, cast_type, is_private]
 
 
 @trace_error_decorator
@@ -3081,22 +3903,31 @@ async def get_popkontv_stream_url(
     # 获取 PopkonTV 直播流地址
     # 解析链路：复用 get_popkontv_stream_data 的 room_info → castwatchonoffguest 拿 HLS；
     # token 失效(E5000/400)自动登录刷新（新 token 长度须 640）；返回 is_live + m3u8 + new_token。
+    # new_token 契约（SEV-N02 修复，2026-09-21）：**裸 token，不含 "Bearer "**——main.py 把它原样
+    # 写入 config.ini 的 [Authorization] popkontv_token，读回后经下方 access_token 归一再补前缀。
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-        "ClientKey": "Client FpAhe6mh8Qtz116OENBmRddbYVirNKasktdXQiuHfm88zRaFydTsFy63tzkdZY0u",
+        "ClientKey": "Client " + _popkontv_credential(),
         "Content-Type": "application/json",
         "Origin": "https://www.popkontv.com",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
 
     # 调用方透传 Bearer token 时优先采用；否则复用游客态，token 失效由下方分支触发登录刷新
+    # SEV-N02 修复（2026-09-21，CODE_REVIEW_2026-09-21）：入参先归一成**裸 token**再补前缀。
+    # 存量用户的 [Authorization] popkontv_token 已被旧实现写坏成自带 "Bearer "（旧实现把带前缀的
+    # 串整体落盘，这里又拼一次 → 实际发出 "Bearer Bearer <token>"，服务端必回 400 / E5000）。
+    # 读取侧剥前缀，让这批配置无需用户手工修改即可自愈。
     if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
+        _bare_access_token = access_token.strip().removeprefix("Bearer ").strip()
+        headers["Authorization"] = f"Bearer {_bare_access_token}"
 
-    anchor_name, room_info = await get_popkontv_stream_data(
-        url, proxy_addr=proxy_addr, code=partner_code, username=username
-    )
+    # CR-12：装饰失败返回 None，显式判空后再解包，避免拿到 dict 触发 ValueError
+    popkon_data = await get_popkontv_stream_data(url, proxy_addr=proxy_addr, code=partner_code, username=username)
+    if not popkon_data:
+        return {"anchor_name": "", "is_live": False}
+    anchor_name, room_info = popkon_data
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     new_token = None
     if room_info:
@@ -3152,24 +3983,40 @@ async def get_popkontv_stream_url(
                     "popkontv platform in the config.ini file."
                 )
             logger.info("Logging into popkontv platform...")
-            new_access_token, new_partner_code = await login_popkontv(
+            # SEV-07：login_popkontv 现为 _or_none（登录失败/异常回 None，账号密码错误原文
+            # 已由装饰器 guard 落 error 日志）。CR-12 契约——判空后再解包。
+            login_result = await login_popkontv(
                 username=username, password=password, proxy_addr=proxy_addr, code=current_partner_code
             )
+            if not login_result:
+                raise RuntimeError("popkontv login failed, please check if the account and password are correct")
+            new_access_token, new_partner_code = login_result
             # 新 token 长度固定 640 字节是登录接口的真实返回特征，偏离即说明登录未真正成功。
-            # 新 token 长度固定 640 是登录接口真实返回特征，偏离即说明登录未真正成功
             if new_access_token and len(new_access_token) == 640:
                 logger.info("Logged into popkontv platform successfully! Starting to fetch live streaming data...")
                 headers["Authorization"] = f"Bearer {new_access_token}"
-                new_token = f"Bearer {new_access_token}"
+                # SEV-N02 修复（2026-09-21，CODE_REVIEW_2026-09-21）：落盘值改为**裸 token**，
+                # "Bearer " 前缀只存在于请求头。旧实现在此处把带前缀的串一并回传，main.py 原样写入
+                # config.ini 的 [Authorization] popkontv_token，下一轮读回后又拼一次前缀，
+                # 双前缀凭据必被拒 → 每个检测轮次（默认 120s）都重跑一次明文账号密码登录
+                # （自建客户端 + 配置写回 + 触发备份线程），len==640 的长度校验形同虚设。
+                new_token = new_access_token
                 current_partner_code = new_partner_code
                 json_str = await fetch_data(headers, current_partner_code)
                 json_str = _get_str_response(json_str)
             else:
                 raise RuntimeError("popkontv login failed, please check if the account and password are correct")
-        json_data = json.loads(json_str)
-        status_msg = json_data["statusMsg"]
+        # MID-48（2026-09-21 海外批次）：castwatchonoffguest 被风控换成 HTML、或返回不含 statusCd
+        # 的信封时，原 `["statusMsg"]` + `["statusCd"]` 索引抛错后被装饰器伪装成「未开播」，与既有
+        # 可诊断的 L000A / 未知状态码分支混成同一条。补一条「响应结构不合预期」告警后再交装饰器兜底。
+        json_data = _loads_dict(json_str)
+        status_cd = _dig_str(json_data, "statusCd")
+        status_msg = _dig_str(json_data, "statusMsg")
+        if not status_cd:
+            _warn_api_abnormal(json_str, "PopkonTV castwatchonoffguest", "statusCd", json_data)
+            raise RuntimeError("Failed to retrieve live stream source, no statusCd in response")
         # L000A：未实名/未手机验证会员，服务端拒绝提供流；L0000：成功拿到 HLS；L0001：首请求需二次确认。
-        if json_data["statusCd"] == "L000A":
+        if status_cd == "L000A":
             # F-11：print → logger（多参数用字符串拼接，避免 f-string 触发 i18n 门禁）
             logger.error("Failed to retrieve live stream source, " + str(status_msg))
             raise RuntimeError(
@@ -3177,18 +4024,24 @@ async def get_popkontv_stream_url(
                 "please verify your mobile phone at the bottom of the 'My Page' > 'Edit My "
                 "Information' to use the service."
             )
-        elif json_data["statusCd"] == "L0001":
+        elif status_cd == "L0001":
             cast_start_date_code_int = int(cast(str, cast_start_date_code)) - 1
             # 对同参数再请求一次（首请求偶发需二次确认才返回真实 HLS）。注意：上面算出的
             # cast_start_date_code_int（原值减 1）实际并未传入本次重试（fetch_data 闭包仍用原值），
             # 若该减 1 才是正确值，则此处重试可能仍失败——属潜在的时效/边界坑位。
             json_str = await fetch_data(headers, current_partner_code)
             json_str = _get_str_response(json_str)
-            json_data = json.loads(json_str)
-            m3u8_url = json_data["data"]["castHlsUrl"]
+            json_data = _loads_dict(json_str)
+            m3u8_url = _dig_str(json_data, "data", "castHlsUrl")
+            if not m3u8_url:
+                _warn_api_abnormal(json_str, "PopkonTV castwatchonoffguest", "data.castHlsUrl", json_data)
+                raise RuntimeError("Failed to retrieve live stream source, no castHlsUrl in response")
             result |= {"m3u8_url": m3u8_url, "record_url": m3u8_url}
-        elif json_data["statusCd"] == "L0000":
-            m3u8_url = json_data["data"]["castHlsUrl"]
+        elif status_cd == "L0000":
+            m3u8_url = _dig_str(json_data, "data", "castHlsUrl")
+            if not m3u8_url:
+                _warn_api_abnormal(json_str, "PopkonTV castwatchonoffguest", "data.castHlsUrl", json_data)
+                raise RuntimeError("Failed to retrieve live stream source, no castHlsUrl in response")
             result |= {"m3u8_url": m3u8_url, "record_url": m3u8_url}
         else:
             raise RuntimeError("Failed to retrieve live stream source,", status_msg)
@@ -3196,7 +4049,13 @@ async def get_popkontv_stream_url(
     return result
 
 
-@trace_error_decorator
+# SEV-07 修复（2026-09-20，CR-12 契约收口）：本函数返回 OptionalStr（cookie 串或 None），
+# 原先挂 trace_error_decorator——cs_session_id 抠取与首次抓页都在内层 try 之外，抛错即被
+# 转成 {"is_live": False}；调用点判空写的是 `if not new_cookie: raise ...`，**dict 恒为真**，
+# 于是把 dict 赋给 headers["Cookie"] 交给 httpx → TypeError → 又被外层装饰器吞 →
+# 需登录房间在风控/改版时表现为静默「未开播」。改用 _or_none 后失败回 None，
+# 调用点判空 + isinstance str 断言双保险。
+@trace_error_decorator_or_none
 async def login_twitcasting(
     account_type: str, username: str, password: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> OptionalStr:
@@ -3276,7 +4135,6 @@ async def get_twitcasting_stream_url(
     parts = url.split("?")[0].split("/")
     # 畸形 URL（无主播 ID 段）：显式报错而非 IndexError
     if len(parts) < 4 or not parts[3].strip():
-        # 畸形 URL（无主播 ID 段）：显式报错而非 IndexError
         raise RuntimeError(f"无法从链接中解析 TwitCasting 主播 ID: {url}")
     anchor_id = parts[3]
     # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
@@ -3311,7 +4169,9 @@ async def get_twitcasting_stream_url(
                 proxy_addr=proxy_addr,
                 cookies=cookies,
             )
-            if not new_cookie:
+            # SEV-07：判空 + isinstance str 双保险——装饰器契约为 OptionalStr，
+            # 非字符串（含旧 dict 形态）绝不允许写进 Cookie 头（httpx 会 TypeError）。
+            if not isinstance(new_cookie, str) or not new_cookie:
                 raise RuntimeError(
                     "TwitCasting login failed, please check if the account password in the "
                     "configuration file is correct"
@@ -3330,7 +4190,8 @@ async def get_twitcasting_stream_url(
             proxy_addr=proxy_addr,
             cookies=cookies,
         )
-        if not new_cookie:
+        # SEV-07：同上——判空 + isinstance str 断言后才允许写 Cookie 头
+        if not isinstance(new_cookie, str) or not new_cookie:
             raise RuntimeError(
                 "TwitCasting login failed, please check if the account and password in the "
                 "configuration file are correct"
@@ -3345,16 +4206,22 @@ async def get_twitcasting_stream_url(
         url_streamserver = f"https://twitcasting.tv/streamserver.php?target={anchor_id}&mode=client&player=pc_web"
         stream_data = await async_req(url_streamserver, proxy_addr=proxy_addr, headers=headers)
         stream_data = _get_str_response(stream_data)
-        json_data = json.loads(stream_data)
+        # MID-48（2026-09-21 海外批次）：streamserver 接口被风控时返回 HTML，裸 json.loads 抛错后
+        # 与「页面判定在播但已无 HLS」混成同一条（后者才是既有的 RuntimeError 语义）。
+        # 只在整体解析不出对象时补告警，避免给「刚下播」这种常态刷噪声。
+        json_data = _loads_dict(stream_data)
+        stream_dict = _dig(json_data, "tc-hls", "streams")
+        if not json_data:
+            _warn_api_abnormal(stream_data, "TwitCasting streamserver", "tc-hls.streams", json_data)
         # tc-hls/streams 缺失即无可用 HLS，报错提示检查链接
-        if not json_data.get("tc-hls") or not json_data["tc-hls"].get("streams"):
+        if not stream_dict:
             raise RuntimeError("No m3u8_url,please check the url")
 
-        stream_dict = json_data["tc-hls"]["streams"]
+        streams = cast(dict[str, object], stream_dict)
         quality_order = {"high": 0, "medium": 1, "low": 2}
         # 按 高>中>低 顺序排序画质候选，未识别的画质 key 放到最后（quality_order.get 默认 99），
         # 避免服务端新增档位时 KeyError 导致整段解析失败。
-        sorted_streams = sorted(stream_dict.items(), key=lambda item: quality_order.get(item[0], 99))
+        sorted_streams = sorted(streams.items(), key=lambda item: quality_order.get(item[0], 99))
         play_url_list = [url for _, url in sorted_streams]
         result |= {"title": live_title, "is_live": True, "play_url_list": play_url_list}
     result["new_cookies"] = new_cookie
@@ -3386,7 +4253,11 @@ async def get_baidu_stream_data(
             "h5-4581281f80bb8968bd9a9dfba6050d3a",
         ]
     )
-    room_id_match = re.search("room_id=(.*?)&", url)
+    # MID-45（2026-09-20，MI-17 收口）：原正则 "room_id=(.*?)&" 要求参数后必有 &，
+    # https://live.baidu.com/m/media/pclive/pchome/live.html?room_id=9175031377 这类
+    # 参数位于串尾的分享链接恒匹配失败 → ValueError → 永久「未开播」。
+    # lookahead 兼收 & / # / 串尾，与同文件 rid= / castId= 已修写法一致。
+    room_id_match = re.search("room_id=(.*?)(?=&|#|$)", url)
     if not room_id_match:
         raise ValueError("Failed to find room_id in url")
     room_id = room_id_match.group(1)
@@ -3409,18 +4280,33 @@ async def get_baidu_stream_data(
     app_api = f"https://mbd.baidu.com/searchbox?{urllib.parse.urlencode(params)}"
     json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    data_dict = json_data.get("data", {})
+    json_data = _loads_dict(json_str)
+    data_dict = cast(dict[str, object], json_data.get("data") or {})
     if not data_dict:
+        # MID-48：data 缺失既可能是「房间不存在/未开播」也可能是风控换成信封/HTML。
+        # 二者都值得留线索（用户侧只会看到「网址内容获取失败」），故不区分 json_str 是否为空，
+        # 由 _warn_api_abnormal 内部按「空响应 / 缺字段」两种成因分别落日志。
+        _warn_api_abnormal(json_str, "百度 searchbox cmd=371", "data", json_data)
         return {"anchor_name": "", "is_live": False}
-    key = list(data_dict.keys())[0]
-    data = data_dict[key]
-    anchor_name = data["host"]["name"]
+    # MIN-2222 修复（2026-09-22）：原取 `list(data_dict.keys())[0]`（**首个键**）——该接口的 data 以
+    # room_id 为键（见 tests/test_spider_hardening.py 的百度用例），响应里若混入其它键，dict 顺序一变就取错。
+    # 先按稳定键名 room_id 取；取不到再退回「首个 dict 值」并显式做类型过滤（防取到非 dict 值）。
+    # 该接口 data 结构为 {"<room_id>": {...}}，room_id 即本次请求所用的房间号，是唯一稳定标识。
+    data: object = None
+    room_key = _dig(data_dict, room_id)
+    if isinstance(room_key, dict):
+        data = room_key
+    else:
+        for _v in data_dict.values():
+            if isinstance(_v, dict):
+                data = _v
+                break
+    anchor_name = _dig_str(data, "host", "name")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
-    if data["status"] == "0":
+    if _dig(data, "status") == "0":
         result["is_live"] = True
-        live_title = data["video"]["title"]
-        play_url_list = data["video"]["url_clarity_list"]
+        live_title = _dig_str(data, "video", "title")
+        play_url_list = _dig_list(data, "video", "url_clarity_list")
         # 百度直播只下发 flv 地址，但本机只支持录制 m3u8，故把 flv 地址的「扩展名+host」剥掉、
         # 换成固定 hls CDN 前缀拼回 .m3u8，得到可拉流的 HLS 地址。
         url_list = []
@@ -3428,20 +4314,24 @@ async def get_baidu_stream_data(
         if play_url_list:
             # 结构一：url_clarity_list 直接给每档位的 flv 串，剥 .flv 与 host 取流 id 重拼为 m3u8
             for i in play_url_list:
-                flv = i.get("urls", {}).get("flv", "")
+                flv = _dig_str(i, "urls", "flv")
                 flv_id = flv.rsplit(".", maxsplit=1)[0].rsplit("/", maxsplit=1)
                 url_list.append(prefix + (flv_id[1] if len(flv_id) > 1 else "") + ".m3u8")
         else:
             # 结构二：url_list 嵌套 urls[0].hls（带查询参数），同样剥查询+host 取流 id
-            play_url_list = data["video"]["url_list"]
+            play_url_list = _dig_list(data, "video", "url_list")
             for i in play_url_list:
-                urls = i.get("urls", [])
-                hls = urls[0].get("hls", "") if urls else ""
+                urls = _dig_list(i, "urls")
+                hls = _dig_str(urls[0], "hls") if urls else ""
                 hls_id = hls.rsplit("?", maxsplit=1)[0].rsplit("/", maxsplit=1)
                 url_list.append(prefix + (hls_id[1] if len(hls_id) > 1 else ""))
 
         if url_list:
             result |= {"is_live": True, "title": live_title, "play_url_list": url_list}
+        else:
+            # status=="0" 却在两种清单结构里都拿不到地址：接口改版/风控降级，不是「未开播」
+            _warn_api_abnormal(json_str, "百度 searchbox cmd=371", "video.url_clarity_list", json_data)
+            result["is_live"] = False
     return result
 
 
@@ -3471,16 +4361,20 @@ async def get_weibo_stream_data(
         parts = url.split("?")[0].rsplit("/u/", maxsplit=1)
         # 畸形 URL（无 /u/ 用户段）：显式报错而非 IndexError
         if len(parts) < 2 or not parts[1].strip():
-            # 畸形 URL（无 /u/ 用户段）：显式报错而非 IndexError
             raise RuntimeError(f"无法从链接中解析微博用户 ID: {url}")
         uid = parts[1]
         web_api = f"https://weibo.com/ajax/statuses/mymblog?uid={uid}&page=1&feature=0"
         json_str = await async_req(web_api, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
-        for i in json_data["data"]["list"]:
-            if "page_info" in i and i["page_info"]["object_type"] == "live":
-                room_id = i["page_info"]["object_id"]
+        # MID-48（2026-09-21）：微博列表接口被风控时会返回 HTML 或 {"error": ...} 信封，
+        # 原 json.loads + ["data"]["list"] 任一失败都抛错 → 装饰器 → 「未开播」。列表为空按
+        # 「该用户无直播」静默返回（正常离线形态、不刷日志），仅响应解析不出对象时归因。
+        json_data = _loads_dict(json_str)
+        if not json_data:
+            _warn_api_abnormal(json_str, "微博 mymblog", "data.list", json_data)
+        for i in _dig_list(json_data, "data", "list"):
+            if _dig(i, "page_info", "object_type") == "live":
+                room_id = _dig_str(i, "page_info", "object_id")
                 break
 
     result: dict[str, object] = {"anchor_name": "", "is_live": False}
@@ -3489,23 +4383,46 @@ async def get_weibo_stream_data(
         # app_api = f'https://weibo.com/l/!/2/wblive/room/show_pc_live.json?live_id={room_id}'
         json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
-        anchor_name = json_data["data"]["user_info"]["name"]
+        json_data = _loads_dict(json_str)
+        if _dig(json_data, "data", "user_info") is None or _dig(json_data, "data", "item") is None:
+            # 房间不存在/已被封时接口只回 {error/code} 信封、无 data.user_info；此前与
+            # 「接口改版」同样表现为 data["user_info"]["name"] 的 KeyError → 装饰器 → 未开播。
+            _warn_api_abnormal(json_str, "微博 pc/anchor/live", "data.user_info / data.item", json_data)
+            return result
+        anchor_name = _dig_str(json_data, "data", "user_info", "name")
         result["anchor_name"] = anchor_name
-        live_status = json_data["data"]["item"]["status"]
+        live_status = _dig(json_data, "data", "item", "status")
         if live_status == 1:
             result["is_live"] = True
-            live_title = json_data["data"]["item"]["desc"]
-            play_url_list = json_data["data"]["item"]["stream_info"]["pull"]
-            m3u8_url = play_url_list["live_origin_hls_url"]
-            flv_url = play_url_list["live_origin_flv_url"]
+            live_title = _dig_str(json_data, "data", "item", "desc")
+            play_url_list = _dig(json_data, "data", "item", "stream_info", "pull")
+            m3u8_url = _dig_str(play_url_list, "live_origin_hls_url")
+            flv_url = _dig_str(play_url_list, "live_origin_flv_url")
+            # MID-2212（2026-09-22）：原 `if not m3u8_url or not flv_url` 把「FLV 与 HLS 同时存在」
+            # 当开播必要条件，与上层 stream_select 的「hls/flv/record_url 三通道各自可空、按可用性
+            # 回退」设计相反——只下发单路的房间每轮被判未开播（「未开播」轮次刻意静默，用户与日志
+            # 都无线索），且归因文案还写「风控降级或字段改名」把方向带偏。改为两路皆空才判无源。
+            if not m3u8_url and not flv_url:
+                # status 已报在播却两路皆无：接口改版/风控降级，不是「未开播」
+                _warn_api_abnormal(json_str, "微博 pc/anchor/live", "item.stream_info.pull", json_data)
+                result["is_live"] = False
+                return result
             result["title"] = live_title
             # 第二组候选把地址里的画质后缀（"_原画"/"_蓝光"等）去掉，回退到默认清晰度，
             # 当原始清晰度档位在 CDN 上不可用时仍有可用源；两组都进 play_url_list 由上层按可达性校验。
+            # 单路缺失（MID-2212）时该路候选留空串，由上层按「三通道各自可空」的口径跳过。
             result["play_url_list"] = [
                 {"m3u8_url": m3u8_url, "flv_url": flv_url},
-                {"m3u8_url": m3u8_url.split("_")[0] + ".m3u8", "flv_url": flv_url.split("_")[0] + ".flv"},
+                {
+                    "m3u8_url": m3u8_url.split("_")[0] + ".m3u8" if m3u8_url else "",
+                    "flv_url": flv_url.split("_")[0] + ".flv" if flv_url else "",
+                },
             ]
+            # 单路缺失时补 record_url 兜底（HLS 优先、退 FLV）：上层 stream_select 以 m3u8/hls 为主
+            # 通道，纯 FLV 房间（无 HLS）必须借 record_url 才能取到流；两路齐备或纯 HLS 时不加，
+            # 保持既有返回结构不变（避免给已有上游路径平添一条结构差异）。
+            if not m3u8_url:
+                result["record_url"] = flv_url
     return result
 
 
@@ -3538,17 +4455,26 @@ async def get_kugou_stream_url(
     app_api = f"https://service2.fanxing.kugou.com/roomcen/room/web/cdn/getEnterRoomInfo?roomId={room_id}"
     json_str = await async_req(url=app_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["data"]["normalRoomInfo"]["nickName"]
+    # MID-48：getEnterRoomInfo 对不存在房间/风控返回不含 data.normalRoomInfo 的 JSON 或 HTML。
+    # 此处不能简单把「取不到昵称」并入下方那条音乐频道 RuntimeError——那会把接口异常
+    # 说成「请换房间」，用户按提示换地址也解决不了。先判响应结构、再判业务空值。
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "data", "normalRoomInfo") is None:
+        _warn_api_abnormal(json_str, "酷狗 getEnterRoomInfo", "data.normalRoomInfo", json_data)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(json_data, "data", "normalRoomInfo", "nickName")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # 音乐频道房间不支持录制，显式抛错提示换房间
     if not anchor_name:
         raise RuntimeError(
             "Music channel live rooms are not supported for recording, please switch to a different live room."
         )
-    live_status = json_data["data"]["liveType"]
-    # 酷狗用 liveType==-1 表示未开播，其它值（0/1 等）视为在播；注意这里是「!= -1」而非 == 1。
-    # 酷狗 liveType==-1 表示未开播，其它值（0/1 等）视为在播（注意是 != -1 而非 == 1）
+    live_status = _dig(json_data, "data", "liveType")
+    if live_status is None:
+        # liveType 缺失不能按「!= -1」当作在播（会把改版误判为开播并白跑第二次请求）
+        _warn_api_abnormal(json_str, "酷狗 getEnterRoomInfo", "data.liveType", json_data)
+        return result
+    # 酷狗用 liveType==-1 表示未开播，其它值（0/1 等）视为在播（注意是「!= -1」而非 == 1）
     if live_status != -1:
         params = {
             "std_rid": room_id,
@@ -3565,10 +4491,19 @@ async def get_kugou_stream_url(
         api = f"https://fx1.service.kugou.com/video/pc/live/pull/mutiline/streamaddr?{urllib.parse.urlencode(params)}"
         json_str2 = await async_req(api, proxy_addr=proxy_addr, headers=headers)
         json_str2 = _get_str_response(json_str2)
-        json_data2 = json.loads(json_str2)
-        stream_data = json_data2["data"]["lines"]
+        json_data2 = _loads_dict(json_str2)
+        if _dig(json_data2, "data") is None:
+            # 已判在播却拿不到 data（含 lines）：签名/接口异常，与「lines 为空」的普通离线形态区分
+            _warn_api_abnormal(json_str2, "酷狗 mutiline/streamaddr", "data.lines", json_data2)
+            return result
+        stream_data = _dig_list(json_data2, "data", "lines")
         if stream_data:
-            flv_url = stream_data[-1]["streamProfiles"][0]["httpsFlv"][0]
+            flv_url = _dig_str(stream_data[-1], "streamProfiles", 0, "httpsFlv", 0)
+            if not flv_url:
+                _warn_api_abnormal(
+                    json_str2, "酷狗 mutiline/streamaddr", "lines[-1].streamProfiles[0].httpsFlv[0]", json_data2
+                )
+                return result
             result |= {"is_live": True, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -3579,8 +4514,15 @@ async def get_twitchtv_room_info(
     # 获取 Twitch 直播间信息
     # 动态获取 Twitch Web 端公开 Client-Id，替代原硬编码值
     client_id = await _ensure_twitch_client_id(proxy_addr)
+    # MID-48（2026-09-20）：Client-Id 拉取失败（Twitch 改版/风控）时原先照发 `Client-Id: ""`，
+    # 制造「必然失败但无日志」的组合——GQL 401 后错误数组穿过守卫再 KeyError，
+    # 最终被上层装饰器伪装成「未开播」。现在缺凭据直接显式失败并告警（MID-33 的 TTL 重取
+    # 保证下一轮会再试，而不是进程内永久拿同一个空值）。
+    if not client_id:
+        logger.warning("Twitch Client-Id unavailable (homepage extraction failed), skip GQL request this round")
+        raise RuntimeError("Failed to obtain Twitch Client-Id")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
+        "User-Agent": _TWITCH_WEB_UA,
         "Accept-Language": "zh-CN",
         "Referer": "https://www.twitch.tv/",
         "Client-Id": client_id,
@@ -3609,16 +4551,29 @@ async def get_twitchtv_room_info(
         "https://gql.twitch.tv/gql", proxy_addr=proxy_addr, headers=headers, json_data=data, abroad=True
     )
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-20）：GQL 批量查询响应是 **list**（_loads_dict 只收 dict，不适用），
+    # 保留 json.loads 但判掉 JSONDecodeError；并处理此前穿过守卫的非空 errors 数组——
+    # 原实现 `json_data[0]["data"]["userOrError"]` 对 errors 响应直接 KeyError，
+    # 被上层装饰器吞成「未开播」，真实原因（GQL 拒绝/凭据问题）在日志里彻底丢失。
+    try:
+        json_data = cast(object, json.loads(json_str))
+    except json.JSONDecodeError as e:
+        logger.warning("Twitch GQL response is not valid JSON (WAF page? truncated?): " + type(e).__name__)
+        raise RuntimeError("Failed to parse Twitch GQL response") from e
     # Twitch GQL 返回异常（非预期数组）即视为拿用户数据失败
-    if not json_data or not isinstance(json_data, list):
+    if not json_data or not isinstance(json_data, list) or not isinstance(json_data[0], dict):
         raise RuntimeError("Failed to retrieve Twitch user data")
-    user_data = json_data[0]["data"]["userOrError"]
-    login_name = user_data["login"]
-    nickname = f"{user_data['displayName']}-{login_name}"
+    first_item = cast(dict[str, object], json_data[0])
+    gql_errors = first_item.get("errors")
+    if gql_errors:
+        logger.warning("Twitch GQL returned errors for ChannelShell: " + str(gql_errors)[:300])
+        raise RuntimeError("Twitch GQL errors: see log")
+    user_data = cast(dict[str, object], cast(dict[str, object], first_item.get("data") or {}).get("userOrError") or {})
+    login_name = user_data.get("login", "")
+    nickname = f"{user_data.get('displayName', '')}-{login_name}"
     # Twitch 用 userOrError.stream 字段是否存在来判定开播（有 stream 对象即在播），
     # 返回 (nickname, status) 元组供 get_twitchtv_stream_data 复用作 is_live。
-    status = True if user_data["stream"] else False
+    status = True if user_data.get("stream") else False
     return nickname, status
 
 
@@ -3629,8 +4584,13 @@ async def get_twitchtv_stream_data(
     # 获取 Twitch 直播流数据
     # 动态获取 Twitch Web 端公开 Client-Id，替代原硬编码值
     client_id = await _ensure_twitch_client_id(proxy_addr)
+    # MID-48（2026-09-20）：同 get_twitchtv_room_info——空 Client-Id 不再照发，显式失败交上层
+    # 下一轮重试（MID-33 TTL 到期后 _ensure_twitch_client_id 会自动重取）。
+    if not client_id:
+        logger.warning("Twitch Client-Id unavailable (homepage extraction failed), skip GQL request this round")
+        raise RuntimeError("Failed to obtain Twitch Client-Id")
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
+        "User-Agent": _TWITCH_WEB_UA,
         "Accept-Language": "en-US",
         "Referer": "https://www.twitch.tv/",
         "Client-ID": client_id,
@@ -3659,10 +4619,19 @@ async def get_twitchtv_stream_data(
         "https://gql.twitch.tv/gql", proxy_addr=proxy_addr, headers=headers, json_data=data, abroad=True
     )
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-20）：裸 json.loads + 深层链式索引 → _loads_dict + .get 链并显式判票据。
+    # 非 JSON 响应（WAF 页/空 body）与 errors 数组此前直接 KeyError，被装饰器吞成「未开播」。
+    json_data = _loads_dict(json_str)
+    if json_data.get("errors"):
+        logger.warning("Twitch GQL returned errors for PlaybackAccessToken: " + str(json_data["errors"])[:300])
+        raise RuntimeError("Twitch GQL errors: see log")
+    _pb_data = cast(dict[str, object], json_data.get("data") or {})
+    _access = cast(dict[str, object], _pb_data.get("streamPlaybackAccessToken") or {})
     # token(value) 与 signature 是拿到 HLS master 地址的必需票据，缺一则 usher 接口返回 403/签名无效。
-    token = json_data["data"]["streamPlaybackAccessToken"]["value"]
-    sign = json_data["data"]["streamPlaybackAccessToken"]["signature"]
+    token = _access.get("value")
+    sign = _access.get("signature")
+    if not isinstance(token, str) or not token or not isinstance(sign, str) or not sign:
+        raise RuntimeError("Twitch PlaybackAccessToken missing value/signature (risk control or expired token)")
 
     anchor_name, live_status = await get_twitchtv_room_info(
         url=url, token=token, proxy_addr=proxy_addr, cookies=cookies
@@ -3676,11 +4645,16 @@ async def get_twitchtv_stream_data(
             "acmb": "e30=",
             "allow_source": "true",
             "browser_family": "firefox",
-            "browser_version": "124.0",
+            # MID-50b（2026-09-20）：browser_version 原先写死 124.0，与同一请求 UA 的
+            # rv:148.0 自相矛盾（UA 与派生参数必须同源，见 AGENTS「UA 双端一字不差」条目，
+            # 版本不一致是风控按指纹识别的特征之一）。现由 _TWITCH_WEB_UA 同一常量派生。
+            "browser_version": _TWITCH_BROWSER_VERSION,
             "cdm": "wv",
             "fast_bread": "true",
             "os_name": "Windows",
-            "os_version": "NT%2010.0",
+            # MID-50b：原值写成预百分号编码的 "NT%2010.0"，再经 urlencode 二次编码成
+            # NT%252010.0。编码交给 urlencode 统一处理，这里存原文。
+            "os_version": "NT 10.0",
             # p="3553732" 是写死的客户端标识；play_session_id 改为每轮动态生成（原硬编码值已过期）。
             "p": "3553732",
             "platform": "web",
@@ -3694,7 +4668,9 @@ async def get_twitchtv_stream_data(
             "token": token,
             "transcode_mode": "cbr_v1",
         }
-        access_key = urllib.parse.urlencode(params)
+        # quote_via=quote：urlencode 默认 quote_plus 会把空格编成 '+'，与本接口历史线上
+        # 形态（NT%2010.0）不一致；显式用 percent-encoding 保持 %20。
+        access_key = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
         m3u8_url = f"https://usher.ttvnw.net/api/channel/hls/{uid}.m3u8?{access_key}"
         play_url_list = await get_play_url_list(m3u8=m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
         result |= {"m3u8_url": m3u8_url, "play_url_list": play_url_list}
@@ -3719,7 +4695,6 @@ async def get_liveme_stream_url(
 
     # 分享短链/主播主页 URL 不含 index.html，需先抓页面从 og:url 还原成带 room_id 的真实直播页地址；
     # 已是 index.html 直链则直接从中抠 room_id，无需额外页面请求。
-    # 分享短链/主页不含 index.html，需先抓页从 og:url 还原带 room_id 的真实直播页
     if "index.html" not in url:
         html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers, abroad=True)
         html_str = _get_str_response(html_str)
@@ -3749,16 +4724,24 @@ async def get_liveme_stream_url(
     api = f"https://live.liveme.com/live/queryinfosimple?{urllib.parse.urlencode(params)}"
     json_str = await async_req(api, data=sign_data, proxy_addr=proxy_addr, headers=headers, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    stream_data = json_data["data"]["video_info"]
-    anchor_name = stream_data["uname"]
-    live_status = stream_data["status"]
+    # MID-48（2026-09-21 海外批次）：queryinfosimple 对签名失效/风控返回不含 data.video_info 的
+    # 信封或 HTML，原三级索引抛错被装饰器伪装成「未开播」。改为安全下钻 + 区分性告警。
+    json_data = _loads_dict(json_str)
+    stream_data = cast(dict[str, object], _dig(json_data, "data", "video_info") or {})
+    if _dig(stream_data, "status") is None:
+        _warn_api_abnormal(json_str, "LiveMe queryinfosimple", "data.video_info.status", json_data)
+        return {"anchor_name": _dig_str(stream_data, "uname"), "is_live": False}
+    anchor_name = _dig_str(stream_data, "uname")
+    live_status = _dig(stream_data, "status")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # LiveMe 用字符串 "0" 表示在播（注意是字符串而非数字），"1" 等表示离线/其它状态。
-    # LiveMe 用字符串 "0" 表示在播（注意是字符串而非数字）
     if live_status == "0":
-        m3u8_url = stream_data["hlsvideosource"]
-        flv_url = stream_data["videosource"]
+        m3u8_url = _dig_str(stream_data, "hlsvideosource")
+        flv_url = _dig_str(stream_data, "videosource")
+        if not m3u8_url and not flv_url:
+            # 已判在播却两路地址皆空（改版 / 风控降级）：按无源返回并留线索
+            _warn_api_abnormal(json_str, "LiveMe queryinfosimple", "data.video_info.videosource", json_data)
+            return result
         result |= {"is_live": True, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": m3u8_url or flv_url}
     return result
 
@@ -3779,42 +4762,80 @@ async def get_huajiao_sn(
 
     live_id = _safe_extract_id(url)
     api = f"https://www.huajiao.com/l/{live_id}"
+    # MID-2223（2026-09-23）处置②（改判据，不删函数）：原「瞬时网络故障」判据是
+    # `isinstance(e, (httpx.HTTPError, httpx.TimeoutException, OSError, asyncio.TimeoutError))`，
+    # 但 async_req 已在内部吞尽传输层异常并返回 ""（见 src/async_http.py 的 async_req 尾部
+    # except）——断网/DNS/超时到此处既不是异常、也不带任何状态，该判据**恒假**
+    # （元组里 TimeoutException ⊂ HTTPError，第二判别项还冗余），2026-09-12 审查 6.3 那轮加固因此无效。
+    # 本函数是 spider.py 唯一会 `utils.replace_url` 改写 URL_config.ini（把用户房间加 `#`
+    # 注释掉、重启不恢复）的分支，判据恒假等于「断网一次即永久注释掉用户房间」。
+    # 现把判据前移到**响应契约层**：空响应 = 网络/风控不确定态 → 一律不写回；
+    # 只有确实取到页面而内容表明地址失效（无 feed 数据 / 字段缺失 / JSON 坏）才写回注释。
+    # 不选处置①（删除函数）的原因：本函数登记在 tests/test_spider_hardening.py 的
+    # OVERSEAS_MIGRATED_FUNCTIONS（MID-48 加固清单），删名须同改该文件；写回语义本身也仍有价值。
+    html_str = _get_str_response(await async_req(url=api, proxy_addr=proxy_addr, headers=headers))
+    if not html_str:
+        logger.warning(
+            i18n.tr(
+                "[花椒直播]房间页返回空响应（网络失败或风控），未改动配置文件: {masked_url}",
+                masked_url=utils.mask_credentials(api),
+            )
+        )
+        raise RuntimeError(
+            "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
+            "the anchor's homepage address for recording."
+        )
     try:
-        html_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
-        html_str = _get_str_response(html_str)
         json_str_match = re.search("var feed = (.*?});", html_str)
         if not json_str_match:
             raise ValueError("Failed to find feed data")
         json_str = json_str_match.group(1)
-        json_data = json.loads(json_str)
-        sn = json_data["feed"]["sn"]
-        uid = json_data["author"]["uid"]
-        nickname = json_data["author"]["nickname"]
+        # MID-48（2026-09-21 海外批次）：`var feed = ` 命中的片段可能被风控换成 JS 壳页/截断，
+        # 裸 json.loads 与三级索引抛错会走进「非瞬时异常 → 注释掉用户配置里的 URL」分支，
+        # 与「确认地址失效」不可区分。先归因再抛错，保留既有写回语义（本函数是唯一写回配置的分支）。
+        json_data = _loads_dict(json_str)
+        sn = _dig(json_data, "feed", "sn")
+        uid = _dig(json_data, "author", "uid")
+        nickname = _dig(json_data, "author", "nickname")
+        if sn is None or uid is None or nickname is None:
+            _warn_api_abnormal(json_str, "花椒 房间页 var feed", "feed.sn + author.uid", json_data)
+            raise KeyError("Missing feed/author data in huajiao page")
         live_id = _safe_extract_id(url)
-        return nickname, sn, uid, live_id
-    except Exception as e:
+        return cast(str, nickname), cast(str, sn), cast(str, uid), live_id
+    except (ValueError, KeyError) as e:
         # 花椒直播间地址不固定（短链会失效），确认失效时把该 URL 在配置文件里注释掉（加 # 前缀），
         # 避免主循环反复重试无效地址；这是少数会写回配置文件的分支，副作用需留意。
         #
-        # 2026-09-12 审查 6.3：原为裸 except Exception 无条件写回——瞬时网络故障
-        # （超时 / 连接被拒 / DNS 失败 / CDN 5xx）同样会被判定成「地址失效」，
-        # 把用户配置里的房间永久注释掉，重启也不会恢复（配置已被改写）。
-        # 改为分类处理：仅「确认拿到响应但内容表明地址失效」（页面无 feed 数据、
-        # 字段缺失、JSON 解析失败）才写回；网络/传输类异常不写回，交由上层重试。
-        _transient = isinstance(e, (httpx.HTTPError, httpx.TimeoutException, OSError, asyncio.TimeoutError))
-        if _transient:
-            logger.warning(
-                i18n.tr(
-                    "[花椒直播]解析失败（疑似瞬时网络故障，未改动配置文件）: {type_name}: {e}",
-                    type_name=type(e).__name__,
-                    e=e,
-                )
+        # 分类按「异常来源」：请求已移出本 try，能进这里的只有上面两处**主动抛出**的
+        # ValueError（页面无 feed 数据）与 KeyError（feed/author 字段缺失），即真正的
+        # 「内容确认失效」；其余未预期异常走下面那条不写回的分支，避免把用户房间无端注释掉
+        # （2026-09-12 审查 6.3 原用 isinstance 按异常类型分类、判据恒假，详见函数头 MID-2223）。
+        logger.warning(
+            i18n.tr(
+                "[花椒直播]房间页确认无有效直播数据，已注释该房间: {type_name}: {e}",
+                type_name=type(e).__name__,
+                e=e,
             )
-            raise RuntimeError(
-                "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
-                "the anchor's homepage address for recording."
-            ) from e
+        )
         utils.replace_url(f"{script_path}/config/URL_config.ini", old=url, new="#" + url)
+        raise RuntimeError(
+            "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
+            "the anchor's homepage address for recording."
+        ) from e
+    except Exception as e:
+        # MID-2223：兜底分支刻意**不写回**配置文件——到这里说明出现了未预期的内部错误
+        # （不是「房间地址失效」的证据），宁可让主循环下轮重试，也不能改写用户配置。
+        logger.warning(
+            i18n.tr(
+                "[花椒直播]解析异常（非内容失效，未改动配置文件）: {type_name}: {e}",
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
+        raise RuntimeError(
+            "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
+            "the anchor's homepage address for recording."
+        ) from e
         raise RuntimeError(
             "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
             "the anchor's homepage address for recording."
@@ -3847,21 +4868,29 @@ async def get_huajiao_user_info(
         api = f"https://webh.huajiao.com/User/getUserFeeds?{urllib.parse.urlencode(params)}"
         json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
+        # MID-48（2026-09-21 海外批次）：getUserFeeds 对风控返回 HTML 时裸 json.loads 抛错，
+        # 本函数无装饰器、异常会一路穿透到 get_huajiao_stream_url。改为解析不出对象时留线索，
+        # 并按「未开播」返回（feeds 为空是既有静默离线形态，不得刷告警）。
+        json_data = _loads_dict(json_str)
+        feeds = _dig_list(json_data, "data", "feeds")
+        if _dig(json_data, "data") is None:
+            _warn_api_abnormal(json_str, "花椒 getUserFeeds", "data.feeds", json_data)
 
         html_str = await async_req(url=f"https://www.huajiao.com/user/{uid}", proxy_addr=proxy_addr, headers=headers)
         html_str = _get_str_response(html_str)
         anchor_name_match = re.search("<title>(.*?)的主页.*</title>", html_str)
         anchor_name = anchor_name_match.group(1) if anchor_name_match else ""
-        feeds = json_data.get("data", {}).get("feeds", [])
-        if json_data.get("data") and feeds and "sn" in feeds[0].get("feed", {}):
-            feed = feeds[0]["feed"]
+        first_feed = _dig(feeds, 0) if feeds else None
+        if feeds and _dig(first_feed, "feed", "sn") is not None:
+            feed = cast(dict[str, object], _dig(first_feed, "feed") or {})
+            # OptionalStreamDict 的值域是 str|bool：这里刻意用 cast 而不是 _dig_str——
+            # 花椒的 relateid/uid 可能是数字，下游只做 urlencode(str())，转成 "" 会直接取不到流。
             return {
                 "anchor_name": anchor_name,
-                "title": feed["title"],
+                "title": cast(str, _dig(feed, "title")),
                 "is_live": True,
-                "sn": feed["sn"],
-                "liveid": feed["relateid"],
+                "sn": cast(str, _dig(feed, "sn")),
+                "liveid": cast(str, _dig(feed, "relateid")),
                 "uid": uid,
             }
         else:
@@ -3887,23 +4916,34 @@ async def get_huajiao_stream_url_app(
     api = f"https://live.huajiao.com/feed/getFeedInfo?relateid={room_id}"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-21 海外批次）：getFeedInfo 被风控换成 HTML 时裸 json.loads 抛错，与
+    # 「errmsg 非空 = 地址失效」这条既有语义混在一起（后者会提示用户换主页地址）。
+    # 先区分「响应整体解析不出对象」，再走原有的地址失效判定。
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "errmsg") is None or _dig(json_data, "data") is None:
+        _warn_api_abnormal(json_str, "花椒 getFeedInfo", "errmsg + data.creatime", json_data)
+        return None
 
-    # errmsg 非空或 creatime 缺失即地址失效，返回 None 触发上层回退主页地址
-    if json_data["errmsg"] or not json_data["data"].get("creatime"):
+    if _dig(json_data, "errmsg") or not _dig(json_data, "data", "creatime"):
         logger.error(
             "Failed to retrieve live room data, the Huajiao live room address is not fixed, please manually change "
             "the address for recording."
         )
         return None
-    data = json_data["data"]
+    data = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(data, "feed", "sn") is None or _dig(data, "author", "nickname") is None:
+        # creatime 在但 feed.sn / author.nickname 缺 = 接口改版或风控降级（原实现此处 KeyError
+        # 穿透到上层装饰器）；回 None 让上层按未开播重试，并留下成因线索
+        _warn_api_abnormal(json_str, "花椒 getFeedInfo", "data.feed.sn + data.author.nickname", json_data)
+        return None
     return {
-        "anchor_name": data["author"]["nickname"],
-        "title": data["feed"]["title"],
+        "anchor_name": _dig_str(data, "author", "nickname"),
+        # 同 get_huajiao_user_info：用 cast 保留数字原值（下游只 urlencode），不得改成 _dig_str
+        "title": cast(str, _dig(data, "feed", "title")),
         "is_live": True,
-        "sn": data["feed"]["sn"],
-        "liveid": data["feed"]["relateid"],
-        "uid": data["author"]["uid"],
+        "sn": cast(str, _dig(data, "feed", "sn")),
+        "liveid": cast(str, _dig(data, "feed", "relateid")),
+        "uid": cast(str, _dig(data, "author", "uid")),
     }
 
 
@@ -3932,10 +4972,24 @@ async def get_huajiao_stream_url(
         room_data = await get_huajiao_user_info(url, cookies, proxy_addr)
     else:
         url_result = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
-        if isinstance(url_result, str):
+        # MID-2225（2026-09-23）：async_req(redirect_url=True) 的契约是「成功回 str(response.url)、
+        # 失败回 ""」（见 src/async_http.py 的异常兜底分支），而空串同样是 str →
+        # 原判据 `isinstance(url_result, str)` 恒真、else 分支**永不执行**：网络抖动后 url 被
+        # 覆盖成空串，于是下面那条「落到首页 = 短链失效」的判定不成立，转而拿空 relateid
+        # 去请求 substream 接口，最终把「断网」与「短链真失效」压成同一条静默未开播。
+        # 现补判空串（对齐本文件已判空串的 Shopee 侧写法），并让 else 成为真正的失败回退：
+        # 拿不到落地页时按「本轮无响应」返回未开播交由下轮重试，**不**再冒充首页去触发
+        # 「地址不固定，请改为主页地址」那条误导提示。
+        if isinstance(url_result, str) and url_result:
             url = url_result
         else:
-            url = "https://www.huajiao.com"
+            logger.warning(
+                i18n.tr(
+                    "[花椒直播]短链重定向无响应（网络失败或风控），本轮按未开播重试: {masked_url}",
+                    masked_url=utils.mask_credentials(url),
+                )
+            )
+            return result
 
         # 重定向落到花椒首页说明短链失效，提示换主页地址按未开播返回
         if url.rstrip("/") == "https://www.huajiao.com":
@@ -3952,17 +5006,32 @@ async def get_huajiao_stream_url(
 
         if live_status:
             result["title"] = room_data.pop("title")
-            params = {"time": int(time.time() * 1000), "version": "1.0.0", **room_data, "encode": "h265"}
+            # MID-42 修复（2026-09-20）：原先请求 encode=h265 却消费 h264_url——请求参数与
+            # 消费字段的编码器错配，两种后果都不利：① 服务端按 encode 只填匹配字段 →
+            # KeyError → 装饰器伪装未开播（花椒整平台静默不可录）；② 服务端把 HEVC 地址
+            # 塞进 h264_url 返回 → 地址上没有 codec=h265 标记，而 stream_select._is_h265()
+            # 只认 URL 查询参数（AGENTS 硬约定）→ HEVC 被当 H.264 直接 -c copy 进容器、
+            # 静默损坏产物。取「请求 h264 + 消费 h264_url」的自洽形态（改动最小，
+            # 且不依赖未实测的 h265_url 字段可用性）。
+            params = {"time": int(time.time() * 1000), "version": "1.0.0", **room_data, "encode": "h264"}
 
             api = f"https://live.huajiao.com/live/substream?{urllib.parse.urlencode(params)}"
             json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
             json_str = _get_str_response(json_str)
-            json_data = json.loads(json_str)
-            result |= {
-                "is_live": True,
-                "flv_url": json_data["data"]["h264_url"],
-                "record_url": json_data["data"]["h264_url"],
-            }
+            # MID-42 后半：json_data["data"] 深索引改为判空取值（WAF 页/截断响应回 {} 不再抛错）
+            json_data = _loads_dict(json_str)
+            _sub_data = json_data.get("data")
+            h264_v = _sub_data.get("h264_url") if isinstance(_sub_data, dict) else None
+            if isinstance(h264_v, str) and h264_v:
+                result |= {
+                    "is_live": True,
+                    "flv_url": h264_v,
+                    "record_url": h264_v,
+                }
+            else:
+                # 语义与旧 KeyError 被装饰器吞掉后的最终表现一致（按未开播返回、下轮重试），
+                # 但现在留下一条明确线索，不再与「真未开播」混淆。
+                logger.warning("Huajiao substream response has no h264_url (API changed or risk control)")
     return result
 
 
@@ -3988,14 +5057,25 @@ async def get_liuxing_stream_url(
     api = f"https://wap.7u66.com/api/ui/room/v1.0.0/live.ashx?{urllib.parse.urlencode(params)}"
     json_str = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    room_info = json_data["data"]["roomInfo"]
-    anchor_name = room_info["nickname"]
-    live_status = room_info["live_stat"]
+    # MID-48（2026-09-21 海外批次）：与畅聊/音播同一套 live.ashx 接口，对不存在的 roomidx 返回
+    # 不含 data.roomInfo 的信封（或经风控回 HTML）。加固口径保持一致（见 get_changliao_stream_url）。
+    json_data = _loads_dict(json_str)
+    room_info = cast(dict[str, object], _dig(json_data, "data", "roomInfo") or {})
+    if _dig(room_info, "live_stat") is None:
+        _warn_api_abnormal(json_str, "流星 live.ashx", "data.roomInfo.live_stat", json_data)
+        return {"anchor_name": _dig_str(room_info, "nickname"), "is_live": False}
+    anchor_name = _dig_str(room_info, "nickname")
+    live_status = _dig(room_info, "live_stat")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
-        idx = room_info["idx"]
-        live_id = room_info["liveId1"]
+        # idx / liveId1 在真实响应里可能是数字，f-string 直接插值即可；刻意不用 _dig_str
+        # （那会把 int 变成空串、拼出坏地址）。
+        idx = _dig(room_info, "idx")
+        live_id = _dig(room_info, "liveId1")
+        if idx is None or live_id is None:
+            # 已判开播却拼不出流地址（改版/风控降级）：按无源返回并留线索
+            _warn_api_abnormal(json_str, "流星 live.ashx", "data.roomInfo.idx + liveId1", json_data)
+            return result
         flv_url = f"https://txpull1.5see.com/live/{idx}/{live_id}.flv"
         result |= {"is_live": True, "flv_url": flv_url, "record_url": flv_url}
     return result
@@ -4029,10 +5109,16 @@ async def get_showroom_stream_data(
     info_api = f"https://www.showroom-live.com/api/live/live_info?room_id={room_id}"
     json_str = await async_req(info_api, proxy_addr=proxy_addr, headers=headers, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["room_name"]
+    json_data = _loads_dict(json_str)
+    # MID-48（2026-09-21）：live_info 对不存在的 room_id 返回不含 room_name/live_status 的
+    # JSON（或经 CDN 回 HTML 挑战页），原两处裸 json.loads + 链式索引一律抛错 → 装饰器 →
+    # 「未开播」。改为安全下钻，结构异常时留区分性告警。
+    if _dig(json_data, "live_status") is None:
+        _warn_api_abnormal(json_str, "ShowRoom live_info", "live_status", json_data)
+        return {"anchor_name": _dig_str(json_data, "room_name"), "is_live": False}
+    anchor_name = _dig_str(json_data, "room_name")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
-    live_status = json_data["live_status"]
+    live_status = _dig(json_data, "live_status")
     # ShowRoom 用 live_status==2 表示开播（1 为离线/准备中），与多数平台的 1 不一致。
     if live_status == 2:
         result["is_live"] = True
@@ -4040,29 +5126,54 @@ async def get_showroom_stream_data(
         json_str = await async_req(web_api, proxy_addr=proxy_addr, headers=headers, abroad=True)
         json_str = _get_str_response(json_str)
         if json_str:
-            json_data = json.loads(json_str)
-            streaming_url_list = json_data["streaming_url_list"]
+            json_data = _loads_dict(json_str)
+            streaming_url_list = _dig_list(json_data, "streaming_url_list")
+            if not streaming_url_list:
+                # 已判开播却拿不到任何线路：接口改版/风控降级，与「未开播」区分开
+                _warn_api_abnormal(json_str, "ShowRoom streaming_url", "streaming_url_list", json_data)
+                result["is_live"] = False
+                return result
 
             for i in streaming_url_list:
-                if i["type"] == "hls_all":
-                    m3u8_url = i["url"]
-                    result["m3u8_url"] = m3u8_url
+                if _dig(i, "type") == "hls_all":
+                    m3u8_url = _dig_str(i, "url")
+                    # MIN-2215（2026-09-23）：m3u8_url 赋值必须在 `if m3u8_url:` **之内**。
+                    # 原实现先无条件写 result["m3u8_url"] = m3u8_url，而 is_live 早在
+                    # live_status==2 处已置 True → 命中 hls_all 但 url 为空时返回
+                    # {is_live: True, m3u8_url: ""}（既无 play_url_list 也无 record_url），
+                    # 与同批「已判开播却拿不到任何线路 → 归因 + is_live=False」自相矛盾，
+                    # 且空地址会进选源、每轮白烧探针。
                     if m3u8_url:
+                        result["m3u8_url"] = m3u8_url
                         m3u8_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
                         if m3u8_url_list:
-                            result["play_url_list"] = [
-                                f"{m3u8_url.rsplit('/', maxsplit=1)[0]}/{i}" for i in m3u8_url_list
-                            ]
+                            # MID-2222（2026-09-23）：原为 `f"{m3u8_url.rsplit('/',1)[0]}/{i}"` 前缀拼接，
+                            # 假定清单行全是相对路径；而 get_play_url_list 已放宽为**可返回绝对地址**
+                            # （ShowRoom 的部分线路确实直接下发 https://cdn/...m3u8），
+                            # 于是绝对条目被拼成 `https://host/path/https://cdn/x.m3u8` 坏候选，
+                            # 多清晰度列表整体报废（画质下拉只剩一项 / 选档后校验必失败）。
+                            # urljoin 对相对/绝对/带参三形态一律正确，与 SOOP 的写法一致。
+                            result["play_url_list"] = [urllib.parse.urljoin(m3u8_url, i) for i in m3u8_url_list]
                         else:
                             result["play_url_list"] = [m3u8_url]
                         _play_url_list = cast(list[str], result["play_url_list"])
                         # ShowRoom CDN 实测 https 拉流不稳定，统一降级为 http（与 huya/popkontv 同思路）。
                         result["play_url_list"] = [i.replace("https://", "http://") for i in _play_url_list]
                         break
+            else:
+                # MIN-2215（2026-09-23）：循环走完仍未 break = 列表里没有 hls_all、或其 url 全为空。
+                # 上一段告警只覆盖「streaming_url_list 整体为空」，这一形态同样属
+                # 「已判开播却拿不到任何线路」，必须复用同一条归因告警并把 is_live 收回 False，
+                # 否则返回 {is_live: True} 空壳、每轮白烧探针。
+                _warn_api_abnormal(json_str, "ShowRoom streaming_url", "streaming_url_list", json_data)
+                result["is_live"] = False
     return result
 
 
-@trace_error_decorator
+# CR-12 修复：返回三元组，失败须回 None（同 get_popkontv_stream_data）。旧装饰器回 dict，
+# 调用方元组解包抛 ValueError 后再被吞，AcFun 整条链路会静默失效且日志看不到
+# visitor/login 失败原因。
+@trace_error_decorator_or_none
 async def get_acfun_sign_params(
     proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> tuple[object, str, object]:
@@ -4071,23 +5182,37 @@ async def get_acfun_sign_params(
     # did 每次随机生成（web_ 前缀是 AcFun 游客设备标识），visitor_st 为登录接口下发的临时令牌，
     # 缺失会致 startPlay 返回 401（风控）。
     did = f"web_{utils.generate_random_string(16)}"
+    # MID-2221（2026-09-23）：Cookie 头必须是**单键**。原先同一字典里并存小写 "cookie"
+    # （游客 _did）与大写 "Cookie"（调用方透传）两个键，httpx 的 Headers 不做大小写去重
+    # （该组已用 httpx.Client().build_request(...).headers.raw 实测请求里出现两条 Cookie 头），
+    # 而 RFC 6265 §5.4 规定 UA 不得发送多个 Cookie 头、取首个还是合并由各边缘节点自决
+    # → 注释承诺的「调用方透传 cookie 时优先采用」并不成立，用户配置的 acfun_cookie
+    # 可能被整体丢弃，部分 WAF 还会因重复 Cookie 直接回 400。
+    # 本文件其余下发小写 cookie 头处（抖音 web / tiktok / B站 h5 / get_soop_headers）都是单键，唯此处混用。
+    cookie_header = f"_did={did};"
+    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
+    if cookies:
+        cookie_header = f"_did={did}; {cookies}"
     headers = {
         "referer": "https://live.acfun.cn/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
-        "cookie": f"_did={did};",
+        "Cookie": cookie_header,
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
-    if cookies:
-        headers["Cookie"] = cookies
     data = {
         "sid": "acfun.api.visitor",
     }
     api = "https://id.app.acfun.cn/rest/app/visitor/login"
     json_str = await async_req(api, data=data, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    user_id = json_data["userId"]
-    visitor_st = json_data["acfun.api.visitor_st"]
+    # MID-48（2026-09-21 海外批次）：visitor/login 被风控时返回 HTML，裸 json.loads 抛错后被
+    # _or_none 吞成 None，调用点只看到「拿不到签名三件套」。userId 是数字（既有测试锁定），
+    # 故一律用 _dig 保留原类型；visitor_st 是票据值，**绝不写进日志**。
+    json_data = _loads_dict(json_str)
+    user_id = _dig(json_data, "userId")
+    visitor_st = _dig(json_data, "acfun.api.visitor_st")
+    if user_id is None or visitor_st is None:
+        _warn_api_abnormal(json_str, "AcFun visitor/login", "userId + acfun.api.visitor_st", json_data)
+        raise RuntimeError("Failed to get AcFun visitor sign params")
     return user_id, did, visitor_st
 
 
@@ -4110,14 +5235,26 @@ async def get_acfun_stream_data(
     user_info_api = f"https://live.acfun.cn/rest/pc-direct/user/userInfo?userId={author_id}"
     json_str = await async_req(user_info_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["profile"]["name"]
+    # MID-48：userInfo 被风控时返回不含 profile 的 JSON/HTML，原 `["profile"]["name"]` 抛
+    # KeyError → 装饰器 → 「未开播」，与「主播未开播（profile 有但无 liveId）」不可区分。
+    json_data = _loads_dict(json_str)
+    profile = cast(dict[str, object], _dig(json_data, "profile") or {})
+    if not profile:
+        _warn_api_abnormal(json_str, "AcFun userInfo", "profile", json_data)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(profile, "name")
     # AcFun 用 profile 是否含 liveId 判定开播（有 liveId 才在播）
-    status = "liveId" in json_data["profile"]
+    status = "liveId" in profile
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     if status:
         result["is_live"] = True
-        user_id, did, visitor_st = await get_acfun_sign_params(proxy_addr=proxy_addr, cookies=cookies)
+        # CR-12：装饰失败返回 None，显式判空后再解包
+        _sign_params = await get_acfun_sign_params(proxy_addr=proxy_addr, cookies=cookies)
+        if not _sign_params:
+            logger.warning("Acfun 游客签名参数获取失败，跳过本轮取流（visitor/login 未拿到三件套）")
+            result["is_live"] = False
+            return result
+        user_id, did, visitor_st = _sign_params
         params = {
             "subBiz": "mainApp",
             "kpn": "ACFUN_APP",
@@ -4134,10 +5271,36 @@ async def get_acfun_stream_data(
         play_api = f"https://api.kuaishouzt.com/rest/zt/live/web/startPlay?{urllib.parse.urlencode(params)}"
         json_str = await async_req(play_api, data=data, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
-        live_title = json_data["data"]["caption"]
-        videoPlayRes = json_data["data"]["videoPlayRes"]
-        play_url_list = json.loads(videoPlayRes)["liveAdaptiveManifest"][0]["adaptationSet"]["representation"]
+        json_data = _loads_dict(json_str)
+        if _dig(json_data, "data") is None:
+            # startPlay 对游客凭据失效/风控回 {resultCode, message} 而无 data：
+            # 此前 `["data"]["caption"]` 抛 KeyError，被装饰器伪装成「未开播」
+            _warn_api_abnormal(json_str, "AcFun startPlay", "data", json_data)
+            result["is_live"] = False
+            return result
+        live_title = _dig_str(json_data, "data", "caption")
+        video_play_res = _dig(json_data, "data", "videoPlayRes")
+        # videoPlayRes 是「JSON 串套在 JSON 字段里」的二重编码，内层同样可能被截断；
+        # 原实现内层再用裸 json.loads 后接四级索引，任一环失败整轮录制作废。
+        if not isinstance(video_play_res, str):
+            _warn_api_abnormal(json_str, "AcFun startPlay", "data.videoPlayRes", json_data)
+            result["is_live"] = False
+            return result
+        res_data = _loads_dict(video_play_res)
+        # 元素须保持 dict 类型：下游按 itemgetter("bitrate") 排序、stream.py 按键取地址，
+        # _dig_list 只能给出 list[object]，故在此显式收窄（原实现的 Any 隐含了同一前提）。
+        play_url_list = cast(
+            list[dict[str, object]], _dig_list(res_data, "liveAdaptiveManifest", 0, "adaptationSet", "representation")
+        )
+        if not play_url_list:
+            _warn_api_abnormal(
+                video_play_res,
+                "AcFun startPlay(videoPlayRes)",
+                "liveAdaptiveManifest[0].adaptationSet.representation",
+                res_data,
+            )
+            result["is_live"] = False
+            return result
         play_url_list = sorted(play_url_list, key=itemgetter("bitrate"), reverse=True)
         result |= {"play_url_list": play_url_list, "title": live_title}
     return result
@@ -4168,9 +5331,16 @@ async def get_changliao_stream_url(
     play_api = f"https://wap.tlclw.com/api/ui/room/v1.0.0/live.ashx?{urllib.parse.urlencode(params)}"
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["data"]["roomInfo"]["nickname"]
-    live_status = json_data["data"]["roomInfo"]["live_stat"]
+    # MID-48（2026-09-21）：live.ashx 对不存在的 roomidx 返回不含 data.roomInfo 的信封
+    # （或经风控返回 HTML），原 `["data"]["roomInfo"]["nickname"]` 三级索引抛 KeyError
+    # → 装饰器 → 「未开播」，与「房间存在但未开播」完全一样。畅聊/音播同接口同实现。
+    json_data = _loads_dict(json_str)
+    room_info = cast(dict[str, object], _dig(json_data, "data", "roomInfo") or {})
+    if not room_info:
+        _warn_api_abnormal(json_str, "畅聊 live.ashx", "data.roomInfo", json_data)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(room_info, "nickname")
+    live_status = _dig(room_info, "live_stat")
 
     async def get_live_domain(page_url: str) -> tuple[str, str]:
         # 拉流域名不能写死：该平台 CDN 域名随部署变化，必须从直播间页内 var config 里抠
@@ -4182,17 +5352,34 @@ async def get_changliao_stream_url(
         if not config_json_match:
             raise ValueError("Failed to find config data")
         config_json_str = config_json_match[0].rsplit(";", maxsplit=1)[0].strip()
-        config_json_data = json.loads(config_json_str)
-        stream_flv_domain = config_json_data["domainpullstream_flv"]
-        stream_hls_domain = config_json_data["domainpullstream_hls"]
+        # var config 命中的片段可能是 JS 对象字面量或被截断（改版），裸 json.loads 抛错
+        # 会把「已确认开播」的一路取流作废；改为回空串 + 归因，由调用方按无源处理。
+        config_json_data = _loads_dict(config_json_str)
+        stream_flv_domain = _dig_str(config_json_data, "domainpullstream_flv")
+        stream_hls_domain = _dig_str(config_json_data, "domainpullstream_hls")
+        if not stream_flv_domain or not stream_hls_domain:
+            _warn_api_abnormal(
+                config_json_str, "畅聊 房间页 var config", "domainpullstream_flv / _hls", config_json_data
+            )
         return stream_flv_domain, stream_hls_domain
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
         flv_domain, hls_domain = await get_live_domain(url)
-        live_id = json_data["data"]["roomInfo"]["liveID"]
-        flv_url = f"{flv_domain}/{live_id}.flv"
-        m3u8_url = f"{hls_domain}/{live_id}.m3u8"
+        if not flv_domain or not hls_domain:
+            return result
+        # SEV-2205 修复（2026-09-22）：原用 _dig_str 取 liveID —— 该接口族的 roomInfo 数值字段在
+        # 真实响应里是**数字**（见 tests/test_spider_hardening.py 流星用例的同源记录），_dig_str 会把
+        # int 变成空串，拼出 "https://<domain>/.flv" 这种只有域名的坏地址；且 liveID 缺失时同样返回 ""。
+        # 两种形态下仍无条件置 is_live=True 并交出坏地址 → 两路候选校验全失败 → real_url 为空，
+        # 每轮多烧请求且永远录不上。对齐孪生实现 get_liuxing_stream_url 的口径：改用 _dig + 显式判空。
+        live_id = _dig(room_info, "liveID")
+        if live_id is None:
+            # 已判开播却拼不出流地址（改版/风控降级）：按无源返回并留线索
+            _warn_api_abnormal(json_str, "畅聊 live.ashx", "data.roomInfo.liveID", json_data)
+            return result
+        flv_url = f"{flv_domain}/{str(live_id)}.flv"
+        m3u8_url = f"{hls_domain}/{str(live_id)}.m3u8"
         result |= {"is_live": True, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -4216,7 +5403,6 @@ async def get_yingke_stream_url(
     query_params = urllib.parse.parse_qs(parsed_url.query)
     uid = query_params.get("uid", [""])[0]
     live_id = query_params.get("id", [""])[0]
-    # URL 缺 uid/id 无法定位映客房间，显式报错交由装饰器重试
     if not uid or not live_id:
         raise ValueError("Failed to extract uid or live_id from inke URL")
     params = {
@@ -4228,14 +5414,25 @@ async def get_yingke_stream_url(
     api = f"https://webapi.busi.inke.cn/web/live_share_pc?{urllib.parse.urlencode(params)}"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["data"]["media_info"]["nick"]
-    live_status = json_data["data"]["status"]
+    # MID-48（2026-09-21 海外批次）：live_share_pc 对失效/风控房间返回不含 data.status 的信封或
+    # HTML，原 `["data"]["media_info"]["nick"]` + `["live_addr"][0]` 索引抛错被装饰器伪装成「未开播」。
+    json_data = _loads_dict(json_str)
+    live_data = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(live_data, "status") is None:
+        _warn_api_abnormal(json_str, "映客 live_share_pc", "data.status", json_data)
+        return {"anchor_name": _dig_str(live_data, "media_info", "nick"), "is_live": False}
+    anchor_name = _dig_str(live_data, "media_info", "nick")
+    live_status = _dig(live_data, "status")
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
-        m3u8_url = json_data["data"]["live_addr"][0]["hls_stream_addr"]
-        flv_url = json_data["data"]["live_addr"][0]["stream_addr"]
+        first_addr = _dig(live_data, "live_addr", 0)
+        m3u8_url = _dig_str(first_addr, "hls_stream_addr")
+        flv_url = _dig_str(first_addr, "stream_addr")
+        if not m3u8_url or not flv_url:
+            # 已判开播但地址列表为空/字段改名：与「未开播」区分，按无源返回
+            _warn_api_abnormal(json_str, "映客 live_share_pc", "data.live_addr[0].hls_stream_addr", json_data)
+            return result
         result |= {"is_live": True, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": m3u8_url}
     return result
 
@@ -4265,10 +5462,15 @@ async def get_yinbo_stream_url(
     play_api = f"https://wap.ybw1666.com/api/ui/room/v1.0.0/live.ashx?{urllib.parse.urlencode(params)}"
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    room_data = json_data["data"]["roomInfo"]
-    anchor_name = room_data["nickname"]
-    live_status = room_data["live_stat"]
+    # MID-48：与畅聊同一套 live.ashx / var config 实现，加固口径也保持一致
+    # （详见 get_changliao_stream_url 内 MID-48 注释）。
+    json_data = _loads_dict(json_str)
+    room_data = cast(dict[str, object], _dig(json_data, "data", "roomInfo") or {})
+    if not room_data:
+        _warn_api_abnormal(json_str, "音播 live.ashx", "data.roomInfo", json_data)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(room_data, "nickname")
+    live_status = _dig(room_data, "live_stat")
 
     async def get_live_domain(page_url: str) -> tuple[str, str]:
         # 拉流域名不能写死：从当前房间页内 var config 抠出 flv/hls 拉流域名再拼 liveID。
@@ -4279,17 +5481,28 @@ async def get_yinbo_stream_url(
         if not config_json_match:
             raise ValueError("Failed to find config data")
         config_json_str = config_json_match[0].rsplit(";", maxsplit=1)[0].strip()
-        config_json_data = json.loads(config_json_str)
-        stream_flv_domain = config_json_data["domainpullstream_flv"]
-        stream_hls_domain = config_json_data["domainpullstream_hls"]
+        config_json_data = _loads_dict(config_json_str)
+        stream_flv_domain = _dig_str(config_json_data, "domainpullstream_flv")
+        stream_hls_domain = _dig_str(config_json_data, "domainpullstream_hls")
+        if not stream_flv_domain or not stream_hls_domain:
+            _warn_api_abnormal(
+                config_json_str, "音播 房间页 var config", "domainpullstream_flv / _hls", config_json_data
+            )
         return stream_flv_domain, stream_hls_domain
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
         flv_domain, hls_domain = await get_live_domain(url)
-        live_id = room_data["liveID"]
-        flv_url = f"{flv_domain}/{live_id}.flv"
-        m3u8_url = f"{hls_domain}/{live_id}.m3u8"
+        if not flv_domain or not hls_domain:
+            return result
+        # SEV-2205 修复（2026-09-22）：与畅聊逐字同形的问题与修法——见 get_changliao_stream_url
+        # 内同编号注释（_dig_str 把 int liveID 变空串 / 缺失时仍置 is_live=True 交出坏地址）。
+        live_id = _dig(room_data, "liveID")
+        if live_id is None:
+            _warn_api_abnormal(json_str, "音播 live.ashx", "data.roomInfo.liveID", json_data)
+            return result
+        flv_url = f"{flv_domain}/{str(live_id)}.flv"
+        m3u8_url = f"{hls_domain}/{str(live_id)}.m3u8"
         result |= {"is_live": True, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -4312,18 +5525,33 @@ async def get_zhihu_stream_url(
     # 知乎主播主页（people/<id>）不直接是直播间：先查 profile 拿到 living_theater 的 theater_url，
     # 再跳到该直播页解析；若没有在映剧场说明未开播，提前返回避免无谓的页面请求。
     if "people/" in url:
-        user_id = url.split("people/")[1]
+        # MID-2224（2026-09-23）：原为裸 `url.split("people/")[1]`，既不剥 query 也不剥子路径。
+        # 知乎分享链普遍带 ?ivt=...，另有 /people/<id>/activities 形态 → 抠出的 user_id 变成
+        # "xxx?ivt=abc" / "xxx/activities"，拼出 query 落在 path 之前的坏接口
+        # （https://api.zhihu.com/people/xxx?ivt=abc/profile?...），接口必回错误；而下方归因
+        # 会说成「缺 drama.living_theater」，把排障方向带偏成「接口改版」。
+        # 本文件其余取 id 处一律先 split("?")[0] 或走 _safe_extract_id，此处对齐。
+        user_id = url.split("?")[0].split("people/")[1].split("/")[0]
+        if not user_id:
+            # 取不到主播 id 时显式抛错（与同文件其它「URL 形态不合预期」处一致），
+            # 不能拿空串去拼 /people//profile —— 那会请求到一个与目标无关的接口路径。
+            raise ValueError("Failed to find zhihu user id")
         api = f"https://api.zhihu.com/people/{user_id}/profile?profile_new_version="
         json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
-        drama = json_data.get("drama") or {}
-        living_theater = drama.get("living_theater") or {}
-        # 未开播（无 drama/无在映剧场）直接返回，不再发起后续页面请求
-        # 无在映剧场即未开播，提前返回避免无谓页面请求
-        if not living_theater.get("theater_url"):
+        # MID-48：profile 接口被风控时返回 HTML/空 body，裸 json.loads 抛 JSONDecodeError；
+        # 原 drama/living_theater 已用 .get 但前一步仍会崩。解析不出对象时归因后按未开播返回。
+        json_data = _loads_dict(json_str)
+        if not json_data:
+            _warn_api_abnormal(json_str, "知乎 people/profile", "drama.living_theater.theater_url", json_data)
             return {"anchor_name": "", "is_live": False}
-        live_page_url = living_theater["theater_url"]
+        drama = _dig(json_data, "drama") or {}
+        living_theater = _dig(drama, "living_theater") or {}
+        # 无在映剧场即未开播，提前返回避免无谓的直播页请求
+        theater_url = _dig_str(living_theater, "theater_url")
+        if not theater_url:
+            return {"anchor_name": "", "is_live": False}
+        live_page_url = theater_url
     else:
         live_page_url = url
 
@@ -4334,20 +5562,32 @@ async def get_zhihu_stream_url(
     if not json_str2_match:
         raise ValueError("Failed to find initialData")
     json_str2 = json_str2_match[0]
-    json_data2 = json.loads(json_str2)
-    live_data = json_data2["initialState"]["theater"]["theaters"][web_id]
-    anchor_name = live_data["actor"]["name"]
-    live_status = live_data["drama"]["status"]
+    # MID-48：js-initialData 命中但内容被截断/改版时，裸 json.loads 与随后
+    # ["initialState"]["theater"]["theaters"][web_id] 的四级索引（最后一级是动态键）都会抛错，
+    # 被装饰器伪装成「未开播」。theaters 以 web_id 为键 → 房间不存在即键缺失，
+    # 与接口改版此前完全无法分辨。
+    json_data2 = _loads_dict(json_str2)
+    live_data = _dig(json_data2, "initialState", "theater", "theaters", web_id)
+    if not isinstance(live_data, dict):
+        _warn_api_abnormal(json_str2, "知乎 js-initialData", f"initialState.theater.theaters[{web_id}]", json_data2)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(live_data, "actor", "name")
+    live_status = _dig(live_data, "drama", "status")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
-        live_title = live_data["theme"]
-        play_url = live_data["drama"]["playInfo"]
+        live_title = _dig_str(live_data, "theme")
+        play_url = _dig(live_data, "drama", "playInfo")
+        hls_url = _dig_str(play_url, "hlsUrl")
+        if not hls_url:
+            # status 已报在播却无 hlsUrl：字段改名/风控降级，不是「未开播」
+            _warn_api_abnormal(json_str2, "知乎 js-initialData", "drama.playInfo.hlsUrl", json_data2)
+            return result
         result |= {
             "is_live": True,
             "title": live_title,
-            "m3u8_url": play_url["hlsUrl"],
-            "flv_url": play_url["playUrl"],
-            "record_url": play_url["hlsUrl"],
+            "m3u8_url": hls_url,
+            "flv_url": _dig_str(play_url, "playUrl"),
+            "record_url": hls_url,
         }
     return result
 
@@ -4374,25 +5614,46 @@ async def get_chzzk_stream_data(
     play_api = f"https://api.chzzk.naver.com/service/v3/channels/{room_id}/live-detail"
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    live_data = json_data["content"]
-    anchor_name = live_data["channel"]["channelName"]
-    live_status = live_data["status"]
+    # MID-48（2026-09-21）：live-detail 对不存在频道返回不含 content 的信封（Naver CDN 也可能
+    # 回 HTML），原 `json_data["content"]["channel"]["channelName"]` 抛 KeyError → 装饰器 →
+    # 「未开播」，与「频道存在但未开播（status!=OPEN）」完全同形。
+    json_data = _loads_dict(json_str)
+    live_data = cast(dict[str, object], _dig(json_data, "content") or {})
+    if not live_data:
+        _warn_api_abnormal(json_str, "CHZZK live-detail", "content", json_data)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(live_data, "channel", "channelName")
+    live_status = _dig(live_data, "status")
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # CHZZK 用字符串 "OPEN" 表示开播（非数字 1）
     if live_status == "OPEN":
-        play_data = json.loads(live_data["livePlaybackJson"])
-        m3u8_url = play_data["media"][0]["path"]
+        # livePlaybackJson 又是「JSON 串套在 JSON 字段里」的二重编码，内层同样可能截断
+        raw_playback = _dig_str(live_data, "livePlaybackJson")
+        if not raw_playback:
+            _warn_api_abnormal(json_str, "CHZZK live-detail", "content.livePlaybackJson", json_data)
+            return result
+        play_data = _loads_dict(raw_playback)
+        m3u8_url = _dig_str(play_data, "media", 0, "path")
+        if not m3u8_url:
+            _warn_api_abnormal(raw_playback, "CHZZK livePlaybackJson", "media[0].path", play_data)
+            return result
         m3u8_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
+        # MID-2222（2026-09-23）：同 ShowRoom——清单行可能是绝对地址，前缀拼接会产出
+        # `https://host/path/https://cdn/x.m3u8` 坏候选。原先连 query 一起当目录前缀
+        # （`split("?")[0]` 只用于去签名），改用 urljoin 后三形态一律正确。
         prefix = m3u8_url.split("?")[0].rsplit("/", maxsplit=1)[0]
-        m3u8_url_list = [prefix + "/" + i for i in m3u8_url_list]
+        m3u8_url_list = [urllib.parse.urljoin(prefix + "/", i) for i in m3u8_url_list]
         result |= {"is_live": True, "m3u8_url": m3u8_url, "play_url_list": m3u8_url_list}
     return result
 
 
-@trace_error_decorator
-# 读取哫秀/哫哫接口 accessToken 的外部覆盖值：优先环境变量，其次 config.ini 的 [Cookie] 段。
+# CR-12 修复（本仓「注释插在装饰器与 def 之间」事故的原点）：Python 允许 @decorator 与 def 之间
+# 夹注释行，且装饰器仍绑到紧随其后的那个 def——原先正是如此，兜底装饰器绑到了本同步函数
+# （返回 str，与「异常回 {"is_live": False}」的契约冲突），而它下方看起来被装饰的
+# get_haixiu_stream_url 反而裸奔，异常会穿透到 main.py 计入 host 熔断样本、存在房间地址被自动
+# 注释掉的风险。本函数体已自带 try/except，无需装饰器；说明性注释一律写在装饰器**上方**。
+# 读取嗨秀/嗨嗨接口 accessToken 的外部覆盖值：优先环境变量，其次 config.ini 的 [Cookie] 段。
 # 背景：内置 token 为「双重 URL 编码」的长期凭据，已随公开仓库分发；提供覆盖入口，
 # 使平台轮换或凭据失效时无需改代码即可替换（正式换发仍需维护者更新内置缺省值）。
 def _read_haixiu_token_override(is_haixiu: bool) -> str:
@@ -4410,6 +5671,8 @@ def _read_haixiu_token_override(is_haixiu: bool) -> str:
     return (cfg_value or "").strip()
 
 
+# CR-12 修复：兜底装饰器回归到平台入口本身（原错配到了上方的 _read_haixiu_token_override）
+@trace_error_decorator
 async def get_haixiu_stream_url(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
@@ -4424,11 +5687,11 @@ async def get_haixiu_stream_url(
         headers["Cookie"] = cookies
 
     room_id = url.split("?")[0].rsplit("/", maxsplit=1)[-1]
-    # access_token 是两段写死的「双重 URL 编码」凭据（嗨秀/嗨嗨两套各一个），调用前再 unquote 两次还原。
-    # 该 token 长期有效、与账号无关，是接口鉴权的关键；改动会导致 401。lehaitv 走另一域名与 origin。
-    # 嗨秀/嗨嗨两套域名各对应一个写死双重编码 token，按域名选择
+    # accessToken 是两段写死的「双重 URL 编码」凭据（嗨秀/嗨嗨两套域名各一个，按域名选择），
+    # 发请求前经 params 组装处 unquote 两次还原；该 token 长期有效、与账号无关，是接口鉴权的关键，
+    # 改动会导致 401。lehaitv 走另一域名与 origin。
+    # 先取外部覆盖（env / config.ini），未配置时才回退内置值以保持既有行为不变。
     _is_haixiu = "haixiutv" in url
-    # 先取外部覆盖（env / config.ini），未配置时回退内置值以保持既有行为不变
     access_token = _read_haixiu_token_override(_is_haixiu)
     if not access_token:
         if _is_haixiu:
@@ -4457,15 +5720,23 @@ async def get_haixiu_stream_url(
 
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-
-    stream_data = json_data["data"]
-    anchor_name = stream_data["nickname"]
-    live_status = stream_data["live_status"]
+    # MID-48（2026-09-21 海外批次）：advanceInfoRoom 对签名过期/风控返回不含 data 的信封或 HTML，
+    # 原 `["data"]["nickname"]` 链式索引抛错被装饰器伪装成「未开播」。注意 accessToken/_ajaxData1
+    # 是凭据，本函数任何日志都不得带出它们的值。
+    json_data = _loads_dict(json_str)
+    stream_data = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(stream_data, "live_status") is None:
+        _warn_api_abnormal(json_str, "嗨秀 advanceInfoRoom", "data.live_status", json_data)
+        return {"anchor_name": _dig_str(stream_data, "nickname"), "is_live": False}
+    anchor_name = _dig_str(stream_data, "nickname")
+    live_status = _dig(stream_data, "live_status")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # 嗨秀 live_status==1 为开播
     if live_status == 1:
-        flv_url = stream_data["media_url_web"]
+        flv_url = _dig_str(stream_data, "media_url_web")
+        if not flv_url:
+            _warn_api_abnormal(json_str, "嗨秀 advanceInfoRoom", "data.media_url_web", json_data)
+            return result
         result |= {"is_live": True, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -4492,11 +5763,15 @@ async def get_vvxqiu_stream_url(
     api_1 = f"https://h5p.vvxqiu.com/activity-center/fanclub/activity/captain/banner?roomId={room_id}&product=vvstar"
     json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["data"]["anchorName"]
+    # MID-48：banner 接口对游客可能不含 data（而非「无昵称」），原 `["data"]["anchorName"]`
+    # 抛 KeyError 会让整轮取流作废（含后面的 m3u8 探测）；这里降级为「昵称留空、继续探测」，
+    # 只在响应整体解析不出对象时留线索——取流判定本就不依赖昵称。
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "data") is None:
+        _warn_api_abnormal(json_str, "VV星球 captain/banner", "data.anchorName", json_data)
+    anchor_name = _dig_str(json_data, "data", "anchorName")
     # 第一个 banner 接口对匿名/未登录用户可能不返回昵称，用第二个活动 banner 接口兜底补 memberName；
     # 仍取不到则留空（不影响取流判定，仅标题/昵称缺失）。
-    # 首接口匿名用户可能不返回昵称，用第二个 banner 接口补 memberName
     if not anchor_name:
         params = {
             "sessionId": "",
@@ -4511,12 +5786,11 @@ async def get_vvxqiu_stream_url(
             headers=headers,
         )
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
-        anchor_name = json_data["data"]["memberVO"]["memberName"]
+        json_data = _loads_dict(json_str)
+        anchor_name = _dig_str(json_data, "data", "memberVO", "memberName")
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # 房间号缺失时不再探测 m3u8（拼不出有效地址，请求必然无意义）
-    # 房间号缺失不再探测 m3u8（拼不出有效地址）
     if not room_id:
         return result
     # 地址是固定 CDN 模板：1400442770 写死前缀 + room_id + room_id[2:] 后缀（取除前两位外的部分），
@@ -4525,7 +5799,6 @@ async def get_vvxqiu_stream_url(
     resp = await async_req(m3u8_url, proxy_addr=proxy_addr, headers=headers)
     resp = _get_str_response(resp)
     # 空响应也判未直播：此前空串不含 "Not Found" 会误判为开播，故需同时判非空且不含 Not Found。
-    # 空响应或含 Not Found 均判未直播（空串不含 Not Found 会误判为开播）
     if resp and "Not Found" not in resp:
         result |= {"is_live": True, "m3u8_url": m3u8_url, "record_url": m3u8_url}
     return result
@@ -4552,22 +5825,33 @@ async def get_17live_stream_url(
     api_1 = f"https://wap-api.17app.co/api/v1/user/room/{room_id}"
     json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    anchor_name = json_data["displayName"]
+    # MID-48：user/room 接口对不存在的主页返回不含 displayName 的信封/HTML，
+    # 原 `json_data["displayName"]` 抛 KeyError → 装饰器 → 连后面的 alive 接口都不再请求。
+    # 昵称缺失不影响开播判定（由 alive 接口给），故降级为留空继续。
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "displayName") is None:
+        _warn_api_abnormal(json_str, "17Live user/room", "displayName", json_data)
+    anchor_name = _dig_str(json_data, "displayName")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # 第一个 user/room 接口只给主播名，需再请求 viewers/alive 接口、用 room_id 作为 liveStreamID
     # 换取开播状态与拉流地址；该平台把开播判定与取流分两步，缺一不可。
-    json_data = {
+    # 注意：alive 的请求体与上一个接口的响应都叫 json_data，改名 request_payload 以免
+    # 与 _loads_dict 的 dict[str, object] 推断冲突（mypy 会因 dict[str, str] 不变性报错）。
+    request_payload: dict[str, str] = {
         "liveStreamID": room_id,
     }
     api_1 = f"https://wap-api.17app.co/api/v1/lives/{room_id}/viewers/alive"
-    json_str = await async_req(api_1, json_data=json_data, proxy_addr=proxy_addr, headers=headers)
+    json_str = await async_req(api_1, json_data=request_payload, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    live_status = json_data.get("status")
+    json_data = _loads_dict(json_str)
+    live_status = _dig(json_data, "status")
     # 17Live status==2 为开播（1 为离线）
     if live_status and live_status == 2:
-        flv_url = json_data["pullURLsInfo"]["rtmpURLs"][0]["urlHighQuality"]
+        flv_url = _dig_str(json_data, "pullURLsInfo", "rtmpURLs", 0, "urlHighQuality")
+        if not flv_url:
+            # 已报在播却无拉流地址：风控降级/字段改名，不是「未开播」
+            _warn_api_abnormal(json_str, "17Live viewers/alive", "pullURLsInfo.rtmpURLs[0].urlHighQuality", json_data)
+            return result
         result |= {"is_live": True, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -4593,15 +5877,24 @@ async def get_langlive_stream_url(
     api_1 = f"https://api.lang.live/langweb/v1/room/liveinfo?room_id={room_id}"
     json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers, abroad=True)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    live_info = json_data["data"]["live_info"]
-    anchor_name = live_info["nickname"]
-    live_status = live_info["live_status"]
+    # MID-48（2026-09-21 海外批次）：liveinfo 对不存在房间返回不含 data.live_info 的信封（或 HTML），
+    # 原三级索引抛错被装饰器伪装成「未开播」。
+    json_data = _loads_dict(json_str)
+    live_info = cast(dict[str, object], _dig(json_data, "data", "live_info") or {})
+    if _dig(live_info, "live_status") is None:
+        _warn_api_abnormal(json_str, "浪Live room/liveinfo", "data.live_info.live_status", json_data)
+        return {"anchor_name": _dig_str(live_info, "nickname"), "is_live": False}
+    anchor_name = _dig_str(live_info, "nickname")
+    live_status = _dig(live_info, "live_status")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # 浪 Live live_status==1 为开播
     if live_status == 1:
-        flv_url = json_data["data"]["live_info"]["liveurl"]
-        m3u8_url = json_data["data"]["live_info"]["liveurl_hls"]
+        flv_url = _dig_str(live_info, "liveurl")
+        m3u8_url = _dig_str(live_info, "liveurl_hls")
+        if not flv_url or not m3u8_url:
+            # 已判开播却拿不到两路地址（改版/风控降级）：按无源返回并留线索
+            _warn_api_abnormal(json_str, "浪Live room/liveinfo", "data.live_info.liveurl", json_data)
+            return result
         result |= {"is_live": True, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": m3u8_url}
     return result
 
@@ -4639,14 +5932,23 @@ async def get_pplive_stream_url(
         api = "https://api.pp.weimipopo.com/live/preview"
     json_str = await async_req(api, json_data=req_body, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    live_info = json_data["data"]
-    anchor_name = live_info["name"]
-    live_status = live_info["living"]
+    # MID-48（2026-09-21 海外批次）：live/preview 对不存在的 anchorUuid 返回不含 data 的信封（或
+    # 风控 HTML），原 `["data"]["name"]` 链式索引抛错被装饰器伪装成「未开播」。
+    json_data = _loads_dict(json_str)
+    live_info = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(live_info, "living") is None:
+        _warn_api_abnormal(json_str, "飘飘 live/preview", "data.living", json_data)
+        return {"anchor_name": _dig_str(live_info, "name"), "is_live": False}
+    anchor_name = _dig_str(live_info, "name")
+    live_status = _dig(live_info, "living")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # 飘飘 living 字段为真即在播
     if live_status:
-        m3u8_url = live_info["pullUrl"]
+        m3u8_url = _dig_str(live_info, "pullUrl")
+        if not m3u8_url:
+            # 已判在播却无 pullUrl（改版/风控降级）：按无源返回并留线索
+            _warn_api_abnormal(json_str, "飘飘 live/preview", "data.pullUrl", json_data)
+            return result
         result |= {"is_live": True, "m3u8_url": m3u8_url, "record_url": m3u8_url}
     return result
 
@@ -4688,9 +5990,16 @@ async def get_6room_stream_url(
     api = "https://v.6.cn/coop/mobile/index.php?padapi=coop-mobile-inroom.php"
     json_str = await async_req(api, data=data, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    flv_title = json_data["content"]["liveinfo"]["flvtitle"]
-    anchor_name = json_data["content"]["roominfo"]["alias"]
+    # MID-48（2026-09-21 海外批次）：inroom 接口对加密房间/风控返回不含 content.liveinfo 的响应
+    # （或 HTML），原三级索引抛错被装饰器伪装成「未开播」，与「房间存在但未开播」（flvtitle 为空）
+    # 混成一条。后者保持既有静默语义。
+    json_data = _loads_dict(json_str)
+    liveinfo = cast(dict[str, object], _dig(json_data, "content", "liveinfo") or {})
+    if _dig(liveinfo, "flvtitle") is None:
+        _warn_api_abnormal(json_str, "六间房 coop-mobile-inroom", "content.liveinfo.flvtitle", json_data)
+        return {"anchor_name": _dig_str(json_data, "content", "roominfo", "alias"), "is_live": False}
+    flv_title = _dig_str(liveinfo, "flvtitle")
+    anchor_name = _dig_str(json_data, "content", "roominfo", "alias")
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # flvtitle 非空才是有效在播房间，否则判未直播
     if flv_title:
@@ -4727,19 +6036,18 @@ async def get_shopee_stream_url(
         if isinstance(url_result, str) and url_result:
             url = url_result
 
-    # 畸形 URL（无 host）直接判未直播，不再抛 IndexError
-    # 畸形 URL（无 host）：判未直播，避免后续 split 越界
+    # 畸形 URL（无 host）：判未直播早退，避免后续 split 越界抛 IndexError
     if "://" not in url or len(url.split("/")) < 3 or not url.split("/")[2]:
         return result
 
-    # 直链用完整 TLD 后缀定位 host；含 uid 的是店铺主页（未必在播）
+    # 直链用完整 TLD 后缀定位 host；含 uid 的是店铺主页（未必在播）。
+    # MI-16 修复：两分支原先后缀算法不一致（live.shopee 分支只取最后一段，
+    # 对 live.shopee.co.id 得到 "id" → 无效域名），同一站点两种链接表现互反而极难归因；
+    # 现统一走 _shopee_host_suffix 一个实现（其算法沿革见该函数注释）。
+    host_suffix = _shopee_host_suffix(url)
     if "live.shopee" in url:
-        host_suffix = url.split("/")[2].rsplit(".", maxsplit=1)[1]
         # 含 uid 的是店铺主页分享链接（未必在播），不含 uid 的 live.shopee 直链（仅带 session）才视为在播态。
         is_living = get_params(url, "uid") is None
-    else:
-        # 完整 TLD 后缀：shopee.co.id → "co.id"（只取首段会拼出 live.shopee.shopee 这种无效域名）
-        host_suffix = url.split("/")[2].split(".", maxsplit=1)[-1]
 
     uid = get_params(url, "uid")
     api_host = f"https://live.shopee.{host_suffix}"
@@ -4749,10 +6057,19 @@ async def get_shopee_stream_url(
             f"{api_host}/api/v1/shop_page/live/ongoing?uid={uid}", proxy_addr=proxy_addr, headers=headers, abroad=True
         )
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
+        # MID-48（2026-09-21）：三个 shopee 接口都会在校验失败时返回不含 data 的信封
+        # （或经 CDN 回 HTML），原 `json_data["data"]["..."]` 抛 KeyError → 装饰器 → 「未开播」，
+        # 用户侧与「店铺没开播」完全同形。改为逐级判空 + 区分性告警。
+        json_data = _loads_dict(json_str)
+        if _dig(json_data, "data") is None:
+            _warn_api_abnormal(json_str, "Shopee shop_page/live/ongoing", "data", json_data)
+            return result
         # 店铺有在进行直播才取 session，否则查回放列表兜底
-        if json_data["data"]["ongoing_live"]:
-            session_id = json_data["data"]["ongoing_live"]["session_id"]
+        if _dig(json_data, "data", "ongoing_live"):
+            session_id = _dig_str(json_data, "data", "ongoing_live", "session_id")
+            if not session_id:
+                _warn_api_abnormal(json_str, "Shopee shop_page/live/ongoing", "data.ongoing_live.session_id", json_data)
+                return result
             is_living = True
         else:
             json_str = await async_req(
@@ -4762,34 +6079,60 @@ async def get_shopee_stream_url(
                 abroad=True,
             )
             json_str = _get_str_response(json_str)
-            json_data = json.loads(json_str)
-            # 仅回放无在播：补主播名后按未直播返回
-            if json_data["data"]["replay"]:
-                result["anchor_name"] = json_data["data"]["replay"][0]["nick_name"]
+            json_data = _loads_dict(json_str)
+            if _dig(json_data, "data") is None:
+                _warn_api_abnormal(json_str, "Shopee replay_list", "data.replay", json_data)
                 return result
+            # 仅回放无在播：补主播名后按未直播返回
+            replays = _dig_list(json_data, "data", "replay")
+            if replays:
+                result["anchor_name"] = _dig_str(replays[0], "nick_name")
+                return result
+
+    # MIN-2211（2026-09-23）：走到这里仍没有 session_id，说明链接既无 ?session= 参数、
+    # 也没走 uid→ongoing_live 分支拿到会话。原实现照发 /api/v1/session/None：白发一次请求，
+    # 然后每轮（默认 120 秒）输出一条 **ERROR** 叫用户「更换房间地址」——可地址没问题，
+    # 只是没开播，正踩 AGENTS「未开播属正常轮次、刻意保持静默，否则真线索会被淹掉」的口径。
+    if not session_id:
+        logger.debug(i18n.tr("Shopee 房间链接未带 session 且无进行中的直播，本轮按未开播返回"))
+        return result
 
     json_str = await async_req(
         f"{api_host}/api/v1/session/{session_id}", proxy_addr=proxy_addr, headers=headers, abroad=True
     )
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    json_data = _loads_dict(json_str)
     # session 接口无 data 即拉取失败，提示换地址按未开播返回
     if not json_data.get("data"):
-        logger.error(
-            "Fetch shopee live data failed, please update the address of the live broadcast room and try again."
-        )
+        if not json_data:
+            _warn_api_abnormal(json_str, "Shopee session", "data.session", json_data)
+        else:
+            # 只有「确实拉到了会话信封、但里面没有 data」才是地址失效级别的错误；
+            # 空响应/风控 HTML 已在上一分支留过区分性告警，不再重复刷 ERROR（MIN-2211）。
+            logger.error(
+                "Fetch shopee live data failed, please update the address of the live broadcast room and try again."
+            )
         return result
-    uid = json_data["data"]["session"]["uid"]
-    anchor_name = json_data["data"]["session"]["nickname"]
-    live_status = json_data["data"]["session"]["status"]
+    if _dig(json_data, "data", "session") is None:
+        # data 在但 session 不在：接口改版/风控降级，与「data 缺失」的拉取失败不同因
+        _warn_api_abnormal(json_str, "Shopee session", "data.session", json_data)
+        return result
+    session = _dig(json_data, "data", "session")
+    # session 里的 uid 与 URL 上的 uid 同名但来源不同；换个局部名以免 mypy 把
+    # `str | None`（get_params 的返回类型）与 object 混赋，且下游只用到这一次。
+    session_uid = _dig(session, "uid")
+    anchor_name = _dig_str(session, "nickname")
+    live_status = _dig(session, "status")
     result["anchor_name"] = anchor_name
-    result["uid"] = f"uid={uid}&session={session_id}"
-    # 必须「接口报 status==1 且 链接判定为在播(is_living)」同时满足才取流；只有 session 而无 uid 的
-    # 直链才置 is_living，避免把店铺主页的离线回放误判为直播。
-    # 必须接口报在播 且 链接判定为在播同时满足，避免把离线回放误判为直播
+    result["uid"] = f"uid={session_uid}&session={session_id}"
+    # 必须「接口报 status==1 且 链接判定为在播(is_living)」同时满足才取流：is_living 只在
+    # 无 uid 的 live.shopee 直链、或 uid→ongoing_live 确实查到在播时才为真，避免把店铺主页的离线回放误判为直播。
     if live_status == 1 and is_living:
-        flv_url = json_data["data"]["session"]["play_url"]
-        title = json_data["data"]["session"]["title"]
+        flv_url = _dig_str(session, "play_url")
+        if not flv_url:
+            _warn_api_abnormal(json_str, "Shopee session", "data.session.play_url", json_data)
+            return result
+        title = _dig_str(session, "title")
         result |= {"is_live": True, "title": title, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -4817,21 +6160,52 @@ async def get_youtube_stream_url(
     if not json_str_match:
         raise ValueError("Failed to find ytInitialPlayerResponse")
     json_str = json_str_match.group(1)
-    json_data = json.loads(json_str)
+    # MID-48（2026-09-21 海外批次）：ytInitialPlayerResponse 命中的片段被截断/换成风控壳页时，
+    # 裸 json.loads 抛错与「未登录无 videoDetails」（既有 error 提示 + 未开播）混成一条。
+    json_data = _loads_dict(json_str)
     result: dict[str, object] = {"anchor_name": "", "is_live": False}
+    video_details = _dig(json_data, "videoDetails")
     # 无 videoDetails 说明未登录/无播放数据，提示配置 cookie 按未开播返回
-    if "videoDetails" not in json_data:
+    if video_details is None:
+        if not json_data:
+            # 内联片段解析不出对象 = 风控壳页/截断，与「未登录」区分开（后者保留既有那条 error 提示）
+            _warn_api_abnormal(json_str, "YouTube ytInitialPlayerResponse", "videoDetails", json_data)
         logger.error("Error: Please log in to YouTube on your device's webpage and configure cookies in the config.ini")
         return result
-    result["anchor_name"] = json_data["videoDetails"]["author"]
-    live_status = json_data["videoDetails"].get("isLive")
+    result["anchor_name"] = _dig_str(video_details, "author")
+    live_status = _dig(video_details, "isLive")
     # isLive 为真才取 HLS 清单
     if live_status:
-        live_title = json_data["videoDetails"]["title"]
-        m3u8_url = json_data["streamingData"]["hlsManifestUrl"]
+        live_title = _dig_str(video_details, "title")
+        m3u8_url = _dig_str(json_data, "streamingData", "hlsManifestUrl")
+        if not m3u8_url:
+            # 已判在播却无清单地址（改版/风控降级）：按无源返回并留线索
+            _warn_api_abnormal(json_str, "YouTube ytInitialPlayerResponse", "streamingData.hlsManifestUrl", json_data)
+            return result
         play_url_list = await get_play_url_list(m3u8_url, proxy=proxy_addr, header=headers, abroad=True)
         result |= {"is_live": True, "title": live_title, "m3u8_url": m3u8_url, "play_url_list": play_url_list}
     return result
+
+
+# SEV-N04 修复（2026-09-21，CODE_REVIEW_2026-09-21）：淘宝 mtop 的两张 H5 签名票据键。
+# 只有这两键允许被响应下发的 Set-Cookie 覆盖，用户 cookie 的其余部分（unb / _tb_token_ /
+# cookie2 等登录态）必须原样保留——见 get_taobao_stream_url 的合并分支。
+_TAOBAO_TICKET_KEYS = ("_m_h5_tk", "_m_h5_tk_enc")
+
+
+def _cookie_str_to_dict(cookie_str: str) -> dict[str, str]:
+    # Cookie 头串 → dict，即 utils.dict_to_cookie_str 的逆向。
+    # 为什么写在本模块而不是 utils：仓内此前只有正向函数（grep 全仓确认无 cookie_str→dict 实现），
+    # 且目前只被淘宝票据合并这一条链路需要。
+    # 边界：只在「;」处分段，段内按**首个**「=」切分——base64 / URL 编码的 cookie 值常含「=」
+    # （_m_h5_tk 形如 <32位hex>_<13位毫秒>，部分站点的值带 padding），再切会把值截断成空串。
+    # 无「=」的残段（末尾多余分号、用户手工截断配置）直接丢弃：解析不出来的内容不该被写回配置文件。
+    parsed: dict[str, str] = {}
+    for segment in cookie_str.split(";"):
+        name, sep, value = segment.strip().partition("=")
+        if sep and name:
+            parsed[name] = value.strip()
+    return parsed
 
 
 @trace_error_decorator
@@ -4892,9 +6266,15 @@ async def get_taobao_stream_url(
         if "_m_h5_tk" in headers.get("Cookie", ""):
             app_key = "12574478"
             cookie_str = headers.get("Cookie", "")
-            _m_h5_tk_match = re.findall("_m_h5_tk=(.*?);", cookie_str)
-            if _m_h5_tk_match:
-                _m_h5_tk = _m_h5_tk_match[0]
+            # MID-2220（2026-09-23）：原用 `re.findall("_m_h5_tk=(.*?);", cookie_str)` 提取票据，
+            # 依赖**尾随分隔符**；而写回用的 utils.dict_to_cookie_str 是 `"; ".join(...)`、不追加
+            # 尾随 `;`，浏览器复制的 cookie 也常把该键放在末位 → `in` 判真、findall 却命中 0，
+            # sign 保持空值 → mtop 必拒；合并回写后仍是末位，于是**两轮都签不上**，收尾的
+            # `_m_h5_tk not in Cookie` 又为真 → 连 cookie 过期提示都不出的静默未开播。
+            # 现统一走 _cookie_str_to_dict（只在「;」分段、段内按首个「=」切，值里的 `=` 与末位
+            # 无分隔符都不受影响）；取不到票据即视为无票据，落回既有「裸请求换票」分支。
+            _m_h5_tk = _cookie_str_to_dict(cookie_str).get("_m_h5_tk", "")
+            if _m_h5_tk:
                 pre_sign_str = f'{_m_h5_tk.split("_")[0]}&{t13}&{app_key}&' + params["data"]
                 sign = hashlib.md5(pre_sign_str.encode("utf-8")).hexdigest()
                 params["sign"] = sign
@@ -4908,7 +6288,68 @@ async def get_taobao_stream_url(
         else:
             jsonp_str = str(result_tuple) if result_tuple else ""
             new_cookie = {}
-        json_data = utils.jsonp_to_json(jsonp_str)
+        try:
+            json_data = utils.jsonp_to_json(jsonp_str)
+        except Exception as e:
+            # WD-18：jsonp_to_json 在响应不是 JSONP（风控页/HTML 错误页/被截断）时直接 raise，
+            # 会把整个「换 token 再试一轮」的补救循环一起掀掉——第二轮根本不会发生。
+            # 这里降级为「本轮无数据」，让循环按既有语义继续。
+            logger.warning(i18n.tr("淘宝响应不是合法 JSONP，本轮重试: {type_name}", type_name=type(e).__name__))
+            json_data = {}
+
+        # WD-18 修复：把「应用刷新到的票据」提到 ret 判定**之外**无条件执行。原实现把
+        # headers["Cookie"] = new_cookie_str 放在与 isinstance(ret_value, list) 配对的 else 分支里，
+        # 而 mtop 在 token 缺失/过期时返回的仍是**非空 ret 数组**（如 ["FAIL_SYS_TOKEN_EMPTY::令牌为空"]），
+        # 那个 else 永远走不到 → 刷新到的票据被丢弃、第二轮 Cookie 与首轮完全相同且 sign 仍为空，
+        # 必然复现首轮失败：cookie 未自带有效 _m_h5_tk 时淘宝 100% 取流失败，且失败被静默降级成
+        # 「未开播」、用户看不到任何 token 过期提示。
+        # [历史注] 2026-09-21 SEV-N04 证伪了本节旧表述「应用刷新到的 cookie」：
+        # async_req(return_cookies=True) 返回的只是响应的 Set-Cookie（src/async_http.py 的
+        # response.cookies，不含请求侧 cookie），整体应用会连带抹掉用户登录态——故意图保留、
+        # 作用范围收窄到下面两张票据键。
+        if new_cookie and "_m_h5_tk" in new_cookie:
+            # SEV-N04 修复（2026-09-21，CODE_REVIEW_2026-09-21）：**合并**而非替换。
+            # 旧实现 `headers["Cookie"] = utils.dict_to_cookie_str(new_cookie)` 把整条 Cookie 头
+            # 换成「只剩响应票据」的串，并在下一行把这一份持久化写回 config.ini 的
+            # [Cookie] taobao_cookie——用户配置的登录态（unb / _tb_token_ / cookie2 等）在任意一次
+            # token 轮换后被静默销毁且重启也回不来，需登录的淘宝房间此后恒为游客态失败。
+            # 响应里除两张票据外的 Set-Cookie 一律不入请求头也不入配置（服务端可控，
+            # 不该被持久化成用户凭据）。
+            merged_cookie = _cookie_str_to_dict(headers.get("Cookie", ""))
+            for _ticket_key in _TAOBAO_TICKET_KEYS:
+                if _ticket_key in new_cookie:
+                    merged_cookie[_ticket_key] = new_cookie[_ticket_key]
+            new_cookie_str = utils.dict_to_cookie_str(merged_cookie)
+            headers["Cookie"] = new_cookie_str
+            # WD-16：回写会话票据，避免每轮都重新走登录式刷新。两处收紧：
+            # ① 持 main.file_update_lock（与主循环热加载读/其它写入方互斥，防半写）；
+            # ② 仅在值确实变化时才写，减少无谓的整份 config.ini 重写与备份触发。
+            # [2026-09-21 SEV-N04 修订] ② 的旧实现拿「响应票据串」与「配置里的完整 cookie」比较，
+            # 两者形态必然不同 → 条件恒真、每轮都重写整份 config.ini 并触发备份线程，
+            # 「仅在值确实变化时才写」实际从未生效。现比较的是**合并后的完整串**。
+            try:
+                import main as _main
+
+                _cfg_path = f"{script_path}/config/config.ini"
+                _old_cookie = utils.read_ini_value(_cfg_path, "Cookie", "taobao_cookie")
+                if _old_cookie != new_cookie_str:
+                    with _main.file_update_lock:
+                        utils.update_config(_cfg_path, "Cookie", "taobao_cookie", new_cookie_str)
+                    # SEV-N04：成功回写须可观测（旧实现只在 except 里留一条 debug，
+                    # 「用户 cookie 被改动」在常规日志级别下完全不可见，与 MID-37
+                    # 「敏感项不得被静默覆盖」的口径冲突）。只落节名/键名，**值一律不落日志**
+                    # （cookie 即凭据，logs/ 会轮转保留多份）；update_config 自身的失败路径
+                    # 已各自 warning，故走到这里即写入已完成。
+                    logger.info(
+                        i18n.tr(
+                            "The value of {key} under [{section}] in the configuration file has been updated.",
+                            key="taobao_cookie",
+                            section="Cookie",
+                        )
+                    )
+            except (ImportError, OSError) as e:
+                logger.debug(i18n.tr("淘宝 cookie 回写配置失败（已忽略）: {type_name}", type_name=type(e).__name__))
+
         # ret 字段存在才进入解析；否则走循环重试换 token
         if json_data and "ret" in json_data:
             ret_value = json_data["ret"]
@@ -4920,10 +6361,34 @@ async def get_taobao_stream_url(
                     raise RuntimeError(f"Please change your taobao cookie: {ret_value}")
 
                 ret_msg = ret_value
-                if ret_msg == ["SUCCESS::调用成功"]:
-                    anchor_name = cast(str, cast(dict[str, object], json_data["data"])["broadCaster"])
+                # MIN-2214（2026-09-23）：两处收口。
+                # ① 状态比较原为 `ret_msg == ["SUCCESS::调用成功"]` 全等——淘宝把该文案改成
+                #    任何后缀（历史上 mtop 的 :: 后文案随版本变过）就会整体判成「非 SUCCESS」，
+                #    表现为持续的「拿不到流」且日志无痕；改判前缀即可。
+                # ② `json_data["data"]` 是本文件 MID-48 口径的最后一处裸链式索引：SUCCESS
+                #    信封偶发不带 data（网关降级）时抛 KeyError，被装饰器吞成「未开播」。
+                if str(ret_msg[0]).startswith("SUCCESS"):
+                    live_status_obj = _dig(json_data, "data")
+                    if not isinstance(live_status_obj, dict):
+                        # 已判 SUCCESS 却拿不到 data 对象：接口改版/网关降级，留线索后按未开播
+                        # 返回。此处不能返回下方才构造的 result（该分支尚未执行到），故显式构造
+                        # 与函数收尾一致的未开播契约。
+                        _warn_api_abnormal(jsonp_str, "淘宝 mtop livedetail", "data", json_data)
+                        return {"anchor_name": "", "is_live": False}
+                    live_status_data = cast(dict[str, object], live_status_obj)
+                    # MID-43 修复（2026-09-20）：mtop livedetail 的 data.broadCaster 是**对象**
+                    # （accountName/nick/headPic…），原实现 `cast(str, ...["broadCaster"])` 只
+                    # 能压掉 mypy 的 no-any-return，运行时仍是 dict → main.py 的
+                    # clean_name(dict).strip() 抛 AttributeError；且 record_success(record_host)
+                    # 在 clean_name **之前**已上报，熔断统计把这轮故障记成成功样本。
+                    # 现取具体字符串字段，非 str 结果回退 ""（宁可主播名为空也不产出错类型）。
+                    broadcaster = live_status_data.get("broadCaster")
+                    if isinstance(broadcaster, dict):
+                        bc_name = broadcaster.get("accountName") or broadcaster.get("nick")
+                        anchor_name = bc_name if isinstance(bc_name, str) else ""
+                    else:
+                        anchor_name = broadcaster if isinstance(broadcaster, str) else ""
                     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
-                    live_status_data = cast(dict[str, object], json_data["data"])
                     live_status = live_status_data.get("streamStatus")
 
                     def get_sort_key(item: dict[str, object]) -> int:
@@ -4949,17 +6414,20 @@ async def get_taobao_stream_url(
                     # 仅在成功分支返回 result；否则落入循环重试（ret 非空但非 SUCCESS）
                     return result
             else:
-                # 两轮都拿不到新 token cookie：登录式刷新失败，提示更新 cookie
-                if "_m_h5_tk" not in new_cookie or "_m_h5_tk_enc" not in new_cookie:
-                    raise RuntimeError(
-                        "Try to update cookie failed, please update the cookies in the configuration file"
-                    )
-                new_cookie_str = utils.dict_to_cookie_str(new_cookie)
-                headers["Cookie"] = new_cookie_str
-                # 淘宝的 _m_h5_tk 是会话级票据，会过期；这里把刷新到的新 cookie 直接回写到 config.ini
-                # 的 taobao_cookie，避免每轮都重新走登录式刷新。属少数会写回配置的分支。
-                utils.update_config(f"{script_path}/config/config.ini", "Cookie", "taobao_cookie", new_cookie_str)
+                # ret 存在但不是非空数组（空数组/非列表）：本轮无有效结果，交由循环重试。
+                # 原实现在这里做「刷新失败即抛错」，但 token 过期时 ret 恰恰是非空数组、
+                # 根本走不到该分支（见上方 WD-18 说明）；刷新失败的判定已移到循环外的收尾处。
+                logger.debug("淘宝 mtop 返回的 ret 为空/非数组，本轮无结果")
     # 如果循环结束还没有返回，返回默认结果
+    # WD-18：两轮耗尽仍未拿到 SUCCESS。区分两种语义——
+    #   ① cookie 里始终没有可用 _m_h5_tk（登录式刷新也没成功）：这是**需要用户干预**的
+    #      确定性错误，必须抛出提示更新 cookie，而不是与「主播未开播」混为同一个静默结果；
+    #   ② 已拿到 token 但仍非 SUCCESS：多为瞬时风控/限流，按未开播返回交由下轮重试。
+    # MID-2220（2026-09-23）：判定改用解析后的**键集合**而非子串包含——`_m_h5_tk` 是
+    # `_m_h5_tk_enc` 的子串，只带 enc 键的 cookie 会被子串判据误认为「已有票据」，
+    # 于是这条本应抛给用户的「请更新 cookie」提示恰好在该形态下不出（与签名侧同源）。
+    if "_m_h5_tk" not in _cookie_str_to_dict(headers.get("Cookie", "")):
+        raise RuntimeError("Try to update cookie failed, please update the cookies in the configuration file")
     return {"anchor_name": "", "is_live": False}
 
 
@@ -4980,8 +6448,12 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
         headers["Cookie"] = cookies
 
     redirect_url_result = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
-    # 重定向返回字符串才采用，否则保留原 URL 继续解析
-    if isinstance(redirect_url_result, str):
+    # MID-2225（2026-09-23）：原注释写「重定向返回字符串才采用，否则保留原 URL 继续解析」，
+    # 与代码相反——async_req(redirect_url=True) 失败时回的是**空串**，空串同样是 str，
+    # 于是 else（保留原 URL）永不执行，原 URL 被空串覆盖 → 后续 authorId / `#/<id>?origin`
+    # 两处正则必然失配 → 静默按未开播返回，用户填的主播页地址根本没被解析过。
+    # 现补判空串，让 else 成为注释所述的真实回退。
+    if isinstance(redirect_url_result, str) and redirect_url_result:
         redirect_url = redirect_url_result
     else:
         redirect_url = url
@@ -5007,21 +6479,35 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
         info_api = "https://api.m.jd.com/talent_head_findTalentMsg"
         json_str = await async_req(info_api, data=data, proxy_addr=proxy_addr, headers=headers)
         json_str = _get_str_response(json_str)
-        json_data = json.loads(json_str)
-        anchor_name = json_data["result"]["talentName"]
+        # MID-48：京东 mtop 风格接口对风控/参数失效返回不含 result 的信封，原
+        # `json_data["result"]["talentName"]` 与后面 `["livingRoomJump"]["params"]["id"]`
+        # 任一环抛错都被装饰器伪装成「未开播」。
+        json_data = _loads_dict(json_str)
+        jd_result = cast(dict[str, object], _dig(json_data, "result") or {})
+        if not jd_result:
+            _warn_api_abnormal(json_str, "京东 talent_head_findTalentMsg", "result", json_data)
+            return result
+        anchor_name = _dig_str(jd_result, "talentName")
         result["anchor_name"] = anchor_name
         # 主播页无在播跳转信息：未开播，直接回未开播
-        if "livingRoomJump" not in json_data["result"]:
+        if "livingRoomJump" not in jd_result:
             return result
-        live_id_str = cast(str, json_data["result"]["livingRoomJump"]["params"]["id"])
+        live_id_str = _dig_str(jd_result, "livingRoomJump", "params", "id")
+        if not live_id_str:
+            # livingRoomJump 在、params.id 不在：字段改名（原实现此处 KeyError）
+            _warn_api_abnormal(json_str, "京东 talent_head_findTalentMsg", "result.livingRoomJump.params.id", json_data)
+            return result
     params = {"body": '{"liveId": "' + live_id_str + '"}', "functionId": "getImmediatePlayToM", "appid": "h5-live"}
 
     api = f"https://api.m.jd.com/client.action?{urllib.parse.urlencode(params)}"
     # backup_api: https://api.m.jd.com/api
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    live_status = json_data["data"]["status"]
+    json_data = _loads_dict(json_str)
+    if _dig(json_data, "data") is None:
+        _warn_api_abnormal(json_str, "京东 getImmediatePlayToM", "data", json_data)
+        return result
+    live_status = _dig(json_data, "data", "status")
     # 京东 status==1 为开播
     if live_status == 1:
         # 仅 authorId 入口才需补查标题（直链入口标题缺省）
@@ -5036,11 +6522,20 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
                 "https://api.m.jd.com/jdTalentContentList", data=data, proxy_addr=proxy_addr, headers=headers
             )
             json_str2 = _get_str_response(json_str2)
-            json_data2 = json.loads(json_str2)
-            result["title"] = json_data2["result"]["content"][0]["title"]
+            json_data2 = _loads_dict(json_str2)
+            contents = _dig_list(json_data2, "result", "content")
+            if contents:
+                result["title"] = _dig_str(contents[0], "title")
+            else:
+                # 标题只用于文件名，不值得让已确认开播的一路取流作废（与 YY 标题补取同口径）
+                _warn_api_abnormal(json_str2, "京东 jdTalentContentList", "result.content[0].title", json_data2)
 
-        flv_url = json_data["data"]["videoUrl"]
-        m3u8_url = json_data["data"]["h5VideoUrl"]
+        flv_url = _dig_str(json_data, "data", "videoUrl")
+        m3u8_url = _dig_str(json_data, "data", "h5VideoUrl")
+        if not flv_url or not m3u8_url:
+            # status 已报开播却无地址：风控降级/字段改名，不是「未开播」
+            _warn_api_abnormal(json_str, "京东 getImmediatePlayToM", "data.videoUrl / data.h5VideoUrl", json_data)
+            return result
         result |= {"is_live": True, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": m3u8_url}
     return result
 
@@ -5061,23 +6556,39 @@ async def get_faceit_stream_data(
     # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
-    nickname = re.findall("/players/(.*?)/stream", url)[0]
+    # MIN-2213（2026-09-23）：原为裸 `re.findall(...)[0]`——用户粘贴不带 /stream 的玩家
+    # 资料页（https://www.faceit.com/zh/players/xxx）时抛 IndexError，日志只剩一行
+    # "IndexError … in get_faceit_stream_data"，读不出「换链接形态」这个可执行结论。
+    # 与本文件其余「正则未命中即 raise ValueError("Failed to find …")」的写法统一口径。
+    nickname_matches = re.findall("/players/(.*?)/stream", url)
+    if not nickname_matches:
+        raise ValueError("Failed to find faceit nickname in url")
+    nickname = nickname_matches[0]
     api = f"https://www.faceit.com/api/users/v1/nicknames/{nickname}"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-    user_id = json_data["payload"]["id"]
+    # MID-48（2026-09-21 海外批次）：nicknames 接口对不存在的用户名返回不含 payload.id 的信封
+    # （或风控 HTML），原二级索引抛错被装饰器伪装成「未开播」。
+    json_data = _loads_dict(json_str)
+    user_id = _dig(json_data, "payload", "id")
+    if user_id is None:
+        _warn_api_abnormal(json_str, "Faceit users/nicknames", "payload.id", json_data)
+        raise RuntimeError("Failed to retrieve Faceit user id")
     api2 = f"https://www.faceit.com/api/stream/v1/streamings?userId={user_id}"
     json_str2 = await async_req(api2, proxy_addr=proxy_addr, headers=headers)
     json_str2 = _get_str_response(json_str2)
-    json_data2 = json.loads(json_str2)
-    platform_info = json_data2["payload"][0]
-    anchor_name = platform_info.get("userNickname")
-    anchor_id = platform_info.get("platformId")
-    platform = platform_info.get("platform")
-    # Faceit 委托 Twitch 解析并透传代理/cookie，否则无流按未开播
+    json_data2 = _loads_dict(json_str2)
+    # payload 为空数组是「该用户没有直播」的既有静默形态，不得刷告警
+    platform_info = _dig(json_data2, "payload", 0)
+    if platform_info is None:
+        if _dig(json_data2, "payload") is None:
+            _warn_api_abnormal(json_str2, "Faceit stream/streamings", "payload", json_data2)
+        return {"anchor_name": "", "is_live": False}
+    anchor_name = _dig_str(platform_info, "userNickname")
+    anchor_id = _dig_str(platform_info, "platformId")
+    platform = _dig_str(platform_info, "platform")
     if platform == "twitch":
-        # 委托 Twitch 解析：透传代理与 cookies，否则登录态/代理全部丢失
+        # 委托 Twitch 解析：必须透传代理与 cookies，否则登录态/代理在这一跳全部丢失
         result = await get_twitchtv_stream_data(f"https://www.twitch.tv/{anchor_id}", proxy_addr, cookies)
         result["anchor_name"] = anchor_name
     else:
@@ -5111,12 +6622,17 @@ async def get_migu_stream_url(
     api = f"https://vms-sc.miguvideo.com/vms-match/v6/staticcache/basic/basic-data/{web_id}/miguvideo"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-
-    anchor_name = json_data["body"].get("title") or ""
-    detail_title = json_data["body"].get("detailPageTitle") or ""
+    # MID-48（2026-09-21）：basic-data 对不存在的 web_id 返回不含 body 的信封（或被风控换成
+    # HTML），原 `json_data["body"]` 抛 KeyError → 装饰器 → 「未开播」。body 缺失归因后仍按
+    # 未开播返回（pId 缺失本身是既有的「房间不存在/失效」静默路径，不刷日志）。
+    json_data = _loads_dict(json_str)
+    body = cast(dict[str, object], _dig(json_data, "body") or {})
+    if not body:
+        _warn_api_abnormal(json_str, "咪咕 basic-data", "body", json_data)
+    anchor_name = _dig_str(body, "title")
+    detail_title = _dig_str(body, "detailPageTitle")
     live_title = f"{anchor_name}-{detail_title}" if detail_title else anchor_name
-    room_id = json_data["body"].get("pId")
+    room_id = _dig(body, "pId")
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # basic-data 没拿到 pId：房间不存在/失效，按未开播返回
@@ -5138,9 +6654,15 @@ async def get_migu_stream_url(
     api = f"https://webapi.miguvideo.com/gateway/playurl/v3/play/playurl?{urllib.parse.urlencode(params)}"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
+    json_data = _loads_dict(json_str)
     # currentLive 是字符串 "1" 表示在播，其它值（含 "0"/空）视为未开播直接返回。
-    live_status = json_data["body"]["content"]["currentLive"]
+    if _dig(json_data, "body", "content") is None:
+        # body/content 缺失是「接口改版或风控」（房间存在且已确认要取流），与 currentLive
+        # 为 "0" 的正常未开播形态不同因，必须区分——否则与下方 urlInfo 缺失一起都表现为
+        # 「未开播」，用户只会看到持续的「网址内容获取失败」。
+        _warn_api_abnormal(json_str, "咪咕 playurl", "body.content.currentLive", json_data)
+        return result
+    live_status = _dig(json_data, "body", "content", "currentLive")
     # 咪咕 currentLive 为字符串 "1" 才在播，其它值（含 "0"/空）判未开播
     if live_status != "1":
         return result
@@ -5148,7 +6670,10 @@ async def get_migu_stream_url(
         result["title"] = live_title
         # source_url 是未签名的播放地址，必须经 migu.js 算出 ddCalcu/sv 签名参数后才可用，
         # 裸地址直接拉会 403；下面 _get_dd_calcu 返回的才是带签名的可拉流地址。
-        source_url = json_data["body"]["urlInfo"]["url"]
+        source_url = _dig_str(json_data, "body", "urlInfo", "url")
+        if not source_url:
+            _warn_api_abnormal(json_str, "咪咕 playurl", "body.urlInfo.url", json_data)
+            return result
 
         async def _get_dd_calcu(url: str) -> str:
             # 咪咕签名算法（内部方法）：node 失败/超时统一转为 ProgramError，
@@ -5169,14 +6694,11 @@ async def get_migu_stream_url(
                 raise ProgramError("Failed to execute JS code. Please check if the Node.js environment")
 
         real_source_url = await _get_dd_calcu(source_url)
-        # 签名后的地址可能已是 m3u8（走重定向拿到最终清单）也可能是 flv 直链，按后缀分流处理；
-        # m3u8 需再发一次请求取重定向后的真实清单，flv 直链可直接作为录制源。
-        # 签名后地址按后缀分流：m3u8 需再取重定向清单，flv 直链可直接录制
+        # 签名后地址按后缀分流：m3u8 需再发一次请求取重定向后的真实清单，flv 直链可直接作为录制源。
         if ".m3u8" in real_source_url:
             m3u8_url = await async_req(real_source_url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
             m3u8_url = _get_str_response(m3u8_url)
             # 重定向失败（空响应）判未直播，避免把空串当流地址返回
-            # 重定向失败（空响应）判未直播，避免把空串当流地址
             if not m3u8_url:
                 return result
             result["m3u8_url"] = m3u8_url
@@ -5209,21 +6731,37 @@ async def get_lianjie_stream_url(
     play_api = f"https://api.lailianjie.com/ApiServices/service/live/getRoomInfo?&_$t=&_sign=&roomNumber={room_id}"
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-
-    room_data = json_data["data"]
-    anchor_name = room_data["nickname"]
-    live_status = room_data["isonline"]
+    # MID-48（2026-09-21 海外批次）：getRoomInfo 对不存在的 roomNumber 返回不含 data 的信封
+    # （或风控 HTML），原 `["data"]["nickname"]` 链式索引抛错被装饰器伪装成「未开播」。
+    json_data = _loads_dict(json_str)
+    room_data = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(room_data, "isonline") is None:
+        _warn_api_abnormal(json_str, "连接直播 getRoomInfo", "data.isonline", json_data)
+        return {"anchor_name": _dig_str(room_data, "nickname"), "is_live": False}
+    anchor_name = _dig_str(room_data, "nickname")
+    live_status = _dig(room_data, "isonline")
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     if live_status == 1:
-        title = room_data["defaultRoomTitle"]
-        webrtc_url = room_data["videoUrl"]
-        # videoUrl 非 webrtc:// 格式时无法拼出可录制的 https 地址，判未直播而非 IndexError
-        # videoUrl 非 webrtc:// 时无法拼出可录 https 地址，判未直播
+        title = _dig_str(room_data, "defaultRoomTitle")
+        webrtc_url = _dig_str(room_data, "videoUrl")
+        # videoUrl 非 webrtc:// 时无法拼出可录制的 https 地址，判未直播而非让 split 越界抛 IndexError
         if not str(webrtc_url).startswith("webrtc://"):
             return result
         https_url = "https://" + webrtc_url.split("webrtc://")[1]
+        # MIN-2212（2026-09-23）：三路地址都是把容器后缀插在**查询串之前**（.flv?/.m3u8?），
+        # 因为 CDN 按路径后缀判容器、签名参数须留在后缀之后。原实现完全依赖 URL 含 "?"——
+        # videoUrl 不带查询串时 replace 是空操作，m3u8_url/flv_url/record_url 三字段同指
+        # 原始无扩展路径 → stream_select 无从判容器、ffmpeg 每轮必失败，而 is_live=True
+        # 会把这一轮记成**成功解析样本**（AGENTS「解析成功轮即上报成功样本」），
+        # 熔断统计看不出该线路已坏。
+        # 在「归因 + 按未开播返回」与「改成无 ? 时拼 .flv 到路径末尾」之间选前者：
+        # 拿不到查询串即说明该 videoUrl 不是可直接 HTTP 拉流的地址（缺签名参数、或本就是
+        # webrtc 信令地址），拼出后缀也必然 4xx，返回 is_live=False 才是该轮的诚实语义
+        # （与同批「已判开播却拿不到任何线路 → 归因 + is_live=False」口径一致）。
+        if "?" not in https_url:
+            _warn_api_abnormal(json_str, "连接直播 getRoomInfo", "data.videoUrl", json_data)
+            return result
         flv_url = https_url.replace("?", ".flv?")
         m3u8_url = https_url.replace("?", ".m3u8?")
         result |= {"is_live": True, "title": title, "m3u8_url": m3u8_url, "flv_url": flv_url, "record_url": flv_url}
@@ -5236,7 +6774,7 @@ async def get_laixiu_stream_url(
 ) -> dict[str, object]:
     # 获取来秀直播流地址
     # 解析链路：calculate_sign(md5 盐 u) 游客头 → getShareLiveVideo 拿 playUrl；
-    # playStatus==0(注意是 0 而非 1) 取流；返回 is_live + flv + record_url；room_data 缺失 KeyError 由装饰器兜底。
+    # playStatus==0(注意是 0 而非 1) 取流；返回 is_live + flv + record_url；room_data 缺失按未开播返回并留归因告警。
     def generate_uuid(ua_type: str) -> str:
         # 生成 UUID（来秀签名用）
         if ua_type == "mobile":
@@ -5284,17 +6822,25 @@ async def get_laixiu_stream_url(
     play_api = f"https://api.imkktv.com/liveroom/getShareLiveVideo?roomId={room_id}"
     json_str = await async_req(play_api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-
-    room_data = json_data["data"]
-    anchor_name = room_data["nickname"]
+    # MID-48（2026-09-21 海外批次）：getShareLiveVideo 对不存在的 roomId 返回不含 data 的信封，
+    # 原注释即自述「room_data 缺失 KeyError 由装饰器兜底」——但那等于把三种成因压成一条
+    # 「未开播」。改为安全下钻并留区分性告警。
+    json_data = _loads_dict(json_str)
+    room_data = cast(dict[str, object], _dig(json_data, "data") or {})
+    if _dig(room_data, "playStatus") is None:
+        _warn_api_abnormal(json_str, "来秀 getShareLiveVideo", "data.playStatus", json_data)
+        return {"anchor_name": _dig_str(room_data, "nickname"), "is_live": False}
+    anchor_name = _dig_str(room_data, "nickname")
     # 来秀用 playStatus==0 表示在播（注意是 0 而非 1，与其它平台相反），非 0 视为未开播。
-    live_status = room_data["playStatus"] == 0
+    live_status = _dig(room_data, "playStatus") == 0
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     # 来秀在播才取 playUrl
     if live_status:
-        flv_url = room_data["playUrl"]
+        flv_url = _dig_str(room_data, "playUrl")
+        if not flv_url:
+            _warn_api_abnormal(json_str, "来秀 getShareLiveVideo", "data.playUrl", json_data)
+            return result
         result |= {"is_live": True, "flv_url": flv_url, "record_url": flv_url}
     return result
 
@@ -5321,15 +6867,19 @@ async def get_picarto_stream_url(
 
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    json_data = json.loads(json_str)
-
-    anchor_name = json_data["channel"]["name"]
-    live_status = json_data["channel"]["online"]
+    # MID-48（2026-09-21 海外批次）：channel detail 对不存在的 anchor_id 返回不含 channel.online 的
+    # 信封（或风控 HTML），原链式索引抛错被装饰器伪装成「未开播」。
+    json_data = _loads_dict(json_str)
+    channel = cast(dict[str, object], _dig(json_data, "channel") or {})
+    if _dig(channel, "online") is None:
+        _warn_api_abnormal(json_str, "Picarto channel detail", "channel.online", json_data)
+        return {"anchor_name": _dig_str(channel, "name"), "is_live": False}
+    anchor_name = _dig_str(channel, "name")
+    live_status = _dig(channel, "online")
 
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": live_status}
-    # Picarto channel.online 布尔直接驱动 is_live
     if live_status:
-        title = json_data["channel"]["title"]
+        title = _dig_str(channel, "title")
         m3u8_url = f"https://1-edge1-us-newyork.picarto.tv/stream/hls/golive+{anchor_name}/index.m3u8"
         result |= {"is_live": True, "title": title, "m3u8_url": m3u8_url, "record_url": m3u8_url}
     return result

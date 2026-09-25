@@ -17,7 +17,7 @@ from src.video_postprocess import get_startup_info
 # - 多渠道直播状态推送（push_message）
 # - 录后自定义脚本执行（run_script）
 # - 线程安全的错误/成功计数（record_error / record_success）
-# - 按错误率动态调整并发线程数（adjust_max_request）
+# - 按错误率动态调整并发（现委托给 ConcurrencyScheduler 的自适应调速循环）
 # - 清理单个直播间的录制状态（clear_record_info）
 # - 房间线程退出时从运行列表移除该房间（remove_room_from_running）
 #
@@ -30,7 +30,6 @@ from src.video_postprocess import get_startup_info
 # 按配置的推送渠道（微信/钉钉/邮箱/TG/BARK/NTFY/PUSHPLUS）分发直播状态消息：
 # record_name 房间显示名、live_url 直播间地址（部分渠道作跳转链接）、content 推送正文；无返回值
 def push_message(record_name: str, live_url: str, content: str) -> None:
-    # 触发消息推送（多渠道分发）
     msg_title = main.push_message_title.strip() or "直播间状态更新通知"
     push_functions = {
         "微信": lambda: xizhi(main.xizhi_api_url, msg_title, content),
@@ -89,18 +88,14 @@ _SCRIPT_TIMEOUT_SECONDS = 300.0
 
 # 执行用户自定义的录后脚本命令 command（shlex 拆分，不用 shell），打印其 stdout/stderr；无返回值
 def run_script(command: str) -> None:
-    # 执行自定义脚本命令
-    # 使用 shlex.split 安全解析命令字符串，避免 shell=True 命令注入
-    # 2026-09-12 审查 6.1：
-    # - 保留 posix=True（默认）以正确解析 "python -c \"...\"" 之类含双引号/单引号的命令；
-    #   posix=False 会把外层双引号当字面字符（实测 shlex.split('python -c \"print()\"', posix=False)
-    #   → ['python', '-c', '"print()"']），让 -c 收到带引号的整段，破坏行为
-    # - Windows 反斜杠路径（"C:\\path\\to.exe"）被 POSIX 规则当转义符拆分的问题，
-    #   当前记录为已知限制：要求用户在自定义脚本中用正斜杠（"C:/path/to.exe"）或
-    #   PowerShell 原生语法（& "C:\path\to.exe"）；彻底修复需重写拆分器，超出本审查范围
-    # - stdout/stderr decode 默认按 utf-8 严格匹配，Windows 自定义脚本输出常含 GBK
-    #   字节（如 PowerShell 写入的中文），抛 UnicodeDecodeError 被 except Exception
-    #   兜底误报"命令解析失败"。改 errors="replace" 兜底，保证非致命字符可显示为 �
+    # 不用 shell=True（避免命令注入），交给 shlex.split 拆分。2026-09-12 审查 6.1 三点取舍：
+    # - 保留 posix=True（默认）以正确解析含引号的命令（如 "python -c \"...\""）；posix=False 会把
+    #   外层双引号当字面字符（实测 shlex.split('python -c \"print()\"', posix=False)
+    #   → ['python', '-c', '"print()"']），让 -c 收到带引号的整段而破坏行为。
+    # - 已知限制：Windows 反斜杠路径（"C:\\path\\to.exe"）被 POSIX 规则当转义符拆分，要求用户改用
+    #   正斜杠（"C:/path/to.exe"）或 PowerShell 原生语法（& "C:\path\to.exe"）；彻底修复需重写拆分器。
+    # - stdout/stderr 以 errors="replace" 解码：Windows 脚本常输出 GBK 字节（如 PowerShell 中文），
+    #   严格 utf-8 会抛 UnicodeDecodeError 被 except 兜底误报成「命令解析失败」。
     try:
         args = shlex.split(command)
         process = subprocess.Popen(
@@ -150,9 +145,8 @@ def run_script(command: str) -> None:
 
 # 线程安全记录一次错误：累计计数 error_count 加一，并向错误率窗口追加样本 1；无入参无返回值
 def record_error(key: str | None = None) -> None:
-    # 线程安全地记录一次错误：递增计数并追加 1 到滑动窗口（deque maxlen 自动裁剪）；
-    # 同时上报给并发调度器（按 key 驱动熔断与全局背压）。key 为可选（直播间 host），
-    # 缺省时仅维护全局错误窗口（保持无参调用以兼容既有调用方与测试）。
+    # 滑动窗口 deque maxlen 自动裁剪；同时上报调度器（按 key 驱动熔断与全局背压）。
+    # key 为可选（直播间 host），缺省时仅维护全局错误窗口（保持无参调用以兼容既有调用方与测试）。
     with main.max_request_lock:
         main.error_count += 1
         main.error_window.append(1)
@@ -164,9 +158,8 @@ def record_error(key: str | None = None) -> None:
 
 # 线程安全记录一次成功的检测周期：向错误率窗口追加样本 0；无入参无返回值
 def record_success(key: str | None = None) -> None:
-    # 线程安全地记录一次成功完成的检测周期（追加 0），与 record_error 的 1 混合采样，
-    # 使 error_window 反映真实错误率（此前只记 1 导致错误率恒为 1.0，并发只能降不能升）；
-    # 同时上报给并发调度器。保持无参调用以兼容既有调用方与测试。
+    # 与 record_error 的 1 混合采样，使 error_window 反映真实错误率（此前只记 1 导致错误率恒为
+    # 1.0，并发只能降不能升）；同时上报调度器。保持无参调用以兼容既有调用方与测试。
     with main.max_request_lock:
         main.error_window.append(0)
     # 直接访问模块级声明属性（AGENTS.md 禁止三参 getattr：返回 Any 使类型检查静默失效）
@@ -186,7 +179,6 @@ def adjust_max_request() -> None:
 
 # 清理 record_name 的录制状态；若 record_url 已被注释则从运行列表移除并把监控计数减一；无返回值
 def clear_record_info(record_name: str, record_url: str) -> None:
-    # 清理录制状态信息
     with main.record_state_lock:
         main.recording.discard(record_name)
         # 清理录制时间记录，防止长期运行内存无界增长

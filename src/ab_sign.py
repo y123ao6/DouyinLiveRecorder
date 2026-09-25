@@ -1,4 +1,9 @@
 # -*- encoding: utf-8 -*-
+# A-Bogus 签名算法（抖音 web 端请求参数签名）——纯 Python 复刻线上 JS 逆向版本。
+# 结构：bb 字节串 = RC4( SM3 双重散列(url_search_params/suffix/ua) + 时间戳/配置/环境字节 )，
+# 再与 12 字节随机前缀拼接后经魔改 base64（s4 表）编码、尾补 '='。
+# SM3 部分是标准实现；「魔改」集中在 result_encrypt 的编码表与 gener_random 的位交错，
+# 这些常量/表值任何一个改动都会导致签名被拒。
 import math
 import os
 import random
@@ -7,16 +12,16 @@ from typing import cast
 
 
 def rc4_encrypt(plaintext: str, key: str) -> str:
-    # 初始化状态数组
+    # 标准 RC4（KSA+PRGA），无魔改；plaintext/key 每字符承载一个原始字节
     s = list(range(256))
 
-    # 使用密钥对状态数组进行置换
+    # KSA：用 key 字节循环置换状态数组 S
     j = 0
     for i in range(256):
         j = (j + s[i] + ord(key[i % len(key)])) % 256
         s[i], s[j] = s[j], s[i]
 
-    # 生成密钥流并加密
+    # PRGA：逐字节生成密钥流并与明文 XOR
     i = j = 0
     result: list[str] = []
     for char in plaintext:
@@ -36,7 +41,7 @@ def left_rotate(x: int, n: int) -> int:
 
 
 def get_t_j(j: int) -> int:
-    # 计算 A-Bogus 算法的 t_j 参数
+    # SM3 轮常量 T(j)：j<16 取 0x79CC4519、16<=j<64 取 0x7A879D8A，越界即非法入参
     if 0 <= j < 16:
         return 2043430169  # 0x79CC4519
     elif 16 <= j < 64:
@@ -46,7 +51,7 @@ def get_t_j(j: int) -> int:
 
 
 def ff_j(j: int, x: int, y: int, z: int) -> int:
-    # 计算 A-Bogus 算法的 ff_j 参数
+    # SM3 布尔函数 FF(j)：j<16 取三变量异或，j>=16 取多数函数（与 GG 的分支不同）
     if 0 <= j < 16:
         return (x ^ y ^ z) & 0xFFFFFFFF
     elif 16 <= j < 64:
@@ -56,7 +61,7 @@ def ff_j(j: int, x: int, y: int, z: int) -> int:
 
 
 def gg_j(j: int, x: int, y: int, z: int) -> int:
-    # 计算 A-Bogus 算法的 gg_j 参数
+    # SM3 布尔函数 GG(j)，j>=16 分支带 ~x 取反（FF 没有）
     # SM3 标准：j<16 → x^y^z；j>=16 → (x&y)|(~x&z)
     if 0 <= j < 16:
         return (x ^ y ^ z) & 0xFFFFFFFF
@@ -67,7 +72,7 @@ def gg_j(j: int, x: int, y: int, z: int) -> int:
 
 
 class SM3:
-    # SM3 密码哈希算法实现
+    # SM3 密码哈希标准的纯 Python 实现；A-Bogus 以 sm3.sum(sm3.sum(x)) 双重散列取摘要
     def __init__(self) -> None:
         # 初始化 SM3 算法常量与初始值
         self.reg: list[int] = []
@@ -76,7 +81,7 @@ class SM3:
         self.reset()
 
     def reset(self) -> None:
-        # 初始化寄存器值 - 修正为与JS版本相同的值
+        # SM3 标准 IV；历史注：旧实现寄存器值曾取错，修正为与 JS 参考版一致
         self.reg = [1937774191, 1226093241, 388252375, 3666478592, 2842636476, 372324522, 3817729613, 2969243214]
         self.chunk = []
         self.size = 0
@@ -186,9 +191,8 @@ class SM3:
             self.reg[7] ^= h
 
     def sum(self, data: str | list[int] | None = None, output_format: str | None = None) -> str | list[int]:
-        #
-        #         计算哈希值
-        #
+        # 出一轮摘要：填充 + 分块压缩后返回 hex 串或 32 字节数组；
+        # data 为 None 时对已累计内容续算（流式接口），否则先重置再一次性写入。
         # 如果提供了输入，则重置并写入
         if data is not None:
             self.reset()
@@ -283,11 +287,8 @@ def gener_random(random_num: int, option: list[int]) -> list[int]:
 
 
 def generate_random_str() -> str:
-    #
-    #     生成随机字符串
-    #
-    #     Returns:
-    #         随机字符串
+    # 生成 A-Bogus 的 12 字节随机前缀（三组 gener_random 合并）；每个字符承载一个
+    # 原始字节，上层 result_encrypt 直接按 ord() 取字节、不经任何文本编码。
     #
     # 2026-09-12 修复（CODE_REVIEW_FIX_1 F-19）：原使用与 JS 版本一致的固定值
     # [0.123456789, 0.987654321, 0.555555555]——所有请求的签名前缀完全相同，
@@ -534,12 +535,12 @@ def generate_rc4_bb_str(
 
 
 def ab_sign(url_search_params: str, user_agent: str) -> str:
-    # A-Bogus 签名算法主入口
+    # A-Bogus 签名主入口：入参为 URL query 串与 UA，返回签名值（上层拼接为请求参数）
     window_env_str = "1920|1080|1920|1040|0|30|0|0|1872|92|1920|1040|1857|92|1|24|Win32"
 
-    # 1. 生成随机字符串前缀
+    # 1. 随机前缀 + RC4(bb) 主体拼接；window_env_str 为固定伪造的浏览器窗口/屏幕尺寸
     # 2. 生成RC4加密的主体部分
-    # 3. 对结果进行最终加密并添加等号后缀
+    # 3. 合并串再过魔改 base64（s4 表）并添加等号后缀
     return (
         result_encrypt(generate_random_str() + generate_rc4_bb_str(url_search_params, user_agent, window_env_str), "s4")
         + "="

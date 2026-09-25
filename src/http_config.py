@@ -31,21 +31,18 @@ https_recording_enabled: bool = False
 
 
 def set_ssl_verify(value: bool) -> None:
-    # 设置控制面 SSL 证书验证开关（安全敏感；不由「https录制」联动，仅显式调用）
+    # 控制面开关的安全敏感性与「不与 https 录制联动」的边界见模块头 ssl_verify 注释
     global ssl_verify
     ssl_verify = value
 
 
 def set_stream_ssl_verify(value: bool) -> None:
-    # 设置拉流侧 SSL 证书验证开关
     global stream_ssl_verify
     stream_ssl_verify = value
 
 
 def set_https_recording(value: bool) -> None:
-    # 由主配置统一设置「是否启用https录制」（整合开关）。
-    # 仅联动拉流侧 stream_ssl_verify；控制面 ssl_verify 保持独立，
-    # 避免拉流的证书豁免扩散到登录 / 取 Cookie / 推送 token 等凭据类请求。
+    # 仅联动拉流侧 stream_ssl_verify；控制面 ssl_verify 保持独立（理由见模块头）
     global https_recording_enabled
     https_recording_enabled = value
     set_stream_ssl_verify(not value)
@@ -57,13 +54,10 @@ def set_platform_ssl_verify(platform: str, value: bool) -> None:
 
 
 def get_effective_ssl_verify(platform: str | None = None) -> bool:
-    # 返回拉流侧某平台实际应使用的 SSL 校验开关。
-    # 「禁用SSL证书验证的平台」仅在拉流侧需要证书校验时才生效——即
-    # stream_ssl_verify=True（http 录制模式，恢复默认严格校验）时平台覆盖参与读取：
-    #   - stream_ssl_verify=True 且平台在禁用列表 → False（该平台跳过证书校验，
-    #     FFmpeg 9.0 默认验证 TLS 证书后，证书异常平台仍可拉流）；
-    #   - stream_ssl_verify=False（https 录制模式，拉流已全局豁免）→ 平台覆盖无
-    #     额外意义，一律继承拉流开关 False。
+    # 返回拉流侧某平台实际应使用的 SSL 校验开关。「禁用SSL证书验证的平台」仅在 stream_ssl_verify=True
+    # （http 录制模式、恢复默认严格校验）时参与裁决：命中禁用列表 → False（FFmpeg 9.0 起默认校验 TLS
+    # 证书，靠此让证书异常平台仍可拉流）；stream_ssl_verify=False（https 录制、拉流已全局豁免）时平台
+    # 覆盖无额外意义，一律继承 False。
     if stream_ssl_verify and platform and platform in ssl_verify_platform_overrides:
         return ssl_verify_platform_overrides[platform]
     return stream_ssl_verify

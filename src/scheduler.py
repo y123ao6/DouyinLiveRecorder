@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import time
 from collections import deque
-from threading import Condition, Lock
+from threading import Condition, Lock, Thread, current_thread
 from typing import Any
 
 import i18n
@@ -20,6 +20,19 @@ from .logger import logger
 #
 # 设计目标：80+ 任务跨多平台时不因固定 3 槽而排队；单平台抖动被隔离降级，
 # 不拖垮全局；单任务异常被捕获，避免连锁报错导致系统不可用。
+#
+# 同源副本：`scripts/douyin_live_recorder_standalone.py` 刻意不 import `src/`（单文件可独立运行），
+# 因而**自带一份 ResizableSemaphore 与 PlatformBreaker 的独立副本**（其类注释已点名本模块）。
+# 改动本文件的**并发语义**（容量/已持有分离、调容唤醒规则、熔断阈值与探针租约等）时
+# **必须逐方法 diff 后同步副本**，不得假定两者已同步——SEV-01 当时只改了本文件，
+# 副本带着原 bug 存活到 2026-09-21 才回灌，且两份 PlatformBreaker 至今**并不等价**
+# （副本缺 `_grant_probe` / `_end_probe` / `error_rate` / `backoff_seconds`，样本入队函数名亦不同：
+# 本类 `_push_sample` vs 副本 `_push`；副本用类属性 `LEASE_SECONDS`、本文件用模块常量
+# `_PROBE_LEASE_SECONDS`）。
+#   [历史注] 2026-09-21 曾把「9 个 vs 5 个方法」的计数写死进注释，随即漂移；
+#   核对口径改为现场跑：`grep -c "^    def " src/scheduler.py` 与副本同项对比。
+# 副本被 `check_annotations.py` 排除，但**在 mypy 的 `[tool.mypy].files` 内**（scripts/ 全量），
+# 改动照样要过类型门禁。细则以 AGENTS.md「构建产物、依赖与运行时基线」的 standalone 条目为准。
 
 
 # 探针租约时长：half-open 探针被授予后超过该时长仍未上报样本（未开播等待轮、
@@ -30,12 +43,21 @@ _PROBE_LEASE_SECONDS = 60.0
 
 class ResizableSemaphore:
     # 可运行时调容的信号量，实现上下文管理器协议。
-    # capacity 语义与 threading.Semaphore 一致（表示可用许可数）；set_value 可增可减，
-    # 减少时仅降低上限（已持锁者不受影响），增加时会唤醒等待者。
+    # 内部严格分离两个量：_capacity = 并发上限（只由 set_value 改）、_used = 当前已持有许可数
+    # （只由 acquire/release 改）。set_value 增大时唤醒相应数量等待者；减小仅降低上限、
+    # **不强行回收已持有槽位**；容量允许为 0（暂停态）。
+    #   [历史注] 2026-09-20 SEV-01：原实现只有单个 _capacity 字段（acquire 递减 / release 递增同一
+    #   字段，实际表示「剩余可用许可」），而注释与调用方都按「容量」理解它。ConcurrencyScheduler
+    #   .recompute() 于是拿剩余量与目标容量比较后无条件绝对赋值——只要存在持有者，每 5s 的
+    #   adjust_loop 与主循环每轮的 set_active_count() 都会把可用数补满到目标值，旧持有者仍在持有
+    #   → 实际并发每轮净增、网络并发上限实质失控（会以「多房间连击同一 CDN → 偶发 403」被误判成
+    #   平台风控）。拆分字段即为消灭该形态。
+    # 同源副本：scripts/douyin_live_recorder_standalone.py::ResizableSemaphore（改并发语义须同步它）。
     def __init__(self, value: int) -> None:
         # 容量允许为 0（表示暂停/全部阻塞），仅作下限保护避免负值。
         self._cond = Condition()
         self._capacity = max(0, int(value))
+        self._used = 0
 
     def __enter__(self) -> "ResizableSemaphore":
         self.acquire()
@@ -46,16 +68,18 @@ class ResizableSemaphore:
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         # 获取一个许可；blocking=False 时非阻塞；timeout>=0 时带超时（秒）。
+        # 判据是「已持有 + 1 是否超过上限」而非「剩余许可是否 > 0」：与 release 对称，
+        # 且不受「release 凭空造容量」影响（见类注释 SEV-01）。
         with self._cond:
             if not blocking:
-                if self._capacity <= 0:
+                if self._used + 1 > self._capacity:
                     return False
-                self._capacity -= 1
+                self._used += 1
                 return True
             endtime: float | None = None
             if timeout >= 0:
                 endtime = _now() + timeout
-            while self._capacity <= 0:
+            while self._used + 1 > self._capacity:
                 if endtime is not None:
                     remaining = endtime - _now()
                     if remaining <= 0:
@@ -63,28 +87,39 @@ class ResizableSemaphore:
                     self._cond.wait(remaining)
                 else:
                     self._cond.wait()
-            self._capacity -= 1
+            self._used += 1
             return True
 
     def release(self) -> None:
-        # 释放一个许可并唤醒一个等待者。
+        # 归还一个许可（只减 _used，绝不增 _capacity）并唤醒一个等待者。
+        # _used 的下界钳制：release 与 acquire 不配对（异常路径重复释放）时不得凭空造出许可。
         with self._cond:
-            self._capacity += 1
+            if self._used > 0:
+                self._used -= 1
             self._cond.notify()
 
     def set_value(self, new_value: int) -> None:
-        # 调整容量：增大则唤醒相应数量等待者；减小则仅降低上限，不强行回收已持锁。
-        # 容量允许为 0（暂停）。
+        # 调整容量：**只改上限**，_used 保持不变（故 decrease 天然不回收已持有槽位）；
+        # 唤醒数量取「新可用数 = 新容量 - 已持有」，即 min(可用数, 等待者数)——
+        # threading.Condition.notify(n) 至多唤醒 n 个等待者，等待者更少时全部唤醒、
+        # 唤醒偏多也无害（acquire 的 while 会重新检查并继续等待）。容量允许为 0（暂停）。
         new_value = max(0, int(new_value))
         with self._cond:
-            delta = new_value - self._capacity
             self._capacity = new_value
-            if delta > 0:
-                for _ in range(delta):
-                    self._cond.notify()
+            free = new_value - self._used
+            if free > 0:
+                self._cond.notify(free)
 
     @property
     def value(self) -> int:
+        # 剩余可用许可数（= 上限 - 已持有）。判定「还能不能再塞进一个请求」用它；
+        # 展示/比较并发上限一律用 capacity，二者在有持有者时必然不同。
+        with self._cond:
+            return max(0, self._capacity - self._used)
+
+    @property
+    def capacity(self) -> int:
+        # 并发上限本身（与当前持有数无关）：调度器重算容量时与之比较。
         with self._cond:
             return self._capacity
 
@@ -93,6 +128,8 @@ class PlatformBreaker:
     # 按 key 的熔断器：closed（放行）→ open（熔断，跳过探测并退避）→ half-open（放一个探针）。
     # 连续失败样本比例超阈值即 open；open 经 cooldown 后转 half-open 放行一个探针，
     # 探针成功则 closed、失败则重新 open。用于把单平台抖动隔离，避免连锁拖垮全局。
+    # 同源副本：scripts/douyin_live_recorder_standalone.py::PlatformBreaker —— 截至 2026-09-21 只是
+    # **部分**同步（缺哪些方法见模块头），改本类语义时须逐方法 diff 后决定是否回灌。
     def __init__(
         self,
         name: str,
@@ -117,6 +154,13 @@ class PlatformBreaker:
         self._open_until = 0.0
         self._probing = False
         self._probe_granted_at = 0.0
+        # 探针代数 + 当前探针持有线程（MIN-22）：_probing 只是布尔，租约重授予后旧探针的
+        # 回报仍会命中 half-open 分支、替新探针把状态机复位（closed + 清窗口），冷却语义被削弱。
+        # 每次授予递增 _probe_seq 并登记持有线程；record() 只接受「当前持有线程」的回报去驱动
+        # half-open→closed/open 迁移，其余样本照常入窗口但不改状态。
+        # 用 Thread 对象而非 get_ident()：ident 会被已死线程复用，对象身份不会。
+        self._probe_seq = 0
+        self._probe_owner: Thread | None = None
 
     def _push_sample(self, failed: int) -> None:
         # 入队一个样本并同步维护 _fail_count（调用方须已持锁）。
@@ -125,6 +169,20 @@ class PlatformBreaker:
             self._fail_count -= self._samples[0]
         self._samples.append(failed)
         self._fail_count += failed
+
+    def _grant_probe(self, now: float) -> None:
+        # 授予（或按租约重授予）探针：递增代数、登记持有线程与授予时刻（调用方须已持锁）。
+        # 房间线程内 allow() 与随后的 record() 在同一线程执行（main.py 的熔断预检与
+        # 结果上报都位于房间线程的 while True 体内），故线程身份足以判定回报属于哪一代探针。
+        self._probing = True
+        self._probe_seq += 1
+        self._probe_owner = current_thread()
+        self._probe_granted_at = now
+
+    def _end_probe(self) -> None:
+        # 探针闭环：清除持有线程（_probe_seq 保留，代数只增不减、供后续比对）。
+        self._probing = False
+        self._probe_owner = None
 
     def record(self, success: bool) -> None:
         # 上报一次结果（True=成功 / False=失败），按状态机推进。
@@ -136,9 +194,16 @@ class PlatformBreaker:
                 ):
                     self._state = "open"
                     self._open_until = _now() + self._cooldown
-                    self._probing = False
+                    self._end_probe()
             elif self._state == "half-open":
-                # 探针结果决定：成功则恢复，失败则重新熔断（延长冷却）
+                if not self._probing or self._probe_owner is not current_thread():
+                    # 非探针回报：① 转入 half-open 前就已放行、此刻仍在途的普通轮次；
+                    # ② 已被租约重授予取代的**陈旧探针**（其持有线程不是当前持有者）。
+                    # 样本照常入窗口（closed 态阈值复用），但不得驱动 half-open→closed/open
+                    # 迁移——否则旧探针会替新探针清窗口、关熔断（MIN-22）。
+                    return
+                self._end_probe()
+                # 当前探针结果决定：成功则恢复，失败则重新熔断（延长冷却）
                 if success:
                     self._state = "closed"
                     self._samples.clear()
@@ -146,7 +211,6 @@ class PlatformBreaker:
                 else:
                     self._state = "open"
                     self._open_until = _now() + self._cooldown
-                self._probing = False
             # open 状态：等待 cooldown 结束，由 allow() 转入 half-open
 
     def allow(self) -> bool:
@@ -161,20 +225,20 @@ class PlatformBreaker:
             if self._state == "open":
                 if now >= self._open_until:
                     if not self._probing:
-                        self._probing = True
-                        self._probe_granted_at = now
                         self._state = "half-open"
+                        self._grant_probe(now)
                         return True
                     return False
                 return False
             # half-open
             if not self._probing:
-                self._probing = True
-                self._probe_granted_at = now
+                self._grant_probe(now)
                 return True
             if now - self._probe_granted_at >= _PROBE_LEASE_SECONDS:
-                # 租约超时：原探针未回报样本，重新授予（自愈）
-                self._probe_granted_at = now
+                # 租约超时：原探针未回报样本，重新授予（自愈）。代数随重授予递增并改记持有线程，
+                # 于是原探针稍后回报时不再匹配当前持有者，只能作普通样本入窗口（MIN-22）；
+                # 同一线程重入时线程对象不变，仍能正常闭环。
+                self._grant_probe(now)
                 return True
             return False
 
@@ -211,7 +275,7 @@ class ConcurrencyScheduler:
         self,
         *,
         configured_limit: int = 3,
-        min_capacity: int = 8,
+        min_capacity: int = 1,
         max_capacity: int = 128,
         scale_divisor: int = 4,
         error_rate_floor: float = 0.5,
@@ -277,9 +341,11 @@ class ConcurrencyScheduler:
         return max(self._min_capacity, target)
 
     def recompute(self) -> None:
-        # 重算全局网络并发容量，变化时才调容（避免每轮无谓唤醒）。
+        # 重算全局网络并发容量，**容量**变化时才调容（避免每轮无谓唤醒）。
+        # 必须与 capacity 而非 value 比较：value 是剩余许可，有持有者时恒小于目标容量，
+        # 于是每轮都判定「变了」并无条件 set_value —— 那正是 SEV-01 的放大机制。
         new_cap = self._compute_capacity()
-        if new_cap != self._network_semaphore.value:
+        if new_cap != self._network_semaphore.capacity:
             self._network_semaphore.set_value(new_cap)
             with self._lock:
                 dynamic = self._dynamic_mode
@@ -336,11 +402,14 @@ class ConcurrencyScheduler:
             self._dynamic_mode = enabled
             self._mode_announced = True
         self.recompute()
+        # 播报取 capacity（并发上限本身）而非 value（剩余许可）：有房间持槽时后者会随
+        # 瞬时占用波动，播报出的「网络容量」就不是调度器实际设定的上限了。
+        # 关键字实参名 value 是四语目录里的占位符名，不得随属性名一起改（见 AGENTS「形参日志必须走 i18n.tr」）。
         if enabled:
             logger.debug(
                 i18n.tr(
                     "并发模式: 动态调速（网络容量随活跃任务数自适应，当前 {value}，下限 {min_capacity}，上限 {max_capacity}）",
-                    value=self._network_semaphore.value,
+                    value=self._network_semaphore.capacity,
                     min_capacity=self._min_capacity,
                     max_capacity=self._max_capacity,
                 )
@@ -349,7 +418,7 @@ class ConcurrencyScheduler:
             logger.debug(
                 i18n.tr(
                     "并发模式: 固定（忽略动态调速器，网络容量固定为 {value}，来源: 配置「同一时间访问网络的线程数」）",
-                    value=self._network_semaphore.value,
+                    value=self._network_semaphore.capacity,
                 )
             )
 
@@ -430,11 +499,21 @@ class ConcurrencyScheduler:
 
 def host_of(url: str) -> str:
     # 熔断 key：取 URL 主机名——「://」后截到首个 /、?、# 为止（无 scheme 时对整串同样处理），
-    # 小写、保留端口。空串或解析异常统一归 "unknown"：互不相关的坏 URL 会共享同一熔断
-    # key，粗粒度兜底视为可接受（不为坏地址细分会引入更多零散熔断桶，统计意义更弱）。
+    # 小写、保留端口。空串或解析异常统一归 "unknown"：互不相关的坏 URL 共享同一熔断 key，
+    # 粗粒度兜底视为可接受（为坏地址细分只会多出零散桶，统计意义更弱）。
+    # MIN-2231（2026-09-23）：截断后必须再剥一次 `user:pass@`。自定义流地址可写成
+    # `https://u:p@host/x.m3u8`（userinfo 段），原实现只按 / ? # 截断 → 返回 `u:p@host`，两个后果：
+    # ① 凭据随 record_host 进 PlayURL.log / streamget.log（300KB 轮转保留多份 = 凭据长期落盘）；
+    # ② 同一真实 host 因凭据不同被拆成多个熔断桶，失败样本被稀释、阈值到不了
+    #   （与 AGENTS「按 host 熔断」的隔离粒度相悖）。
+    # 用 rsplit 而非 split：IPv6 形态 `[::1]:8080` 与 userinfo 含 `@` 的地址都要取**最后一个**
+    # `@` 之后才是真实 host。可复核判据：tests/test_regression_2026_09_22_main.py::test_host_of_strips_userinfo
+    # 孪生待办：scripts/douyin_live_recorder_standalone.py 的 host_of 是同语义副本（该文件按设计不
+    # import src/），2026-09-23 实测它**尚未**剥 userinfo，待该文件负责人同步；改此处须两处同改。
     try:
         tail = url.split("://", 1)[-1]
         host = tail.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        host = host.rsplit("@", 1)[-1]
         host = host.lower()
         if not host:
             return "unknown"

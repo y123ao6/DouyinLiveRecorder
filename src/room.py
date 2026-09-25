@@ -10,6 +10,7 @@ import time
 import urllib.parse
 
 import i18n
+from src.logger import logger
 
 # 优先使用 exejs（PyExecJS 的活跃维护继任者），未安装时回退到 PyExecJS
 try:
@@ -36,8 +37,8 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
     + "Chrome/141.0.0.0 Mobile Safari/537.36",
     "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
-    # 移除原硬编码的 s_v_web_id 访客校验 Cookie
-    # 该字段为抖音访客校验 ID，原值为硬编码过期凭据，访问页面时服务器会重新下发
+    # [历史注] 原硬编码的 s_v_web_id（抖音访客校验 ID）系过期凭据，已移除；
+    # 访问页面时服务器会重新下发该 Cookie，留空即可。
     "Cookie": "",
 }
 
@@ -60,17 +61,16 @@ async def _ensure_douyin_ttwid(proxy_addr: str | None = None) -> str:
     return result
 
 
-# X-bogus算法
+# 为 url 的 query 计算 X-Bogus 签名（node 执行 src/javascript/x-bogus.js）
 async def get_xbogus(url: str, headers: dict[str, str] | None = None) -> str:
     if not headers or "user-agent" not in (k.lower() for k in headers):
         headers = HEADERS
     query = urllib.parse.urlparse(url).query
-    # headers 键大小写不敏感，回退到 HEADERS 的真实 UA（此前默认值误写为字面量 "user-agent"）
+    # UA 必须与签名计算所用的一致（headers 键大小写不敏感）；此前默认值误写成字面量 "user-agent"
     user_agent = next((v for k, v in headers.items() if k.lower() == "user-agent"), HEADERS["User-Agent"])
-    # 2026-09-12 审查 6.3：原为同步读文件 + execjs.compile().call()（内部起 node
-    # 子进程并阻塞等待 stdout）。本函数是 async 且被抖音解析链路高频调用，同步阻塞
-    # 会冻结调用方房间的整个事件循环；且每次调用都重复读文件 + compile。
-    # 改 utils.run_js_async：阻塞段丢线程池，编译产物按 (路径, mtime) 缓存。
+    # 2026-09-12 审查 6.3：原为同步读文件 + execjs.compile().call()（起 node 子进程阻塞等
+    # stdout），本 async 函数被抖音解析链路高频调用 → 同步阻塞会冻结调用方整个事件循环且每次
+    # 重复 compile。改 utils.run_js_async：阻塞段丢线程池，编译产物按 (路径, mtime) 缓存。
     xbogus = cast(str, await utils.run_js_async(f"{JS_SCRIPT_PATH}/x-bogus.js", "sign", query, user_agent))
     return xbogus
 
@@ -84,10 +84,9 @@ async def get_sec_user_id(
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        # 2026-09-12 审查 6.3：补 verify=http_config.ssl_verify（控制面开关）。
-        # 原先三处 AsyncClient 均未传该参数，httpx 默认恒校验——用户在 config.ini
-        # 关闭证书校验后，抖音解析链路（sec_user_id / unique_id / web_rid）仍会
-        # 因证书问题失败，开关形同不一致
+        # 2026-09-12 审查 6.3：补 verify=http_config.ssl_verify（控制面开关）。原先三处
+        # AsyncClient 均未传该参数、httpx 默认恒校验——用户在 config.ini 关闭证书校验后，
+        # 抖音解析链路（sec_user_id / unique_id / web_rid）仍会因证书问题失败，开关形同不一致
         async with httpx.AsyncClient(proxy=proxy_addr, timeout=15, verify=http_config.ssl_verify) as client:
             response = await client.get(url, headers=headers, follow_redirects=True)
             redirect_url = response.url
@@ -158,7 +157,6 @@ def _set_cached_unique_id(sec_user_id: str, unique_id: str) -> None:
         _SEC_UID_UNIQUE_CACHE[sec_user_id] = (unique_id, time.monotonic())
 
 
-# 获取抖音号
 async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict[str, str] | None = None) -> str | None:
     # 将「主播主页链接」解析为抖音号（unique_id），供上层拼接 live.douyin.com/<抖音号> 录制。
     #
@@ -185,8 +183,7 @@ async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict[s
                 sec_user_id = extract_sec_user_id(redirect_url)
                 if not sec_user_id:
                     raise RuntimeError(f"Could not extract sec_user_id from {redirect_url}")
-            # 进程级缓存：sec_user_id -> 抖音号 映射几乎不变，但每个 room 轮询都会重解析
-            # （默认每 120s 一次），命中缓存可省去一次 iesdouyin 接口请求及其 ttwid 依赖。
+            # 命中 _SEC_UID_UNIQUE_CACHE 即省一次 iesdouyin 请求（表头注释说明为何可缓存）
             cached_unique_id = _get_cached_unique_id(sec_user_id)
             if cached_unique_id is not None:
                 return cached_unique_id
@@ -212,8 +209,20 @@ async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict[s
                 if isinstance(short_id_value, str) and short_id_value and short_id_value != "0":
                     _set_cached_unique_id(sec_user_id, short_id_value)
                     return short_id_value
-            except Exception:
-                pass  # 接口异常时继续走 HTML 兜底
+            except Exception as e:
+                # MID-2246（2026-09-23）：原为 `except Exception: pass` 零日志。主路径（iesdouyin
+                # JSON 接口）失败后走 HTML 兜底（AGENTS 记载「已是 JS 反爬壳页、正则通常失效」），
+                # 用户只看到上层「网址内容获取失败」而根因（证书 / 代理 / DNS / 风控 200+空 body /
+                # JSON 改版）没落盘，违反 AGENTS「异常日志须带类型与上下文、禁止静默吞异常」。用
+                # debug 而非 warning：这是每轮都走的有兜底降级路径，warning 会淹掉真线索（同 spider.py）。
+                logger.debug(
+                    i18n.tr(
+                        "抖音 unique_id 接口失败（转 HTML 兜底）: {type_name}: {e} - {masked_url}",
+                        type_name=type(e).__name__,
+                        e=e,
+                        masked_url=utils.mask_credentials(api),
+                    )
+                )
 
             # 兜底路径：分享页 HTML 正则（页面改版后通常已失效，保留以防接口下线）
             user_page_response = await client.get(
@@ -244,9 +253,8 @@ async def get_live_room_id(
         headers = HEADERS
 
     if not params:
-        # 移除原硬编码的 verifyFp 和 msToken 过期凭据
-        # verifyFp（访客指纹）和 msToken（请求令牌）原为硬编码过期值，
-        # 留空时由抖音服务器在响应中重新下发，避免凭据失效导致功能异常
+        # verifyFp（访客指纹）/ msToken（请求令牌）原为硬编码过期凭据，现留空由抖音
+        # 服务器在响应中重新下发，避免凭据失效导致功能异常
         params = {
             "verifyFp": "",
             "type_id": "0",
@@ -273,10 +281,12 @@ async def get_live_room_id(
             owner = cast(dict[str, object], room.get("owner", {}))
             return cast(str, owner.get("web_rid"))
     except httpx.HTTPStatusError as e:
-        print(i18n.tr("HTTP status error occurred: {status_code}", status_code=e.response.status_code))
+        # MI-19：改用 logger。原用 print——绕过日志分级/落盘/轮转，GUI 与 Web 端采集不到，
+        # 且冻结打包（console=False，sys.stderr 为 None）时 stdout 会被直接丢弃。
+        logger.warning(i18n.tr("HTTP status error occurred: {status_code}", status_code=e.response.status_code))
         raise
     except Exception as e:
-        print(i18n.tr("An exception occurred during get_live_room_id: {e}", e=e))
+        logger.warning(i18n.tr("An exception occurred during get_live_room_id: {e}", e=e))
         raise
 
 
