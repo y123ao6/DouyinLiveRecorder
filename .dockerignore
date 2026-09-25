@@ -1,13 +1,10 @@
 # =============================================================================
 # DouyinLiveRecorder .dockerignore
-# -----------------------------------------------------------------------------
-# 目的：只把容器运行所需内容送入构建上下文，减小上下文体积、避免把宿主机
-# 敏感文件 / 开发产物打进镜像。
-# 运行所需：main.py / web.py / gui.py + src/（含 javascript/ 签名脚本、
-#            platforms/ 各平台实现与弹幕采集、proto/ 弹幕协议）+ web/（面板前端）
-#            + i18n/（编译好的 .mo 翻译）
-# 注意：i18n/**/*.mo 编译翻译文件是 gettext 运行时必需，Dockerfile 不会重新编译，
-#       不可排除；仅排除 .po 源文件与编译脚本。
+# 目的：只把容器运行所需内容送入构建上下文，减小体积、避免宿主机敏感文件与开发产物进镜像。
+# 运行所需：main.py / web.py / gui.py + src/（javascript/ 签名脚本、platforms/ 各平台实现与
+#   弹幕采集、proto/ 弹幕协议）+ web/（面板前端）+ i18n/**/*.mo
+# 红线：编译好的 .mo 是 gettext 运行时必需、Dockerfile 不会重编译，**不可排除**；
+#   只排 .po 源文件（编译脚本 compile_po.py 在 scripts/ 下，随 scripts/ 整目录排除）。
 # =============================================================================
 
 # ---------- Git / CI（构建上下文无需版本库与流水线定义）----------
@@ -21,9 +18,10 @@
 .codebuddy/
 .trae/
 
-# ---------- 本地工具 / 审查生成物（第三方编码代理 / 浏览器测试等，与 .gitignore 及 pyproject 各工具排除列表同源）----------
+# ---------- 本地工具 / 审查生成物（与 .gitignore 及 pyproject 各工具排除列表同源）----------
 .mimosa/
 .qoder/
+.qoder-credits/
 .agents/
 .pnpm-store/
 .npm-cache/
@@ -41,15 +39,17 @@ LICENSE
 CODE_WIKI.md
 CODE_WIKI_EN.md
 AGENTS.md
-# 审查 / 排查记录与开发期笔记（仅开发期参考，运行时无需）：
-# 2026-09-14 同步——原逐文件名列举的 bili_danmuku_proxy.md / danmaku_check.md / todo.md
-# 与 PERF_REVIEW_2026-08-28.md 均已从工作区移除，逐文件名维护会持续腐化；
-# 改为通配模式，新增同类根目录文档自动落入排除，无需再改本文件。
+# 审查 / 排查记录与开发期笔记（2026-09-14 由逐文件名列举改为本形态：逐文件名会持续腐化，
+# 新增同类文档自动落入排除，无需再改本文件）
 CODE_CHANGES.md
 TRAE_AGENT_CODE_WIKI.md
 PERF_REVIEW_*.md
 CODE_REVIEW_*.md
 DIAGNOSIS_*.md
+# 上面的自动落入只对已存在的三个前缀成立：换前缀必须在此补一行（PROPOSAL_*.md 为 2026-09-22
+# 新增，待审批的生产代码改动提案——正式记录、随仓库分发，只是不进镜像），
+# 并同步 .gitignore 的「不得忽略」注记与 AGENTS.md 的镜像额外排除集条目。
+PROPOSAL_*.md
 
 # ---------- Docker 相关（避免自嵌套；.env 由 compose 运行时加载，不打入镜像）----------
 .dockerignore
@@ -79,6 +79,7 @@ tests/
 .pytest_cache/
 .coverage
 .coverage.*
+coverage.json
 htmlcov/
 .tox/
 .nox/
@@ -106,9 +107,12 @@ dist/
 .eggs/
 
 # ---------- 打包与桌面平台专用文件（容器内不使用）----------
-build_exe.py             # 仅本地 / CI 打包脚本，镜像运行不需要
-StopRecording.vbs        # Windows 停止录制脚本，非容器适用
-# 根目录 index.html 是独立的 M3U8 播放器页面；Web 面板使用 web/ 目录，不受影响
+# 注意（MID-2255）：本文件里 `#` **只有行首才是注释**，行内 `#` 是模式的一部分。
+# 原先写成 `build_exe.py    # 说明` 时，模式变成「带空格与中文的长串」，永远匹配不到任何
+# 路径——规则看着在、实际等于没写，且**伪装成已排除**（比漏写更糟）。注释一律独立成行。
+# 以下三项：本地 / CI 打包脚本、Windows 停止录制脚本、独立的 M3U8 播放器页（面板用 web/）
+build_exe.py
+StopRecording.vbs
 index.html
 
 # ---------- PyInstaller ----------
@@ -130,9 +134,11 @@ ffmpeg/
 node/
 node-v*.zip
 
-# ---------- 翻译：仅排除 .po 源文件与编译脚本，编译好的 .mo 必须保留 ----------
+# ---------- 翻译：仅排除 .po 源文件，编译好的 .mo 必须保留 ----------
+# [历史注] MID-2255 删掉了曾有的 `i18n/**/compile_po.py`：该脚本真身在 scripts/ 下，
+# i18n/ 内从来没有这个文件，规则永不匹配、属空规则；回归锁见
+# tests/test_build_exe.py::test_dockerignore_excludes_dev_only_artifacts_as_bare_patterns。
 i18n/**/*.po
-i18n/**/compile_po.py
 
 # ---------- Windows 专用二进制与脚本（容器内为 Linux，无需）----------
 *.exe
@@ -141,15 +147,22 @@ i18n/**/compile_po.py
 *.bat
 *.vbs
 
-# ---------- 临时文件 ----------
+# ---------- 临时文件与调试残留（与 .gitignore 同源维护）----------
+# *.jsonl：弹幕监控边车日志（logs/danmaku_monitor.jsonl 等），与下方 logs/ 目录排除互补；
+# *.pyc_probe_tmp：过程性探针 / 调试残留；*.icon：系统托盘图标缓存；*.isorted：isort 备份残留；
+# _out_*.txt：2026-09-22/23 新增形态——各组修复代理的重定向输出，绝不该进镜像上下文。
+# _probe_*.py：并行修复组新建的临时探针脚本（与 .gitignore 同源维护，2026-09-26 补入此处）。
+#   刻意**不**在此排 _FIX_BRIEF_*.md / _i18n_pending.json / _run.py（由主会话收尾统一处置）。
 *.tmp
 *.temp
 *.bak
 *.log
-*.jsonl   # 运行日志（logs/danmaku_monitor.jsonl 等），与下方 logs/ 目录排除互补
+*.jsonl
 *.isorted
-# 过程性探针 / 调试残留（非源码，与 .gitignore 同源维护）
 *.pyc_probe_tmp
+*.icon
+_out_*.txt
+_probe_*.py
 
 # ---------- 系统文件 ----------
 .DS_Store
