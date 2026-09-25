@@ -962,7 +962,7 @@ def host_of(url: str) -> str: ...
 | requests          | >=2.34.2  | 同步 HTTP 请求（现仅 ffmpeg / node 安装下载脚本使用；各平台解析走 httpx 异步面） |
 | urllib3           | >=2.7.0   | 传输层（requests 之下；显式声明以防解析回退落入 CVE-2026-44431 区间）    |
 | httpx[http2]      | >=0.28.1  | 异步 HTTP 客户端（含 HTTP/2，`src/async_http.py` 并发抓取流地址）  |
-| h2                | >=4.3.0   | httpx `http2=True` 的运行期依赖（`Client.__init__` 内 `import h2`） |
+| h2                | >=4.4.1   | httpx `http2=True` 的运行期依赖（`Client.__init__` 内 `import h2`） |
 | socksio           | >=1.0.0   | httpx SOCKS 代理（socks5/socks5h）的运行期依赖（传输层内 `import socksio`） |
 | loguru            | >=0.7.3   | 结构化日志（`src/logger.py` 统一封装）                       |
 | pycryptodome      | >=3.23.0  | 加密算法（SM3、RC4、AES）                                 |
@@ -1627,6 +1627,22 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
+### v4.3.0-dev (2026-09-26) — CI typecheck 门禁补装固定版本 pytest，并修掉 `tests/test_proto_runtime_compat.py` 的 `[return]` 误报：消除「本机绿、CI 红」的检查面漂移（纯 CI / 测试改动，零运行期变更）
+
+- **背景**：CI 的 `typecheck` job 报 `tests/test_proto_runtime_compat.py:33: error: Missing return statement  [return]`（checked 159 files），而本机 `mypy` 158 files 全绿、完全无法复现。
+- **根因**：该 job 只装 `requirements.txt + mypy`、**未装 pytest** → `import pytest` 被解析为 `Any`，`pytest.fail()` 的 `NoReturn` 标注丢失，mypy 认为 `_declared_protobuf_specifier() -> str` 可能隐式返回 `None`。这是环境差异而非代码缺陷；同一原因还意味着 `tests/` 里所有 `pytest.*`（fixture / `MonkeyPatch` / `raises`）此前**全部免检**——门禁本就是半盲的。本机复现手法：`mypy --no-site-packages`（遮蔽已装包即可精确复现同一条；该模式额外多出的 5 条 `no-any-return` 属过度剥离噪声）。
+- **改动性质**：只改 CI 工作流 + 一条测试辅助函数 + `AGENTS.md`；`src/`、`main.py`、`gui.py`、`web.py`、`web/app.js`、`requirements.txt` / `pyproject.toml` 零改动，未增删任何依赖（pytest 只进 typecheck job 的临时安装，不进运行时清单）。
+
+**涉及文件（按模块分类）**：
+
+- **模块：`tests/test_proto_runtime_compat.py`（F-14 protobuf 护栏用例）** — 辅助函数 `_declared_protobuf_specifier()` 收尾的 `pytest.fail(...)` 改为 `raise AssertionError(...)`：`raise` 是天然 `NoReturn`，与「环境里是否装了 pytest」无关，两种口径结论一致；未在其后补不可达语句（basedpyright 会报 `reportUnreachable`）。同文件 `_satisfies()` 末尾有 `return True`，其 `pytest.fail` 不受影响，保留未动。
+- **模块：`.github/workflows/ci.yml`（typecheck job）** — ① setup 的 `outputs` 增 `pytest_version`；② consts 步骤声明 `pytest_version=9.1.1`（与 black / isort / mypy 同口径固定版本，防「代码未改动却 CI 变红」）；③ Install dependencies 改为 `pip install -r requirements.txt "mypy==2.3.1" "pytest==9.1.1"`，label 同步为「requirements + mypy + pytest」，并加注「为什么必须装 + 为什么钉版本」。只装 `pytest` 即够：全仓 99 个测试文件仅 import `pytest` 与 `from pytest import MonkeyPatch`，无 `pytest_asyncio` / `pytest_mock` / `pytest_cov` 导入（缺它们由 `ignore_missing_imports` 兜住）。
+- **模块：`AGENTS.md`（已知坑）** — 「类型检查、注释与静态门禁」新增一条：typecheck job 必须装 pytest，否则 `tests/` 半盲；辅助函数走不到终点时一律 `raise AssertionError(...)`，不要依赖 `pytest.fail()` 的返回类型。附 `mypy --no-site-packages` 复现手法，以及「该模式下 `src/` 多出的 `no-any-return` 是噪声」的判据。
+
+**验证**：`mypy`（无参）与 `mypy --platform linux` 均 Success 158 files（本机 pytest 9.1.1，与 CI 新口径同版本）；`mypy --no-site-packages` 下原 `[return]` 已消失，仅剩 5 条剥离噪声；`basedpyright tests/test_proto_runtime_compat.py` 0 errors / 0 warnings / 0 notes；`black --check` unchanged；`pytest tests/test_proto_runtime_compat.py` 4 passed；`yaml.safe_load` 解析 `ci.yml` 通过且 outputs / steps 结构如预期；改动文件行尾形态不变（`ci.yml` 纯 LF，`AGENTS.md` 与该测试文件纯 CRLF）。
+
+**遗留观察**：CI 那次运行报 `checked 159 source files`，本机按 `[tool.mypy].files` 口径数出 158 个 `.py`，差 1 个未定位（疑为该次运行所在提交上的多余文件），与本次修复无关。
+
 ### v4.3.0-dev (2026-09-26) — 仓库元数据与文档同源同步：依赖表 / 目录树 / egg-info / 忽略清单对齐，清理已删除模块 `weverse_auth` 的残留记载（纯元数据与文档改动，零运行期代码变更）
 
 - **背景**：全仓通读核对「版本 / 依赖 / 目录树 / 忽略清单」四类同源信息，发现多处滞后：`CODE_WIKI*.md` 依赖表仍停在 16 条且 `starlette` 下限写着 `>=0.49.1`；目录树仍列 2026-09-23 已删除的 `src/weverse_auth.py` 与 `tests/test_weverse_auth.py`；`DouyinLiveRecorder.egg-info/requires.txt` 缺 2026-09-23 补入的 `h2`/`socksio`；`AGENTS.md` 依赖条数仍写 21 条。
@@ -1637,7 +1653,8 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **模块：`AGENTS.md`** — 「依赖管理」运行时依赖条数 `21 条 → 23 条`（两处），并补注 `h2`/`socksio` 的补入时点；安全下限条目里的 `starlette>=1.0.1` 更正为 `>=1.3.1`（1.0.1 自身仍落在 PYSEC-2026-2280/2281/248/249 受影响段，2026-09-21 已二次抬升）。
 - **模块：`README.md` / `README_EN.md`** — 项目结构树删除 `src/weverse_auth.py`，补入此前遗漏的 `src/ffmpeg_master_download.py`（中英同步）。
 - **模块：`CODE_WIKI.md` / `CODE_WIKI_EN.md`** — ① 依赖关系表由 16 条补齐到 23 条（补 `urllib3` / `h2` / `socksio` / `websockets` / `protobuf` / `brotli` / `PyYAML`，`starlette` 下限 `0.49.1 → 1.3.1`，删除空行占位）；② 目录树与测试清单去掉 `weverse_auth.py` / `test_weverse_auth.py` 两处残留；③ 「注 1」由现状陈述改为带日期的 `[历史注]`（保留「勿加 pip 上的 weverse 包」结论，因其拉入无法编译的 pycrypto）。历史更新日志条目（记录当时事实）一律未改。
-- **模块：`DouyinLiveRecorder.egg-info`（构建产物，未入库）** — 经 setuptools `egg_info` 重建：`requires.txt` 补齐 `h2>=4.3.0` / `socksio>=1.0.0`，`SOURCES.txt` 不再列已删除模块；`PKG-INFO` 版本保持 `4.3.0`。
+- **模块：`DouyinLiveRecorder.egg-info`（构建产物，未入库）** — 经 setuptools `egg_info` 重建：`requires.txt` 补齐 `h2>=4.4.1` / `socksio>=1.0.0`，`SOURCES.txt` ；`PKG-INFO` 版本保持 `4.3.0`。
+- **模块：`requirements.txt` / `pyproject.toml`（依赖清单两侧同源）** — `h2` 下限 `>=4.3.0` → **`>=4.4.1`**：CI `deps-audit` 的「下限复核」步（逐条把 `>=X` 钉成 `==X` 再 `--no-deps` 审计）报出 `h2 4.3.0` 命中 **PYSEC-2026-3628 / GHSA-6hr6-w5qg-qmwg**（重复 Host 头 → 请求走私），OSV 区间 `introduced=0` / `fixed=4.4.1`；4.3.0 只修了同源的 PYSEC-2026-1435，故**旧下限自身落在受影响段**——与 starlette、protobuf 完全同形态，解析模式（只审区间内最新版）对此全瞎。本机现装与 `uv.lock` 均已是 4.4.1，抬下限不改变解析集合；同步更新两侧清单、`egg-info`、`CODE_WIKI*.md` 依赖表与 README 双侧更新日志。
 - **模块：`.dockerignore`** — 补入 `_probe_*.py`（与 `.gitignore` 同源维护；此前只排了 `_out_*.txt`）。
 - **模块：`config/config.ini`（本地运行期配置，已 gitignore）** — 补入 `[Cookie]` 段的 `ttwid`（`src/ttwid.py` 的 `_CONFIG_TTWID_KEY` 与 README 均已声明、本地缺键）；写入保留 UTF-8 BOM 与 LF 行尾。
 - **模块：`i18n/`（四语目录）** — 完整性核对：`scripts/extract_i18n_strings.py` 全量扫描 533 条有价值串 + 三个盲区（`print_colored` / `messagebox` / 推送模板）补扫，缺失均为 0；四目录键集一致、无空值。清理：删除 3 条 Weverse token 刷新相关孤儿条目（对应 `src/weverse_auth.py` 已于 2026-09-23 删除、全仓无代码再产出），四目录**同进同退**后均为 **780 条**；随后 `scripts/compile_po.py` 重编 `zh_CN.mo`（781 条含头部 / 110585 字节）。
