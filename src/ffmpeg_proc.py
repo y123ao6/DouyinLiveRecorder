@@ -42,6 +42,19 @@ _CLEANUP_WAIT_SECONDS: float | None = None
 # 单段等待的最小秒数，理由见 _stage_budget。
 _MIN_STAGE_WAIT_SECONDS = 1.0
 
+# 三级终止的第一级（「优雅退出」）在两个平台上走的是两条不同的路，且**不可互换**：
+#   · Windows：向 stdin 写 'q' 再关闭——ffmpeg 在 Windows 上没有可用的控制台信号语义，
+#     写完必须 close（部分构建要读到 EOF 才处理 'q'，见 _terminate_ffmpeg_process 内注释）；
+#   · POSIX：直接发 SIGINT，ffmpeg 自行 flush 并收尾——这条路径**绝不碰 stdin**：ffmpeg
+#     一旦卡死且不读管道，写满的缓冲会让 stdin.write **永久阻塞**（进程内无法给管道写加
+#     超时），一个进程就能把整条退出清理链路挂死。
+# 抽成模块级常量而非内联 `os.name == "nt"`：CI 全程跑在 ubuntu（POSIX），内联的话
+# tests/test_ffmpeg_proc.py 那两条「写失败也要关 stdin」的回归锁在 CI 上根本进不了分支、
+# 断言恒为假（2026-09-26 CI 实测两条红）；而这恰恰是最需要门禁的形态——它锁的是
+# 「旧实现把 close() 和 write/flush 放进同一个 try，写失败即跳过 close」。测试侧以
+# monkeypatch 置 True 覆盖 Windows 路径，POSIX 路径由默认取值覆盖。
+_QUIT_VIA_STDIN = os.name == "nt"
+
 
 # 本轮清理的状态载体：在「worker 已处理完」事件之上多带一个「已确认进程终止」结果位。
 # 为什么要多这一位（MIN-2236②）：「未确认」告警读 event、注册表复核读 p.poll() is None
@@ -99,7 +112,7 @@ def _terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = int(
     deadline = time.monotonic() + max(float(timeout), _MIN_STAGE_WAIT_SECONDS * 3)
     try:
         # 第一步：尝试正常退出（Windows 写 q 到 stdin，POSIX 发 SIGINT）
-        if os.name == "nt":
+        if _QUIT_VIA_STDIN:
             if proc.stdin:
                 try:
                     _ = proc.stdin.write(b"q")
