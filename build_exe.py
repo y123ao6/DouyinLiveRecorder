@@ -418,6 +418,10 @@ def _read_ini_pairs(path: Path) -> list[tuple[str, str, str]]:
 # 「最新 LTS」每次构建都可能变化，按文件名钉定既无法分平台表达、也无法表达「这一份还没核实」。
 RUNTIME_SLOTS: tuple[str, ...] = ("ffmpeg", "node")
 
+# [2026-09-26] 某些平台还有一个「与 ffmpeg 分家发布」的可执行件（macOS 的 ffprobe），它同样需要一个
+# 下载槽位。这类槽位按运行时键登记在 _EXTRA_EXECUTABLE_URLS，**不并进本元组**：并进来会让
+# windows/linux 三键凭空多出没有公布值的钉定义务。查「这个键该有几个槽」一律用 runtime_slots_for()。
+
 # 发布矩阵覆盖的运行时键（<os>-<arch>），与 .github/workflows/build-release.yml 的三平台矩阵同源；
 # scripts/check_runtime_pins.py 校验钉定表对它的覆盖完整性。
 RELEASE_RUNTIME_KEYS: tuple[str, ...] = ("windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64")
@@ -502,6 +506,8 @@ _PINNED_RUNTIME_SHA256: dict[str, dict[str, str]] = {
     "macos-x64": {
         # evermeet getrelease/zip：官方只给 GPG 签名（追加 /sig），无 SHA256 → 走官方签名档
         "ffmpeg": OFFICIAL_SIGNATURE_PIN,
+        # 与 ffmpeg 同一把钥匙签的独立归档（getrelease/ffprobe/zip），故同走官方签名档
+        "ffprobe": OFFICIAL_SIGNATURE_PIN,
         # node-v24.21.0-darwin-x64.tar.gz
         "node": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
     },
@@ -509,6 +515,7 @@ _PINNED_RUNTIME_SHA256: dict[str, dict[str, str]] = {
         # 与 macos-x64 同一份 evermeet 构建（上游不发布 arm64，见 _FFMPEG_DOWNLOAD_URLS 注释）：
         # 同一来源 → 同一档；两槽的取值必须保持相等（tests/test_build_exe.py 锁此项）
         "ffmpeg": OFFICIAL_SIGNATURE_PIN,
+        "ffprobe": OFFICIAL_SIGNATURE_PIN,
         # node-v24.21.0-darwin-arm64.tar.gz
         "node": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
     },
@@ -717,11 +724,23 @@ _RUNTIME_GPG_SIGNATURES: dict[str, dict[str, tuple[str, str]]] = {
             "https://evermeet.ca/ffmpeg/getrelease/zip/sig",
             "20F6EA3E0CFD6B4C53447A73476C4B611A660874",
         ),
+        # ffprobe 归档与 ffmpeg 归档同页同钥：实测两份 .sig 的签发者都是主钥
+        # 20F6EA3E0CFD6B4C53447A73476C4B611A660874 名下的子钥 4E7BEC998E920EE1
+        # （RSA-4096 / SHA-512，2026-09-18 签），_verify_gpg_artifact 按「主钥+子钥指纹集合」判归属，
+        # 故沿用同一个已钉主钥指纹，不需要另立第 4 把钥匙。
+        "ffprobe": (
+            "https://evermeet.ca/ffmpeg/getrelease/ffprobe/zip/sig",
+            "20F6EA3E0CFD6B4C53447A73476C4B611A660874",
+        ),
     },
     "macos-arm64": {
         # 与 macos-x64 同一份产物、同一把钥匙（见 _FFMPEG_DOWNLOAD_URLS 注释）
         "ffmpeg": (
             "https://evermeet.ca/ffmpeg/getrelease/zip/sig",
+            "20F6EA3E0CFD6B4C53447A73476C4B611A660874",
+        ),
+        "ffprobe": (
+            "https://evermeet.ca/ffmpeg/getrelease/ffprobe/zip/sig",
             "20F6EA3E0CFD6B4C53447A73476C4B611A660874",
         ),
     },
@@ -990,6 +1009,36 @@ def _ffmpeg_source_url() -> str:
     return fallback
 
 
+# 「与 ffmpeg 分家发布」的第二可执行件：{运行时键: {槽位: 归档 URL}}。
+# 目前只有 macOS 一支：evermeet 的 getrelease/zip 里**只有 ffmpeg**，ffprobe 要在同页面另下一份
+# （getrelease/ffprobe/zip，2026-09-26 实测真实落点 e.deolaha.ca:4242/pub/ffprobe/ffprobe-9.0.2.zip、
+# 26,104,193 B，且 .sig 存在、与 ffmpeg 同为已钉主钥的子钥 4E7BEC998E920EE1 签出）。
+# gyan.dev 与 BtbN 的归档里 ffmpeg+ffprobe 同包，其完整性已由该平台的 ffmpeg 槽一并覆盖，
+# 故本表**不含**windows/linux 键——给同包成员另立一个没有独立公布值的钉定槽，等于凭空造一个假闸口。
+# 本表的键集合就是「哪些运行时键多一个下载槽位」的唯一事实源：runtime_slots_for() 与
+# scripts/check_runtime_pins.py 的槽位覆盖面都由它推导，不得在第二处再列一遍槽位名。
+_EXTRA_EXECUTABLE_URLS: dict[str, dict[str, str]] = {
+    "macos-x64": {"ffprobe": "https://evermeet.ca/ffmpeg/getrelease/ffprobe/zip"},
+    "macos-arm64": {"ffprobe": "https://evermeet.ca/ffmpeg/getrelease/ffprobe/zip"},
+}
+
+
+def runtime_slots_for(key: str) -> tuple[str, ...]:
+    # 该运行时键**实际存在**的下载槽位 = 通用槽位 + 该平台独有的独立归档槽位。
+    # 用它而不是全局 RUNTIME_SLOTS 来圈定钉定表的义务范围：ffprobe 只在 macOS 需要单独钉定，
+    # 按全局槽位查会让 windows/linux 三键因「缺 ffprobe 钉定项」被判结构缺陷（rc=2）。
+    return (*RUNTIME_SLOTS, *tuple(_EXTRA_EXECUTABLE_URLS.get(key, {})))
+
+
+def _extra_executable_urls() -> dict[str, str]:
+    # 当前机器需要另行下载的槽位及其归档 URL；空字典 = 本平台所有可执行件都随主归档同包。
+    # 回落规则与 _ffmpeg_source_url 一致（未登记架构回落同族 x64），否则会出现
+    # 「ffmpeg 拿到了回落项、ffprobe 查不到键」的半拉子形态。
+    key = runtime_slot_key()
+    entry = _EXTRA_EXECUTABLE_URLS.get(key) or _EXTRA_EXECUTABLE_URLS.get(f"{key.partition('-')[0]}-x64")
+    return dict(entry or {})
+
+
 # 解包 Linux 的 ffmpeg 归档，把 ffmpeg/ffprobe 取到 ffmpeg_dir（与平台分支解耦，便于在任一
 # 开发机上直接驱动真 tarfile + 真目录查找，不必靠 skipif 让 CI 静默丢掉这条锁）。
 def _extract_linux_ffmpeg_binaries(archive: Path, ffmpeg_dir: Path) -> None:
@@ -1018,6 +1067,63 @@ def _extract_linux_ffmpeg_binaries(archive: Path, ffmpeg_dir: Path) -> None:
         raise SystemExit(f"[build][FATAL] Linux ffmpeg 归档内找不到 {'、'.join(missing)}，已终止构建")
 
 
+# 从 zip 归档里按成员名取可执行件到 dest_dir（Windows 的 gyan zip 与 macOS 的 evermeet zip 共用）。
+# 之所以做成一个函数而不是两条分支各写一遍：darwin 分支此前是 `zf.extractall()`，既没有下面这条
+# CR-11 路径校验、也没有缺件判定，于是同一份「解包」语义在两处漂移成了两种强度（AGENTS.md 对
+# `-segment_format` 事故的结论同源：复制粘贴的分支会各自演化）。
+# 三条硬要求：
+#   ① CR-11：手工写成员绕过 zipfile.extractall 的路径净化（它会剥离 `..` 与盘符），而 `name` 取自
+#      压缩包自述、可含 `../../`——配合无哈希校验可写到任意已存在目录。逐成员做 realpath 前缀校验
+#      （与 src/utils.unzip_file 同判据），并限制为期望的可执行文件名。
+#   ② 缺件必须 SystemExit 而不是静默出空目录（与 _extract_linux_ffmpeg_binaries 同一条判据）：
+#      上游一改内部层级，「解包成功但一件没拷」就又落回「一行 warning + 出包成功」。
+#   ③ set_exec_bit：Python 的 ZipFile.extract 系列**不还原**归档外部属性里的 unix mode，只按
+#      「成员是否只读」决定要不要去掉写位，落盘即 0o666 & ~umask（macOS 上 0o644）。evermeet 的
+#      ffmpeg 在归档里本来是 0o755，解出来却没有可执行位，产物自检直接 PermissionError
+#      [Errno 13]（2026-09-26 macOS 实测）。Windows 无此概念，传 False。
+def _install_executables_from_zip(
+    archive: Path,
+    dest_dir: Path,
+    allowed_names: tuple[str, ...],
+    *,
+    require_bin_dir: bool,
+    set_exec_bit: bool,
+    required: tuple[str, ...],
+) -> None:
+    dest_root = os.path.realpath(dest_dir)
+    written: set[str] = set()
+    with zipfile.ZipFile(archive) as zf:
+        for member in zf.namelist():
+            if member.endswith("/"):
+                continue
+            if require_bin_dir:
+                # gyan.dev zip 内结构：ffmpeg-release-essentials/bin/{ffmpeg,ffprobe}.exe
+                if "/bin/" not in member:
+                    continue
+                name = member.split("/bin/")[-1]
+            else:
+                # evermeet zip 是平铺布局（成员名即文件名），取 basename 后与白名单比
+                name = member.rsplit("/", 1)[-1]
+            if not name or name not in allowed_names:
+                continue
+            target_path = os.path.realpath(dest_dir / name)
+            if not target_path.startswith(dest_root + os.sep):
+                raise SystemExit(f"[build][FATAL] 压缩包成员路径越界，已终止构建：{member}")
+            with zf.open(member) as src, open(target_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            if set_exec_bit:
+                os.chmod(target_path, 0o755)
+            written.add(name)
+    # 判「有没有取到」按**词干**而不是全名：Windows 侧白名单同时收 ffmpeg 与 ffmpeg.exe，
+    # 只比全名会把已经取到的件误判成缺件。
+    missing = [stem for stem in required if not any(w == stem or w.split(".")[0] == stem for w in written)]
+    if missing:
+        raise SystemExit(
+            f"[build][FATAL] {archive.name} 内没取到 {'、'.join(missing)}（白名单 {list(allowed_names)}，"
+            f"实际命中 {sorted(written)}），已终止构建"
+        )
+
+
 # 按平台下载并解压 ffmpeg/ffprobe 到 target_dir/ffmpeg/，返回是否成功
 def _download_ffmpeg(target_dir: Path) -> bool:
     # URL 一律取自 _FFMPEG_DOWNLOAD_URLS（按运行时键查表；来源与可信度依据写在该表上方注释，
@@ -1032,25 +1138,14 @@ def _download_ffmpeg(target_dir: Path) -> bool:
         if IS_WIN:
             archive = target_dir / "_ffmpeg_temp.zip"
             _download_file(url, archive, "ffmpeg (gyan.dev release-essentials)", slot="ffmpeg")
-            # gyan.dev zip 内结构：ffmpeg-release-essentials/bin/{ffmpeg,ffprobe}.exe
-            # CR-11：手工写成员绕过 zipfile.extractall 的路径净化（它会剥离 `..` 与盘符），
-            # 而 `name` 取自压缩包自述、可含 `../../`——配合无哈希校验可写到任意已存在目录。
-            # 逐成员做 realpath 前缀校验（与 src/utils.unzip_file 同判据），并限制为
-            # 期望的两个可执行文件名。
-            _ffmpeg_root = os.path.realpath(ffmpeg_dir)
-            _allowed_names = {"ffmpeg.exe", "ffprobe.exe", "ffmpeg", "ffprobe"}
-            with zipfile.ZipFile(archive) as zf:
-                for member in zf.namelist():
-                    if "/bin/" not in member or member.endswith("/"):
-                        continue
-                    name = member.split("/bin/")[-1]
-                    if not name or name not in _allowed_names:
-                        continue
-                    target_path = os.path.realpath(ffmpeg_dir / name)
-                    if not target_path.startswith(_ffmpeg_root + os.sep):
-                        raise SystemExit(f"[build][FATAL] 压缩包成员路径越界，已终止构建：{member}")
-                    with zf.open(member) as src, open(target_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+            _install_executables_from_zip(
+                archive,
+                ffmpeg_dir,
+                ("ffmpeg.exe", "ffprobe.exe", "ffmpeg", "ffprobe"),
+                require_bin_dir=True,
+                set_exec_bit=False,
+                required=("ffmpeg", "ffprobe"),
+            )
 
         elif sys.platform == "darwin":
             # 两架构共用 evermeet x86_64 构建（上游无 arm64 产物，依据见 _FFMPEG_DOWNLOAD_URLS 注释），
@@ -1058,8 +1153,30 @@ def _download_ffmpeg(target_dir: Path) -> bool:
             # 下面的 except 吞成一行 warning，让 full zip 静默缺 ffmpeg。
             archive = target_dir / "_ffmpeg_temp.zip"
             _download_file(url, archive, "ffmpeg (evermeet.ca release)", slot="ffmpeg")
-            with zipfile.ZipFile(archive) as zf:
-                zf.extractall(ffmpeg_dir)
+            # 归档成员名是 ffmpeg（evermeet 平铺、无扩展名），执行位要显式补回来
+            _install_executables_from_zip(
+                archive,
+                ffmpeg_dir,
+                ("ffmpeg",),
+                require_bin_dir=False,
+                set_exec_bit=True,
+                required=("ffmpeg",),
+            )
+            # ffprobe 在 evermeet 上是**另一支归档**（依据见 _EXTRA_EXECUTABLE_URLS 注释）：
+            # 上面那支里只有 ffmpeg，漏掉这一步会让 macOS 的 full 包长期缺 ffprobe——而 ffmpeg 本身
+            # 是好的，缺件要到出包前自检才暴露。列表为空即该平台无需另下。
+            for slot, extra_url in sorted(_extra_executable_urls().items()):
+                extra_archive = target_dir / f"_{slot}_temp.zip"
+                _download_file(extra_url, extra_archive, f"{slot} (evermeet.ca release)", slot=slot)
+                _install_executables_from_zip(
+                    extra_archive,
+                    ffmpeg_dir,
+                    (slot,),
+                    require_bin_dir=False,
+                    set_exec_bit=True,
+                    required=(slot,),
+                )
+                extra_archive.unlink(missing_ok=True)
 
         else:  # Linux
             archive = target_dir / "_ffmpeg_temp.tar.xz"
@@ -1086,13 +1203,25 @@ def _find_runtime_binary(root: Path, names: tuple[str, ...]) -> Path | None:
     return None
 
 
-def _probe_runnable(binary: Path) -> str | None:
-    # 跑一次 `-version`：文件存在不等于能用。这一 probe 恰好覆盖两种「在包里但跑不动」的形态——
-    # macOS 上缺 dylib 闭包（dyld: Library not loaded）与 Apple Silicon 上没有 Rosetta。
+# 每个组件的「版本探针」取值（唯一事实源，_probe_runnable 按此查表）：三者的 CLI 解析器互不通用。
+# 实测读数：`node --version` 返回码 0、`node -version` 是「bad option: -version」+ 返回码 1；
+# `ffmpeg --version` 返回码 8、`ffmpeg -version` 返回码 0；`ffprobe -version` 返回码 0
+# （取自 2026-09-26 三平台 build-release 日志——那两轮自检只点名 node，ffmpeg/ffprobe 均已通过）。
+# 取值与运行期自动安装侧保持一致（src/node_install.py 用 `node -v`、src/ffmpeg_install.py 用
+# `ffmpeg -version`），免得同一组件在两条路径上被问两个问题。
+VERSION_PROBE_ARGS: dict[str, str] = {"ffmpeg": "-version", "ffprobe": "-version", "node": "--version"}
+
+
+def _probe_runnable(binary: Path, component: str) -> str | None:
+    # 跑一次版本探针：文件存在不等于能用。这一 probe 恰好覆盖三种「在包里但跑不动」的形态——
+    # 以及解包丢了可执行位（PermissionError）。
+    # 探针取值一律查 VERSION_PROBE_ARGS，不在本函数内写死：三平台共用 `-version` 曾让 full 包
+    # **一支都出不来**（node 判它非法选项），而反向统一成 `--version` 同样错（ffmpeg 返回码 8）。
     # 输出按字节读、显式解码失败也不参与判定（AGENTS.md「探测子进程输出一律按字节比较」）。
+    probe_arg = VERSION_PROBE_ARGS[component]
     try:
         proc = subprocess.run(
-            [str(binary), "-version"],
+            [str(binary), probe_arg],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=60,
@@ -1104,7 +1233,7 @@ def _probe_runnable(binary: Path) -> str | None:
     if proc.returncode != 0:
         first = (proc.stderr or b"").splitlines()[:1]
         detail = first[0].decode("latin-1", errors="replace") if first else f"退出码 {proc.returncode}"
-        return f"执行 `-version` 失败：{detail}"
+        return f"执行 `{probe_arg}` 失败：{detail}"
     return None
 
 
@@ -1120,7 +1249,7 @@ def verify_runtime_binaries(target_dir: Path) -> list[str]:
     if ffmpeg_bin is None:
         problems.append(f"{ffmpeg_dir} 内找不到非空的 ffmpeg 可执行文件")
     else:
-        why = _probe_runnable(ffmpeg_bin)
+        why = _probe_runnable(ffmpeg_bin, "ffmpeg")
         if why:
             problems.append(f"ffmpeg ({ffmpeg_bin}) {why}")
 
@@ -1128,7 +1257,7 @@ def verify_runtime_binaries(target_dir: Path) -> list[str]:
     if ffprobe_bin is None:
         problems.append(f"{ffmpeg_dir} 内找不到非空的 ffprobe 可执行文件")
     else:
-        why_probe = _probe_runnable(ffprobe_bin)
+        why_probe = _probe_runnable(ffprobe_bin, "ffprobe")
         if why_probe:
             problems.append(f"ffprobe ({ffprobe_bin}) {why_probe}")
 
@@ -1136,7 +1265,7 @@ def verify_runtime_binaries(target_dir: Path) -> list[str]:
     if node_bin is None:
         problems.append(f"{node_dir} 内找不到非空的 node 可执行文件")
     else:
-        why_node = _probe_runnable(node_bin)
+        why_node = _probe_runnable(node_bin, "node")
         if why_node:
             problems.append(f"node ({node_bin}) {why_node}")
     return problems
