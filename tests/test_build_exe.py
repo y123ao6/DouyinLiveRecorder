@@ -23,13 +23,14 @@ import inspect
 import io
 import os
 import re
+import stat
 import subprocess
 import sys
 import tarfile
 import types
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -95,8 +96,10 @@ def test_broken_arm64_endpoint_cannot_be_resurrected() -> None:
 
 def test_every_pinned_source_url_is_https_on_an_allowlisted_host() -> None:
     # 供应链侧的最低门槛：明文 http 或新增镜像域都必须显式改进本清单（并在评审里说明理由）。
+    # 独立归档件（macOS 的 ffprobe）同属出站下载点，一并纳入，不得只查主表。
     urls = list(build_exe._FFMPEG_DOWNLOAD_URLS.values())
-    assert len(urls) == len(build_exe.RELEASE_RUNTIME_KEYS)
+    urls += [url for slots in build_exe._EXTRA_EXECUTABLE_URLS.values() for url in slots.values()]
+    assert len(urls) == len(build_exe.RELEASE_RUNTIME_KEYS) + len(build_exe._EXTRA_EXECUTABLE_URLS)
     for url in urls:
         assert url.startswith("https://"), f"非 TLS 来源: {url}"
         host = url.split("/", 3)[2]
@@ -110,9 +113,10 @@ def test_every_pinned_source_url_is_https_on_an_allowlisted_host() -> None:
 def test_both_macos_ffmpeg_slots_stay_consistent() -> None:
     # 两个槽指向同一份产物 → 取值必须同为占位或同为同一个官方哈希。
     # 只在其中一个填值会让 macos-x64 有校验、arm64 无校验（或反之），而 --strict 只数「未钉定」。
-    x64 = build_exe._PINNED_RUNTIME_SHA256["macos-x64"]["ffmpeg"]
-    arm = build_exe._PINNED_RUNTIME_SHA256["macos-arm64"]["ffmpeg"]
-    assert x64 == arm, "macOS 两槽的 ffmpeg 钉定值不一致：同一份构建被钉成了两个值"
+    for slot in ("ffmpeg", "ffprobe"):
+        x64 = build_exe._PINNED_RUNTIME_SHA256["macos-x64"][slot]
+        arm = build_exe._PINNED_RUNTIME_SHA256["macos-arm64"][slot]
+        assert x64 == arm, f"macOS 两槽的 {slot} 钉定值不一致：同一份构建被钉成了两个值"
 
 
 def test_unlisted_arch_falls_back_to_family_x64_and_warns(
@@ -132,10 +136,37 @@ def test_unknown_family_raises_instead_of_skipping_silently(monkeypatch: pytest.
 
 
 def test_runtime_slots_cover_both_pinnable_components() -> None:
-    # 钉定表按槽位分列；槽位集合与 RUNTIME_SLOTS 不一致时，check_runtime_pins 会静默少查一类。
+    # 钉定表按槽位分列；槽位集合与 runtime_slots_for() 不一致时，check_runtime_pins 会静默少查一类。
     assert set(build_exe.RUNTIME_SLOTS) == {"ffmpeg", "node"}
     for key, entry in build_exe._PINNED_RUNTIME_SHA256.items():
-        assert set(entry) == set(build_exe.RUNTIME_SLOTS), f"{key} 的槽位集合不完整"
+        assert set(entry) == set(build_exe.runtime_slots_for(key)), f"{key} 的槽位集合不完整"
+
+
+def test_ffprobe_is_a_separate_download_point_only_on_macos() -> None:
+    # evermeet 的 getrelease/zip 里**只有 ffmpeg**（2026-09-26 macOS 日志：自检报「找不到非空的
+    # ffprobe 可执行文件」却报 ffmpeg 可执行），所以 macOS 的 ffprobe 必须是一个独立槽位；
+    # 而 gyan.dev / BtbN 的归档里两件同包，给它另立槽位等于凭空造一个没有公布值的假闸口。
+    # 三张表的键集合必须互相推出，缺任一处都会让「有来源没钉定」或「有钉定没来源」半边静默。
+    macos_keys = {k for k in build_exe.RELEASE_RUNTIME_KEYS if k.startswith("macos-")}
+    assert set(build_exe._EXTRA_EXECUTABLE_URLS) == macos_keys, "独立归档件的登记面与 macOS 运行时键不同步"
+    assert set(build_exe.runtime_slots_for("macos-x64")) == {"ffmpeg", "node", "ffprobe"}
+    for key in build_exe.RELEASE_RUNTIME_KEYS:
+        expected = {"ffprobe"} if key in macos_keys else set()
+        pinned_extra = set(build_exe._PINNED_RUNTIME_SHA256[key]) - set(build_exe.RUNTIME_SLOTS)
+        assert pinned_extra == expected, f"{key} 的额外钉定槽位 {pinned_extra} 与实际下载点 {expected} 不符"
+        assert ("ffprobe" in build_exe.runtime_slots_for(key)) is (key in macos_keys)
+
+
+def test_macos_ffprobe_signature_entry_matches_its_artifact_url() -> None:
+    # 钉的是「谁签的」，登记错了签名 URL 就等于这一档从未真正管住过。两架构同一份产物 → 同值。
+    for key in ("macos-x64", "macos-arm64"):
+        sig_url, fingerprint = build_exe._RUNTIME_GPG_SIGNATURES[key]["ffprobe"]
+        assert sig_url == f"{build_exe._EXTRA_EXECUTABLE_URLS[key]['ffprobe']}/sig", sig_url
+        assert (
+            fingerprint == build_exe._RUNTIME_GPG_SIGNATURES[key]["ffmpeg"][1]
+        ), "ffprobe 与 ffmpeg 同页同钥，另立指纹等于引入第二把未核实的钥匙"
+        # 实测：两份 .sig 的签发者都是主钥名下的同一把子钥（判据见 build_exe 侧注释）
+        assert fingerprint == _PRIMARY_FPR
 
 
 def test_is_pinned_shape_rule_rejects_every_placeholder_form() -> None:
@@ -242,15 +273,25 @@ def _macos_release_env(monkeypatch: pytest.MonkeyPatch, *, release: bool) -> Non
     monkeypatch.setattr(build_exe, "require_pinned_hashes", lambda: release)
 
 
+def _artifact_url_for_slot(key: str, slot: str) -> str:
+    # 签名 URL 的同构校验要先拿到「该槽的产物 URL」。ffprobe 不在 _FFMPEG_DOWNLOAD_URLS 里，
+    # 它在 _EXTRA_EXECUTABLE_URLS（依据见该表注释），查不到就该 KeyError 而不是回空串——
+    # 回空串会让下面 `sig_url == f"{artifact}/sig"` 变成和 "/sig" 比，永远红或永远假绿。
+    # build_exe 是按路径动态加载的 Any，故这里显式 cast 收窄（warn_return_any 不容 Any 直返）。
+    if slot == "ffmpeg":
+        return cast(str, build_exe._FFMPEG_DOWNLOAD_URLS[key])
+    return cast(str, build_exe._EXTRA_EXECUTABLE_URLS[key][slot])
+
+
 def test_gpg_config_shape_and_source_consistency() -> None:
     # 只登记「上游确实公布 detached 签名」的槽位；且签名 URL 必须是产物 URL + "/sig"
     # （evermeet 的既定约定），否则改了产物来源却忘了改签名来源，验签会长期假失败。
     for key, slots in build_exe._RUNTIME_GPG_SIGNATURES.items():
         assert key in build_exe._FFMPEG_DOWNLOAD_URLS, f"签名配置指向了不存在的运行时键 {key}"
         for slot, (sig_url, fingerprint) in slots.items():
-            assert slot in build_exe.RUNTIME_SLOTS
+            assert slot in build_exe.runtime_slots_for(key)
             assert re.fullmatch(r"[0-9a-fA-F]{40}", fingerprint), f"{key}/{slot} 指纹不是 40 位十六进制"
-            artifact = build_exe._FFMPEG_DOWNLOAD_URLS[key] if slot == "ffmpeg" else ""
+            artifact = _artifact_url_for_slot(key, slot)
             assert sig_url == f"{artifact}/sig", f"{key}/{slot} 签名 URL 与产物 URL 脱钩: {sig_url}"
 
 
@@ -368,7 +409,7 @@ def test_verify_runtime_binaries_accepts_nested_bin_layout(monkeypatch: pytest.M
     (tmp_path / "ffmpeg" / "ffprobe").write_bytes(b"y" * 10)
     (tmp_path / "node" / "bin").mkdir(parents=True)
     (tmp_path / "node" / "bin" / "node").write_bytes(b"z" * 10)
-    monkeypatch.setattr(build_exe, "_probe_runnable", lambda binary: None)
+    monkeypatch.setattr(build_exe, "_probe_runnable", lambda binary, component: None)
     assert build_exe.verify_runtime_binaries(tmp_path) == []
 
 
@@ -379,7 +420,7 @@ def test_zero_byte_runtime_binary_is_not_counted_as_present(monkeypatch: pytest.
     (tmp_path / "ffmpeg" / "ffprobe").write_bytes(b"ok")
     (tmp_path / "node").mkdir()
     (tmp_path / "node" / "node").write_bytes(b"ok")
-    monkeypatch.setattr(build_exe, "_probe_runnable", lambda binary: None)
+    monkeypatch.setattr(build_exe, "_probe_runnable", lambda binary, component: None)
     problems = build_exe.verify_runtime_binaries(tmp_path)
     assert len(problems) == 1 and "ffmpeg" in problems[0], problems
 
@@ -399,6 +440,32 @@ def test_unrunnable_binary_is_reported_with_upstream_reason(monkeypatch: pytest.
     problems = build_exe.verify_runtime_binaries(tmp_path)
     assert len(problems) == 3, problems
     assert any("libx265" in p for p in problems), problems
+
+
+def test_version_probe_arg_is_per_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # 2026-09-26 三平台 build-release 同因红的回归锁：探针取值曾对三件套共用 `-version`，
+    # 而 node 的 CLI 解析器把 `-version` 判成非法选项（`bad option: -version` + 返回码 1），
+    # 于是**每一支 full 包**都卡在产物自检上出不来。
+    # 反向「统一改成 --version」同样是错的，故这里锁的是**逐件取值**而不是某个统一值：
+    # 实测 `ffmpeg --version` 返回码 8、`ffmpeg -version` 返回码 0（本机 ffmpeg 9.0.x 实跑），
+    # `node --version` 返回码 0、`node -version` 非法选项。谁把两者并成一个常量，本用例即红。
+    for rel in ("ffmpeg/ffmpeg", "ffmpeg/ffprobe", "node/node"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"binary")
+    argvs: list[list[str]] = []
+    fake = types.SimpleNamespace(**vars(subprocess))
+
+    def record_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        argvs.append([str(part) for part in cmd])
+        return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    fake.run = record_run
+    monkeypatch.setattr(build_exe, "subprocess", fake)
+    assert build_exe.verify_runtime_binaries(tmp_path) == [], "真实探针把可用产物判成了缺件"
+    flags = {Path(argv[0]).name: argv[1] for argv in argvs}
+    assert flags == {"ffmpeg": "-version", "ffprobe": "-version", "node": "--version"}, flags
+    assert len(argvs) == 3, "有组件没被探测"
 
 
 @pytest.mark.parametrize("release", [True, False], ids=["release", "local"])
@@ -710,6 +777,166 @@ def test_linux_ffmpeg_extraction_aborts_when_binary_absent(monkeypatch: pytest.M
     ffmpeg_dir.mkdir()
     with pytest.raises(SystemExit):
         build_exe._extract_linux_ffmpeg_binaries(archive, ffmpeg_dir)
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-26 macOS full 包两处产物缺陷：zip 解包丢可执行位 + ffprobe 从未被下载。
+# 两条都不是「CI 恰好红」：前者让 ffmpeg 落盘即不可执行（自检 PermissionError [Errno 13]），
+# 后者让 macOS 的 full 包结构上就缺件（evermeet 的 ffmpeg 归档里只有 ffmpeg）。
+# 全程离线：归档由用例自己造，网络与 gpg 走本文件既有的桩。
+# ---------------------------------------------------------------------------
+
+
+def _make_zip(archive: Path, members: dict[str, tuple[bytes, int]]) -> None:
+    # 造一份最小 zip：成员名 → (内容, unix mode)。必须把 mode 写进 external_attr 的高 16 位，
+    # 因为本组用例锁的正是「归档里带了 0o755，解出来却没有可执行位」这一形态。
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, (data, mode) in members.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = mode << 16
+            zf.writestr(info, data)
+
+
+def _install_chmod_spy(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+    # 替换 build_exe 的**模块全局名 os**（浅拷贝 stdlib 全部属性，只覆盖 chmod），
+    # 不污染 stdlib 本体（AGENTS.md「patch stdlib 模块属性」同源坑）。
+    calls: list[tuple[str, int]] = []
+    shim = types.SimpleNamespace(**vars(os))
+
+    def spy_chmod(path: Any, mode: int, *args: Any, **kwargs: Any) -> None:
+        calls.append((str(path), mode))
+        return os.chmod(path, mode, *args, **kwargs)
+
+    shim.chmod = spy_chmod
+    monkeypatch.setattr(build_exe, "os", shim)
+    return calls
+
+
+def test_zip_install_restores_exec_bit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    archive = tmp_path / "ffmpeg.zip"
+    _make_zip(archive, {"ffmpeg": (b"MachO-ffmpeg", 0o755), "LICENSE": (b"text", 0o644)})
+    ffmpeg_dir = tmp_path / "ffmpeg"
+    ffmpeg_dir.mkdir()
+    chmod_calls = _install_chmod_spy(monkeypatch)
+
+    build_exe._install_executables_from_zip(
+        archive, ffmpeg_dir, ("ffmpeg",), require_bin_dir=False, set_exec_bit=True, required=("ffmpeg",)
+    )
+    got = ffmpeg_dir / "ffmpeg"
+    assert got.read_bytes() == b"MachO-ffmpeg"
+    assert [(os.path.basename(p), m) for p, m in chmod_calls] == [("ffmpeg", 0o755)], chmod_calls
+
+    # 反向证据（POSIX 才有权限语义，Windows 上 chmod 只映射只读位）：
+    # 同归档走 zipfile.extractall 解出来的那一份**没有**执行位——这就是 macOS runner 上的实测形态，
+    # 也是「改回 extractall」会被本用例抓住的原因。
+    via_extractall = tmp_path / "via_extractall"
+    via_extractall.mkdir()
+    with zipfile.ZipFile(archive) as zf:
+        zf.extractall(via_extractall)
+    if os.name != "nt":
+        assert (
+            not (via_extractall / "ffmpeg").stat().st_mode & stat.S_IXUSR
+        ), "extractall 竟然保留了执行位：本用例的前提（Python 不还原 unix mode）已被证伪，须重判"
+        assert got.stat().st_mode & stat.S_IXUSR, "补位后仍不可执行，chmod 没落到目标文件上"
+
+
+def test_zip_install_aborts_when_required_member_absent(tmp_path: Path) -> None:
+    # 上游一改归档内部层级就会「解包成功但一件没拷」；缺件必须 SystemExit，
+    # 与 _extract_linux_ffmpeg_binaries 同一条判据（不得降级成 warning + 出包成功）。
+    archive = tmp_path / "ffmpeg.zip"
+    _make_zip(archive, {"README": (b"docs only", 0o644)})
+    ffmpeg_dir = tmp_path / "ffmpeg"
+    ffmpeg_dir.mkdir()
+    with pytest.raises(SystemExit) as caught:
+        build_exe._install_executables_from_zip(
+            archive, ffmpeg_dir, ("ffmpeg",), require_bin_dir=False, set_exec_bit=True, required=("ffmpeg",)
+        )
+    assert "ffmpeg" in str(caught.value)
+
+
+def test_zip_install_never_writes_outside_dest_dir(tmp_path: Path) -> None:
+    # CR-11 的取件面锁：成员名取自压缩包自述、可含 `../../` 或 `x/bin/../../y`。本函数一律先取
+    # basename 再与白名单比，于是「逃逸形态的成员名」最坏只会命中同名 basename 写到 dest_dir 内，
+    # 绝不会被写到外面——这条断言的就是那个「绝不会」，删掉 basename 归一（改成直接用 member 作路径）
+    # 即红。realpath 前缀校验是第二道闸，只在白名单里出现带目录分隔的名字时才可能触发。
+    archive = tmp_path / "evil.zip"
+    _make_zip(
+        archive,
+        {
+            "../../ffmpeg": (b"payload", 0o755),
+            "nested/a/bin/../../../ffprobe": (b"payload2", 0o755),
+        },
+    )
+    ffmpeg_dir = tmp_path / "out" / "ffmpeg"
+    ffmpeg_dir.mkdir(parents=True)
+    build_exe._install_executables_from_zip(
+        archive,
+        ffmpeg_dir,
+        ("ffmpeg", "ffprobe"),
+        require_bin_dir=False,
+        set_exec_bit=True,
+        required=("ffmpeg",),
+    )
+    assert sorted(p.name for p in ffmpeg_dir.iterdir()) == ["ffmpeg", "ffprobe"]
+    assert not (tmp_path.parent / "ffmpeg").exists() and not (tmp_path / "ffmpeg").exists(), "写到了 ffmpeg_dir 之外"
+
+
+def _install_routed_urlopen(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes]) -> list[str]:
+    # evermeet 一条链路要发 4 次请求（两支归档 + 两份签名），单 payload 的 _install_fake_urlopen
+    # 会把签名内容也返回成归档，故按 URL 前缀匹配、**最长前缀优先**
+    # （.../ffprobe/zip/sig 同时含 .../ffprobe/zip 与 .../zip）。
+    seen: list[str] = []
+    ordered = sorted(payloads, key=len, reverse=True)
+
+    def fake_urlopen(url: str, *args: Any, **kwargs: Any) -> Any:
+        seen.append(url)
+        for prefix in ordered:
+            if prefix in url:
+                return _FakeResponse(payloads[prefix])
+        raise AssertionError(f"用例没准备这个 URL 的应答: {url}")
+
+    monkeypatch.setattr(build_exe, "urllib", types.SimpleNamespace(request=types.SimpleNamespace(urlopen=fake_urlopen)))
+    return seen
+
+
+def test_macos_ffmpeg_branch_fetches_both_archives_and_verifies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # darwin 分支的端到端锁，且**不靠 skipif**：IS_WIN / sys.platform / runtime_slot_key 三处
+    # 一起强制，让这条只在 macOS runner 上真实执行的分支在 Windows 开发机与 Linux CI 上都跑到
+    # （AGENTS.md「平台专属分支的测试不得靠 skipif 让 CI 跳过」同源）。
+    _macos_release_env(monkeypatch, release=True)
+    monkeypatch.setattr(build_exe, "IS_WIN", False)
+    sys_shim = types.SimpleNamespace(**vars(sys))
+    sys_shim.platform = "darwin"
+    monkeypatch.setattr(build_exe, "sys", sys_shim)
+    ffmpeg_zip = tmp_path / "src_ffmpeg.zip"
+    _make_zip(ffmpeg_zip, {"ffmpeg": (b"MachO-ffmpeg", 0o755)})
+    ffprobe_zip = tmp_path / "src_ffprobe.zip"
+    _make_zip(ffprobe_zip, {"ffprobe": (b"MachO-ffprobe", 0o755)})
+    seen = _install_routed_urlopen(
+        monkeypatch,
+        {
+            "/getrelease/ffprobe/zip/sig": b"sig-ffprobe",
+            "/getrelease/zip/sig": b"sig-ffmpeg",
+            "/getrelease/ffprobe/zip": ffprobe_zip.read_bytes(),
+            "/getrelease/zip": ffmpeg_zip.read_bytes(),
+        },
+    )
+    _install_fake_gpg(monkeypatch, keyring=_keyring_record(_PRIMARY_FPR), verify_status=_GOOD_VERIFY_STATUS)
+    chmod_calls = _install_chmod_spy(monkeypatch)
+
+    assert build_exe._download_ffmpeg(tmp_path) is True
+    ffmpeg_dir = tmp_path / "ffmpeg"
+    assert (ffmpeg_dir / "ffmpeg").read_bytes() == b"MachO-ffmpeg"
+    assert (ffmpeg_dir / "ffprobe").read_bytes() == b"MachO-ffprobe", "macOS full 包又缺 ffprobe 了"
+    # 两个可执行件都补了执行位（归档本身是 zip，Windows 开发机上也能按 chmod 调用记录判定）
+    assert sorted(os.path.basename(p) for p, _ in chmod_calls) == ["ffmpeg", "ffprobe"], chmod_calls
+    # 归档与签名都取过，且**没有**落到 target_dir（会被 make_zip 打进对外分发包）
+    assert sum(1 for url in seen if url.endswith("/sig")) == 2, seen
+    assert any("getrelease/ffprobe/zip" in url for url in seen), seen
+    # 临时归档必须解包后即删：留在 target_dir 里会被 make_zip 一起打进对外分发包
+    assert not list(tmp_path.glob("_*temp.zip")), "临时归档残留在发布目录里"
 
 
 # ---------------------------------------------------------------------------

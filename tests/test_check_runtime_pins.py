@@ -48,13 +48,22 @@ build_exe = _load_build_exe()
 _HEX64 = "a" * 64
 
 
-def _fake_module(table: dict[str, dict[str, str]], declared_keys: tuple[str, ...] = _ALL_KEYS) -> SimpleNamespace:
+def _fake_module(
+    table: dict[str, dict[str, str]],
+    declared_keys: tuple[str, ...] = _ALL_KEYS,
+    slots_for: Any = None,
+) -> SimpleNamespace:
     # _slot_is_gated 复用 build_exe 的真实现：判定口径必须只有一份事实源，
     # 打桩打成「恒 True」会让本文件的用例全部失去意义。
+    # runtime_slots_for 默认桩成「只有通用两槽」：本文件测的是**分流语义**（矩阵内/外、标记是否算满足），
+    # 而「哪个平台该有几个槽」的数据事实源在 build_exe._EXTRA_EXECUTABLE_URLS，由
+    # tests/test_build_exe.py::test_ffprobe_is_a_separate_download_point_only_on_macos 锁；
+    # 真实的接线在 test_real_runtime_slots_for_is_wired_into_the_coverage_check 里单独驱动。
     return SimpleNamespace(
         _PINNED_RUNTIME_SHA256=table,
         RUNTIME_SLOTS=("ffmpeg", "node"),
         RELEASE_RUNTIME_KEYS=declared_keys,
+        runtime_slots_for=slots_for or (lambda key: ("ffmpeg", "node")),
         _slot_is_gated=build_exe._slot_is_gated,
         _is_source_build_marker=build_exe._is_source_build_marker,
         SOURCE_BUILD_PROVENANCE=build_exe.SOURCE_BUILD_PROVENANCE,
@@ -156,10 +165,16 @@ def test_strict_blocks_all_placeholder_table_with_real_matrix(monkeypatch: pytes
     assert _run(monkeypatch, _unpinned_everywhere(), strict=False) == 0
 
 
-def _run(monkeypatch: pytest.MonkeyPatch, table: dict[str, dict[str, str]], *, strict: bool) -> int:
+def _run(
+    monkeypatch: pytest.MonkeyPatch,
+    table: dict[str, dict[str, str]],
+    *,
+    strict: bool,
+    slots_for: Any = None,
+) -> int:
     # 只打桩「表从哪来」，判定路径全程走真实现：本文件的价值就在于证明**分流与判据**正确，
     # 若连 check() 一起桩掉就成了自证（AGENTS.md「测试不得自实现被测逻辑」同源）。
-    monkeypatch.setattr(checker, "_load_build_exe", lambda: _fake_module(table))
+    monkeypatch.setattr(checker, "_load_build_exe", lambda: _fake_module(table, slots_for=slots_for))
     return int(checker.check(strict=strict))
 
 
@@ -167,6 +182,33 @@ def _pinned_table() -> dict[str, dict[str, str]]:
     # 基线取「全部满足」形态，各用例再各自破坏一格——这样任何新增键/槽位都会在基线里暴露
     # （缺槽位 → rc=2），而不是悄悄少测一格。
     return {key: {"ffmpeg": _HEX64, "node": _HEX64} for key in _ALL_KEYS}
+
+
+def test_real_slot_inventory_is_wired_into_the_coverage_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 接线锁：check() 必须按 build_exe.runtime_slots_for() 圈定每个键的义务范围。
+    # 若把它改回全局 RUNTIME_SLOTS，macOS 的 ffprobe 槽就永远没人查（多一个下载点少一道闸）；
+    # 若表里留了个该平台并不存在的槽位，也必须在结构模式就被发现而不是当「多余数据」忽略。
+    table = _pinned_table()
+    for key in ("macos-x64", "macos-arm64"):
+        table[key]["ffprobe"] = _HEX64
+    assert _run(monkeypatch, table, strict=False, slots_for=build_exe.runtime_slots_for) == 0
+    broken = {key: dict(value) for key, value in table.items()}
+    del broken["macos-arm64"]["ffprobe"]
+    assert (
+        _run(monkeypatch, broken, strict=False, slots_for=build_exe.runtime_slots_for) == 2
+    ), "macOS 缺 ffprobe 钉定项却没报结构缺陷：槽位覆盖面又被退回成全局 RUNTIME_SLOTS"
+    drifted = {key: dict(value) for key, value in table.items()}
+    drifted["windows-x64"]["ffprobe"] = _HEX64
+    assert (
+        _run(monkeypatch, drifted, strict=False, slots_for=build_exe.runtime_slots_for) == 2
+    ), "表里多出该平台没有的下载槽位却被当成没看见"
+
+
+def test_repository_pin_table_passes_the_real_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 用真表 + 真槽位清单跑一遍结构模式：新增运行时键/独立归档件却忘了同步钉定表，
+    # 这条是第一道网（--strict 侧的钉定值由 test_real_matrix_parser_* 一族覆盖）。
+    monkeypatch.setattr(checker, "_load_build_exe", _load_build_exe)
+    assert int(checker.check(strict=False)) == 0
 
 
 def test_matrix_unpinning_still_blocks_release(monkeypatch: pytest.MonkeyPatch) -> None:
