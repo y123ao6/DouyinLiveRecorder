@@ -32,7 +32,10 @@
 #   · DLR_RUNTIME_SHA256    —— 非 secret：full 版内置的 ffmpeg / node 的官方 SHA256 钉定表，
 #                              由 prepare job 的 "Verify runtime binary SHA256 pins" 步骤
 #                              校验后从 build_exe.py 透传（事实源仍是 build_exe.py，不放这里）。
-#                              表内仍是占位值时 prepare 即失败，发布链不产出产物（SEV-10）。
+#                              表值有两种形态：64 位十六进制官方哈希，或 build_exe 的
+#                              PINNED-OFFICIAL-GPG-SIGNATURE 标记（该槽上游不公布哈希，改由
+#                              官方 GPG 签名 + 带外钉死的主钥指纹把关，判据见 build_exe.py）。
+#                              两种都不满足（仍是占位串 / 有标记但签名表未登记）时 prepare 即失败，发布链不产出产物（SEV-10）。
 #   如需代码签名（Windows Authenticode / macOS codesign & notarize），
 #   再新增 secrets.WINDOWS_CERT_PFX_BASE64 / APPLE_ID / APPLE_APP_PASSWORD 等，
 #   并在对应平台的构建步骤后追加签名步骤。当前发布**未签名**。
@@ -133,10 +136,12 @@ jobs:
         run: python scripts/check_version.py
 
       # SEV-10：发布路径 fail-closed 的前半段。build_exe.py --dual 会从 gyan.dev /
-      # evermeet.ca / johnvansickle.com / nodejs.org 拉取约 300MB 的 ffmpeg+node 并打进
+      # evermeet.ca / github.com(BtbN) / nodejs.org 拉取约 300MB 的 ffmpeg+node 并打进
       # 对外分发的 full zip（这些二进制以子进程方式执行）。本步在**任何平台开始构建之前**
-      # 校验钉定表：表为空 / 缺平台 / 缺槽位 → rc=2；存在未填入官方 SHA256 的槽位 → rc=1，
-      # prepare 失败即整条发布链不产出产物（这是刻意的：官方值未核实前不得发布）。
+      # 校验钉定表：表为空 / 缺平台 / 缺槽位 → rc=2；存在既无官方 SHA256、又未按下述任一档满足的
+      # 槽位 → rc=1，prepare 失败即整条发布链不产出产物（这是刻意的：官方值未核实前不得发布）。
+      # 2026-09-26 起「算满足」有两档：64 位十六进制官方哈希，或官方签名档（无公布哈希的上游，
+      # 判据 = 官方分离 GPG 签名 + 带外钉死的 40 位主钥指纹，见 build_exe._is_signature_satisfied）。
       # 官方值核实后请改 build_exe.py 的 _PINNED_RUNTIME_SHA256，不要在本文件里硬编码副本。
       - name: Verify runtime binary SHA256 pins (fail-closed)
         id: runtime-pins
@@ -321,8 +326,10 @@ jobs:
       # P-2（2026-09-22 批准引入 gnupg）：build_exe.py 会对 evermeet 的 ffmpeg 产物做官方 GPG
       # 签名核验（配置见 build_exe._RUNTIME_GPG_SIGNATURES），且**发布路径 fail-closed**——
       # gpg 不可用即终止构建，不会退化成「跳过核验照样出包」。
-      # 仅 macOS 需要：gyan.dev / johnvansickle 实测不公布签名文件，那两路无物可验，
+      # 仅 macOS 需要：gyan.dev / BtbN 实测不公布签名文件，那两路无物可验，
       # 将来若给它们换了会公布签名的来源，在此按同样形态补一步即可。
+      # [2026-09-26] macOS 两槽的 ffmpeg 没有公布哈希可比对，本步的验签从「补强层」升格为该槽
+      # **唯一的完整性判据**（build_exe 的官方签名档）：gpg 缺失不再只是少一道保险，而是整槽无校验。
       - name: Install gnupg (macOS)
         if: matrix.platform == 'macos'
         uses: ./.github/actions/retry

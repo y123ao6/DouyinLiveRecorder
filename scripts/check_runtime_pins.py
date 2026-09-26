@@ -19,6 +19,10 @@
 # 钉定值的唯一事实源是 build_exe.py 的 _PINNED_RUNTIME_SHA256：本脚本动态加载它来取表，
 # 「什么算填好了」也一律问 build_exe._slot_is_gated()（= 官方哈希已钉定 ∨ 证据齐备的第 4 类
 # 「源码可复现构建」），这里不复述判定——两处各判一次，迟早演化出两种「已钉定」。
+# [2026-09-26] 满足方式再加一档「官方签名档」（取值 = build_exe.OFFICIAL_SIGNATURE_PIN 标记，
+# 判据是上游公布的分离 GPG 签名 + 带外钉死的 40 位主钥指纹，登记在 _RUNTIME_GPG_SIGNATURES）。
+# 仍只有 _slot_is_gated() 一个口径；本脚本新增的义务只是**按档播报**（[NOTE] 行），
+# 让报告不会把「靠签名管住」说成「有 64 位十六进制哈希」。
 # 同理**不得**把哈希副本写进 workflow：CI 用 --emit-env 的输出注入 DLR_RUNTIME_SHA256，
 # 换版本只改 build_exe.py 一处。
 # --strict 的失败集合只覆盖**发布矩阵真正构建的运行时键**；表里为本地/未来构建方保留的额外键
@@ -108,13 +112,19 @@ def check(strict: bool) -> int:
     # 判定口径一律取自 build_exe（见文件头）：本脚本不自己判形状，也不复制槽位/键清单
     slot_is_gated = cast("Any", module._slot_is_gated)
     is_marker = cast("Any", module._is_source_build_marker)
+    is_sig_marker = cast("Any", module._is_signature_marker)
+    is_sig_satisfied = cast("Any", module._is_signature_satisfied)
     placeholder = cast(str, module.UNVERIFIED_PIN)
+    # 报错文案里引用的两个标记常量一律取自 build_exe，不在本文件复述字面值（并行事实源禁令）
+    source_build_pin = cast(str, module.SOURCE_BUILD_PROVENANCE)
+    signature_pin = cast(str, module.OFFICIAL_SIGNATURE_PIN)
     matrix_keys = _runtime_matrix_keys()
 
     problems: list[str] = []  # 结构缺陷 → rc=2
     unpinned: list[str] = []  # 矩阵内未钉定项 → --strict 时 rc=1
     unpinned_offmatrix: list[str] = []  # 矩阵外的键：只告警，绝不静默丢弃
     declared_class: list[str] = []  # 第 4 类已满足的槽位（显式列出，不与「已钉定」混为一谈）
+    declared_sig: list[str] = []  # 官方签名档已满足的槽位（同上，另一种满足方式）
 
     # 1) 空表必须硬失败：SEV-10 的原始缺陷形态就是「表为空且无人察觉」
     if not table:
@@ -144,11 +154,21 @@ def check(strict: bool) -> int:
             if slot_is_gated(value, key, slot):
                 if is_marker(value):
                     declared_class.append(f"{key}/{slot} 走第 4 类（源码可复现构建，三件证据齐备）")
+                elif is_sig_satisfied(value, key, slot):
+                    # 与「已钉定 64 位十六进制」分开播报：这一档靠的是官方分离签名 + 带外钉死的
+                    # 主钥指纹，报告里若把它算作「已钉定」就等于谎称发布链拿到的是一手哈希。
+                    declared_sig.append(f"{key}/{slot} 走官方签名档（无公布哈希，判据 = GPG 验签 + 钉定指纹）")
                 continue
             if is_marker(value):
                 # 声明了第 4 类但证据不齐 = 与「未钉定」同等处置。这条是防「换个标记拿免检」的关键：
                 # 标记若比 64 位十六进制更容易填，放宽判定就等于把闸口拆了。
                 unpinned.append(f"{key}/{slot} 声明为第 4 类但证据不齐（三件证据缺任一或形状不符）")
+                continue
+            if is_sig_marker(value):
+                # 同一条防线用在签名档上：光有标记、签名表里却没这一槽（或指纹形状不符）必须同等拦下。
+                unpinned.append(
+                    f"{key}/{slot} 声明为官方签名档但未满足（该槽未在 _RUNTIME_GPG_SIGNATURES 登记，或指纹非 40 位十六进制）"
+                )
                 continue
             reason = "仍是占位标记" if value == placeholder else ("取值为空" if not value else f"形状非法（{value!r}）")
             bucket = unpinned if key in matrix_keys else unpinned_offmatrix
@@ -170,6 +190,8 @@ def check(strict: bool) -> int:
 
     for line in declared_class:
         print(f"[NOTE] {line}")
+    for line in declared_sig:
+        print(f"[NOTE] {line}")
 
     if unpinned_offmatrix:
         # 矩阵外的键：本地/未来构建方保留的段。只告警，但**必须打出来**——静默省略等于
@@ -189,13 +211,15 @@ def check(strict: bool) -> int:
                 "\n[FAIL] --strict（发布路径）：发布矩阵所需槽位存在未钉定项即终止。"
                 "请核对官方公布值后写入 build_exe.py 的 _PINNED_RUNTIME_SHA256，"
                 "或由 CI 注入 DLR_RUNTIME_SHA256；上游确实不公布哈希时改走第 4 类"
-                "（SOURCE-BUILD-PROVENANCE + 三件证据，见 W1）。",
+                f"（{source_build_pin} + 三件证据，见 W1）"
+                f"或官方签名档（{signature_pin}"
+                " + _RUNTIME_GPG_SIGNATURES 登记签名 URL 与完整主钥指纹）。",
                 file=sys.stderr,
             )
             return 1
         print("  → 本地门禁放行；build-release.yml 的 prepare job 以 --strict 拦下发布。")
     elif not unpinned_offmatrix:
-        print("\n[OK] 全部槽位均已钉定（64 位十六进制）或已按第 4 类给出齐备证据")
+        print("\n[OK] 全部槽位均已钉定（64 位十六进制）、已按第 4 类给出齐备证据，或已按官方签名档钉定指纹")
     return 0
 
 

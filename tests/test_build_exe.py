@@ -20,10 +20,12 @@ import ast
 import hashlib
 import importlib.util
 import inspect
+import io
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import types
 import zipfile
 from pathlib import Path
@@ -33,9 +35,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# evermeet / gyan.dev / johnvansickle 三家 + nodejs.org 官方 dist：来源清单与
+# evermeet / gyan.dev / BtbN(github) 三家 + nodejs.org 官方 dist：来源清单与
 # _FFMPEG_DOWNLOAD_URLS / _download_nodejs 的拼接主机一一对应。
-_ALLOWED_HOSTS = frozenset({"www.gyan.dev", "evermeet.ca", "johnvansickle.com", "nodejs.org"})
+# [2026-09-26] 加入 github.com（Linux ffmpeg 换用 BtbN 的 n9.0 系列资产），同时**移除** johnvansickle.com：
+# 该主机不再出现在来源表里，留在清单内等于给一条已退役的来源保留通行证——将来真要再用，
+# 必须在这里显式改回来并说明理由（本清单就是那道说明的落点）。
+_ALLOWED_HOSTS = frozenset({"www.gyan.dev", "evermeet.ca", "github.com", "nodejs.org"})
 
 
 def _load_build_exe() -> Any:
@@ -138,7 +143,15 @@ def test_is_pinned_shape_rule_rejects_every_placeholder_form() -> None:
     # 带空白一律算未钉定。形状关把不住，后面所有「缺钉定即终止构建」的语义都无从谈起。
     is_pinned = build_exe._is_pinned
     assert is_pinned("a" * 64) is True
-    for bad in (build_exe.UNVERIFIED_PIN, "", "A" * 64, "a" * 63, "z" * 64, "  " + "a" * 64 + " "):
+    for bad in (
+        build_exe.UNVERIFIED_PIN,
+        build_exe.OFFICIAL_SIGNATURE_PIN,  # 签名档标记不得被当成「已钉定的哈希」，否则哈希分支会拿它去比 digest
+        "",
+        "A" * 64,
+        "a" * 63,
+        "z" * 64,
+        "  " + "a" * 64 + " ",
+    ):
         assert is_pinned(bad) is False, f"形状判定对 {bad!r} 放宽了"
 
 
@@ -168,11 +181,18 @@ def _keyring_record(*fingerprints: str) -> bytes:
 
 
 class _FakeResponse:
+    # 桩同时服务两种调用方：_verify_gpg_artifact 整块 read()，而 _download_file 按 read(65536)
+    # 分块循环读到空字节为止，并要 headers["Content-Length"]。故这里必须**逐次排空**——
+    # 每次返回同一份 payload 会让下载循环永不退出。
+    headers: dict[str, str] = {}
+
     def __init__(self, payload: bytes) -> None:
         self._payload = payload
 
-    def read(self) -> bytes:
-        return self._payload
+    def read(self, size: int = -1) -> bytes:
+        take = len(self._payload) if size is None or size < 0 else min(size, len(self._payload))
+        chunk, self._payload = self._payload[:take], self._payload[take:]
+        return chunk
 
     def __enter__(self) -> "_FakeResponse":
         return self
@@ -505,6 +525,191 @@ def test_pinned_slot_still_downloads_and_verifies_normally(monkeypatch: pytest.M
     build_exe._download_file("https://example.invalid/x.zip", dest, "ffmpeg (gyan.dev)", slot="ffmpeg")
     assert dest.read_bytes() == payload
     assert seen == [(dest, "ffmpeg", "ffmpeg (gyan.dev)")], "钉定通过后才应触发验签，且不得对未核过内容的产物验签"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-26 官方签名档（macOS 两槽）：上游不公布 SHA256，判据 = 官方分离 GPG 签名
+# + 带外钉死的 40 位主钥指纹。下面各锁分别拦一种具体失效形态：
+#   ① 「光有标记就拿免检」——标记比 64 位十六进制更容易填，缺登记 / 缺形状必须同等拦下；
+#   ② SEV-2221「验签代码写在下载后、闸口卡在下载前」——若签名档槽位不在哈希分支之外也验签，
+#      这一档在真实构建路径上永不可达，看着有防线其实一次都没跑过；
+#   ③ 签名档**没有哈希兜底**，故发布路径上「gpg 不可用 / 验签判坏」必须终止，不得降级放行。
+# 全程离线：urlopen 与 _run_gpg 一律打桩（桩替换 build_exe 的模块全局名，不改 stdlib 本体）。
+# ---------------------------------------------------------------------------
+
+_SIG_MARKER = build_exe.OFFICIAL_SIGNATURE_PIN
+_GOOD_VERIFY_STATUS = (
+    b"[GNUPG:] GOODSIG 1234567890ABCDEF someone@example.org\n"
+    b"[GNUPG:] VALIDSIG " + _PRIMARY_FPR.lower().encode("ascii") + b" 1600000000 1600000000 0 4 0 1 22 00\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("key", "slot", "expected"),
+    [
+        ("macos-arm64", "ffmpeg", True),
+        ("macos-x64", "ffmpeg", True),
+        ("macos-arm64", "node", False),  # 同一运行时键的另一槽没登记签名 → 不许蹭同键的登记
+        ("linux-x64", "ffmpeg", False),  # BtbN 不公布 detached 签名，无物可验
+        ("windows-x64", "ffmpeg", False),
+    ],
+    ids=["arm64-ffmpeg", "x64-ffmpeg", "同键另一槽", "linux-无签名", "windows-无签名"],
+)
+def test_signature_mode_is_satisfied_only_by_a_registered_slot(key: str, slot: str, expected: bool) -> None:
+    # 与第 4 类同一条防线：标记本身绝不构成放行，必须「该槽确有登记」且「指纹形状对」。
+    assert build_exe._is_signature_satisfied(_SIG_MARKER, key, slot) is expected
+    # 唯一口径必须同步认下这一档：_slot_is_gated 若漏并，--strict 会把已按签名管住的槽判成未钉定。
+    assert build_exe._slot_is_gated(_SIG_MARKER, key, slot) is expected
+
+
+def test_signature_mode_marker_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    # _pinned_slots() 会把内置表与 DLR_RUNTIME_SHA256 注入值统一 .strip().lower()；
+    # 若标记按原样逐字比，CI 注入通道就永远认不出签名档（与 test_env_injected_marker_also_refuses_download
+    # 抓出来的第 4 类同一形态）。
+    assert build_exe._is_signature_satisfied(_SIG_MARKER.lower(), "macos-arm64", "ffmpeg") is True
+
+
+@pytest.mark.parametrize(
+    "bad_fpr",
+    ["", "20F6EA3E", "z" * 40, "20F6EA3E0CFD6B4C53447A73476C4B611A66087"],
+    ids=["空指纹", "过短", "非十六进制", "39位"],
+)
+def test_signature_mode_rejects_malformed_fingerprint(monkeypatch: pytest.MonkeyPatch, bad_fpr: str) -> None:
+    # 指纹形状关把不住，「登记一把不存在的钥匙」就成了新的绕闸通道。
+    monkeypatch.setitem(
+        build_exe._RUNTIME_GPG_SIGNATURES, "macos-arm64", {"ffmpeg": ("https://example.invalid/sig", bad_fpr)}
+    )
+    assert build_exe._is_signature_satisfied(_SIG_MARKER, "macos-arm64", "ffmpeg") is False
+    assert build_exe._slot_is_gated(_SIG_MARKER, "macos-arm64", "ffmpeg") is False
+
+
+def test_table_never_declares_signature_mode_without_satisfaction() -> None:
+    # 永久不变量（对齐 test_table_never_declares_the_fourth_class_without_evidence）：
+    # 谁把某槽改成签名档，就必须同批把签名 URL 与指纹登记进 _RUNTIME_GPG_SIGNATURES。
+    offenders = [
+        f"{key}/{slot}"
+        for key, entry in build_exe._PINNED_RUNTIME_SHA256.items()
+        for slot, value in entry.items()
+        if value == _SIG_MARKER and not build_exe._is_signature_satisfied(value, key, slot)
+    ]
+    assert not offenders, f"以下槽位声明官方签名档但未满足登记/指纹条件: {offenders}"
+
+
+@pytest.mark.parametrize("release", [True, False], ids=["release", "local"])
+def test_signature_mode_slot_downloads_and_actually_verifies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, release: bool
+) -> None:
+    # SEV-2221 的可达性锁：签名档槽位必须**真的走到验签**。把验签调用点挪回「只在哈希已过的分支里」
+    # （改造前形态）→ 本用例红，因为 macOS 槽值永远过不了 _is_pinned。
+    dest = tmp_path / "ffmpeg.zip"
+    payload = b"evermeet-archive"
+    _macos_release_env(monkeypatch, release=release)
+    _install_fake_urlopen(monkeypatch, payload)
+    _install_fake_gpg(monkeypatch, keyring=_keyring_record(_PRIMARY_FPR), verify_status=_GOOD_VERIFY_STATUS)
+    seen: list[tuple] = []
+    real_verify = build_exe._verify_official_signature
+
+    def _spy(*args: Any) -> None:
+        seen.append(args)
+        real_verify(*args)
+
+    monkeypatch.setattr(build_exe, "_verify_official_signature", _spy)
+    build_exe._download_file("https://example.invalid/x.zip", dest, "ffmpeg (evermeet)", slot="ffmpeg")
+    assert seen == [(dest, "ffmpeg", "ffmpeg (evermeet)")], "签名档没有触发验签：验签又落回了哈希分支"
+    assert dest.read_bytes() == payload
+
+
+def test_signature_mode_aborts_build_when_signature_is_bad(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # 验签判坏必须终止构建：签名档是这一槽唯一的判据，这里降级就等于整槽无校验。
+    dest = tmp_path / "ffmpeg.zip"
+    _macos_release_env(monkeypatch, release=True)
+    _install_fake_urlopen(monkeypatch, b"evermeet-archive")
+    _install_fake_gpg(
+        monkeypatch, keyring=_keyring_record(_PRIMARY_FPR), verify_status=b"[GNUPG:] BADSIG 1 x@example.org\n"
+    )
+    with pytest.raises(SystemExit):
+        build_exe._download_file("https://example.invalid/x.zip", dest, "ffmpeg (evermeet)", slot="ffmpeg")
+
+
+def test_signature_mode_aborts_build_when_gpg_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # 「gpg 这个工具不存在」在发布路径必须终止：签名档没有哈希兜底，跳过验签=跳过校验。
+    dest = tmp_path / "ffmpeg.zip"
+    _macos_release_env(monkeypatch, release=True)
+    _install_fake_urlopen(monkeypatch, b"evermeet-archive")
+    _install_fake_gpg(monkeypatch, keyring=b"", verify_status=b"", import_available=False)
+    with pytest.raises(SystemExit):
+        build_exe._download_file("https://example.invalid/x.zip", dest, "ffmpeg (evermeet)", slot="ffmpeg")
+
+
+def test_signature_mode_marker_without_registration_never_downloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 声明了签名档但登记不齐（例如同步改表时漏改签名表）→ 必须**在下载前**拦下，
+    # 且不发起任何请求；报错文案点名「未登记/指纹形状」，别让维护者去核对一个不存在的哈希。
+    def explode(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("未满足的签名档不得发起下载")
+
+    monkeypatch.setattr(build_exe, "runtime_slot_key", lambda: "linux-x64")
+    monkeypatch.setattr(build_exe, "require_pinned_hashes", lambda: True)
+    monkeypatch.setattr(build_exe, "_PINNED_RUNTIME_SHA256", {"linux-x64": {"ffmpeg": _SIG_MARKER, "node": "a" * 64}})
+    monkeypatch.setattr(build_exe, "urllib", types.SimpleNamespace(request=types.SimpleNamespace(urlopen=explode)))
+    with pytest.raises(SystemExit) as caught:
+        build_exe._download_file("https://example.invalid/x.tar.xz", tmp_path / "x.tar.xz", "ffmpeg", slot="ffmpeg")
+    assert "官方签名档" in str(caught.value) and "未满足" in str(caught.value)
+
+
+def _make_tar_xz(archive: Path, members: dict[str, bytes]) -> None:
+    # 造一份最小 tar.xz：只用于驱动真实的 tarfile 解包与递归查名，不碰网络。
+    with tarfile.open(archive, "w:xz") as tf:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o755
+            tf.addfile(info, io.BytesIO(data))
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        # BtbN 实测布局（2026-09-26 取该资产归档前 4 MB 列成员所得）
+        {
+            "ffmpeg-n9.0-latest-linux64-gpl-9.0/bin/ffmpeg": b"ELF-ffmpeg",
+            "ffmpeg-n9.0-latest-linux64-gpl-9.0/bin/ffprobe": b"ELF-ffprobe",
+            "ffmpeg-n9.0-latest-linux64-gpl-9.0/doc/ffmpeg.html": b"docs",
+        },
+        # johnvansickle 旧布局：平铺在 ffmpeg-<ver>-<arch>-static/ 下
+        {
+            "ffmpeg-7.0-amd64-static/ffmpeg": b"ELF-ffmpeg",
+            "ffmpeg-7.0-amd64-static/ffprobe": b"ELF-ffprobe",
+        },
+    ],
+    ids=["BtbN-bin布局", "johnvansickle-平铺布局"],
+)
+def test_linux_ffmpeg_extraction_is_layout_agnostic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, members: dict[str, bytes]
+) -> None:
+    # 换源后归档内层级从平铺变成带 bin/：写死任一种，另一种会「解包成功但一件没拷」，
+    # 而调用方要到出包前的 verify_runtime_binaries 才发现。本函数不读 sys.platform，
+    # 故在 Windows 开发机与 Linux CI 上都会真实执行（AGENTS.md「平台分支不得靠 skipif 让 CI 丢锁」同源）。
+    archive = tmp_path / "runtime.tar.xz"
+    _make_tar_xz(archive, members)
+    ffmpeg_dir = tmp_path / "ffmpeg"
+    ffmpeg_dir.mkdir()
+    build_exe._extract_linux_ffmpeg_binaries(archive, ffmpeg_dir)
+    for binary, content in (("ffmpeg", b"ELF-ffmpeg"), ("ffprobe", b"ELF-ffprobe")):
+        got = ffmpeg_dir / binary
+        assert got.is_file() and got.read_bytes() == content, f"{binary} 未被取出（布局假设被写死了）"
+
+
+def test_linux_ffmpeg_extraction_aborts_when_binary_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # 缺件抛 SystemExit（BaseException 不被 _download_ffmpeg 外层 except Exception 吞）：
+    # 否则回到「一行 warning + 出包成功」的 arm64 404 形态。
+    archive = tmp_path / "runtime.tar.xz"
+    _make_tar_xz(archive, {"ffmpeg-x/doc/README": b"docs only"})
+    ffmpeg_dir = tmp_path / "ffmpeg"
+    ffmpeg_dir.mkdir()
+    with pytest.raises(SystemExit):
+        build_exe._extract_linux_ffmpeg_binaries(archive, ffmpeg_dir)
 
 
 # ---------------------------------------------------------------------------

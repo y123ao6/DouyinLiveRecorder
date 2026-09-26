@@ -58,6 +58,10 @@ def _fake_module(table: dict[str, dict[str, str]], declared_keys: tuple[str, ...
         _slot_is_gated=build_exe._slot_is_gated,
         _is_source_build_marker=build_exe._is_source_build_marker,
         SOURCE_BUILD_PROVENANCE=build_exe.SOURCE_BUILD_PROVENANCE,
+        # 2026-09-26 官方签名档：判定与标记常量同样只能取自 build_exe（本脚本不得自定口径）
+        _is_signature_marker=build_exe._is_signature_marker,
+        _is_signature_satisfied=build_exe._is_signature_satisfied,
+        OFFICIAL_SIGNATURE_PIN=build_exe.OFFICIAL_SIGNATURE_PIN,
         UNVERIFIED_PIN=build_exe.UNVERIFIED_PIN,
     )
 
@@ -224,6 +228,29 @@ def test_incomplete_evidence_never_satisfies_the_fourth_class(monkeypatch: pytes
     table = _pinned_table()
     table["macos-arm64"]["ffmpeg"] = build_exe.SOURCE_BUILD_PROVENANCE
     assert _run(monkeypatch, table, strict=True) == 1, f"证据形态不完整却放行：{broken}"
+
+
+_SIG_MARKER = build_exe.OFFICIAL_SIGNATURE_PIN
+
+
+def test_signature_mode_passes_strict_and_is_announced(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 官方签名档是「上游确实不公布哈希」时的合法满足方式（判据 = GPG 验签 + 带外钉死的 40 位主钥
+    # 指纹，登记在 build_exe._RUNTIME_GPG_SIGNATURES）。满足时必须放行**且显式播报**：
+    # 报告若把它算进「已钉定 64 位十六进制」，就是在谎称发布链拿到的是一手哈希。
+    table = _pinned_table()
+    table["macos-arm64"]["ffmpeg"] = _SIG_MARKER
+    assert _run(monkeypatch, table, strict=True) == 0
+    assert "官方签名档" in capsys.readouterr().out, "靠签名管住的槽位必须单独说出来，不得与「已钉定」混为一谈"
+
+
+def test_signature_marker_without_registration_is_not_a_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 与第 4 类「光有标记不算」同一条防线：登记面在 _RUNTIME_GPG_SIGNATURES，那里没有该槽
+    # （或指纹形状不符）就必须与「未钉定」同等拦下——否则填标记比填哈希还容易，闸口等于拆除。
+    table = _pinned_table()
+    table["linux-x64"]["ffmpeg"] = _SIG_MARKER
+    assert _run(monkeypatch, table, strict=True) == 1, "未登记的签名档标记被放行 = 绕闸通道"
 
 
 def test_missing_slot_is_a_structural_failure_not_a_data_gap(monkeypatch: pytest.MonkeyPatch) -> None:

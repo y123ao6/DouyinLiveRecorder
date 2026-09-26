@@ -1630,6 +1630,67 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > Scripts: `tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`
 > (`python file.py <URL> [seconds]`; requires a live room + network; manual channel by default).
 
+### v4.3.0-dev (2026-09-26) — Release-chain integrity gate gains an "official signature" mode and Linux ffmpeg moves to BtbN: `build-release.yml` prepare goes from rc=1 to rc=0 without loosening SEV-10's fail-closed semantics
+
+- **Background**: the prepare job failed at `Verify runtime binary SHA256 pins (fail-closed)` with
+  `Error: Process completed with exit code 1.`, and the log body is literally the output of
+  `scripts/check_runtime_pins.py --strict`: two in-matrix slots (`linux-x64/ffmpeg`, `macos-arm64/ffmpeg`) still
+  carry the placeholder marker. Located precisely at `.github/workflows/build-release.yml:141-149`; rc=1 comes from
+  the `--strict` branch of the checker. This is not a defect — the gate stopped the release exactly as designed
+  (both the `build_exe.py` pin-table comment and the `AGENTS.md` SEV-10 entry say: if upstream publishes no hash,
+  the release chain stays red).
+- **Why deleting the gate was not the fix**: the pin table does not live in the workflow (source of truth is
+  `build_exe._PINNED_RUNTIME_SHA256`; the YAML only passes values through via `DLR_RUNTIME_SHA256`). And
+  `require_pinned_hashes()` is auto-true under `GITHUB_ACTIONS=true`, so removing the prepare step would only move
+  the same failure into the three build jobs (each after a full pip install, still aborting before any download) —
+  zero artefacts either way.
+- **Chosen route (per the user's "grade integrity criteria by what each upstream actually publishes")**: class ①
+  "release-time runtime binaries" gains a second satisfaction mode **behind the single predicate**
+  `build_exe._slot_is_gated()` — the **official signature mode**: table value = `OFFICIAL_SIGNATURE_PIN`, and the
+  slot must actually be registered in `_RUNTIME_GPG_SIGNATURES` with a 40-hex fingerprint. The marker alone never
+  grants passage (same anti-"easier-to-fill marker = free pass" wall as the 4th class `SOURCE_BUILD_PROVENANCE`).
+  macOS's two slots take this mode (evermeet publishes `/sig`, no hash); the Linux slots moved to BtbN's n9.0-series
+  assets, pinning the `assets[].digest` SHA256 published by `api.github.com`, so no MD5 downgrade mode was needed.
+- **SEV-2221 fixed on the way**: `_download_file()`'s pre-download gate only accepted `_is_pinned()`, while the
+  signature check sat after the download inside the "hash already matched" branch — so a placeholder-valued macOS
+  slot never reached the download and the P-2 verification had **never executed** on the real build path. The gate
+  now accepts both modes, and a signature-mode slot **must** pass verification after download (BADSIG / signer not
+  in the pinned key's primary-or-subkey set / missing gpg or unreachable signature on the release path all
+  `SystemExit`); the observed SHA256 is logged as the audit trail for the rolling alias.
+- **Scope**: `build_exe.py` (new constant + predicates, `_download_file` dispatch, `_unpinned_action` naming the
+  exact reason a signature declaration is unsatisfied, the two Linux rows of `_FFMPEG_DOWNLOAD_URLS`, four pin-table
+  cells, and Linux extraction pulled out into the layout-agnostic `_extract_linux_ffmpeg_binaries()`);
+  `scripts/check_runtime_pins.py` (per-mode `[NOTE]` announcement, judgement still delegated);
+  `tests/test_build_exe.py` (+12 cases: signature-mode truth table, case-insensitive marker, fingerprint shape gate,
+  table/registration stay-in-sync invariant, the SEV-2221 reachability lock, abort-on-bad-signature and
+  abort-when-gpg-missing, unregistered marker must not download, both archive layouts plus abort-on-missing-binary;
+  `_ALLOWED_HOSTS` gains `github.com` and drops `johnvansickle.com`; `_FakeResponse` gains `headers` and drains per
+  read); `tests/test_check_runtime_pins.py` (`_fake_module` exposes the new symbols + 2 routing cases);
+  `.github/workflows/build-release.yml` — **comments only** (4 spots: the `DLR_RUNTIME_SHA256` legend, the prepare
+  step explanation, the source-host list, and the gnupg step noting verification is now the sole criterion);
+  matrix / caching / build / upload / release logic untouched. Plus `AGENTS.md` and
+  `docs/agent-reference/measured-evidence.md` (every retrieval command and reading from this round).
+- **Measured (2026-09-26)**: `evermeet.ca/ffmpeg/getrelease/zip/sig` → 200 / `application/pgp-signature` / 594 B
+  binary OpenPGP packet, landing on `e.deolaha.ca:4242/pub/ffmpeg/ffmpeg-9.0.2.zip.sig`; keyserver lookup of
+  `0x476C4B611A660874` → 200, UID `static FFmpeg binaries (signing key)`, server-echoed fingerprint equal to the
+  pinned value (**a second, independent channel** — this closes R-2's "fingerprint never corroborated");
+  `johnvansickle ...amd64-static.tar.xz.md5` → 200 with the same value as 2026-09-22, `.sha256` → 404; BtbN
+  `linux64-gpl-9.0` = 150,998,508 B / `linuxarm64-gpl-9.0` = 127,417,700 B, and a ranged prefix fetch + `tar -tJf`
+  confirms the binaries sit at `bin/ffmpeg` and `bin/ffprobe`.
+- **Verification**: `scripts/run_gates.py` 8/8 green; full `pytest` **3220 passed, empty warnings summary**;
+  `pytest tests/test_build_exe.py tests/test_check_runtime_pins.py` → 105 passed; `check_runtime_pins.py --strict`
+  went rc=1 → **rc=0**, announcing the two macOS slots as "signature mode" rather than "pinned"; all five mutations
+  reddened (gate omits the new mode / SEV-2221 reverted / marker alone satisfies / `bin/` layout hardcoded /
+  missing binary no longer aborts).
+- **Not yet verified, handed back**: ① the direct `github.com/.../releases/download/...` link resets on this box, so
+  "download in full and compare against the pin" can only be proven by the first GitHub runner run; ② evermeet
+  verification on the real build path executes for the first time in the macOS CI job (the keyserver probe shows
+  `--recv-keys` will resolve, but no local gpg run happened); ③ the Linux full zip grows sharply with the source
+  switch, and `report_bundle_size.py` could not be run locally (no Linux, blocked direct link) — re-check the size
+  gate from CI artefacts before adjusting any threshold. A rolling alias pins *who signed*, not *which version*: a
+  new evermeet build flows through without reddening the gate. That is this mode's inherent boundary; the logged
+  observed SHA256 is what makes it auditable afterwards.
+
 ### v4.3.0-dev (2026-09-26) — CI typecheck gate: install a pinned pytest and fix the `[return]` false positive in `tests/test_proto_runtime_compat.py`, removing the "green locally, red in CI" coverage drift (CI / test-only change, zero runtime impact)
 
 - **Background**: the CI `typecheck` job reported `tests/test_proto_runtime_compat.py:33: error: Missing return statement  [return]` (checked 159 files), while a local `mypy` run was fully green on 158 files and could not reproduce it at all.
