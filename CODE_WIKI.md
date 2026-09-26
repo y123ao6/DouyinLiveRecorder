@@ -1627,6 +1627,53 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
+### v4.3.0-dev (2026-09-26) — 发布链完整性门禁新增「官方签名档」，Linux ffmpeg 换源 BtbN：让 `build-release.yml` 的 prepare 由 rc=1 转 rc=0，同时不放宽 SEV-10 的 fail-closed 语义
+
+- **背景**：`build-release.yml` 的 prepare job 在 `Verify runtime binary SHA256 pins (fail-closed)` 一步报
+  `Error: Process completed with exit code 1.`，日志正文即 `scripts/check_runtime_pins.py --strict` 的输出：
+  矩阵内 2 个槽位（`linux-x64/ffmpeg`、`macos-arm64/ffmpeg`）仍是占位标记。定位结论——报错步骤在
+  `.github/workflows/build-release.yml:141-149`，rc=1 由 `check_runtime_pins.py` 的 `--strict` 分支返回；
+  这不是缺陷而是门禁按设计拦停（`build_exe.py` 钉定表注释与 `AGENTS.md` SEV-10 条目均写明「上游不公布哈希时
+  宁可让发布链红」）。
+- **为什么不删门禁**：钉定表不在工作流里（事实源是 `build_exe._PINNED_RUNTIME_SHA256`，workflow 只有
+  `DLR_RUNTIME_SHA256` 透传）；且 `require_pinned_hashes()` 在 `GITHUB_ACTIONS=true` 下自动为真，删掉 prepare
+  那步只会把同一处失败从 prepare 后移到三个 build job（各先跑完 pip 安装、仍在下载前 `SystemExit`），产物数不变 0。
+- **处置（用户选定「按上游能力分档」）**：类别 ①「发布期运行时二进制」在**同一口径**
+  `build_exe._slot_is_gated()` 下并上第二档**官方签名档**——取值 = `OFFICIAL_SIGNATURE_PIN` 标记，且该槽在
+  `_RUNTIME_GPG_SIGNATURES` 确有登记、指纹为 40 位十六进制（标记本身绝不构成放行，与第 4 类 `SOURCE_BUILD_PROVENANCE`
+  同一条「换个更容易填的标记拿免检」防线）。macOS 两槽（evermeet 只给 `/sig` 不给哈希）走该档；Linux 两槽换源到
+  BtbN 的 n9.0 系列资产，取 `api.github.com` 的 `assets[].digest` 作官方公布哈希正常钉定，故不需要 MD5 降级档。
+- **顺带修掉 SEV-2221**：`_download_file()` 下载前的闸口原只认 `_is_pinned()`，而验签调用点在下载后、
+  「哈希已过」分支内——占位值的 macOS 槽永远走不到下载，那一档 P-2 验签在真实构建路径上**一次都没跑过**。
+  现闸口认两档，签名档槽位下载后**必须**验签（BADSIG / 指纹不在环内 / 发布路径 gpg 缺失或取不到签名一律
+  `SystemExit`），并把实测 SHA256 打进食包日志作滚动别名的审计线索。
+- **改动面**：`build_exe.py`（新常量与谓词、`_download_file` 分派、`_unpinned_action` 报错点名「签名档未满足」
+  的具体原因、`_FFMPEG_DOWNLOAD_URLS` Linux 两条、钉定表 4 格、Linux 解压抽成布局无关的
+  `_extract_linux_ffmpeg_binaries()`）；`scripts/check_runtime_pins.py`（按档 `[NOTE]` 播报，判定仍委托
+  `_slot_is_gated`）；`tests/test_build_exe.py`（+12 用例：签名档真值表、大小写无关、指纹形状关、表/登记同批不变量、
+  SEV-2221 可达性锁、验签失败与 gpg 缺失必须终止、未登记标记不得发起下载、两种归档布局与缺件终止；`_ALLOWED_HOSTS`
+  增 `github.com` 移除 `johnvansickle.com`；`_FakeResponse` 补 `headers` 与分块排空）；
+  `tests/test_check_runtime_pins.py`（`_fake_module` 暴露新符号 + 2 条签名档分流用例）；
+  `.github/workflows/build-release.yml` **仅注释**（4 处：`DLR_RUNTIME_SHA256` 说明、prepare 步说明、来源主机清单、
+  gnupg 步骤「验签已是唯一判据」），矩阵/缓存/构建/上传/Release 逻辑零改动；`AGENTS.md`（SEV-10 条目、三类边界条目、
+  新增「发布面来源增删同改三处」条目）；`docs/agent-reference/measured-evidence.md`（本次全部取数命令与读数）。
+- **实测（2026-09-26）**：`evermeet.ca/ffmpeg/getrelease/zip/sig` → 200 / `application/pgp-signature` / 594 B 二进制
+  OpenPGP 包，落点 `e.deolaha.ca:4242/pub/ffmpeg/ffmpeg-9.0.2.zip.sig`；`keys.openpgp.org` 查
+  `0x476C4B611A660874` → 200，UID `static FFmpeg binaries (signing key)`，服务端回显指纹 ≡ 钉定值（**独立第二渠道**，
+  R-2 的「指纹未经二渠道确认」就此解掉）；`johnvansickle ...amd64-static.tar.xz.md5` → 200 且取值与 09-22 逐字相同、
+  `.sha256` → 404；BtbN `linux64-gpl-9.0` 150,998,508 B / `linuxarm64-gpl-9.0` 127,417,700 B，归档成员经前缀取回后
+  `tar -tJf` 实测为 `bin/ffmpeg`、`bin/ffprobe`。
+- **验证**：`scripts/run_gates.py` 8/8 全绿；`pytest` 全量 **3220 passed 且 warnings summary 为空**；
+  `pytest tests/test_build_exe.py tests/test_check_runtime_pins.py` 105 passed；
+  `check_runtime_pins.py --strict` 由 rc=1 → **rc=0**（两条 `[NOTE]` 明确说「走官方签名档」而非「已钉定」）；
+  5 条变异全部被抓红（漏并签名档 / SEV-2221 回退 / 光标记即满足 / 写死 `bin/` 布局 / 缺件不终止）。
+- **未实测与交回动作**：① 本机 `github.com/.../releases/download/...` 直链 `Connection was reset`，
+  「按来源表全量下载并比对钉定值」只能由 GitHub runner 首跑验证；② evermeet 验签在真实构建路径的首次执行即
+  macOS CI 跑（`--recv-keys` 能否成功已由 keyserver 探针旁证，但 `gpg` 全流程未在本机跑过）；③ Linux full 包体积
+  因换源大幅上涨（见上表读数），`report_bundle_size.py` 本机无 Linux 未实测，须由 CI 产物复核后再决定是否需要
+  按平台调体积门禁阈值。滚动别名只钉住「谁签的」钉不住「哪个版本」，evermeet 出新构建时 macOS 产物会随之变化而
+  门禁不会拦——这是该档的固有边界，靠日志里的实测 SHA256 做事后审计。
+
 ### v4.3.0-dev (2026-09-26) — CI typecheck 门禁补装固定版本 pytest，并修掉 `tests/test_proto_runtime_compat.py` 的 `[return]` 误报：消除「本机绿、CI 红」的检查面漂移（纯 CI / 测试改动，零运行期变更）
 
 - **背景**：CI 的 `typecheck` job 报 `tests/test_proto_runtime_compat.py:33: error: Missing return statement  [return]`（checked 159 files），而本机 `mypy` 158 files 全绿、完全无法复现。

@@ -426,14 +426,28 @@ RELEASE_RUNTIME_KEYS: tuple[str, ...] = ("windows-x64", "linux-x64", "linux-arm6
 # 故任何非 hex 值（含本标记）都等价于「未钉定」，无需在别处复制本常量。
 UNVERIFIED_PIN = "UNVERIFIED-OFFICIAL-SHA256-FILL-ME"
 
+# 官方签名档的表值标记：该槽**没有**上游公布的 SHA256 可比对，完整性判据换成「上游公布的分离
+# GPG 签名 + 带外钉死的完整 40 位主钥指纹」。为什么这一档比哈希钉定更强而不是更弱：哈希钉定的
+# 期望值与产物走同一条通道（gyan.dev 的 .sha256 文档就是它自己服务器发的），通道被劫持时两者一起
+# 被换；而签名档的判据是「这份产物由那把钥匙签出」，公钥按指纹从 keys.openpgp.org 这一**独立**
+# 通道导入，伪造者没有私钥就签不出环内钥匙认过的签名。
+# 该档自带两处硬条件，缺一即视为未管住（见 _is_signature_satisfied）：① 槽位必须在
+# _RUNTIME_GPG_SIGNATURES 里确有登记；② 指纹必须是 40 位十六进制。光填标记拿不到放行。
+OFFICIAL_SIGNATURE_PIN = "PINNED-OFFICIAL-GPG-SIGNATURE"
+
 # 已钉定的运行时二进制 SHA256，按运行时键分列：{ "<os>-<arch>": { "<槽位>": "<sha256>" } }。
 # 发布路径为 **fail-closed**（SEV-10）：CI（GITHUB_ACTIONS）默认 --require-pinned，缺钉定/形状非法
 # 即在**下载之前** SystemExit（不浪费 300MB 带宽，也不落盘未校验产物）。
 # 维护方式（每次升级运行时版本都要走一遍）：
-#   1) 从官方渠道取该构建公布的 SHA256：nodejs.org 的 SHASUMS256.txt、johnvansickle 的
-#      ffmpeg-release-<arch>-static.tar.xz.sha56、gyan.dev / evermeet.ca 页面公布值；
+#   1) 从官方渠道取该构建公布的 SHA256：nodejs.org 的 SHASUMS256.txt、gyan.dev 的 <name>.zip.sha256、
+#      BtbN 资产则取 api.github.com 的 releases/latest → assets[].digest（形如 "sha256:<64hex>"）；
+#      三条取数命令与读数时刻记在 docs/agent-reference/measured-evidence.md 对应小节。
 #   2) 把 64 位十六进制小写值替换下表中的 UNVERIFIED_PIN（**不得凭本地下载结果填写**——
-#      那只会把「构建机已中毒」的情形固化成基线）；
+#      那只会把「构建机已中毒」的情形固化成基线）；上游确实只给签名不给哈希时，改填
+#      OFFICIAL_SIGNATURE_PIN 并把「签名 URL + 完整 40 位主钥指纹」同批登记进 _RUNTIME_GPG_SIGNATURES
+#      （只改表不登记 = 未满足，--strict 照旧拦，见 _is_signature_satisfied）。
+#      [历史注] 本清单曾列 johnvansickle 的 ffmpeg-release-<arch>-static.tar.xz.sha56：该端点实测 404
+#      （它只发 *.md5），Linux 两槽已于 2026-09-26 换源到 BtbN，见 _FFMPEG_DOWNLOAD_URLS。
 #   3) 也可不改本表、由 CI 用环境变量 DLR_RUNTIME_SHA256（JSON）注入同一批值，把「发布密钥」
 #      与代码仓分离；两种来源都接受槽位名或下载文件名做键。
 # 表内仍是占位值时，`python scripts/check_runtime_pins.py --strict` 与 CI 发布链一律失败，直到
@@ -448,14 +462,21 @@ UNVERIFIED_PIN = "UNVERIFIED-OFFICIAL-SHA256-FILL-ME"
 #   · windows-x64/ffmpeg 已钉定：来源 gyan.dev 官方 .sha256 文档，两个端点取值互相印证（滚动别名
 #     ffmpeg-release-essentials.zip.sha256 与重定向目标 packages/ffmpeg-9.0.2-essentials_build.zip
 #     .sha256），对应版本 ffmpeg 9.0.2。滚动别名意味着**每次上游发新版本都会失配**，需重新核对后回填。
-#   · macos-x64 / macos-arm64 / linux-x64 / linux-arm64 的 ffmpeg **保持占位**，原因不是「没来得及
-#     填」而是**这四个槽位对应的上游不公布 SHA256**（2026-09-22 实测）：evermeet（macOS 两槽同一份
-#     产物）页面只写「任意文件追加 /sig 取 GPG 签名」、无 sha256 文档，原 arm64 下载点
-#     getrelease-arm64/zip 在上游从不存在（恒 404），2026-09-22 已把两架构统一为 x86_64 构建（见
-#     _FFMPEG_DOWNLOAD_URLS 注释）；johnvansickle（Linux）只提供 *.md5（实测 200，内容为 md5 摘要）。
-#     按「不得凭本地下载结果填写」的硬约束，宁可让发布链继续红在这 4 个槽位上。可选处置（须由
-#     维护者决策）：改用「GPG 验签 + SHA256」双通道（macOS 两槽已登记验签，见 _RUNTIME_GPG_SIGNATURES）、
-#     或换用公布 SHA256 的上游、或为 md5-only 的上游另设一套显式降级的判定并写明理由。
+#   · macos-x64 / macos-arm64 的 ffmpeg 取值 = OFFICIAL_SIGNATURE_PIN（官方签名档，判据见该常量注释）：
+#     evermeet 页面只写「任意文件追加 /sig 取 GPG 签名」、无 sha256 文档（2026-09-26 实测 /sig → 200
+#     application/pgp-signature、594 B 二进制 OpenPGP 包，重定向真实落点 e.deolaha.ca:4242/pub/ffmpeg/
+#     ffmpeg-9.0.2.zip.sig）；_RUNTIME_GPG_SIGNATURES 已登记该槽的签名 URL 与完整主钥指纹，指纹同日经
+#     keys.openpgp.org 这一**独立**通道回显印证（UID "static FFmpeg binaries (signing key)"）。
+#     两槽是同一份 x86_64 产物（原 arm64 下载点 getrelease-arm64/zip 上游从不存在、恒 404，2026-09-22
+#     已把两架构统一为 x86_64 构建，见 _FFMPEG_DOWNLOAD_URLS 注释）。
+#   · linux-x64 / linux-arm64 的 ffmpeg 已换用**公布 SHA256 的上游**（BtbN FFmpeg-Builds 的 n9.0 系列
+#     资产，2026-09-26）：下表取值取自 api.github.com 该 release asset 的 digest 字段——属平台公布的哈希
+#     文档，不是本地下载自算，故仍是常规 64 位十六进制钉定，不需要新开完整性档。
+#   [历史注] 2026-09-22 至 2026-09-26 这四槽长期保持占位，原因是当时所选上游确实不公布 SHA256：
+#     johnvansickle（Linux）只提供 *.md5（实测 200，内容为 md5 摘要）。按「不得凭本地下载结果填写」的
+#     硬约束宁可让发布链红在这些槽位上。Linux 侧最终处置选了「换用公布 SHA256 的上游」，而不是为
+#     md5-only 上游另设一档显式降级——代价是产物体积：BtbN linux64-gpl 150,998,508 B
+#     vs johnvansickle amd64-static 41,888,096 B（实测 2026-09-26，见 _FFMPEG_DOWNLOAD_URLS 注释）。
 # [历史注] 2026-09-18 CR-11 只有校验框架、表为空且未钉定仅告警后继续（fail-open），
 #   2026-09-20 SEV-10 确认约 300MB 无校验二进制直接进分发包，改为上方 fail-closed 语义。
 _PINNED_RUNTIME_SHA256: dict[str, dict[str, str]] = {
@@ -467,30 +488,36 @@ _PINNED_RUNTIME_SHA256: dict[str, dict[str, str]] = {
         "node": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
     },
     "linux-x64": {
-        "ffmpeg": UNVERIFIED_PIN,  # johnvansickle amd64-static：官方只有 MD5，无 SHA256 可比对
+        # BtbN ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz（api.github.com assets[].digest，2026-09-26）
+        "ffmpeg": "87de09009b85f61d452f5edcc702885c2ac7cb5f2016b30bd273b454df87eb9a",
         # node-v24.21.0-linux-x64.tar.gz
         "node": "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff",
     },
     "linux-arm64": {
-        "ffmpeg": UNVERIFIED_PIN,  # johnvansickle arm64-static：同上，官方只有 MD5
+        # BtbN ffmpeg-n9.0-latest-linuxarm64-gpl-9.0.tar.xz（同上取值方式，2026-09-26）
+        "ffmpeg": "30774c8ff65512d1700c4d552d4bfed30a9924576b38aab8e4deb9c744597d61",
         # node-v24.21.0-linux-arm64.tar.gz
         "node": "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5",
     },
     "macos-x64": {
-        "ffmpeg": UNVERIFIED_PIN,  # evermeet getrelease/zip：官方只给 GPG 签名（追加 /sig），无 SHA256
+        # evermeet getrelease/zip：官方只给 GPG 签名（追加 /sig），无 SHA256 → 走官方签名档
+        "ffmpeg": OFFICIAL_SIGNATURE_PIN,
         # node-v24.21.0-darwin-x64.tar.gz
         "node": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
     },
     "macos-arm64": {
         # 与 macos-x64 同一份 evermeet 构建（上游不发布 arm64，见 _FFMPEG_DOWNLOAD_URLS 注释）：
-        # 无官方 SHA256 可比对，且因来源相同，两槽将来必须填**同一个值**
-        "ffmpeg": UNVERIFIED_PIN,
+        # 同一来源 → 同一档；两槽的取值必须保持相等（tests/test_build_exe.py 锁此项）
+        "ffmpeg": OFFICIAL_SIGNATURE_PIN,
         # node-v24.21.0-darwin-arm64.tar.gz
         "node": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
     },
 }
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+# 钉定指纹的形状关：与哈希同理，只看形状、不看语义。39 位/带空格/非十六进制一律算「没钉指纹」，
+# 于是签名档不可能靠填个像样的字符串凑过判定（_is_pinned 的同类设计）。
+_FINGERPRINT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 # 命令行对「必须钉定」的显式覆盖：None = 沿用默认判定（CI 环境变量自动开启）。
 # 由 main() 在解析参数后写入，_download_file 通过 require_pinned_hashes() 读取。
@@ -592,11 +619,31 @@ def _is_source_build_satisfied(value: str, key: str, slot: str) -> bool:
     )
 
 
+def _is_signature_marker(value: str) -> bool:
+    # 与 _is_source_build_marker 同理：比较一律大小写无关，否则 CI 经 DLR_RUNTIME_SHA256 注入的
+    # 标记永远认不出（_pinned_slots() 会把取值统一 .strip().lower()）。
+    return value.strip().lower() == OFFICIAL_SIGNATURE_PIN.lower()
+
+
+def _is_signature_satisfied(value: str, key: str, slot: str) -> bool:
+    # 标记本身**绝不构成放行**（与第 4 类同一条防线）：必须同时满足「该槽在 _RUNTIME_GPG_SIGNATURES
+    # 里确有登记」且「登记的指纹过 40 位十六进制形状关」，否则「换个更容易填的标记」就成了绕闸通道。
+    if not _is_signature_marker(value):
+        return False
+    entry = _RUNTIME_GPG_SIGNATURES.get(key, {}).get(slot)
+    if entry is None:
+        return False
+    return bool(_FINGERPRINT_PATTERN.fullmatch(str(entry[1]).strip().lower()))
+
+
 def _slot_is_gated(value: str, key: str, slot: str) -> bool:
     # 「这个槽位今天算不算被管住了」的**唯一**口径 = 已钉定的官方哈希 ∨ 证据齐备的第 4 类。
     # scripts/check_runtime_pins.py 必须调本函数而不是自己判 _is_pinned，否则会出现两份判定、
     # 第 4 类在某一侧被漏认（AGENTS.md 禁止并行事实源的同一条）。
-    return _is_pinned(value) or _is_source_build_satisfied(value, key, slot)
+    # [2026-09-26] 第三个析取项「官方签名档」（_is_signature_satisfied）并入，仍只有本函数一个口径。
+    return (
+        _is_pinned(value) or _is_source_build_satisfied(value, key, slot) or _is_signature_satisfied(value, key, slot)
+    )
 
 
 def _declares_source_build(value: str) -> bool:
@@ -613,7 +660,9 @@ def require_pinned_hashes() -> bool:
 
 
 # 未钉定时的处置：发布路径终止构建，本地路径打印实际哈希供人工核对官方值后再钉定。
-def _unpinned_action(slot: str, dest: Path, desc: str, declared_source_build: bool = False) -> None:
+def _unpinned_action(
+    slot: str, dest: Path, desc: str, declared_source_build: bool = False, declared_signature: bool = False
+) -> None:
     # declared_source_build 由调用方传入**已合并环境变量后的实际取值**（而不是只查内置表），
     # 否则「CI 用 DLR_RUNTIME_SHA256 注入第 4 类标记」这条通道会绕过下面的拒下载判定。
     key = runtime_slot_key()
@@ -625,6 +674,17 @@ def _unpinned_action(slot: str, dest: Path, desc: str, declared_source_build: bo
             f"不该走下载路径。该类的满足条件 = {SOURCE_BUILD_EVIDENCE_FIELDS} 三件证据齐备且过形状关"
             f"（见 _SOURCE_BUILD_EVIDENCE）。已终止构建，未开始下载。"
         )
+    if declared_signature:
+        # 声明了官方签名档却没被认下，只可能是「该槽未在 _RUNTIME_GPG_SIGNATURES 登记」或「登记的指纹
+        # 形状不符」两种原因。报错必须点名这两种，否则维护者会去核对一个本就不存在的「缺失的哈希」。
+        msg = (
+            f"{desc}（槽位 {key}/{slot}）声明为官方签名档 {OFFICIAL_SIGNATURE_PIN!r} 但未满足："
+            f"需该槽在 _RUNTIME_GPG_SIGNATURES 有登记，且登记的指纹为 40 位十六进制"
+        )
+        if require_pinned_hashes():
+            raise SystemExit(f"[build][FATAL] {msg}。已终止构建，未开始下载。")
+        print(f"[build][warn] {msg}——本地构建继续，但**该产物不得用于发布**")
+        return
     msg = f"{desc}（槽位 {key}/{slot}）未钉定 SHA256"
     if require_pinned_hashes():
         raise SystemExit(
@@ -646,6 +706,9 @@ def _unpinned_action(slot: str, dest: Path, desc: str, declared_source_build: bo
 # 只登记**上游确实公布 detached 签名**的槽位，没公布的留空即跳过：evermeet（macOS 两架构）页面
 # 明示「任意文件追加 /sig 取其 GPG 签名」；gyan.dev / johnvansickle 实测不公布签名文件，
 # **不得**为了「看起来全都验了」伪造配置。
+# [2026-09-26] macOS 两槽的 _PINNED_RUNTIME_SHA256 取值改为本表的官方签名档，于是「登记了签名」从
+# 锦上添花升格为**判据本体**：该表若缺某槽条目，_is_signature_satisfied 直接判未管住（--strict 红），
+# 而不是像过去那样只是「顺带没验」。指纹已于 2026-09-26 经 keys.openpgp.org 独立通道回显印证。
 # 指纹的信任来源要知情：它取自上游自己的页面/文档，属「同一通道带回来的钥匙」，强度等同
 # TOFU-of-key；要再上一格需从第二渠道（密钥服务器上的签名网络 / 与维护者当面核对指纹）确认。
 _RUNTIME_GPG_SIGNATURES: dict[str, dict[str, tuple[str, str]]] = {
@@ -685,8 +748,10 @@ def _run_gpg(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess
 
 
 def _verify_official_signature(dest: Path, slot: str, desc: str) -> None:
-    # 未登记签名的槽位（gyan.dev / johnvansickle 不公布签名）直接返回——**跳过是显式状态**，
+    # 未登记签名的槽位（gyan.dev 与 BtbN 均不公布 detached 签名文件）直接返回——**跳过是显式状态**，
     # 不是「静默通过」：--strict 仍会因该槽位未钉定而拦下发布。
+    # [2026-09-26] 官方签名档槽位（macOS 两槽）以本函数**作为唯一完整性判据**，故这里的「跳过」
+    # 对那一档不可能发生：_is_signature_satisfied 已把「该槽确有登记」列为满足条件之一。
     entry = _RUNTIME_GPG_SIGNATURES.get(runtime_slot_key(), {}).get(slot)
     if entry is None:
         return
@@ -768,8 +833,14 @@ def _download_file(url: str, dest: Path, desc: str, *, slot: str) -> None:
     expected = pins.get(slot, "") if slot else ""
     if not expected:
         expected = pins.get(dest.name, "")
-    if not _is_pinned(expected):
-        _unpinned_action(slot or dest.name, dest, desc, _declares_source_build(expected))
+    # 满足口径取 _slot_is_gated 的两个析取项（哈希档 / 官方签名档），**不得**只认 _is_pinned：
+    # 只认哈希会让声明为签名档的槽位（macOS 两槽）在下载前即终止，于是「上游确实只给签名」这一档
+    # 永远不会被真实构建路径执行到（SEV-2221 的形态：验签代码写在下载后、闸口卡在下载前）。
+    signature_mode = _is_signature_satisfied(expected, runtime_slot_key(), slot)
+    if not (_is_pinned(expected) or signature_mode):
+        _unpinned_action(
+            slot or dest.name, dest, desc, _declares_source_build(expected), _is_signature_marker(expected)
+        )
 
     # 下载文件到 dest（带进度输出）；重定向由 urllib 自动跟随。
     print(f"[build] 下载 {desc}：{url}")
@@ -800,6 +871,15 @@ def _download_file(url: str, dest: Path, desc: str, *, slot: str) -> None:
         print(f"[build] {dest.name} SHA256 校验通过（{slot or dest.name}）")
         # 签名核验只在**哈希已过**之后做：对一份连内容都没核过的产物验签没有意义。
         _verify_official_signature(dest, slot, desc)
+    elif signature_mode:
+        # 本档没有可比对的公布哈希：**验签本身**就是完整性判据，不能再挂在「哈希已过」的分支里。
+        # _verify_gpg_artifact 对 BADSIG/ERRSIG/指纹不在环内一律 SystemExit，发布路径下
+        # 「gpg 不可用」与「取不到签名文件」同样 SystemExit，因此控制流能走到下一行
+        # 就等于这份产物已由钉定指纹那把钥匙（或其子钥）签出并被 GnuPG 判为 GOOD。
+        _verify_official_signature(dest, slot, desc)
+        # evermeet 的 getrelease/zip 是滚动别名：签名钉住「谁签的」，钉不住「哪个版本」。
+        # 把实测哈希留在构建日志里作事后审计线索（发布产物版本异常时唯一的可比对记录）。
+        print(f"[build] {desc} 官方签名核验通过（{slot}），实测 SHA256={actual}")
     else:
         # 仅本地路径可达（发布路径已在下载前终止）：打出实际哈希，供人工核对官方值后钉定
         print(f"[build][warn] {desc} 未钉定 SHA256，请核对官方值后填入 _PINNED_RUNTIME_SHA256：{actual}")
@@ -873,13 +953,25 @@ def _download_nodejs(target_dir: Path) -> bool:
 #             lame/libvmaf/libvpx/openssl@3/opus/sdl2-compat/svt-av1/x264/x265/xz）的 dylib 位于
 #             Homebrew 前缀下的**其他 formulae**、不在 bottle tarball 内，直接打进分发包只会得到
 #             `dyld: Library not loaded` 的坏产物。
-#   linux   → johnvansickle：自包含 static 构建；只提供 *.md5，无 SHA256。
+#   linux   → BtbN FFmpeg-Builds 的 **n9.0 系列**资产（2026-09-26 换源）：选该上游是因为它有一份
+#             **可人工核对的公布哈希**——api.github.com 的 `releases/latest` 里每个 asset 带
+#             `digest: sha256:<64hex>`，取值即按此填入 _PINNED_RUNTIME_SHA256（属平台公布的哈希文档，
+#             不是本地下载自算）。版本对齐：gyan/evermeet 当前均为 ffmpeg 9.0.x，故取 `-gpl-9.0` 系列
+#             而不是 master 滚动构建，避免三大平台各拉一条不同代次的 ffmpeg。
+#             代价（实测 2026-09-26）：linux64 资产 150,998,508 B / linuxarm64 127,417,700 B，
+#             体积门禁需按 report_bundle_size.py 实跑复核，不估算。
+#             [历史注] 2026-09-22 起此槽用 johnvansickle 自包含 static 构建（amd64 41,888,096 B），
+#             换走的唯一原因是它只提供 *.md5、无 SHA256，导致 --strict 长期拦下发布。
+#   两条运行期源（src/ffmpeg_install.py / src/ffmpeg_master_download.py，类别 ②）与本表**互不覆盖**：
+#   那里仍按「gyan.dev 为默认唯一自动路径、BtbN master 由 FFMPEG_MASTER_ALLOWED 默认关闭」执行，
+#   本表的换源不改动那一侧，也不构成对「BtbN master 无 .sha256 文档」结论的反驳（本表靠的是 GitHub
+#   平台 digest + 人工核后写入常量，运行期自动安装拿不到那份带外核对）。
 _FFMPEG_DOWNLOAD_URLS: dict[str, str] = {
     "windows-x64": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
     "macos-x64": "https://evermeet.ca/ffmpeg/getrelease/zip",
     "macos-arm64": "https://evermeet.ca/ffmpeg/getrelease/zip",
-    "linux-x64": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
-    "linux-arm64": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz",
+    "linux-x64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz",
+    "linux-arm64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linuxarm64-gpl-9.0.tar.xz",
 }
 
 
@@ -898,12 +990,38 @@ def _ffmpeg_source_url() -> str:
     return fallback
 
 
+# 解包 Linux 的 ffmpeg 归档，把 ffmpeg/ffprobe 取到 ffmpeg_dir（与平台分支解耦，便于在任一
+# 开发机上直接驱动真 tarfile + 真目录查找，不必靠 skipif 让 CI 静默丢掉这条锁）。
+def _extract_linux_ffmpeg_binaries(archive: Path, ffmpeg_dir: Path) -> None:
+    import tempfile
+
+    # 布局一律**递归按名查**（_find_runtime_binary），不硬编码顶层目录形态：johnvansickle 是
+    # `ffmpeg-<ver>-<arch>-static/ffmpeg` 平铺，BtbN 是 `ffmpeg-n9.0-latest-linux64-gpl-9.0/bin/ffmpeg`
+    # （2026-09-26 实测该资产归档成员）。写死任一种，另一种产物会「解包成功但一件没拷」，
+    # 而本函数的调用方对此并无感知——唯一兜底只剩出包前的 verify_runtime_binaries。
+    missing: list[str] = []
+    with tempfile.TemporaryDirectory(dir=ffmpeg_dir.parent) as tmp:
+        with tarfile.open(archive, "r:xz") as tf:
+            # MI-26：显式传 filter 而非依赖解释器默认值，防止在更低版本解释器上回归出路径穿越
+            tf.extractall(tmp, filter="data")
+        root = Path(tmp)
+        for binary in ("ffmpeg", "ffprobe"):
+            found = _find_runtime_binary(root, (binary,))
+            if found is None:
+                missing.append(binary)
+                continue
+            # 赋给 _ 只为消除 basedpyright reportUnusedCallResult，非功能所需
+            _ = shutil.copy2(found, ffmpeg_dir / binary)
+    if missing:
+        # 抛 SystemExit 而不是 return False：BaseException 不被调用方的 `except Exception` 吞掉。
+        # 「归档里没有可执行件」必须终止构建，不能降级成一行 warning（那正是 arm64 404 长期隐身的路径）。
+        raise SystemExit(f"[build][FATAL] Linux ffmpeg 归档内找不到 {'、'.join(missing)}，已终止构建")
+
+
 # 按平台下载并解压 ffmpeg/ffprobe 到 target_dir/ffmpeg/，返回是否成功
 def _download_ffmpeg(target_dir: Path) -> bool:
     # URL 一律取自 _FFMPEG_DOWNLOAD_URLS（按运行时键查表；来源与可信度依据写在该表上方注释，
     # 勿在此重复），本函数只按平台决定**解压与取用方式**。
-    import tempfile
-
     ffmpeg_dir = target_dir / "ffmpeg"
     if ffmpeg_dir.exists():
         shutil.rmtree(ffmpeg_dir)
@@ -945,21 +1063,8 @@ def _download_ffmpeg(target_dir: Path) -> bool:
 
         else:  # Linux
             archive = target_dir / "_ffmpeg_temp.tar.xz"
-            _download_file(url, archive, "ffmpeg (johnvansickle static)", slot="ffmpeg")
-            with tempfile.TemporaryDirectory(dir=target_dir) as tmp:
-                with tarfile.open(archive, "r:xz") as tf:
-                    # MI-26：同上，显式 filter 而非依赖解释器默认值
-                    tf.extractall(tmp, filter="data")
-                for item in Path(tmp).iterdir():
-                    if item.is_dir() and item.name.startswith("ffmpeg-"):
-                        for binary in ("ffmpeg", "ffprobe"):
-                            bin_path = item / binary
-                            if bin_path.is_file():
-                                # 赋给 _ 只为消除 basedpyright reportUnusedCallResult，非功能所需
-                                _ = shutil.copy2(bin_path, ffmpeg_dir / binary)
-                    # 跳出外层目录遍历（tar 内仅一个 ffmpeg-* 目录）；break 必须位于内层 for 之外，
-                    # 否则只会复制 ffmpeg 而漏掉 ffprobe。
-                    break
+            _download_file(url, archive, "ffmpeg (BtbN FFmpeg-Builds n9.0)", slot="ffmpeg")
+            _extract_linux_ffmpeg_binaries(archive, ffmpeg_dir)
 
         archive.unlink(missing_ok=True)
         print(f"[build] ffmpeg 已安装到 {ffmpeg_dir}")
