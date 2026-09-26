@@ -10,7 +10,8 @@
 #
 # 两种模式（退出码语义不同，务必区分）：
 #   默认（结构模式，进 AGENTS.md「格式化命令」门禁块）
-#       —— 只查表的结构：表非空、键覆盖 RELEASE_RUNTIME_KEYS、每键含全部槽位、取值要么是
+#       —— 只查表的结构：表非空、键覆盖 RELEASE_RUNTIME_KEYS、每键含该平台**实际存在**的全部槽位
+#          （通用槽位 + build_exe._EXTRA_EXECUTABLE_URLS 登记的独立归档件，且反向不许多留）、取值要么是
 #          64 位小写十六进制、要么明显是占位/可疑值。占位值只告警不判红：「官方哈希还没人工
 #          核实」是开发期的常态，不该弄红每个 PR。
 #   --strict（发布模式，由 build-release.yml 的 prepare job 执行）
@@ -108,6 +109,10 @@ def check(strict: bool) -> int:
     module = _load_build_exe()
     table = cast("dict[str, dict[str, str]]", module._PINNED_RUNTIME_SHA256)
     slots = cast("tuple[str, ...]", module.RUNTIME_SLOTS)
+    # 按运行时键查「该平台实际有几个槽」：macOS 的 ffprobe 是独立归档、需要自己的钉定项，
+    # 而 windows/linux 的 ffprobe 随 ffmpeg 同包、没有独立公布值。槽位清单的事实源在
+    # build_exe._EXTRA_EXECUTABLE_URLS，本脚本只问 runtime_slots_for()，不自判（并行清单禁令）。
+    runtime_slots_for = cast("Any", module.runtime_slots_for)
     declared_keys = cast("tuple[str, ...]", module.RELEASE_RUNTIME_KEYS)
     # 判定口径一律取自 build_exe（见文件头）：本脚本不自己判形状，也不复制槽位/键清单
     slot_is_gated = cast("Any", module._slot_is_gated)
@@ -141,12 +146,13 @@ def check(strict: bool) -> int:
         if os_tag not in _OS_TAGS or arch_tag not in _ARCH_TAGS:
             problems.append(f"钉定键 {key} 不符合 <os>-<arch> 形态")
 
-    # 3) 每个键都要覆盖全部槽位（ffmpeg / node），且取值合法或明确未钉定
+    # 3) 每个键都要覆盖该平台**实际存在**的槽位（见 runtime_slots_for），且取值合法或明确未钉定
     for key, entry in table.items():
         if not isinstance(entry, dict):
             problems.append(f"{key} 的值不是 {{槽位: 哈希}} 映射")
             continue
-        for slot in slots:
+        expected_slots = runtime_slots_for(key)
+        for slot in expected_slots:
             value = str(entry.get(slot, ""))
             if slot not in entry:
                 problems.append(f"{key} 缺少槽位 {slot} 的钉定项")
@@ -173,13 +179,29 @@ def check(strict: bool) -> int:
             reason = "仍是占位标记" if value == placeholder else ("取值为空" if not value else f"形状非法（{value!r}）")
             bucket = unpinned if key in matrix_keys else unpinned_offmatrix
             bucket.append(f"{key}/{slot} 未钉定：{reason}")
+        # 反向：表里多出一个该平台并不存在的下载槽位同样要报——它意味着「有人在钉定表里给一个
+        # 没有下载点的组件留了通行证」，而 runtime_slots_for() 的事实源（_EXTRA_EXECUTABLE_URLS）
+        # 里并没有这一项，check 会永远查不到它。
+        for slot in entry:
+            if slot not in expected_slots:
+                problems.append(f"{key} 含槽位 {slot} 的钉定项，但该平台没有这个下载点（表与来源漂移）")
 
     # 4) 与发布矩阵的覆盖关系（跨文件同源检查，防「矩阵加了平台、表里没这一份」）
     for key in matrix_keys:
         if key not in table:
             problems.append(f"发布矩阵需要 {key}，但钉定表无该段")
 
-    print(f"运行时二进制钉定表：{len(table)} 个运行时键 × {len(slots)} 个槽位")
+    per_key_slots = sorted({len(runtime_slots_for(key)) for key in table})
+    # 空表在前面已判为结构缺陷（problems 非空即 rc=2），但打印发生在 rc 判定之前，
+    # 所以这里仍要能吃下「一个键都没有」——不然报告会以 IndexError 崩掉，把「表为空」这个
+    # 本来要说清楚的结论换成一句看不懂的栈回溯（SEV-10 最初的形态正是「空表没人说」）。
+    if not per_key_slots:
+        span = "0"
+    elif len(per_key_slots) == 1:
+        span = str(per_key_slots[0])
+    else:
+        span = f"{per_key_slots[0]}~{per_key_slots[-1]}"
+    print(f"运行时二进制钉定表：{len(table)} 个运行时键 × {span} 个槽位（通用 {len(slots)} 个，独立归档件按平台另计）")
     print(f"发布矩阵运行时键：{', '.join(matrix_keys)}")
 
     if problems:
