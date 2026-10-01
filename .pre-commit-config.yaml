@@ -1,0 +1,53 @@
+# pre-commit hooks — 自动化 AGENTS.md 核心门禁（black / isort / mypy）
+# 安装: pip install pre-commit && pre-commit install
+# 手动全量跑: pre-commit run --all-files
+# 工具配置（line-length / target-version / exclude 等）统一读 pyproject.toml，此处不重复。
+
+default_language_version:
+  python: python3
+
+repos:
+  # ── 通用卫生检查（行尾空白 / 末尾换行 / YAML 语法等）──
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # 排除生成物 / 运行期目录，与 pyproject [tool.black].exclude 同源
+        exclude: ^(node/|ffmpeg/|downloads/|logs/|\.venv/|__pycache__/|.*\.egg-info/)
+      - id: end-of-file-fixer
+        exclude: ^(node/|ffmpeg/|downloads/|logs/|\.venv/|__pycache__/|.*\.egg-info/)
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=1024']
+
+  # ── Black（代码格式化）──
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 25.9.0
+    hooks:
+      - id: black
+        # pyproject [tool.black] 提供 line-length / target-version；
+        # pre-commit 显式传路径时 pyproject 的 exclude 可能不生效（Windows 反斜杠），
+        # 故在此重复 typings / standalone 排除（与 pyproject 同源）。
+        exclude: ^(typings/|scripts/douyin_live_recorder_standalone\.py$)
+
+  # ── isort（导入排序）──
+  - repo: https://github.com/PyCQA/isort
+    rev: 6.1.0
+    hooks:
+      - id: isort
+        # pyproject [tool.isort] 提供 profile / line_length / known_first_party / extend_skip
+
+  # ── mypy（静态类型检查）──
+  # 使用 system Python 以消费项目 venv 已安装的第三方包；
+  # pyproject [tool.mypy] 提供 files / python_version / exclude，
+  # 不带路径参数（AGENTS.md 硬约束：显式传参会覆盖 [tool.mypy].files）。
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]
+        require_serial: true
+        pass_filenames: false
