@@ -78,7 +78,15 @@ def test_run_script_timeout_kills_process(
     # POSIX: killpg）→ 第二次 communicate 带 _SCRIPT_REAP_TIMEOUT_SECONDS 有限超时」，
     # 4 秒余量同时覆盖 taskkill 那一轮子进程调用；进程树与超时分支的逐条锁在
     # tests/test_notify_script_guard.py，本文件只管「超时后确实不再占着调用线程」。
-    assert elapsed < 4.0, f"超时未被强制回收: elapsed={elapsed:.2f}s"
+    # [2026-10-02 补] 4.0 手拍余量已被实测证伪——taskkill.exe 在部分机器态下杀一个真实
+    # 进程稳定 2.5~3.1s（对照读数：taskkill /? 0.10s、Stop-Process 0.71s、proc.kill()
+    # 0.01s；正常终端与沙箱均复现，根因在 taskkill 自身实现链路而非进程终止动作），
+    # 1s 超时 + 3s taskkill ≈ 4.01s 恰好撞线。余量改为由生产常量推导：超时 +
+    # _TREE_KILL_TIMEOUT_SECONDS（杀树路径自身的设计预算）+ 2s 调度余量——taskkill
+    # 吃满自家预算也不误报；「永久阻塞 / 杀树超出预算 / 管道回收悬挂」仍会撞线转红，
+    # 「不再占着调用线程」的原判据意图不变。
+    kill_budget = notify._SCRIPT_TIMEOUT_SECONDS + notify._TREE_KILL_TIMEOUT_SECONDS + 2.0
+    assert elapsed < kill_budget, f"超时未被强制回收: elapsed={elapsed:.2f}s"
     log_text = log_capture.getvalue()
     assert "执行自定义脚本超时" in log_text
 
