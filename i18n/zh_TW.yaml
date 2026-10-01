@@ -464,6 +464,7 @@ tg推送失败, 聊天ID：{chat_id}, 推送地址：{masked_url}, 错误信息:
 '启动时预热 ttwid 失败: {e}': '啟動時預熱 ttwid 失敗: {e}'
 '备份配置文件失败, 错误信息: {e}': '備份設定檔失敗, 錯誤訊息: {e}'
 '存在 HLS 源但 HLS 采集未启用，且无 FLV/record_url 可回退，本轮放弃（可开启 HLS 采集恢复录制）: {anchor_name}': '存在 HLS 源但 HLS 採集未啟用，且無 FLV/record_url 可回退，本輪放棄（可開啟 HLS 採集恢復錄製）: {anchor_name}'
+'存在 {count} 条 m3u8 候选但 HLS 采集对本平台关闭（全局关闭或命中排除列表），已整组静默丢弃（可开启「是否启用HLS采集(是/否)」或将平台移出「HLS采集排除平台(逗号分隔)」恢复）: {anchor_name}': '存在 {count} 條 m3u8 候選但 HLS 採集對本平台關閉（全局關閉或命中排除清單），已整組靜默丟棄（可開啟「是否启用HLS采集(是/否)」或將平台移出「HLS采集排除平台(逗号分隔)」恢復）: {anchor_name}'
 '尝试终止 ffmpeg 进程 (PID: {pid})': '嘗試終止 ffmpeg 進程 (PID: {pid})'
 '并发模式: 动态调速（网络容量随活跃任务数自适应，当前 {value}，下限 {min_capacity}，上限 {max_capacity}）': '並發模式: 動態調速（網路容量隨活躍任務數自適應，當前 {value}，下限 {min_capacity}，上限 {max_capacity}）'
 '并发模式: 动态调速，网络容量调整为 {new_cap}（活跃任务 {active}）': '並發模式: 動態調速，網路容量調整為 {new_cap}（活躍任務 {active}）'

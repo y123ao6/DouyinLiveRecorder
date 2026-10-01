@@ -498,9 +498,12 @@ def test_select_source_url_hls_with_fallback_not_last_resort() -> None:
 
 
 def test_select_source_url_h265_flv_hls_is_last_resort() -> None:
-    # FLV 为 h265 不可用时，HLS 即最后机会：恒为 last_resort
+    # FLV 为 h265 不可用时，HLS 即最后机会：恒为 last_resort。
+    # 保存格式钉为 FLV（不支持 HEVC 直拷）——TS/MKV/MP4 下 h265 已按 2026-10-01 放宽进常规
+    # 序列（见下方放宽矩阵），本用例锁的是「不支持格式下 h265 仍被剔除」的语义
     with (
         patch.object(main, "hls_collection_enabled", True),
+        patch.object(main, "video_save_type", "FLV"),
         patch("src.stream_select._validate_stream_url", return_value=False) as mock_v,
     ):
         result = select_source_url(
@@ -508,6 +511,179 @@ def test_select_source_url_h265_flv_hls_is_last_resort() -> None:
         )
     assert result is None  # mock 恒 False：h265 分支放弃；真实校验器在末位会放行（见上方用例）
     assert mock_v.call_args.kwargs.get("last_resort") is True
+
+
+def test_select_source_url_h265_flv_falls_back_to_h264_from_list() -> None:
+    # 2026-10-01 抖音原画 hevc 房死锁回归锁（端到端选源）：flv_url 为 h265、保存格式不支持
+    # HEVC 直拷（钉 FLV）时被 h265 过滤剔除，stream.py 保留的 h264 原画地址进 flv_url_list。
+    # HLS 关闭时 HLS 组与 record_url（m3u8）一并禁用，序列 [h265, h264] 过滤后应选中
+    # h264 备选，而不是「本轮无可用源」。
+    h264 = "https://flv.example.com/a.flv"
+    with (
+        patch.object(main, "hls_collection_enabled", False),
+        patch.object(main, "video_save_type", "FLV"),
+        patch("src.stream_select._validate_stream_url", return_value=True) as mock_v,
+    ):
+        result = select_source_url(
+            {
+                "m3u8_url": "https://hls.example.com/a.m3u8?codec=h264",
+                "flv_url": "https://flv.example.com/a.flv?codec=h265",
+                "flv_url_list": [h264],
+                "record_url": "https://hls.example.com/a.m3u8?codec=h264",
+            },
+            platform="抖音直播",
+        )
+    assert result == h264
+    # h265 主候选在过滤阶段即被剔除、不得进入校验；备选是唯一被校验的地址
+    assert [c.args[0] for c in mock_v.call_args_list] == [h264]
+
+
+def test_select_source_url_h265_only_without_fallback_yields_none() -> None:
+    # 对照组（修复前形态）：flv_url 为 h265 且无 flv_url_list 备选、HLS 关闭、保存格式不支持
+    # HEVC 直拷（钉 FLV）时，过滤后零可用候选且 record_url（m3u8）被连带禁用 → 本轮无可用源。
+    # 锁住「不支持格式 + 无备选时不得凭空放行 h265」的语义（TS/MKV/MP4 放行见下方放宽矩阵）。
+    with (
+        patch.object(main, "hls_collection_enabled", False),
+        patch.object(main, "video_save_type", "FLV"),
+        patch("src.stream_select._validate_stream_url", return_value=True) as mock_v,
+        patch("src.stream_select.logger.warning") as warn,
+    ):
+        result = select_source_url(
+            {
+                "m3u8_url": "https://hls.example.com/a.m3u8?codec=h264",
+                "flv_url": "https://flv.example.com/a.flv?codec=h265",
+                "record_url": "https://hls.example.com/a.m3u8?codec=h264",
+            },
+            platform="抖音直播",
+        )
+    assert result is None
+    assert mock_v.call_count == 0
+    assert any("h265 编码候选" in str(c.args[0]) for c in warn.call_args_list)
+    assert any("本轮无可用源" in str(c.args[0]) for c in warn.call_args_list)
+
+
+# ---- h265 候选按保存格式放行（2026-10-01 放宽：_h265_copy_format_supported） ----
+
+
+@pytest.mark.parametrize("fmt", ["TS", "ts", "MKV", "MP4"])
+def test_select_source_url_h265_usable_when_copy_supported(fmt: str) -> None:
+    # TS/MKV/MP4 容器可直拷 HEVC：h265 主候选进常规序列并按序选中，不再先剔除。
+    # 大小写混合入参覆盖 main() 配置归一化前后两种形态（归一后大写、模块默认值小写）
+    h265 = "https://flv.example.com/a.flv?codec=h265"
+    with (
+        patch.object(main, "hls_collection_enabled", False),
+        patch.object(main, "video_save_type", fmt),
+        patch("src.stream_select._validate_stream_url", return_value=True) as mock_v,
+    ):
+        result = select_source_url(
+            {
+                "m3u8_url": "https://hls.example.com/a.m3u8?codec=h264",
+                "flv_url": h265,
+                "flv_url_list": ["https://flv.example.com/a.flv"],
+                "record_url": "https://hls.example.com/a.m3u8?codec=h264",
+            },
+            platform="抖音直播",
+        )
+    assert result == h265
+    # h265 主候选首个被校验并选中；h264 备选不再被消耗
+    assert [c.args[0] for c in mock_v.call_args_list] == [h265]
+
+
+@pytest.mark.parametrize("fmt", ["FLV", "MP3", "M4A音频", "webm", ""])
+def test_select_source_url_h265_still_dropped_when_copy_unsupported(fmt: str) -> None:
+    # 不支持直拷的保存格式（FLV 容器 / 纯音频 / 域外取值）保持剔除语义，
+    # 落到 stream.py 保留的 h264 原画备选——与上方支持格式的矩阵互为对照
+    h264 = "https://flv.example.com/a.flv"
+    with (
+        patch.object(main, "hls_collection_enabled", False),
+        patch.object(main, "video_save_type", fmt),
+        patch("src.stream_select._validate_stream_url", return_value=True) as mock_v,
+    ):
+        result = select_source_url(
+            {
+                "m3u8_url": "https://hls.example.com/a.m3u8?codec=h264",
+                "flv_url": "https://flv.example.com/a.flv?codec=h265",
+                "flv_url_list": [h264],
+                "record_url": "https://hls.example.com/a.m3u8?codec=h264",
+            },
+            platform="抖音直播",
+        )
+    assert result == h264
+    # h265 在过滤阶段被剔除、零探针；备选是唯一被校验的地址
+    assert [c.args[0] for c in mock_v.call_args_list] == [h264]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("TS", True),
+        ("ts", True),
+        (" MKV ", True),
+        ("MP4", True),
+        ("FLV", False),
+        ("MP3", False),
+        ("MP3音频", False),
+        ("M4A音频", False),
+        ("", False),
+        (None, False),
+        (123, False),
+    ],
+)
+def test_h265_copy_format_supported_matrix(monkeypatch: pytest.MonkeyPatch, raw: object, expected: bool) -> None:
+    # 容器可行性判定矩阵：大小写/空白鲁棒（覆盖 main() 归一化前后形态），
+    # 域外取值与类型异常一律按「不支持」的保守语义
+    monkeypatch.setattr(main, "video_save_type", raw)
+    assert ss._h265_copy_format_supported() is expected
+
+
+def test_h265_copy_format_supported_missing_global(monkeypatch: pytest.MonkeyPatch) -> None:
+    # main 全局缺失（启动早期/测试替身）：按「不支持」保守回退，与 _hls_selection_config 同型
+    monkeypatch.delattr(main, "video_save_type", raising=False)
+    assert ss._h265_copy_format_supported() is False
+
+
+# ---- HLS 配置静默丢弃的观测（2026-10-01 补观测） ----
+
+
+def test_select_source_url_warns_dropped_hls_when_no_source() -> None:
+    # HLS 组被配置静默剔除 + 其余候选全灭 → 无源结论前必须点名「m3u8 被配置丢弃」并给
+    # 恢复开关指引——这是此前唯一零日志的选源成因（2026-10-01 死锁房的排查盲区）
+    with (
+        patch.object(main, "hls_collection_enabled", False),
+        patch("src.stream_select._validate_stream_url", return_value=False),
+        patch("src.stream_select.logger.warning") as warn,
+    ):
+        result = select_source_url(
+            {
+                "m3u8_url": "https://hls.example.com/a.m3u8?codec=h264",
+                "flv_url": "https://flv.example.com/a.flv",
+                "record_url": "https://hls.example.com/a.m3u8?codec=h264",
+            },
+            platform="抖音直播",
+        )
+    assert result is None
+    dropped = [str(c.args[0]) for c in warn.call_args_list if "静默丢弃" in str(c.args[0])]
+    assert len(dropped) == 1
+    assert "1 条" in dropped[0] and "是否启用HLS采集" in dropped[0]
+
+
+def test_no_dropped_hls_warning_when_source_found() -> None:
+    # HLS 被配置丢弃但 FLV 可用（健康轮）：不得打「静默丢弃」告警——观测只跟随失败轮
+    with (
+        patch.object(main, "hls_collection_enabled", False),
+        patch("src.stream_select._validate_stream_url", return_value=True),
+        patch("src.stream_select.logger.warning") as warn,
+    ):
+        result = select_source_url(
+            {
+                "m3u8_url": "https://hls.example.com/a.m3u8?codec=h264",
+                "flv_url": "https://flv.example.com/a.flv",
+                "record_url": "https://hls.example.com/a.m3u8?codec=h264",
+            },
+            platform="抖音直播",
+        )
+    assert result == "https://flv.example.com/a.flv"
+    assert not [c.args[0] for c in warn.call_args_list if "静默丢弃" in str(c.args[0])]
 
 
 def test_select_source_url_m3u8_list_picks_first_reachable() -> None:
@@ -992,11 +1168,14 @@ def test_non_excluded_platform_keeps_hls_priority(clear_probe_backoff: None) -> 
 
 
 def test_excluded_platform_h265_flv_not_switched_to_hls(clear_probe_backoff: None) -> None:
-    # 排除平台连带失效 h265-FLV → HLS 切换：h265 FLV 无法 copy 录制、HLS 又被排除
-    # 剔除 → 与关闭 HLS 采集同义，本轮无可用候选返回 None
+    # 排除平台连带失效 h265-FLV → HLS 切换：保存格式不支持 HEVC 直拷（钉 FLV）时 h265 FLV
+    # 仍被剔除、HLS 又被排除剔除 → 与关闭 HLS 采集同义，本轮无可用候选返回 None。
+    # [历史注 2026-10-01] 原注释「h265 FLV 无法 copy 录制」已按容器可行性收窄（TS/MKV/MP4
+    # 放行，见放宽矩阵用例），本用例改为显式钉 FLV 维持原判据。
     with (
         patch.object(main, "hls_collection_enabled", True),
         patch.object(main, "hls_collection_exclude_platforms", ["斗鱼直播"]),
+        patch.object(main, "video_save_type", "FLV"),
         patch("src.stream_select._validate_stream_url", return_value=True),
     ):
         result = select_source_url(

@@ -369,6 +369,133 @@ class TestGetDouyinStreamUrl:
         # 降级后应切换到 SD
         assert result.get("actual_quality") in ("SD", "HD")
 
+    @pytest.mark.asyncio
+    async def test_hevc_origin_replaces_flv_but_keeps_h264_in_list(self) -> None:
+        # 2026-10-01 原画 hevc 房死锁回归锁：原画 + hevc_flv_url 时 flv_url 被替换为 h265，
+        # 被替换的 h264 原画地址必须同步进 flv_url_list —— 选源层会剔除一切 codec=h265 候选，
+        # 不保留则「HLS 采集关闭 / m3u8 缺席」的原画 hevc 房过滤后零可用候选、永不录制。
+        from src.stream import get_douyin_stream_url
+
+        json_data = {
+            "anchor_name": "hevc_anchor",
+            "status": 2,
+            "stream_url": {
+                "flv_pull_url": {"FULL_HD1": "https://flv.example.com/a.flv"},
+                "hls_pull_url_map": {"FULL_HD1": "https://hls.example.com/a.m3u8?codec=h264"},
+                "hevc_flv_url": "https://flv.example.com/a.flv?codec=h265",
+            },
+        }
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True):
+            result = await get_douyin_stream_url(json_data, video_quality="OD")
+
+        assert result["is_live"] is True
+        assert result["flv_url"] == "https://flv.example.com/a.flv?codec=h265"
+        assert result["flv_url_list"] == ["https://flv.example.com/a.flv"]
+        # record_url 契约不变：m3u8 优先（h265 主候选仍只经 record_url 末位通道放行）
+        assert result["record_url"] == "https://hls.example.com/a.m3u8?codec=h264"
+
+    @pytest.mark.asyncio
+    async def test_hevc_fallback_list_survives_m3u8_probe_failure(self) -> None:
+        # m3u8 探针失败触发相邻档降级：use_hevc_flv 时 flv_url 保持 h265、仅换 m3u8，
+        # 替换发生前已捕获的 h264 原画备选不得丢失 —— 否则探针失败轮恰好退回死锁形态。
+        from src.stream import get_douyin_stream_url
+
+        json_data = {
+            "anchor_name": "hevc_anchor",
+            "status": 2,
+            "stream_url": {
+                "flv_pull_url": {"FULL_HD1": "https://flv.example.com/a.flv"},
+                "hls_pull_url_map": {"FULL_HD1": "https://hls.example.com/a.m3u8?codec=h264"},
+                "hevc_flv_url": "https://flv.example.com/a.flv?codec=h265",
+            },
+        }
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=False):
+            result = await get_douyin_stream_url(json_data, video_quality="OD")
+
+        assert result["flv_url"] == "https://flv.example.com/a.flv?codec=h265"
+        assert result["flv_url_list"] == ["https://flv.example.com/a.flv"]
+
+    @pytest.mark.asyncio
+    async def test_non_origin_quality_skips_hevc_substitution(self) -> None:
+        # 对照组：非原画请求不触发 hevc 替换，flv_url 保持 h264；备选列表键恒存在但为空
+        from src.stream import get_douyin_stream_url
+
+        json_data = {
+            "anchor_name": "hevc_anchor",
+            "status": 2,
+            "stream_url": {
+                "flv_pull_url": {"FULL_HD1": "https://flv.example.com/a.flv", "HD1": "https://flv.example.com/hd.flv"},
+                "hls_pull_url_map": {"FULL_HD1": "https://hls.example.com/a.m3u8?codec=h264"},
+                "hevc_flv_url": "https://flv.example.com/a.flv?codec=h265",
+            },
+        }
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True):
+            result = await get_douyin_stream_url(json_data, video_quality="HD")
+
+        assert result["flv_url"] == "https://flv.example.com/hd.flv"
+        assert result["flv_url_list"] == []
+
+    @pytest.mark.asyncio
+    async def test_hevc_only_without_flv_pairs_has_empty_fallback(self) -> None:
+        # flv_pull_url 为空（仅下发 hevc）：flv_url 直接取 hevc，无 h264 原件可保留，备选为空
+        from src.stream import get_douyin_stream_url
+
+        json_data = {
+            "anchor_name": "hevc_only",
+            "status": 2,
+            "stream_url": {
+                "flv_pull_url": {},
+                "hls_pull_url_map": {"FULL_HD1": "https://hls.example.com/a.m3u8?codec=h264"},
+                "hevc_flv_url": "https://flv.example.com/a.flv?codec=h265",
+            },
+        }
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True):
+            result = await get_douyin_stream_url(json_data, video_quality="OD")
+
+        assert result["flv_url"] == "https://flv.example.com/a.flv?codec=h265"
+        assert result["flv_url_list"] == []
+
+    @pytest.mark.asyncio
+    async def test_hevc_equal_to_flv_entry_not_duplicated(self) -> None:
+        # flv_pull_url 原画条目与 hevc 地址逐字相同（接口异常形态）：备选不得重复收同一条
+        from src.stream import get_douyin_stream_url
+
+        json_data = {
+            "anchor_name": "hevc_dup",
+            "status": 2,
+            "stream_url": {
+                "flv_pull_url": {"FULL_HD1": "https://flv.example.com/a.flv?codec=h265"},
+                "hls_pull_url_map": {"FULL_HD1": "https://hls.example.com/a.m3u8?codec=h264"},
+                "hevc_flv_url": "https://flv.example.com/a.flv?codec=h265",
+            },
+        }
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True):
+            result = await get_douyin_stream_url(json_data, video_quality="OD")
+
+        assert result["flv_url"] == "https://flv.example.com/a.flv?codec=h265"
+        assert result["flv_url_list"] == []
+
+    @pytest.mark.asyncio
+    async def test_h265_marked_flv_entry_not_collected_as_fallback(self) -> None:
+        # flv_pull_url 条目自带 codec=h265（约定外形态）：选源层对标记地址同样剔除，
+        # 收进备选只会多一条告警、救不了选源 —— 备选必须保证是过滤后仍可用的候选
+        from src.stream import get_douyin_stream_url
+
+        json_data = {
+            "anchor_name": "hevc_marked",
+            "status": 2,
+            "stream_url": {
+                "flv_pull_url": {"FULL_HD1": "https://flv.example.com/other.flv?codec=h265"},
+                "hls_pull_url_map": {"FULL_HD1": "https://hls.example.com/a.m3u8?codec=h264"},
+                "hevc_flv_url": "https://flv.example.com/a.flv?codec=h265",
+            },
+        }
+        with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True):
+            result = await get_douyin_stream_url(json_data, video_quality="OD")
+
+        assert result["flv_url"] == "https://flv.example.com/a.flv?codec=h265"
+        assert result["flv_url_list"] == []
+
 
 class TestGetHuyaStreamUrl:
     # get_huya_stream_url: 虎牙 web 路径 HLS 解析。枚举全部 CDN 候选（不再固定取 index0），

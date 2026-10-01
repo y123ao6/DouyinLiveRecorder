@@ -24,7 +24,7 @@ msgstr ""
 "Project-Id-Version: DouyinLiveRecorder\n"
 "MIME-Version: 1.0\n"
 "POT-Creation-Date: 2024-10-20 00:00+0800\n"
-"PO-Revision-Date: 2026-09-30 12:00+0800\n"
+"PO-Revision-Date: 2026-10-01 12:00+0800\n"
 "Last-Translator: Hmily <ihmily@github>\n"
 "Language-Team: Chinese\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -2818,3 +2818,10 @@ msgstr "收件人地址"
 
 msgid "未知错误"
 msgstr "未知错误"
+
+# =============================================================================
+# 选源观测（2026-10-01）：HLS 组被配置静默剔除导致无源时点名成因与恢复开关
+# （stream_select 无源结论前的观测增强；占位符 count / anchor_name）
+# =============================================================================
+msgid "存在 {count} 条 m3u8 候选但 HLS 采集对本平台关闭（全局关闭或命中排除列表），已整组静默丢弃（可开启「是否启用HLS采集(是/否)」或将平台移出「HLS采集排除平台(逗号分隔)」恢复）: {anchor_name}"
+msgstr "存在 {count} 条 m3u8 候选但 HLS 采集对本平台关闭（全局关闭或命中排除列表），已整组静默丢弃（可开启「是否启用HLS采集(是/否)」或将平台移出「HLS采集排除平台(逗号分隔)」恢复）: {anchor_name}"

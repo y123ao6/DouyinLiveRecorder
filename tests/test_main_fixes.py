@@ -119,7 +119,10 @@ class TestSelectSourceUrl:
         monkeypatch.setattr(web_config, "_resolve_host_ips", lambda host: [_PUBLIC_DNS_IP])
 
     def test_h265_flv_uses_hls_when_enabled_and_valid(self, main_mod: Any) -> None:
-        # 端到端：h265 FLV 校验通过 + HLS 采集开 → 选源切到 m3u8（规避 h265 copy 限制）。
+        # 端到端：h265 FLV 校验通过 + HLS 采集开 → 选源命中 m3u8。
+        # [历史注 2026-10-01] 原注释「规避 h265 copy 限制」已证伪——h265 在 TS/MKV/MP4 下
+        # 已放行进常规序列（_h265_copy_format_supported），此处 m3u8 胜出靠的是默认
+        # HLS-first 排序而非 h265 过滤。
         with patch("src.stream_select._validate_stream_url", return_value=True):
             info: Mapping[str, object] = {
                 "flv_url": "https://cdn.example.com/live.flv?codec=h265",
@@ -130,13 +133,18 @@ class TestSelectSourceUrl:
         assert result == "https://cdn.example.com/live.m3u8"
 
     def test_h265_flv_skipped_when_hls_disabled(self, main_mod: Any) -> None:
-        # 用户关闭 HLS 采集时不再强制切回 HLS
+        # 用户关闭 HLS 采集时不再强制切回 HLS；保存格式钉为 FLV（不支持 HEVC 直拷），
+        # h265 FLV 被剔除且无 HLS/record_url 可回退 → 本轮 None
+        # （TS/MKV/MP4 下 h265 已放行，行为见 tests/test_stream_select.py 放宽矩阵）
         with patch("src.stream_select._validate_stream_url", return_value=True):
             info: Mapping[str, object] = {
                 "flv_url": "https://cdn.example.com/live.flv?codec=h265",
                 "m3u8_url": "https://cdn.example.com/live.m3u8",
             }
-            with patch.object(main_mod, "hls_collection_enabled", False):
+            with (
+                patch.object(main_mod, "hls_collection_enabled", False),
+                patch.object(main_mod, "video_save_type", "FLV"),
+            ):
                 result = main_mod.select_source_url(info)
         assert result is None
 

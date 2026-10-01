@@ -531,8 +531,21 @@ async def get_douyin_stream_url(
         m3u8_is_hevc = "h265" in m3u8_codec.lower() or "hevc" in m3u8_codec.lower()
         # 仅原画请求(quality_index==0)且存在 hevc 备用地址、且 m3u8 非 h265 时启用 hevc flv；
         # 否则仍走通用 h264 源，避免把编码不兼容的源当成可录地址。
+        flv_url_list: list[str] = []
         use_hevc_flv = quality_index == 0 and bool(hevc_flv_url) and not m3u8_is_hevc
         if use_hevc_flv and hevc_flv_url:
+            # 被替换的 h264 原画地址必须存入 flv_url_list：选源层会把一切 codec=h265 候选剔除
+            # （stream_select 的 h265 过滤），不保留则「HLS 采集关闭 / m3u8 缺席」的原画 hevc 房
+            # 过滤后零可用候选，每轮「本轮无可用源」永不录制（2026-10-01 两间抖音原画房实测）。
+            # select_source_url 会把 flv_url_list 追加在主候选之后：HLS 开启时仍 m3u8 优先，
+            # HLS 关闭/不可达时落到这条 h264 FLV。flv_pull_url 条目若自带 codec=h265 标记
+            # （钉定约定该参数只应出现在 hevc_flv_url 上）同样会被选源层剔除，不收进备选徒增告警。
+            # 函数内 import：stream_select 顶层 import main 会循环导入（python main.py 下实测炸），
+            # 惯例见本文件 _probe_headers 的同款延迟导入。
+            from .stream_select import _is_h265
+
+            if flv_url and flv_url != hevc_flv_url and not _is_h265(flv_url):
+                flv_url_list.append(flv_url)
             flv_url = hevc_flv_url
         if m3u8_url:
             # MID-26：探针必须与 stream_select / ffmpeg 用同一份拉流侧 SSL 口径
@@ -569,6 +582,7 @@ async def get_douyin_stream_url(
             "available_qualities": available_qualities,
             "m3u8_url": m3u8_url,
             "flv_url": flv_url,
+            "flv_url_list": flv_url_list,
             "record_url": m3u8_url or flv_url,
         }
     return result

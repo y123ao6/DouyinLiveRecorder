@@ -336,6 +336,7 @@
   "失败": "failed",
   "如需恢复控制台显示，请在 config.ini 设置 web_show_console = true 后重启": "To restore the console, set web_show_console = true in config.ini and restart",
   "存在 HLS 源但 HLS 采集未启用，且无 FLV/record_url 可回退，本轮放弃（可开启 HLS 采集恢复录制）: {anchor_name}": "HLS source exists but HLS capture is disabled and no FLV/record_url fallback is available; giving up this round (enable HLS capture to resume recording): {anchor_name}",
+  "存在 {count} 条 m3u8 候选但 HLS 采集对本平台关闭（全局关闭或命中排除列表），已整组静默丢弃（可开启「是否启用HLS采集(是/否)」或将平台移出「HLS采集排除平台(逗号分隔)」恢复）: {anchor_name}": "HLS capture is disabled for this platform (disabled globally or matched by the exclusion list); {count} m3u8 candidate(s) have been dropped silently (enable \"是否启用HLS采集(是/否)\" or remove the platform from \"HLS采集排除平台(逗号分隔)\" to resume): {anchor_name}",
   "将强制使用FLV格式录制": "will force FLV format recording",
   "尝试终止 ffmpeg 进程": "Trying to terminate ffmpeg process",
   "尝试终止 ffmpeg 进程 (PID: {pid})": "Trying to terminate ffmpeg process (PID: {pid})",

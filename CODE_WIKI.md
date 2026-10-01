@@ -1624,6 +1624,23 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
+### v4.4.0-dev (2026-10-01) — h265 候选按保存格式放行（TS/MKV/MP4 可直拷 HEVC）+ HLS 配置静默丢弃的零源观测告警
+
+- **触发**：同日上一条目（原画 hevc 房死锁根治）交付时遗留的两项候选改进，用户拍板实施（「放宽并补观测」）。
+- **改动**：① `src/stream_select.py` 新增 `_h265_copy_format_supported()`——按 main 的热更新全局 `video_save_type` 判定当前保存格式的容器能否直拷 HEVC：TS(mpegts)/MKV(matroska)/MP4 三个 muxer 支持（main.py 选中 h265 地址时强制转 TS 是同一事实）；FLV（HEVC-in-FLV 属 Enhanced-FLV 扩展、仓库口径不支持）、MP3/M4A 纯音频（装不下视频轨）、域外/缺失取值保守判不支持。h265 过滤从「无条件剔除」收窄为「不支持直拷时剔除」，TS 用户解析原画 hevc 房时 h265 FLV 主候选直接进常规序列参与探针；`_is_h265` 与候选序列注释里「h265 无法 copy 录制」的已证伪整段表述按注释约定改正并压为带日期历史注。② `main.py` 的 h265→TS 强制块加同一口径守卫：保存格式已是 TS/MKV/MP4 时不再接管、不再打「use TS format instead」告警（否则 TS 用户每轮一条误导告警）；FLV/纯音频形态维持原强制语义。③ 无源结论前新增观测告警：m3u8 候选被 HLS 配置（全局开关/HLS采集排除平台）整组静默剔除且本轮最终无可用源时，点名成因、候选条数与恢复开关指引——这是此前唯一「零日志」的选源成因（同日死锁房排查盲区：有 FLV 兜底时早退告警不触发、序列里也看不到 m3u8 踪影）；选中源的轮次不打。i18n 四目录同步登记 1 条新 msgid（zh_CN.po 尾部新分区 + PO-Revision-Date 推进；en/en_GB 「」转双引号；zh_TW 术语对齐採集/清單/丟棄）并重编 zh_CN.mo（810 条 = 809 键 + 头部）。
+- **回归锁**：`tests/test_stream_select.py` 新增 h265×保存格式双矩阵（TS/ts/MKV/MP4 放行且首个选中 h265 主候选；FLV/MP3/M4A音频/webm/空串 剔除并落到 h264 备选，均断言 h265 零探针）、`_h265_copy_format_supported` 判定矩阵 11 格（大小写/空白/域外/None/int）与缺失全局保守回退、无源观测告警正反 2 条（失败轮必打且恰 1 条、健康轮零告警）；`tests/test_main_fixes.py` 两条 h265 选源用例随语义收窄显式钉保存格式并留历史注；`tests/test_stream_select.py` 的 `test_excluded_platform_h265_flv_not_switched_to_hls` 同步钉 FLV。变异验证：判定反转（MUTATION-H265RELAX）24 条转红、观测告警条件置恒假（MUTATION-HLSOBS）正例转红，均当轮字节级还原、残留 grep 为 0。
+- **验证**：`pytest --cov=src` 3720 passed / 14 skipped / 1 failed（**环境态，非代码回归**）——`tests/test_notify.py::test_run_script_timeout_kills_process` 因本会话沙箱/OS 态下 `taskkill` 终止真实进程稳定耗时 ~3s（纯 stdlib 复现：`taskkill /?` 0.10s、`/F /PID` 2.5~3.1s 且 rc=0、CPU 占用 6%；正常应 ~0.1s），1s 测试超时 + 3s taskkill ≈ 4.04s 撞 4.0s 断言余量；与本次改动面（选源/i18n/main 格式守卫）无交集，对照同日早间全量 3698 passed 时该用例通过。`check_coverage.py` 44 模块达标、basedpyright 0 error / 0 warning、compile_po --check 同步。真机验证（hevc 原画房 127453393722「央视网快看」在播，内联选源脚本）：HLS 关 + ts → **h265 FLV 主候选被放行并选中**（codec=h265 实测探针通过）；HLS 关 + FLV → 落到 h264 原画备选（codec=h264）；HLS 关 + FLV + 摘除备选 → None 且新观测告警实弹打出（英文目录形态含恢复开关指引与主播名）→ 三态全 PASS。
+
+### v4.4.0-dev (2026-10-01) — 抖音原画 hevc 房「本轮无可用源」死锁根治：hevc 替换时保留 h264 原画 FLV 进 `flv_url_list`
+
+- **触发**：用户运行实例日志——两间抖音原画房（H131-好几百个八 / 新增的大山摩旅中国）每轮 `h265 编码候选无法 copy 录制，跳过` → `选源结论: platform=抖音直播 本轮无可用源` → 跳过录制，主播在播却永不录制；状态行「累计错误数」恒 0（选源失败轮不计错误样本，纯看状态行会误判一切正常）。
+- **根因**：三条各自成立的规则叠加成死锁。① `src/stream.py::get_douyin_stream_url` 原画请求（quality_index==0）且接口下发 `hevc_flv_url` 时，用 h265 FLV **替换** h264 FLV 作唯一 FLV 候选（m3u8 非 h265 才触发）；② `select_source_url` 把一切 `codec=h265` 候选在探针之前剔除（h265 不进常规候选序列，只留 record_url 末位通道）；③ 运行实例 HLS 采集关闭时，h264 m3u8 组被**静默**剔除（有 FLV 兜底时不打「HLS 未启用」告警），且 record_url（抖音=`m3u8_url or flv_url`）因是 `.m3u8` 被 HLS 开关联动禁用——过滤后零可用候选。日志判读依据：「h265 告警 → 选源结论」同毫秒＝过滤后零探针发出；无 `record_url has h265 codec` 英文告警＝record_url 是 m3u8（即 m3u8 每轮存在而非缺席）。
+- **改动**：`src/stream.py::get_douyin_stream_url` 在 hevc 替换发生前，把被替换的 h264 原画地址存入 `flv_url_list`（新增返回键；`select_source_url` 的既有消费点会把它追加在主候选之后）——HLS 开启时仍 m3u8 优先，HLS 关闭/不可达时落到这条 h264 FLV。防御性过滤：`flv_pull_url` 条目与 hevc 地址逐字相同、或自带 `codec=h265` 标记（钉定约定该参数只应出现在 hevc_flv_url 上）时不收，避免收进同样会被剔除的地址徒增告警。`record_url` 契约不变。候选改进另两项（HLS 静默丢弃补告警、h265 过滤按保存格式放宽）本次未做，待用户决定。
+- **回归锁**：`tests/test_stream.py::TestGetDouyinStreamUrl` 新增 6 条（原画替换保留 h264 备选、m3u8 探针失败降级后备选不丢、非原画不触发、仅 hevc 无 flv_pull_url 时备选为空、逐字同址不重复收、h265 标记条目不收）；`tests/test_stream_select.py` 新增 2 条（HLS 关闭时从 `flv_url_list` 选中 h264 备选且 h265 主候选零探针；对照组 h265-only 无备选时恒 None 且不打探针）。变异验证：拆掉 append（标记 MUTATION-H265FB）后两条 stream 侧锁转红，字节级还原后回绿。
+- **验证**：`run_gates.py` 8 门禁全绿（内嵌全量 pytest 3698 passed / 0 警告）；`pytest --cov=src` 3698 passed / 14 skipped 后 `check_coverage.py` 44 模块达标；basedpyright 0 error / 0 warning。真机验证（内联脚本，复用 `tests/test_douyin_live_collector.py` 的 web 路径与 cookie 三级回退）：
+  `[2026-10-01] 抖音直播 | https://live.douyin.com/127453393722（央视网快看） | 内联选源脚本（web 路径） | PASS | status=2，h265 主候选 + h264 备选，SELECT hls_off → h264 FLV`
+  该房恰为在播 hevc 原画房（与用户死锁房间同型）：接口下发 h265 FLV 主候选（`pull-f3.douyinliving.com/…codec=h265`，选源层各打 1 条剔除告警）+ 保留的 h264 原画 FLV 备选（`pull-flv-f1.douyinliving.com/…codec=h264`）；HLS 开启选中 m3u8(h264)（优先级不变），HLS 关闭**选中 h264 FLV 备选**（修复前该形态恒「本轮无可用源」）→ `E2E_RESULT: CURED`。另试 656722643531（大山摩旅中国）、699394970561 均 `SKIP(房间未开播)`；用户死锁房间的运行实例侧确认（HLS 开关状态）交回用户。
+
 ### v4.4.0-dev (2026-10-01) — 修复 test_gui_stop_exit_singleflight 的 Linux CI 4 条假红：POSIX 信号分支缺打桩点
 
 - **触发**：CI `test` job（ubuntu）4 failed / 3679 passed——`tests/test_gui_stop_exit_singleflight.py` 四个场景的「恰一次附着」断言实测 0 次（`attaches: []`），场景 A 的 `reuse_logged` 同时为 False；本地 Windows 全量绿。

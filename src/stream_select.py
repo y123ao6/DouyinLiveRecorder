@@ -299,11 +299,26 @@ mark_ffmpeg_reject = _mark_probe_reject
 clear_ffmpeg_reject = _clear_probe_reject
 
 
-# 判定流地址是否为 h265 编码：h265 无法 copy 录制，候选构建与 record_url 兜底
-# 两处共用的判定逻辑，抽为单一实现避免口径漂移
+# 判定流地址是否为 h265 编码：候选过滤、record_url 兜底与 stream.py 的 h264 备选收集
+# 三处共用的判定逻辑，抽为单一实现避免口径漂移。
+# [历史注 2026-10-01] 原注释「h265 无法 copy 录制」已证伪收窄——直拷可行性取决于输出容器
+# 而非编码本身，容器判定收进 _h265_copy_format_supported。
 def _is_h265(url: str) -> bool:
     codec = utils.get_query_params(url, "codec")
     return isinstance(codec, list) and bool(codec) and codec[0] == "h265"
+
+
+# 判定当前「视频保存格式」的容器能否直拷（-c copy）HEVC 流：TS(mpegts)/MKV(matroska)/MP4
+# 三个 muxer 均支持写 HEVC（main.py 选中 h265 地址时强制 record_save_type=TS 即同一事实）；
+# FLV（HEVC-in-FLV 属 Enhanced-FLV 扩展，仓库口径不支持——main.py 对 h265 地址同样强制转 TS）、
+# MP3/M4A 纯音频格式（容器装不下视频轨）不支持。取值经 main 的热更新全局 video_save_type
+# 惰性读取（与 _hls_selection_config 同一模式）：main() 启动后已把它 .upper() 收敛进
+# video_save_type_list 域（非法值回 "TS"），此处仍做 strip+upper 以覆盖配置加载前的小写
+# 模块默认值；缺失/非字符串一律按「不支持」处理，保住 h265 过滤的保守语义。
+def _h265_copy_format_supported() -> bool:
+    raw = getattr(main, "video_save_type", "")
+    fmt = raw.strip().upper() if isinstance(raw, str) else ""
+    return fmt in ("TS", "MKV", "MP4")
 
 
 # 可交给 ffmpeg `-i` 的流地址协议白名单（MID-19）。rtmp/rtmps 是合法用例
@@ -1240,7 +1255,9 @@ def select_source_url(
 
         # ---- 候选序列：按平台偏好排序（默认 HLS 优先，FLV-first 平台反转）----
         # 统一为一个有序序列逐候选校验。两处与旧分块逻辑的刻意差异：
-        # ① h265 候选在构建序列时即剔除——h265 无法 copy 录制，不构成真实备选；旧实现
+        # ① h265 候选在构建序列时按保存格式判定，仅在不支持 HEVC 直拷时剔除（判据见
+        #    _h265_copy_format_supported；[历史注 2026-10-01] 原口径「h265 无法 copy 录制、
+        #    一律剔除」已按容器可行性收窄）；旧实现
         #    「FLV 为 h265 → 立即重试整组 HLS」在默认顺序（HLS 已在前面试过全败）下会把
         #    HLS 探针白烧一遍；剔除后末位放行（last_resort）基于过滤后的序列判定，
         #    h265 之前的候选自然获得末位资格，语义与旧「插入式回退」一致但不多烧探针。
@@ -1258,9 +1275,12 @@ def select_source_url(
         flv_seq: list[tuple[str, bool]] = [(u, False) for u in flv_candidates]
         seq = flv_seq + hls_seq if flv_first else hls_seq + flv_seq
 
+        # h265 候选仅在当前保存格式装不下 HEVC 直拷时剔除：TS/MKV/MP4 放行进常规序列，
+        # FLV/纯音频/取值异常仍剔除（stream.py 保留的 h264 原画备选继续承担不支持格式下的兜底）
+        h265_copy_ok = _h265_copy_format_supported()
         usable: list[tuple[str, bool]] = []
         for url, is_hls in seq:
-            if _is_h265(url):
+            if _is_h265(url) and not h265_copy_ok:
                 logger.warning(i18n.tr("h265 编码候选无法 copy 录制，跳过: {url}", url=utils.mask_credentials(url)))
                 continue
             usable.append((url, is_hls))
@@ -1344,6 +1364,19 @@ def select_source_url(
                     return accepted
         # 观测增强：整轮无可用源时补一条收束结论（逐候选告警已各自给出原因），
         # 让「房间一直不录制」在日志里有一句可检索的结论行
+        if hls_available and not hls_effective_enabled:
+            # HLS 组被配置整组剔除是唯一「零日志静默丢弃」的选源成因：有 FLV/record_url 兜底时
+            # 上方 1134 的早退告警不触发、候选序列里也看不到 m3u8 的踪影，用户只能对着
+            # 「在播但不录制且无告警」猜配置原因（2026-10-01 死锁房实测盲区），无源结论前必须
+            # 点名并给恢复开关；选中源的轮次不打——观测只跟随失败轮，健康轮零噪音。
+            logger.warning(
+                i18n.tr(
+                    "存在 {count} 条 m3u8 候选但 HLS 采集对本平台关闭（全局关闭或命中排除列表），"
+                    "已整组静默丢弃（可开启「是否启用HLS采集(是/否)」或将平台移出「HLS采集排除平台(逗号分隔)」恢复）: {anchor_name}",
+                    count=len(hls_candidates),
+                    anchor_name=stream_info.get("anchor_name") or "",
+                )
+            )
         logger.warning(i18n.tr("选源结论: platform={platform} 本轮无可用源", platform=platform or ""))
         return None
     finally:

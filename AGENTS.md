@@ -375,6 +375,9 @@ find . -name "*.isorted" -delete
 - **虎牙选档不可抛异常或返回空流地址**: 不可用时就近降级或回原画，保持 `is_live=True` 契约。
 - **斗鱼本地重试链最多回退 2 档**: 全部失败保持 `is_live=True`，不得替代 HLS 候选与全局退避。
 - **选档一律「保留原始请求索引 + FLV/HLS 双列表各自钳制」**: 不得把一侧钳过的下标写回共享变量再供另一侧复用——TikTok 曾因此对 HLS-only 房间恒取首档，且 `actual_quality` 回采 OD 后降级告警永不触发（「选流畅实拉原画」无提示）。参照 `src/stream.py` 抖音分支的 `flv_idx`/`m3u8_idx` 与修复后的 `flv_quality_index`/`m3u8_quality_index`（回归锁 `tests/test_tiktok_hls_quality_index.py`）。回退/探针失败重算分支同样不得复用被钳值。
+- **抖音原画 hevc 替换必须把被替换的 h264 FLV 存入 `flv_url_list`**: 原画请求且接口下发 `hevc_flv_url` 时，选源层在保存格式不支持 HEVC 直拷时会把 `codec=h265` 候选在探针前剔除（TS/MKV/MP4 已放行，见下条），不保留 h264 原画备选则「HLS 采集关闭 / m3u8 缺席」+ FLV/音频格式的原画 hevc 房过滤后零可用候选、每轮「本轮无可用源」永不录制（2026-10-01 两间房实测）。与 hevc 地址逐字相同或自带 `codec=h265` 标记的条目不得收进备选（同样会被剔，徒增告警）。回归锁 `tests/test_stream.py::TestGetDouyinStreamUrl` + `tests/test_stream_select.py::test_select_source_url_h265_flv_falls_back_to_h264_from_list`。
+- **h265 候选按保存格式放行（`_h265_copy_format_supported`）**: TS/MKV/MP4 三种容器可直拷 HEVC（main.py 选中 h265 地址时强制转 TS 是同一事实），此时 h265 候选进常规序列按序参与探针；FLV（HEVC-in-FLV 属 Enhanced-FLV 扩展、仓库口径不支持）、MP3/M4A 纯音频、域外/缺失取值仍一律剔除（保守默认）。判定读 main 的热更新全局 `video_save_type`（与 `_hls_selection_config` 同模式），改允许集须同步核实 `_EXTENSION_BY_SAVE_TYPE`/`SEGMENT_FORMAT_BY_SUFFIX` 的容器能力；main.py 的 h265→TS 强制块带同一口径守卫（已是 TS/MKV/MP4 不接管、不打「use TS format instead」）。回归锁 `tests/test_stream_select.py` 的 h265×保存格式双矩阵与 `test_h265_copy_format_supported_matrix`。
+- **HLS 配置静默丢弃导致无源必须点名**: m3u8 候选被「是否启用HLS采集(是/否)/HLS采集排除平台(逗号分隔)」整组静默剔除且本轮最终无可用源时，选源结论前必须补一条带候选条数与恢复开关指引的告警——这是唯一「零日志」的选源成因（有 FLV/record_url 兜底时早退告警不触发）；选中源的轮次不得打（健康轮零噪音）。回归锁 `tests/test_stream_select.py::test_select_source_url_warns_dropped_hls_when_no_source` + `test_no_dropped_hls_warning_when_source_found`。
 
 ### HTTP 客户端复用与连接管理
 

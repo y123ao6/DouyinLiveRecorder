@@ -4181,7 +4181,16 @@ def start_record(
 
                             if real_url == port_info.get("flv_url") and port_info.get("flv_url"):
                                 codec = utils.get_query_params(cast(str, port_info["flv_url"]), "codec")
-                                if isinstance(codec, list) and codec and codec[0] == "h265":
+                                # h265 地址已在保存格式为 TS/MKV/MP4 时放行进常规序列
+                                # （stream_select._h265_copy_format_supported），此处仅在当前容器
+                                # 装不下 HEVC 直拷（FLV/纯音频）时才接管转 TS——否则 TS 用户选中
+                                # h265 原画后会每轮收到一条误导性的「use TS format instead」告警
+                                if (
+                                    isinstance(codec, list)
+                                    and bool(codec)
+                                    and codec[0] == "h265"
+                                    and record_save_type.upper() not in ("TS", "MKV", "MP4")
+                                ):
                                     logger.warning("FLV is not supported for h265 codec, use TS format instead")
                                     record_save_type = "TS"
 
