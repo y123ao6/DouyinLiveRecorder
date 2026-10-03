@@ -91,7 +91,10 @@ async def get_sec_user_id(
             response = await client.get(url, headers=headers, follow_redirects=True)
             redirect_url = response.url
             if "reflow/" in str(redirect_url):
-                match = re.search(r"sec_user_id=([\w_\-]+)&", str(redirect_url))
+                # L-11（2026-10-02）：参数值后改为前瞻断言 (?=&|#|$)——原要求紧随 `&`，
+                # sec_user_id 位于 query 末尾（无后继参数）时匹配失败，该房每轮永久失败；
+                # 与同文件 rid=/mcid= 的既有写法一致。
+                match = re.search(r"sec_user_id=([\w_\-]+)(?=&|#|$)", str(redirect_url))
                 if match:
                     sec_user_id = match.group(1)
                     room_id = str(redirect_url).split("?")[0].rsplit("/", maxsplit=1)[1]
@@ -103,7 +106,9 @@ async def get_sec_user_id(
     except UnsupportedUrlError as e:
         raise e
     except Exception as e:
-        raise RuntimeError(f"An error occurred: {e}")
+        # L-07（2026-10-02）：e 的 str 内嵌完整 URL（InvalidURL/TooManyRedirects 等可能带
+        # token 参数），包装前过码——异常文本会进入上层日志（logs 轮转保留多份）
+        raise RuntimeError(f"An error occurred: {utils.mask_credentials(str(e))}") from e
 
 
 def is_user_homepage_url(url: str) -> bool:
@@ -238,57 +243,13 @@ async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict[s
     except UnsupportedUrlError as e:
         raise e
     except Exception as e:
-        raise RuntimeError(f"An error occurred: {e}")
+        # L-07：同 get_sec_user_id——异常文本过码后再包装
+        raise RuntimeError(f"An error occurred: {utils.mask_credentials(str(e))}") from e
 
 
-# 获取直播间webID
-async def get_live_room_id(
-    room_id: str,
-    sec_user_id: str,
-    proxy_addr: str | None = None,
-    params: dict[str, str] | None = None,
-    headers: dict[str, str] | None = None,
-) -> str:
-    if not headers or all(k.lower() not in ["user-agent", "cookie"] for k in headers):
-        headers = HEADERS
-
-    if not params:
-        # verifyFp（访客指纹）/ msToken（请求令牌）原为硬编码过期凭据，现留空由抖音
-        # 服务器在响应中重新下发，避免凭据失效导致功能异常
-        params = {
-            "verifyFp": "",
-            "type_id": "0",
-            "live_id": "1",
-            "room_id": room_id,
-            "sec_user_id": sec_user_id,
-            "app_id": "1128",
-            "msToken": "",
-        }
-
-    api = f"https://webcast.amemv.com/webcast/room/reflow/info/?{urllib.parse.urlencode(params)}"
-    xbogus = await get_xbogus(api)
-    api = api + "&X-Bogus=" + xbogus
-
-    try:
-        proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        # 2026-09-12 审查 6.3：同 get_sec_user_id，补 verify=http_config.ssl_verify
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15, verify=http_config.ssl_verify) as client:
-            response = await client.get(api, headers=headers)
-            _ = response.raise_for_status()
-            json_data = cast(dict[str, object], response.json())
-            data = cast(dict[str, object], json_data.get("data", {}))
-            room = cast(dict[str, object], data.get("room", {}))
-            owner = cast(dict[str, object], room.get("owner", {}))
-            return cast(str, owner.get("web_rid"))
-    except httpx.HTTPStatusError as e:
-        # MI-19：改用 logger。原用 print——绕过日志分级/落盘/轮转，GUI 与 Web 端采集不到，
-        # 且冻结打包（console=False，sys.stderr 为 None）时 stdout 会被直接丢弃。
-        logger.warning(i18n.tr("HTTP status error occurred: {status_code}", status_code=e.response.status_code))
-        raise
-    except Exception as e:
-        logger.warning(i18n.tr("An exception occurred during get_live_room_id: {e}", e=e))
-        raise
-
+# L-13（2026-10-02）：get_live_room_id 已删除——全仓无生产调用点（web_rid 由
+# spider.get_douyin_stream_url 的 webcast/room/web/enter 接口直接返回），且其键缺失
+# 分支 cast(str, owner.get("web_rid")) 实际返回 None、与 -> str 注解矛盾。
 
 if __name__ == "__main__":
     import asyncio
@@ -297,5 +258,4 @@ if __name__ == "__main__":
     result = asyncio.run(get_sec_user_id(room_url))
     if result is not None:
         _room_id, sec_uid = result
-        web_rid = asyncio.run(get_live_room_id(_room_id, sec_uid))
-        print("return web_rid:", web_rid)
+        print("return sec_user_id:", sec_uid)

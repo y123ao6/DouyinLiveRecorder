@@ -27,6 +27,12 @@ from src import utils
 # 布尔环境开关的唯一解析入口（与全仓布尔配置同一识别集合，勿在别处再造第三套布尔判定）
 from src.config_bool import parse_config_bool
 
+# Linux 原生 ffmpeg 直下（类别② 的 Linux 分支）。master_allowed 由本模块传入而非该模块自读环境变量：
+# ffmpeg_install → ffmpeg_linux_download 已有一条 import 边，反向 import _master_source_allowed() 即成环。
+# 位置取「ffmpeg_master_download 之前」而非其后：isort 按模块名字典序排（ffmpeg_linux_download <
+# ffmpeg_master_download），插在下方会直接让 `isort --check-only` 红。
+from src.ffmpeg_linux_download import install_ffmpeg_linux_native
+
 # Windows ARM64 原生构建 / gyan.dev 不可达时的兜底下载器：BtbN master 滚动构建
 # （上游不公布 latest 别名的 SHA256，只有 TOFU）。**默认不调用**——须 FFMPEG_MASTER_ALLOWED
 # 显式取真才走该路径，判据与理由见 _master_source_allowed() 与 install_ffmpeg_windows()。
@@ -71,13 +77,26 @@ from src.utils import unzip_file
 #   本模块自身的「安装成功后前置注入 PATH」（Windows 官方源一处）**不在**该判据范围内：
 #   它只发生在「系统里本来就没有可用 ffmpeg」的自动安装分支，且仅 Windows 分支可达，
 #   让位判据在 macOS/Linux 安装路径（brew / yum / apt）上根本不执行。
+#   [历史注 2026-10-03] 上句「仅 Windows 分支可达」在 Windows-only 自动下载时代为真、原文照留，本批
+#   Linux arm64 支持落地后已被证伪：Linux 直下分支（src/ffmpeg_linux_download.install_ffmpeg_linux_native
+#   把 ffmpeg/ffprobe 落进 execute_dir/ffmpeg/ 之后）同样就地前置 `os.environ["PATH"]`，注入点也在
+#   「安装后验证」之前，故验证失败（`ffmpeg -version` 抛异常或返非零）时留下的正是「跑不起来的落件 +
+#   不回滚的 PATH」——与下面两条 Windows 注入点（本模块 install_ffmpeg_windows、
+#   src/ffmpeg_master_download.py）「先注入再校验，校验失败也保留注入」的既有取舍一字不差，
+#   本批刻意不改该取舍（与 AGENTS.md「包内 ffmpeg 的 PATH 前置在 Apple Silicon 上必须「让位」（W6）」
+#   条目里「Windows/Linux/Intel Mac 行为逐字不变」的口径同源——本批改的只是注入点数量，不是让位判据）。
+#   因此「安装成功后前置注入 PATH」现有**三处**（Windows 官方源 / Windows master 兜底 / Linux 直下），
+#   不再只有一处；让位判据本身不变——仍只在 darwin+arm64 生效，Linux 上
+#   should_prepend_bundled_ffmpeg_dir() 恒 True，所以下一次启动会命中上一次直下的那份、不会每轮重下。
 
 
 current_platform = platform.system()
 execute_dir = script_path  # 冻结后指向 _internal/，与 __file__ 定位的资源收敛到同一处
 # 安装时把新 ffmpeg 目录前缀拼回系统原 PATH；运行期 PATH 可能已被修改，先快照原始值避免重复嵌套。
 current_env_path = os.environ.get("PATH")
-# 安装目标子目录：ffmpeg 可执行文件最终位于 execute_dir/ffmpeg/bin/ffmpeg.exe。
+# 安装目标子目录：解压后 ffmpeg 可执行文件平铺位于 execute_dir/ffmpeg/ffmpeg.exe（L-42，
+# 2026-10-02 注释更正：原注释称 execute_dir/ffmpeg/bin/，与 copytree 平铺解压的实际布局不符，
+# PATH 注入用的正是本目录、与实际一致）。
 ffmpeg_path = os.path.join(execute_dir, "ffmpeg")
 
 
@@ -258,8 +277,28 @@ def _check_or_record_zip_sha256(
         try:
             expected = hash_file.read_text(encoding="ascii").strip().lower()
         except OSError as e:
-            logger.warning(i18n.tr("读取 SHA256 缓存失败，跳过校验: {e}", e=e))
-            return True
+            # L-44（2026-10-02，对齐 ffmpeg_master_download 的 SEV-2222 口径）：基准**存在**
+            # 却读不出来 = 本机那份可信基准处于不可信状态，必须拒装（fail-closed）。旧实现
+            # warning 后 return True 放行——唯一一道完整性检查在磁盘异常时静默失效（官方
+            # 文档不可达时 TOFU 就是最后一道，与 master 侧没有区别）。触发需「官方文档
+            # 不可达 ∧ 基准损坏 ∧ CDN 投毒」三重叠加，属防御纵深收紧，非行为回归。
+            # 返回 False 走调用方既有「删包且不执行」路径；用户删掉该基准后重试即恢复 TOFU 记账。
+            # [历史注] master 侧同形分支注释曾称两侧「刻意不同」（那边 TOFU 是唯一一道）——
+            # 该理由对本模块的降级分支同样成立，故统一收紧。
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            logger.error(
+                i18n.tr(
+                    "ffmpeg 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制"
+                    "（请人工核对或删除 {hash_file} 后重试）: {type_name}: {e}",
+                    hash_file=str(hash_file),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
+            )
+            return False
         if expected != current_hash:
             logger.error(
                 i18n.tr(
@@ -484,9 +523,8 @@ def install_ffmpeg_mac() -> bool:
             return True
         else:
             logger.error("ffmpeg installation failed")
-    except subprocess.CalledProcessError as e:
-        logger.error(i18n.tr("Failed to install ffmpeg using Homebrew. {e}", e=e))
-        logger.error("Please install ffmpeg manually or check your Homebrew installation.")
+    # L-43（2026-10-02）：原在此处的 except subprocess.CalledProcessError 不可达——
+    # subprocess.run 未传 check=True 永不抛该异常，删除；通用兜底分支保留。
     except Exception as e:
         logger.error(i18n.tr("An unexpected error occurred: {e}", e=e))
     return False
@@ -529,18 +567,32 @@ def install_ffmpeg_linux() -> bool:
             result = subprocess.run(["apt", "update"], capture_output=True, timeout=300)
             if result.returncode != 0:
                 logger.error("Failed to update package lists using apt")
-                return False
-
-            result = subprocess.run(["apt", "install", "-y", "ffmpeg"], capture_output=True, timeout=300)
-            if result.returncode == 0:
-                logger.debug("ffmpeg installation was successful using apt. Restart for changes to take effect.")
-                return True
+                # R-11（2026-10-02）：本分支原先在此 `return False` 早退，绕过了函数末尾的直下兜底。
+                # 而无 root 的 Debian/Ubuntu arm64（含本仓镜像的 USER recorder）上 `apt update` 失败正是
+                # 常态——它要写 /var/lib/apt/lists，而这一人群恰是规格 §一 与新模块头注释声明的目标用户。
+                # 现只去掉早退：保留「update 失败就别白跑 apt install」的既有取舍（收进下方 else 分支），
+                # 但让它与「apt install 失败」「apt 不存在」一样落到统一出口——先试官方直下，仍失败才给手动提示。
             else:
-                logger.error(result.stderr.decode("utf-8", errors="replace").strip())
+                result = subprocess.run(["apt", "install", "-y", "ffmpeg"], capture_output=True, timeout=300)
+                if result.returncode == 0:
+                    logger.debug("ffmpeg installation was successful using apt. Restart for changes to take effect.")
+                    return True
+                else:
+                    logger.error(result.stderr.decode("utf-8", errors="replace").strip())
         except FileNotFoundError:
             logger.error("apt command not found, unable to install ffmpeg. Please manually install ffmpeg by yourself")
         except Exception as e:
             logger.error(i18n.tr("An error occurred while trying to install ffmpeg using apt: {e}", e=e))
+    # 顺序判据（2026-10-02 Linux arm64 支持）：直下兜底**只能在** yum、apt 两条包管理器路径都试过
+    # 且都没装上之后进行，不得颠倒——apt/yum 天然给原生 arm64 构建且带发行版自己的签名链，
+    # 完整性强度高于「运行期取官方公布的 SHA256」；直下只兜「拿不到包管理器」（轻量发行版/容器）
+    # 或包管理器仓库里没有 ffmpeg 的情形。
+    # 成功即 return True，与上面两条包管理器路径的返回形态一致；失败则继续落到下方手动安装提示。
+    # master_allowed 由本模块的开关函数传入（同一份 FFMPEG_MASTER_ALLOWED 语义），新模块自身不读环境变量。
+    # [2026-10-02 R-11 补充] 「apt 在位但 update 失败」同样属于「两条包管理器路径都试过且都没装上」，
+    # 该分支不再早退、一并落到本统一出口；判据仍是「两条路径都试过之后」，顺序未颠倒。
+    if install_ffmpeg_linux_native(execute_dir, master_allowed=_master_source_allowed()):
+        return True
     logger.error("Manual installation of ffmpeg is required. Please manually install ffmpeg by yourself.")
     return False
 

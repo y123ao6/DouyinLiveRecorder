@@ -116,8 +116,13 @@ def _install_crash_sink() -> None:
 
             _root = _tk.Tk()
             _root.withdraw()
-            # 标题过 tr：目录已有词条，崩溃弹窗在模块导入完成后才可能触发，可安全查表
-            _messagebox.showerror(i18n_module.tr("GUI 启动失败"), text[-3000:])
+            # [历史注] L-38（2026-10-02）更正：原注释称「崩溃弹窗在模块导入完成后才可能触发，
+            # 可安全查表」——不成立。本钩子恰以「导入期崩溃」为设计目标场景，此时 i18n_module
+            # 尚未导入，直接引用全局名抛 NameError 被外层 except 吞掉，弹窗静默失效。
+            # 改条件取用：未导入时回退字面量标题。
+            _i18n_tr = getattr(globals().get("i18n_module"), "tr", None)
+            _title = cast(str, _i18n_tr("GUI 启动失败")) if callable(_i18n_tr) else "GUI 启动失败"
+            _messagebox.showerror(_title, text[-3000:])
         except Exception:
             pass
 
@@ -3057,6 +3062,12 @@ class LiveRecorderGUI:
 
     # 启动录制：构造命令行拉起录制核心并接管其输出线程。
     def start_recording(self) -> None:
+        # M-14（2026-10-02）：退出收尾窗口期禁止启动——退出只置 _quitting 并后台停子进程，
+        # 收尾线程做僵尸 ffmpeg 清理（两次 taskkill 上限约 8s）期间，若 _process_ended 已把
+        # start_btn 重新启用，此处点「开始录制」会拉起新录制子进程，随后 _finalize_quit
+        # 销毁窗口、GUI 进程退出，新进程及其 ffmpeg 全部孤儿化（在用户以为已退出的情况下继续录制）。
+        if self._quitting:
+            return
         if self._stopping:
             # 停止流程尚未完成，禁止在此期间启动新录制，避免竞态（双击停止/停止中误点启动）
             self._log("停止流程进行中，暂不可启动新录制", "warn")
@@ -3514,6 +3525,15 @@ class LiveRecorderGUI:
         try:
             self._drain_log_queue()
         except Exception as e:
+            # L-39 与 M-15 的交界，必须在此处补回 has_data：_drain_log_queue 现在一进函数就把
+            # has_data 清成 False（哨兵被单独取空时的永久空转由那一步负责），但「渲染中途抛错」
+            # 并不等于「队列已被消费干净」——抛错轮次里 _drain_log_queue 已经弹出的 messages
+            # 随异常丢失，若此时链转入休眠态（job id 置 None），后续唤醒只剩 _log / _pump_ui_events
+            # 两处，日志页可能停在半屏。这里把标志复位回 True，令下方 finally 照常续期，
+            # 下一轮取空队列后自然再转休眠（只多一个空闲节拍，不会重新变成永久空转）。
+            # 回归锁：tests/test_gui_tail_robustness.py::test_log_flush_chain_rearms_when_render_raises。
+            with self._log_queue_lock:
+                self._log_queue_has_data = True
             self._warn_chain("日志刷新", e)
         finally:
             # 「是否继续排期」的判据与改动前逐字保持一致：还有数据才续期，否则置 None
@@ -3542,6 +3562,12 @@ class LiveRecorderGUI:
             except queue.Empty:
                 break
 
+        # L-39（2026-10-02）：has_data 的清除必须在「队列已取空」的无条件位置——原写法只在
+        # messages 非空分支清；哨兵被单独取空（messages 为空）且 _process_ended 提前 return
+        # 时，has_data 恒 True 而队列恒空，刷新链以 _LOG_FLUSH_INTERVAL 间隔永久空转。
+        with self._log_queue_lock:
+            self._log_queue_has_data = False
+
         if messages:
             self.log_text.config(state=tk.NORMAL)
 
@@ -3567,8 +3593,6 @@ class LiveRecorderGUI:
 
             self.log_text.see(tk.END)
             self.log_text.config(state=tk.DISABLED)
-            with self._log_queue_lock:
-                self._log_queue_has_data = False
 
         if process_ended:
             self._process_ended(ended_session_id)
@@ -3579,6 +3603,12 @@ class LiveRecorderGUI:
         # 立即重新启动，旧 output_thread 的 EOF 才到达），直接丢弃，避免把新会话
         # 的按钮/状态灯/self.running 打回「未运行」
         if session_id is not None and session_id != self._session_id:
+            return
+        # M-14（2026-10-02）：退出收尾期间短路——EOF 哨兵仍会触发本回调，但退出线程
+        # 此刻还在 _cleanup_zombie_ffmpeg；本函数若照常重新启用 start_btn，用户可在
+        # 「以为已退出」的窗口期拉起新录制并被随后的 _finalize_quit 孤儿化。
+        # 退出路径的 UI 生命周期由 _finalize_quit 统一收尾。
+        if self._quitting:
             return
         # 等待输出线程收尾，确保所有日志都被读取到 UI 后再重置状态
         if self._stopping:
@@ -4318,26 +4348,12 @@ class LiveRecorderGUI:
                             )
                     except Exception as e:
                         self._log(f"taskkill 执行失败: {type(e).__name__}: {e}", "warn")
-                # 兜底：按镜像名清理 GUI 直接派生的 ffmpeg（极少出现）
-                try:
-                    proc = subprocess.run(
-                        ["taskkill", "/F", "/FI", "IMAGENAME eq ffmpeg.exe", "/FI", f"PARENTPID eq {os.getpid()}"],
-                        capture_output=True,
-                        timeout=3,
-                    )
-                    if proc.returncode == 0:
-                        found = True
-                    elif proc.returncode != 128:
-                        # 128 = 「没有匹配的进程」，与本函数末尾那条「未发现需要清理的 ffmpeg 进程」
-                        # 同义，兜底调用几乎每次都返回它——在这里再记一条只是噪音；
-                        # 但 rc=1（拒绝访问 / taskkill 被组策略禁用）是真失败，必须落 warn。
-                        self._log(
-                            f"taskkill 按父进程兜底清理 ffmpeg 失败（返回码 {proc.returncode}）"
-                            f"，提示: {_process_kill_hint(proc.stdout, proc.stderr)}",
-                            "warn",
-                        )
-                except Exception:
-                    pass
+                # [历史注] L-40（2026-10-02）：原此处还有一段「按映像名 + PARENTPID eq GUI 自身
+                # PID」的兜底 taskkill——结构性无法命中：ffmpeg 的父进程恒为 main.py（录制
+                # 子进程），GUI 的直接派生 ffmpeg 不存在，该段只会给「有第二道网」的假象。
+                # 「main.py 已死、ffmpeg 孤儿残留」的场景需按命令行锚定程序目录（同
+                # StopRecording.vbs 的三层匹配），为避免误杀其它项目的 ffmpeg，本函数不做
+                # 该形态的兜底，孤儿清理由 StopRecording.vbs 手段承担。
             else:
                 if target_pid is not None:
                     try:
@@ -4356,14 +4372,8 @@ class LiveRecorderGUI:
                             )
                     except Exception as e:
                         self._log(f"pkill 执行失败: {type(e).__name__}: {e}", "warn")
-                try:
-                    proc = subprocess.run(
-                        ["pkill", "-P", str(os.getpid()), "-x", "ffmpeg"], capture_output=True, timeout=3
-                    )
-                    if proc.returncode == 0:
-                        found = True
-                except Exception:
-                    pass
+                # [历史注] L-40：原此处「pkill -P GUI 自身 PID」的兜底同 Windows 侧注释——
+                # ffmpeg 父进程恒为 main.py，该形态结构性无法命中，已删除。
 
             if not found:
                 self._log("未发现需要清理的 ffmpeg 进程")

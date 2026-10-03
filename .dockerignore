@@ -30,6 +30,10 @@
 .plugin-src/
 .tmp-dps-extract/
 .v2c/
+# SDD/治理式流程技能在仓库内留下的工作区（brief/report/review/diff + 运行日志快照）。
+# 本目录曾因未登记而被 `Dockerfile:112` 的 `COPY . ./` 打进对外镜像（2026-10-03 评审 I-3），
+# 与 .gitignore 及 pyproject 各工具排除列表同源维护，见 AGENTS.md「dockerignore / gitignore 同源约定」。
+.superpowers/
 pytest-cache-files-*/
 
 # ---------- 文档（容器内无需运行）----------
@@ -90,6 +94,9 @@ htmlcov/
 
 # ---------- 维护脚本（CI / i18n / 版本同步工具，运行时链路不引用 scripts/）----------
 scripts/
+
+# ---------- 开发工具配置（pre-commit 钩子定义，仅本地开发用；配套 pyproject dev extra 的 pre-commit>=3.6.0）----------
+.pre-commit-config.yaml
 
 # ---------- 类型存根（仅供 IDE / mypy 静态检查，运行时无用）----------
 typings/

@@ -359,7 +359,11 @@ class DanmakuMonitorHub:
     # 房间行，Web 快照随房间表自动消失。同房间重新录制时由 collector.start() 的 room_started 重新登记。
     # 此前条目**永不删除**：URL 从 URL_config.ini 移除/注释后房间线程已退出，监控页却一直残留
     # 该已失效直播间及其旧弹幕数据。
-    def room_stopped(self, room: str, reason: str = "房间已停止监控") -> None:
+    def room_stopped(self, room: str, reason: Optional[str] = None) -> None:
+        # L-24（2026-10-02）：默认文案改函数内 i18n.tr（原默认参数在 import 期求值一次，
+        # 语言热切换后不更新；缺省 None + 函数内取值保证每次调用按当前语言解析）
+        if reason is None:
+            reason = i18n.tr("房间已停止监控")
         try:
             with self._lock:
                 if self._rooms.pop(room, None) is None:
@@ -716,7 +720,11 @@ class DanmakuMonitorHub:
             if not path:
                 return
             writer = _get_sidecar()
-            writer.submit("close", path)
+            # L-23（2026-10-02）：submit 返回 False（队列满被丢弃）必须与 drain 超时同语义
+            # 处理——静默丢弃 close 指令会让句柄未关而本函数「成功」返回，随后的归档改名
+            # 必抛 PermissionError 且无法归因。外层容错会记日志（归档侧跳过该文件）。
+            if not writer.submit("close", path):
+                raise TimeoutError("sidecar close command dropped (queue full)")
             if not writer.drain(_SIDECAR_DRAIN_SECONDS):
                 raise TimeoutError(f"sidecar drain exceeded {_SIDECAR_DRAIN_SECONDS}s")
         except Exception as e:

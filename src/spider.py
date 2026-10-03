@@ -67,6 +67,7 @@ except ImportError:
 
 from . import JS_SCRIPT_PATH, http_config, utils, web_config
 from .async_http import async_req
+from .config_bool import parse_config_bool
 from .cookie_cache import DEFAULT_TTL as _CREDENTIAL_TTL
 from .cookie_cache import fetch_cookies as _cache_fetch_cookies
 from .cookie_cache import invalidate_generic as _cache_invalidate_generic
@@ -307,10 +308,14 @@ async def _ensure_kuaishou_did(proxy_addr: OptionalStr = None) -> str:
 
     got = await _cache_singleflight(key=f"kuaishou_did|{proxy_addr or ''}", factory=_fetch, timeout=10)
     if isinstance(got, str) and got:
-        _cached_kuaishou_did = got
-        _cached_kuaishou_did_ts = time.monotonic()
-        _cached_kuaishou_did_proxy = proxy_addr or ""
-        return _cached_kuaishou_did
+        # M-04（2026-10-02）：「值/ts/proxy 记录」三元组必须整组在锁内写——两个不同代理的
+        # singleflight 桶并发返回时，锁外交错写会产生「值与出口记录错配」（proxy=A 的房间
+        # 拿到 proxy=B 拉取的 did，跨出口串用即复活 M-8 描述的风控症状）。临界区零 await。
+        with _kuaishou_did_lock:
+            _cached_kuaishou_did = got
+            _cached_kuaishou_did_ts = time.monotonic()
+            _cached_kuaishou_did_proxy = proxy_addr or ""
+        return got
     # M-8（2026-09-29）本轮没拿到新值的两条出口。全局留着的是**别的出口**的 did 时，既不能把它
     # 递给本次调用（那正是快路漏判 proxy 的那条泄漏路径，失败分支同样要走一遍），也不能清掉它
     # （对它自己的出口仍有效）。
@@ -332,8 +337,13 @@ async def _ensure_twitch_client_id(proxy_addr: OptionalStr = None) -> str:
     # 2026-09-12 审查 H-2：同 _ensure_kuaishou_did，原为锁内 await 反模式，
     # 改经 cookie_cache.singleflight 去重（锁内零 await）
     global _cached_twitch_client_id, _cached_twitch_client_id_ts, _cached_twitch_client_id_proxy
-    if _cached_twitch_client_id and (
-        not _cached_twitch_client_id_ts or (time.monotonic() - _cached_twitch_client_id_ts) < _CREDENTIAL_TTL
+    # L-12（2026-10-02）：快路补出口(proxy)一致性比对，对齐快手 did / B站 buvid 的
+    # _take_cached_* 口径。Client-Id 非出口绑定凭据，错配的实际影响有限，但保持三处
+    # 凭据缓存同一判定形态，避免未来新凭据复制快路写法时把「漏判 proxy」一起带上。
+    if (
+        _cached_twitch_client_id
+        and _cached_twitch_client_id_proxy == (proxy_addr or "")
+        and (not _cached_twitch_client_id_ts or (time.monotonic() - _cached_twitch_client_id_ts) < _CREDENTIAL_TTL)
     ):
         return _cached_twitch_client_id
 
@@ -354,13 +364,16 @@ async def _ensure_twitch_client_id(proxy_addr: OptionalStr = None) -> str:
 
     got = await _cache_singleflight(key=f"twitch_client_id|{proxy_addr or ''}", factory=_fetch, timeout=10)
     if isinstance(got, str) and got:
-        _cached_twitch_client_id = got
-        _cached_twitch_client_id_ts = time.monotonic()
-        _cached_twitch_client_id_proxy = proxy_addr or ""
+        # M-04（2026-10-02）：三元组整组锁内写，理由同 _ensure_kuaishou_did
+        with _twitch_client_id_lock:
+            _cached_twitch_client_id = got
+            _cached_twitch_client_id_ts = time.monotonic()
+            _cached_twitch_client_id_proxy = proxy_addr or ""
     elif _cached_twitch_client_id and (time.monotonic() - _cached_twitch_client_id_ts) >= _CREDENTIAL_TTL:
         # TTL 过期且重取失败：不再返回过期旧值（同 _ensure_kuaishou_did 口径）
-        _cached_twitch_client_id = ""
-        _cached_twitch_client_id_ts = 0.0
+        with _twitch_client_id_lock:
+            _cached_twitch_client_id = ""
+            _cached_twitch_client_id_ts = 0.0
     return _cached_twitch_client_id
 
 
@@ -640,9 +653,20 @@ def _extract_room_data_from_html(html_str: str) -> dict[str, object]:
             if hevc_flv_url:
                 stream_url_field["hevc_flv_url"] = hevc_flv_url
         return json_data
-    # 整段兜底逻辑用裸 except 吞掉一切异常并回 {}：失败原因（页面改版/网络/解析错误）全部丢失，
-    # 上游只能看到空结果、按「未开播」处理，无法区分「真离线」与「解析挂了」。
-    except Exception:
+    # 整段兜底逻辑捕获一切异常并回 {}，上游只能看到空结果、按「未开播」处理。
+    # [历史注] L-10（2026-10-02）前为裸 except 零日志，失败原因（页面改版/网络/解析错误）
+    # 全部丢失、无法区分「真离线」与「解析挂了」；现补 debug 留痕（见下方分支注释）。
+    except Exception as e:
+        # L-10（2026-10-02）：补 debug 日志——原裸 except 回 {} 使意外 TypeError/KeyError 零痕迹，
+        # 与「真离线」不可区分。本路径是「页面结构改版/网络异常」的兜底，每轮重试都会走，
+        # 用 debug 避免告警噪音（与同文件 MID-2246 口径一致）。
+        logger.debug(
+            i18n.tr(
+                "抖音房间页 __INITIAL_STATE__ 解析异常（按未开播处理）: {type_name}: {e}",
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
         return {}
 
 
@@ -1540,6 +1564,35 @@ async def get_token_js(rid: str, did: str, proxy_addr: OptionalStr = None) -> di
         return {}
 
 
+# 斗鱼房间号提取：两种来源（?rid= 查询参数 / 路径首段）与一处归一。
+# 旧实现是两处整串正则，各有一个边界洞：
+#   ① `rid=(.*?)(?=&|$)` 未锚定参数边界 —— ?xyzrid=123 这类参数会被误命中成房间号；
+#   ② `douyu.com/(.*?)(?=\?|$)` 把尾斜杠与后续路径段一起带进房间号（/8751648/ → "8751648/"、
+#      /topic/x → "topic/x"），于是 betard 请求拿不到 room，用户只看到「房间不存在」这类误导。
+# 换 urlsplit 后 scheme / 尾斜杠 / query / fragment 都在解析层剥掉，http 与 https、
+# www.douyu.com 与 m.douyu.com 走同一口径（移动端链接接入即依赖此点）。
+def extract_douyu_rid_param(url: str) -> str:
+    # 取 ?rid= / &rid= 参数值（参数边界锚定）；无该参数或值为空时返回空串，由调用方决定后续
+    match = re.search(r"[?&]rid=([^&#]*)", url)
+    return match.group(1) if match else ""
+
+
+def extract_douyu_room_id(url: str) -> str:
+    # 取斗鱼链接**路径首个非空段**作为房间号候选（可能是字母号，还原成数字 rid 由调用方负责）。
+    # 无 scheme 时按准入侧同一规则补 `https://`——否则 urlsplit 会把 "m.douyu.com/8751648"
+    # 整串当成 path，首个非空段取到的是主机名而非房间号。
+    # 房间号候选来自用户手填，链接可带 token 类查询参数，故入错误消息前先脱敏。
+    masked_url = utils.mask_credentials(url)
+    try:
+        path = urllib.parse.urlsplit(url if "://" in url else f"https://{url}").path
+    except ValueError as e:
+        raise ValueError(i18n.tr("斗鱼链接无法解析房间号: {masked_url}", masked_url=masked_url)) from e
+    segments = [seg for seg in path.split("/") if seg]
+    if not segments:
+        raise ValueError(i18n.tr("斗鱼链接缺少房间号: {masked_url}", masked_url=masked_url))
+    return segments[0]
+
+
 @trace_error_decorator
 async def get_douyu_info_data(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
@@ -1555,17 +1608,18 @@ async def get_douyu_info_data(
         headers["Cookie"] = cookies
 
     # 斗鱼 URL 形态不一：带 rid= 查询参数的直链可直接取到房间号；
-    # 否则从路径末段抠字母号，再抓移动端 vike_pageContext 还原成真正的数字 rid
+    # 否则从路径首段抠房间号（可能是字母号），再抓移动端 vike_pageContext 还原成真正的数字 rid
     # （web 端 betard 接口只认数字 rid，字母号/分享短链必须先解析），否则取流必失败。
-    match_rid = re.search("rid=(.*?)(?=&|$)", url)
-    if match_rid:
-        rid = match_rid.group(1)
+    query_rid = extract_douyu_rid_param(url)
+    if query_rid.isdigit():
+        rid = query_rid
     else:
-        rid_match = re.search("douyu.com/(.*?)(?=\\?|$)", url)
-        if not rid_match:
-            raise ValueError("Failed to find rid in url")
-        rid = rid_match.group(1)
-        html_str = await async_req(url=f"https://m.douyu.com/{rid}", proxy_addr=proxy_addr, headers=headers)
+        # rid 参数不是数字（?rid=abc 这类畸形直链）时**不认它**：旧实现会拿它直拼 betard，
+        # 必然失败且没有任何提示。此时回落到路径首段，仍拿不到才报「缺少房间号」。
+        # 路径形态一律抓移动端页面还原（含已是纯数字的情形——按维护者口径保持现状，
+        # 不做「数字即跳过抓取」的快路径，www 与 m 两侧行为因此完全一致）。
+        rid_candidate = extract_douyu_room_id(url)
+        html_str = await async_req(url=f"https://m.douyu.com/{rid_candidate}", proxy_addr=proxy_addr, headers=headers)
         html_str = _get_str_response(html_str)
         json_str_matches = re.findall('<script id="vike_pageContext" type="application/json">(.*?)</script>', html_str)
         if not json_str_matches:
@@ -1582,6 +1636,12 @@ async def get_douyu_info_data(
         if inner_room.get("rid") is None:
             raise ValueError("Failed to find rid in vike_pageContext (WAF page? truncated JSON?)")
         rid = str(inner_room["rid"])
+        # betard / getH5PlayV1 两个接口只认数字 rid：还原产物非数字时直拼 URL 只会拿到
+        # 「响应缺少 room 字段」这类误导性结果，故在还原出口就判掉并给出明确原因。
+        if not rid.isdigit():
+            raise ValueError(
+                i18n.tr("斗鱼房间号还原结果非数字: candidate={candidate} rid={rid}", candidate=rid_candidate, rid=rid)
+            )
 
     # 抓 vike_pageContext 时用 ios UA（移动端页面模板），真正取房间信息切回桌面 Firefox UA：
     # betard 接口按桌面端返回结构解析，UA 不对会拿到不同的页面骨架导致字段取不到。
@@ -1831,7 +1891,10 @@ async def get_bilibili_room_info(
             _warn_api_abnormal(json_str2, "B站 master/info", "data.info.uname", anchor_info)
             return {"anchor_name": "", "live_status": False, "room_url": url}
 
-        title = await get_bilibili_room_info_h5(url, proxy_addr, cookies)
+        # L-08（2026-10-02）：补 `or ""` 兜底（对齐函数头注释的契约）——兜底装饰器
+        # trace_error_decorator_or_none 失败时返回 None，无兜底时 None 会作为 title 入 dict，
+        # get_bilibili_room_info 跨接口拼装标题时 TypeError。
+        title = await get_bilibili_room_info_h5(url, proxy_addr, cookies) or ""
         return {"anchor_name": anchor_name, "live_status": live_status, "room_url": url, "title": title}
     except Exception as e:
         # 房间信息抓取失败（房间不存在/风控/网络）一律返回空名+未开播，交由主循环下轮重试，
@@ -2320,9 +2383,12 @@ async def get_bilibili_danmaku_info(
             # 等待超时/拉取异常：退化为本地兜底，不写缓存（下轮重试）
             buvid = str(uuid.uuid4())
             _bili_buvid_is_fallback = True
-    _bili_buvid_cached = buvid
-    # MID-40：随缓存值记录其代理上下文，供无参失效钩子清对 generic 键（见 invalidate_bili_buvid_cache）
-    _bili_buvid_cached_proxy = proxy_addr or ""
+    # M-04（2026-10-02）：缓存值与代理上下文必须整组在锁内写（与 invalidate 钩子的持锁清空
+    # 对称），否则并发 singleflight 返回交错时可产生「值与出口记录错配」。
+    with _bili_buvid_lock:
+        _bili_buvid_cached = buvid
+        # MID-40：随缓存值记录其代理上下文，供无参失效钩子清对 generic 键（见 invalidate_bili_buvid_cache）
+        _bili_buvid_cached_proxy = proxy_addr or ""
 
     # 4) getDanmuInfo（wbi 签名）；无 wbi 则跳过签名，由调用方 -352 风控日志体现
     danmu_params: dict[str, str] = {"id": real_room_id, "type": "0", "web_location": "444.8"}
@@ -2419,6 +2485,18 @@ async def get_xhs_stream_url(
     # 获取小红书直播流地址
     # 解析链路：xhslink 短链先解重定向 → 抠 host_id/user_id → __INITIAL_STATE__（undefined 替换 null 后解析）；
     # 返回 is_live + flv/m3u8 + record_url；标题含「回放」视为非实时不取流；未开播仍回抠到的 anchor_name。
+    # M-03（2026-10-02）：入口先做域族白名单校验（对齐 _shopee_is_allowed_host 的 S-1 判据，
+    # 与下方 SEV-2214 落地页校验同源）——本函数 headers 内嵌 xy-common-params（含会话 sid）
+    # 与用户 Cookie，分发侧按 host 收紧（main._match_host）之外的防御纵深：必须在任何请求
+    # 发出前确认目标是官方域，而不是等第一个带凭据请求已经出去了再补救。
+    if not _xhs_is_allowed_host(url):
+        logger.warning(
+            i18n.tr(
+                "小红书直播间地址不在白名单域内，拒绝解析（不发送任何带凭据请求）: {url}",
+                url=utils.mask_credentials(url),
+            )
+        )
+        return {"anchor_name": "", "is_live": False}
     sid_value = _read_xhs_sid()
     # MID-2218（2026-09-23）：镜像 TikTok 的 _warn_if_builtin_guest（见 get_tiktok_stream_data）。
     # MID-50a 只补了 sid 覆盖入口、没补「用了内置缺省且本轮失败」的告警，于是 sid 被平台判失效
@@ -4075,7 +4153,15 @@ async def get_popkontv_stream_url(
         result["is_live"] = True
         room_password = get_params(url, "pwd")
         # 私有房间且未配密码：必须带 pwd 才能取流，否则抛错提示配置密码
-        if int(cast(str, is_private)) != 0 and not room_password:
+        # M-05（2026-10-02）：判定不再依赖字段的具体 JSON 类型——原 `int(cast(str, is_private))`
+        # 在 API 以 JSON 布尔下发 mc_isPrivate 时抛 ValueError（int("True") 非法），被兜底装饰器
+        # 吞成 {"is_live": False}，开播房间恒判未开播。
+        # [历史注] 同日首版改成裸真值 `if is_private`，实测证伪：字符串 "0" 的 bool() 为 True，
+        # 下发 "0" 的公开房间会被误判成私有并整轮报错。现走全仓统一布尔口径 parse_config_bool
+        # （bool 短路 / int 非零 / "0"·"false"·"否" 等 token 归一）；无法识别的取值按「非私有」
+        # 放行取流，宁可让后续取流环节自然失败，也不误挡公开房间。
+        # 回归锁：tests/test_spider_platforms.py::TestPopkontvIsPrivateParsing（三形态矩阵）。
+        if parse_config_bool(cast("str | bool | int | None", is_private), False) and not room_password:
             raise RuntimeError(
                 f"Failed to retrieve live room data because {anchor_name}'s room is a private room. "
                 f"Please configure the room password and try again."
@@ -4165,10 +4251,10 @@ async def get_popkontv_stream_url(
                 "Information' to use the service."
             )
         elif status_cd == "L0001":
-            cast_start_date_code_int = int(cast(str, cast_start_date_code)) - 1
-            # 对同参数再请求一次（首请求偶发需二次确认才返回真实 HLS）。注意：上面算出的
-            # cast_start_date_code_int（原值减 1）实际并未传入本次重试（fetch_data 闭包仍用原值），
-            # 若该减 1 才是正确值，则此处重试可能仍失败——属潜在的时效/边界坑位。
+            # 对同参数再请求一次（首请求偶发需二次确认才返回真实 HLS）。
+            # [历史注] M-05 清理（2026-10-02）：原此处计算的 cast_start_date_code_int（原值减 1）
+            # 从未传入重试（fetch_data 闭包仍用原值），属死代码已删；若减 1 才是正确值，
+            # 则此处重试可能仍失败——属潜在的时效/边界坑位。
             json_str = await fetch_data(headers, current_partner_code)
             json_str = _get_str_response(json_str)
             json_data = _loads_dict(json_str)
@@ -4980,10 +5066,6 @@ async def get_huajiao_sn(
                 e=e,
             )
         )
-        raise RuntimeError(
-            "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
-            "the anchor's homepage address for recording."
-        ) from e
         raise RuntimeError(
             "Failed to retrieve live room data, the Huajiao live room address is not fixed, please use "
             "the anchor's homepage address for recording."

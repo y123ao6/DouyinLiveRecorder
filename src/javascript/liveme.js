@@ -379,13 +379,13 @@ function sign(videoid, cryptoJSPath, platform='web'){
         vali: vali
       }
     console.log("data_i:",data_i);
-    
+
     // fake lm_s_sign param value
     let lm_s_sign = pC(data_i);
     console.log(`fake lm_s_sign: ${lm_s_sign}`);
 
     //finnal request params
-    /* 
+    /*
     signParams = {
     "alias": "liveme",
     "tongdun_black_box": "iWPU21728483558afruvSVo6x0",
@@ -400,7 +400,7 @@ function sign(videoid, cryptoJSPath, platform='web'){
     "videoid": "17284844223282059697",
     "area": "zh",
     "vali": "zH8SlBwnCm4AZWp"
-    }# 
+    }#
     //result: 4eaf71a1ec19b49b7267e4d16e007105
     */
     signParams = {

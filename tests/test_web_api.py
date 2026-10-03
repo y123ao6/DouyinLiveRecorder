@@ -470,6 +470,49 @@ class TestRoomWriteParity:
         {"url": "https://live.douyin.com/ok", "quality": "超清"},
     ]
 
+    def test_put_to_existing_url_returns_409_without_duplicate_line(
+        self, app_env: types.SimpleNamespace, fake_main: types.ModuleType
+    ) -> None:
+        # L-29 行为锁（2026-10-02）：PUT 改写为已存在的 URL 必须回 409，且文件不出现重复
+        # URL 行（原实现漏检，成功后删除/画质操作命中不确定）。仅改画质/名字（new_url ==
+        # old_url）不得被误杀。
+        token = _login(app_env.client)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        def _fake_update_file(path: str, old_str: str, new_str: str, **kw: str) -> str:
+            # 端点在 update_file 后会重解析文件做「真写入了」裁决（MIN-2243），替身必须
+            # 真的改写文件，否则同址更新分支被判 500
+            p = Path(path)
+            text = p.read_text(encoding="utf-8-sig")
+            p.write_text(text.replace(old_str, new_str), encoding="utf-8-sig")
+            return new_str
+
+        setattr(fake_main, "update_file", _fake_update_file)
+        assert (
+            app_env.client.post("/api/rooms", json={"url": "https://live.douyin.com/a"}, headers=headers).status_code
+            == 200
+        )
+        assert (
+            app_env.client.post("/api/rooms", json={"url": "https://live.douyin.com/b"}, headers=headers).status_code
+            == 200
+        )
+        resp = app_env.client.put(
+            "/api/rooms",
+            json={"old_url": "https://live.douyin.com/b", "url": "https://live.douyin.com/a"},
+            headers=headers,
+        )
+        assert resp.status_code == 409
+        text = app_env.url_cfg.read_text(encoding="utf-8-sig")
+        assert text.count("live.douyin.com/a") == 1
+        assert "live.douyin.com/b" in text
+        # 同址更新（只改画质）不受查重影响
+        resp_same = app_env.client.put(
+            "/api/rooms",
+            json={"old_url": "https://live.douyin.com/a", "url": "https://live.douyin.com/a", "quality": "超清"},
+            headers=headers,
+        )
+        assert resp_same.status_code == 200
+
     def test_put_and_post_reach_same_verdict(self, app_env: types.SimpleNamespace, fake_main: types.ModuleType) -> None:
         token = _login(app_env.client)
         headers = {"Authorization": f"Bearer {token}"}
@@ -489,8 +532,14 @@ class TestRoomWriteParity:
             body = cast("dict[str, str]", payload)
             post = app_env.client.post("/api/rooms", json=body, headers=headers)
             put = app_env.client.put("/api/rooms", json={**body, "old_url": seed}, headers=headers)
-            # POST 的 409（重复）与 PUT 的 404/200 属各自语义，其余裁决必须逐字一致
-            same = (post.status_code == put.status_code) or (post.status_code == 409 and put.status_code == 200)
+            # POST 的 409（重复）与 PUT 的 404/200 属各自语义，其余裁决必须逐字一致。
+            # [历史注] L-29（2026-10-02）后 PUT 对「新 URL 与其它房间重复」同样回 409
+            # （原实现漏检、会写成重复 URL 行），故 PUT=409 恒为合法裁决。
+            same = (
+                post.status_code == put.status_code
+                or (post.status_code == 409 and put.status_code == 200)
+                or put.status_code == 409
+            )
             assert same, f"{body}: POST={post.status_code} PUT={put.status_code}"
             if post.status_code == 422:
                 assert put.status_code == 422, f"PUT 仍可写入被 POST 拒绝的载荷: {body}"

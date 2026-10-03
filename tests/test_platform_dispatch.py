@@ -99,14 +99,17 @@ def test_resolver_table_is_wellformed(main_mod: Any) -> None:
 
 
 def test_resolver_table_priority_head(main_mod: Any) -> None:
-    # 前五项 = 迁移前 elif 链的前五个平台（抖音 / TikTok / 快手 / 虎牙 / 斗鱼）。
+    # 前六项 = 迁移前 elif 链的前五个平台（抖音 / TikTok / 快手 / 虎牙 / 斗鱼）
+    # + 2026-10-03 新增的虎牙移动端短链 hy.fan（表项插在虎牙之后、斗鱼之前，白名单同批登记）。
     # 顺序即优先级：抖音短链 v.douyin.com 等形态必须最先判定，不能被更宽松的片段抢走。
-    names = [handler.__name__ for _, handler in main_mod._PLATFORM_RESOLVERS[:5]]
+    # 插入新表项会挪动其后所有下标——本锁因此显式列出顺序，改顺序必须同步改这里并说明理由。
+    names = [handler.__name__ for _, handler in main_mod._PLATFORM_RESOLVERS[:6]]
     assert names == [
         "_resolve_douyin_com",
         "_resolve_tiktok_com",
         "_resolve_live_kuaishou_com",
         "_resolve_huya_com",
+        "_resolve_hy_fan",
         "_resolve_douyu_com",
     ]
     # 自定义流地址必须垫底：它只按扩展名匹配，放前面会截获平台地址
@@ -122,7 +125,13 @@ _DISPATCH_CASES = [
     ("https://live.kuaishou.com/u/x", "快手直播", "get_kuaishou_stream_data"),
     ("https://www.huya.com/660002", "虎牙直播", "get_huya_stream_data"),
     ("https://www.douyu.com/9999", "斗鱼直播", "get_douyu_info_data"),
+    # 斗鱼移动端域名：与 www 共用 _resolve_douyu_com，必须落到同一个解析入口
+    ("https://m.douyu.com/9999", "斗鱼直播", "get_douyu_info_data"),
+    ("http://m.douyu.com/9999/", "斗鱼直播", "get_douyu_info_data"),
     ("https://live.bilibili.com/1", "B站直播", "get_bilibili_room_info"),
+    # B站移动端分享短链纯数字形态：归一后复用 _resolve_live_bilibili_com（短码形态
+    # 依赖跳转解析，整体替换为桩后的专项覆盖见 test_b23_tv_dispatch.py）
+    ("https://b23.tv/22747736", "B站直播", "get_bilibili_room_info"),
     ("https://www.picarto.tv/x", "Picarto", "get_picarto_stream_url"),
 ]
 
@@ -215,6 +224,20 @@ def test_platform_host_entries_that_were_fixed_on_2026_09_20(main_mod: Any) -> N
     assert main_mod._match_host("tb.cn", "tbzb.taobao.com", "huodong.m.taobao.com")("https://huodong.m.taobao.com/x")
 
 
+def test_douyu_mobile_host_is_admitted_and_dispatched(main_mod: Any) -> None:
+    # 斗鱼移动端 host 必须在准入白名单里：准入按 `url_host in PLATFORM_HOST` 精确匹配，
+    # 缺此项时 https://m.douyu.com/8751648 在读取 URL 配置阶段就被判「未知链接」注释掉，
+    # 根本走不到解析；而分派表缺 m.douyu.com/ 则会落入 _resolve_unrecognized 无限空转
+    # （与 SEV-2203 同一失败型：永不录制、不记 record_error）。两处必须同时存在。
+    assert "m.douyu.com" in main_mod.PLATFORM_HOST
+    matcher = main_mod._match_host("www.douyu.com/", "m.douyu.com/")
+    assert matcher("https://m.douyu.com/8751648")
+    assert matcher("http://m.douyu.com/8751648/")
+    assert matcher("https://www.douyu.com/8751648")
+    # 反例：路径里出现域名词不得被路由进斗鱼（M-03 同口径）
+    assert not matcher("https://example.com/m.douyu.com/8751648")
+
+
 # --------------------------------------------------------------------------------------
 # MID-03（CODE_REVIEW_2026-09-20）：录制链里的「平台名字面量」必须等于 resolver 回写值
 #
@@ -267,6 +290,41 @@ def _literal_sequences_by_name(tree: "ast.Module") -> dict[str, list[str]]:
             for target in targets:
                 found[target] = items
     return found
+
+
+def _platform_cookie_map_entries(tree: "ast.Module") -> dict[str, str]:
+    # 取 `platform_cookie = {...}.get(platform, "")` 里的字面量映射：{平台名字面量: 值表达式名}。
+    # 值一律取「表达式里的名字」（如 shopee_cookie），字面量兜底（"" 等）原样回字符串——
+    # 调用方据此区分「键加上了但没接到配置变量」这一形态。
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(t, ast.Name) and t.id == "platform_cookie" for t in node.targets
+        ):
+            continue
+        dict_node: ast.Dict | None = None
+        value = node.value
+        # 形态一：`{...}.get(platform, "")`；形态二：直接 `{...}` 赋值。只认这两种字面量映射。
+        if isinstance(value, ast.Dict):
+            dict_node = value
+        elif (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "get"
+            and isinstance(value.func.value, ast.Dict)
+        ):
+            dict_node = value.func.value
+        if dict_node is None:
+            continue
+        entries: dict[str, str] = {}
+        for key, val in zip(dict_node.keys, dict_node.values):
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                if isinstance(val, ast.Name):
+                    entries[key.value] = val.id
+                elif isinstance(val, ast.Constant):
+                    entries[key.value] = repr(val.value)
+        if entries:
+            return entries
+    return {}
 
 
 def test_platform_name_literals_match_resolver_writeback(main_mod: Any) -> None:
@@ -361,3 +419,21 @@ def test_custom_stream_keys_follow_path_extension(dispatch_env: tuple) -> None:
     assert result2 is not None
     port_info2 = result2[1]
     assert "flv_url" in port_info2 and "m3u8_url" not in port_info2
+
+
+def test_forced_direct_download_platforms_carry_cookie(main_mod: Any) -> None:
+    # L-04（CODE_REVIEW_2026-10-02）不变量锁：两个「强制直下」平台必须在 platform_cookie 映射里
+    # 有条目，且条目绑定到配置项变量（*_cookie），而不是空串字面量。
+    # 成因：[Cookie] shopee_cookie / huajiao_cookie 在 main.py 已有读取点并透传给解析函数，
+    # 却不在映射里，于是同一份用户 Cookie 在「解析」与「探针 / ffmpeg 录制头 / 直下」两条路上
+    # 口径不一——直下路径按游客态取流，CDN 可 403 或钳到最低档。
+    # 判据：删掉任一键、或把键的值写成 "" 字面量，本用例变红；映射整体丢失时开头的
+    # 「entries 非空」反向见证变红（不靠假绿）。
+    tree = ast.parse((_REPO_ROOT / "main.py").read_text(encoding="utf-8"))
+    entries = _platform_cookie_map_entries(tree)
+    assert entries, "AST 未能取到 platform_cookie 字面量映射（扫描口径失效即假绿）"
+    only_flv = _literal_sequences_by_name(tree).get("only_flv_platform_list")
+    assert only_flv, "main.py 中找不到 only_flv_platform_list（被改名或删除，本回归锁随之失效）"
+    for platform in only_flv:
+        assert platform in entries, f"强制直下平台 {platform} 未向探针/录制头/直下转发 Cookie（L-04 回归）"
+        assert entries[platform].endswith("_cookie"), f"{platform} 未绑定配置项变量: {entries[platform]}"

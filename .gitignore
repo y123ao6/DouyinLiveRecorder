@@ -33,6 +33,9 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
+# 本目录内文件全部保持跟踪；不加否定规则时，git add 显式传入该目录名会因匹配上一行
+# 而整体报 ignored 失败（即使目录内文件全部已跟踪），提交工具按退出码中止提交。
+!DouyinLiveRecorder.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
@@ -295,6 +298,10 @@ PERF_REVIEW_*.md
 .tmp-dps-extract/
 .mimosa/
 .v2c/
+# SDD/治理式流程技能在仓库内留下的工作区（brief/report/review/diff + 运行日志快照；
+# 与 .dockerignore 及 pyproject 各工具排除列表同源维护，见 AGENTS.md「dockerignore / gitignore 同源约定」；
+# 2026-10-03 漏登记的实测后果：`Dockerfile:112` 的 `COPY . ./` 会把该目录整体打进对外镜像）
+.superpowers/
 
 # 测试输出目录（端到端 / 真实房间采集的临时产物）
 tests/_out_e2e/

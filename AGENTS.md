@@ -9,7 +9,7 @@
 ## 项目概览
 
 - **名称**: DouyinLiveRecorder
-- **版本**: 4.4.0（唯一事实源 `pyproject.toml` 的 `version`，动态读取口径见「关键约定」#1）
+- **版本**: 4.5.0（唯一事实源 `pyproject.toml` 的 `version`，动态读取口径见「关键约定」#1）
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具
 - **许可证**: MIT
 
@@ -53,7 +53,7 @@
 
 - **取值**: `python_version = "3.14"`；`warn_return_any`/`warn_unused_configs`/`disallow_untyped_defs`/`ignore_missing_imports` 均为 `true`。
 - **不带路径参数**：检查范围由 `pyproject.toml [tool.mypy].files` 定义（src/ + 根入口 + build_exe.py + scripts/ + tests/）。显式传参（如 `mypy src/`）会**覆盖**该配置只查 src/；排障可收窄，但**门禁结果以无参数跑法为准**（早期只查 src/ 时，gui.py 的 `logger`/`session_id` 根入口漏 import 长期逃逸）。
-- **平台符号门控双跑同样不带路径**：见「已知坑」平台专属符号条目。
+- **平台符号门控双跑同样不带路径**：本机裸跑 `mypy` + 另两个平台目标各增跑一次（`mypy --platform linux` / `mypy --platform win32`），使任一主机上都同时覆盖 linux 与 win32 两侧门控分支；CI typecheck job 已按同一 `[tool.mypy].files` 范围、同样不带路径参数补齐该双跑到合并边界（本机实测 win32 与 linux 判定面逐行一致，不与既有 `# type: ignore` 冲突）。判据见「已知坑」平台专属符号条目。
 
 #### typings/ 存根的「仅 IDE 暴露」告警处理（2026-09-24 定稿）
 
@@ -96,12 +96,28 @@
 ## 项目级 Skill
 
 > 高频复用的领域约定已提取为独立 Skill（位于 `.agents/skills/`），agent 可按需加载详细流程与验证清单。AGENTS.md 仍保留约束语句（must / must-not）作为唯一事实源；Skill 展开操作步骤、事故背景与验证命令。
+>
+> **表格与目录同源**: 本表须与 `.agents/skills/` 的一级子目录一一对应，新增、合并或删除 Skill 时同批改本表（不在此维护计数，目录本身才是事实源）；核对口径为 `Get-ChildItem .agents/skills -Directory` 的目录名集合与表格「路径」列逐行相等。「触发词 / 场景」列取各 `SKILL.md` frontmatter `description` 自述的触发词，不得凭印象另写。
 
-| Skill | 路径 | 覆盖领域 |
-| --- | --- | --- |
-| ffmpeg 命令构造 | `.agents/skills/ffmpeg-command-construction/` | `-reconnect*` 位置、`-segment_format` 查表、F-01 四定义点、黄金命令比对 |
-| 平台选源流程 | `.agents/skills/platform-source-selection/` | 探针可达性、FLV-first/HLS 排除、画质映射、装饰器契约 |
-| 运行时钉定验证 | `.agents/skills/runtime-pin-verification/` | 三层防线、官方签名档、三类钉定边界、来源增删三处同改 |
+| Skill | 路径 | 触发词 / 场景 | 覆盖领域 |
+| --- | --- | --- | --- |
+| DLR 开发手册 | `.agents/skills/dlr-dev-playbook/` | 新功能/新子系统/新 UI 或产品级行为设计、编写或修改 `tests/` 用例、用户粘贴带 `file:function:line` 的运行时日志、平台专属符号致 Windows 绿而 Linux CI 红、reviewer 断言某段代码有语法错误 | 开发工作流路由（设计先行、测试约定、日志故障分诊、平台类型门控、静态检查判定、工程原则）；命中路由后只加载对应的单个 `references/*.md` |
+| ffmpeg 命令构造 | `.agents/skills/ffmpeg-command-construction/` | `ffmpeg`、`-reconnect`、`-segment_format`、`_build_ffmpeg_input_args`、`_build_ffmpeg_output_args`、`_run_ffmpeg_record`、`record_save_type` | `-reconnect*` 位置、`-segment_format` 查表、F-01 四定义点、黄金命令比对 |
+| 平台选源流程 | `.agents/skills/platform-source-selection/` | `select_source_url`、`stream_select`、探针/`probe`、`FLV-first`、`QUALITY_MAPPING`、`_PROBE_BACKOFF_PLATFORMS`、`_FLV_FIRST_PLATFORMS`、`trace_error_decorator` | 探针可达性、FLV-first/HLS 排除、画质映射、装饰器契约 |
+| 运行时钉定验证 | `.agents/skills/runtime-pin-verification/` | `_PINNED_RUNTIME_SHA256`、`--require-pinned`、`check_runtime_pins`、`_is_pinned`、`_slot_is_gated`、`DLR_RUNTIME_SHA256`、`releases/tags` | 三层防线、官方签名档、三类钉定边界、来源增删三处同改 |
+| BrowserSkill（外部工具技能，非本仓领域约定） | `.agents/skills/browser-skill/` | 操作已登录的 Chromium：读取页面、填表、抓取数据、点击流程、UI 回归、验证已部署页面 | `bsk` CLI + 浏览器扩展前置；会话前检查、任务流程、标签页借用与恢复、截图/Canvas、文件工具。借用用户标签页须显式授权，禁止提取 Cookie/token 等凭据 |
+
+### 项目级 Hooks / Commands（生命周期资产）
+
+> 与 Skill 的分工：Skill 展开**怎么做**（判断与步骤），Hook 只做**确定性拦截与即时反馈**，Command 只是短入口。三者都不得另立判据——约束本体仍在 AGENTS.md，改动顺序是「先改本节 → 再改资产」。
+
+| 资产 | 位置 | 触发条件 | 对应约束条目 |
+| --- | --- | --- | --- |
+| Hook 执行体 | `scripts/agent_hook_guard.py` | `PreToolUse`（Bash）：批量重装 venv 依赖、删除目标命中运行期产物目录或 `scripts/`、无过滤面的递归/通配删除；`PostToolUse`（Write/Edit）：`MUTATION-` 标记残留、`.py` 行尾形态混存、新增 `tests/frontend/*.mjs` 未登记 ci.yml | 「风险控制（前置）」、「CI / workflow 约定」的 venv 分级处置、「测试收尾清理临时脚本」、「变异验证…当轮还原」、「注释检查工具」三个盲点、「测试」的 `.mjs` 登记 |
+| Command 入口 | `.qoder/commands/dlr-dod.md` → `/dlr-dod` | 用户显式请求按完成定义逐条验收 | 「完成定义（Definition of Done）」1→6；只引用入口命令，**不得**复制门禁清单 |
+
+- **`.qoder/` 属本地工具目录**（`.gitignore`/`.dockerignore` 已忽略，见「CI / workflow 约定」的 dockerignore / gitignore 同源条目），故这两项资产**不随仓库分发、不得进镜像**；换机器后重建注册：Hook 执行体在 `.qoder/settings.json` 的 `hooks.PreToolUse`（matcher 盖 Bash）与 `hooks.PostToolUse`（matcher 盖 Write/Edit）两个入口，均指向上表脚本。接线与判据的一致性由 `tests/test_agent_hook_guard.py` 钉：受保护目录集合与「运行期产物目录」枚举逐项比对，资产缺失时 skip 而非伪绿。
+- **Hook 只判不改，出口能力由事件的生命周期点决定**（与 provider 文档 https://docs.qoder.com/extensions/hooks 的 Blockable 列同源）：`PreToolUse` 可阻断——命中时以退出码 2 阻止命令执行并把理由经 stderr 回给 agent，这是写入/执行前真正能拦的一站；`PostToolUse` **非阻断**——写入已发生、不可撤销（官方退出码表注明 exit 2 的 stderr 注入仅对 blockable 事件生效），故命中时以退出码 0 + stdout JSON `hookSpecificOutput.feedback` **即时回传**，职责是提示 agent 当场修，不得把「拦下」的声明套在这一站。「变异验证…当轮还原」等约束的真正切断点因此不在 Post 一站，而落在仍可判红的收尾门禁（`run_gates.py` / `tests/test_test_hygiene.py` 的 R8 全仓扫描 / CI）：feedback 被忽略时由它们在入库前兜住。两站均**不得**代替用户决定「该不该清理」（越界一律停下来交回用户）；事件形态不认识时一律放行（fail-open）——Hook 坏掉不能演变成「agent 什么都做不了」，那会把工具故障伪装成代码不合格，质量判定仍由 `run_gates.py` + CI 承担。[历史注] 旧版本对 Pre/Post 统一声明「命中时以退出码 2 拦下」，2026-10-02 经 provider 文档证伪后改为上述双轨口径。
 
 ## 入口点
 
@@ -114,7 +130,7 @@
 ## 依赖管理
 
 - **运行时依赖**: `pyproject.toml [project.dependencies]` 与 `requirements.txt` 保持同步（21 条，2026-09-30 复核，两侧包名集合逐项相等；`fastapi`/`pydantic` 已随 Web 后端阶段2 移除）。回归锁：`tests/test_regression_2026_09_22_gates.py`。
-- **开发 / 构建 / GUI 依赖**: `pip install .[dev]`（pytest / pytest-asyncio / pytest-cov / black / isort / mypy 六条）/`.[build]`（PyInstaller>=6.10.0）/`.[gui]`（customtkinter/pystray/Pillow）；三者均不进运行时清单。
+- **开发 / 构建 / GUI 依赖**: `pip install .[dev]`（pytest / pytest-asyncio / pytest-cov / black / isort / mypy / pre-commit 七条，配套根目录 `.pre-commit-config.yaml`）/`.[build]`（PyInstaller>=6.10.0）/`.[gui]`（customtkinter/pystray/Pillow）；三者均不进运行时清单。
 - **i18n 依赖**: PyYAML（zh_TW.yaml 加载；缺失时仅损失 YAML 格式）。
 - **GUI 三包版本下限（须与 `requirements.txt` 和 `pyproject.toml [project.dependencies]` 三处一致）**: `pystray>=0.19.5`、`Pillow>=12.3.0`、`customtkinter>=6.0.0`。
 - **安全下限（清单只写下限，抬下限消除「声明区间含已知受影响版本」风险）**: `starlette>=1.3.1`（CVE-2026-48710 受影响 <=1.0.0，叠加 PYSEC-2026-2280/2281/248/249 两轮抬升，2026-09-21 定稿）、`urllib3>=2.8.0`（显式声明，requests 传递依赖且同步出站 HTTP 穿过它，CVE-2026-44431 定下限 2.7.0，2026-10-01 由 `deps-audit`「下限复核」抓出 CVE-2026-97687/97688/97689 均影响 2.7.0、修复于 2.8.0 后抬升）、`h2>=4.4.1`（PYSEC-2026-3628 / GHSA-6hr6-w5qg-qmwg 重复 Host 头致请求走私，2026-09-26 由 `deps-audit`「下限复核」抓出）。`python-multipart>=0.0.32`、`requests>=2.34.2` 均已高于修复版本。`pip-audit` 属 CI 审计工具，**不得**进 `requirements.txt`/`[project.dependencies]`；出现新公告优先抬下限而非 `--ignore-vuln` 白名单，新增/上调下限时跑一次 `deps-audit`。
@@ -128,7 +144,7 @@
 - **pytest「0 警告」口径**: warnings summary 为空（0 条）。第三方库告警一律经 `pyproject.toml [tool.pytest.ini_options].filterwarnings` 显式 ignore 并附来源注释；**禁止用 filterwarnings 掩盖项目自身告警**，禁止给用例加宽泛过滤。协程类 RuntimeWarning 由 GC 延迟触发、ignore 拦不住——必须修根因（见「已知坑」跨循环关闭 AsyncClient）。
 - 覆盖率源码 `src/`、排除 `tests/`/`__pycache__/`/`node/`/`ffmpeg/` 等（与 `.gitignore`/`.dockerignore`/pyproject 同源）；门禁：`python scripts/check_coverage.py`（阈值事实源 `MODULE_THRESHOLDS`）。
 - **前端用例（`tests/frontend/*.mjs`）**: Node 内置 `node:test` + `node:vm` 沙箱驱动 `web/app.js`，零 npm 依赖；由同名 Python 包装用例以子进程 `node --test` 调用，Node 缺失时 skip。新增前端用例沿用「`.mjs` 真用例 + `.py` 包装」双文件结构。
-- **新增 `.mjs` 必须同批登记进 `ci.yml`「Gate frontend tests not skipped」的 node-id 清单**: `node --test <文件>` 只跑被点名的文件、不会顺带发现同级其他 `.mjs`，包装写了但不进清单＝该文件的全部锁在正常 CI 中从不执行（M-28 实证：`test_motion.mjs` 的动效降级/清理锁长期空转）。该清单同时是「node 缺失时整体 skip 不被 ci-summary 区分」的第二道防线；新增包装只加 id，**不得**动 `python_build`/`node_version` 常量。
+- **新增 `.mjs` 必须同批登记进 `ci.yml`「Gate frontend tests not skipped」的 node-id 清单**: `node --test <文件>` 只跑被点名的文件、不会顺带发现同级其他 `.mjs`，包装写了但不进清单＝该文件的全部锁在正常 CI 中从不执行（M-28 实证：`test_motion.mjs` 的动效降级/清理锁长期空转）。该清单同时是「node 缺失时整体 skip 不被 ci-summary 区分」的第二道防线；新增包装只加 id，**不得**动 `python_build`/`node_version` 常量。完备性由 `tests/test_ci_frontend_registration.py` 机检（枚举 `tests/frontend/*.mjs` 与该清单求双向差集，不另建第二份清单），本机 Hook 只是即时反馈通道，不能替代它。
 
 - **创建/更新测试**: 按「源码分析 → Mock 配置 → 验证执行」编写；新建用例与被测模块同名（`src/x.py` ↔ `tests/test_x.py`），并用变异验证证明用例真能抓回归（删掉生产实现用例应变红）。**变异验证必做**：新增安全不变量类用例（黄金快照、`-reconnect*`/`-segment_format` 回归锁、节流/锁/退避）；**免做**：仅调整既有断言或新增已被完整覆盖的平凡用例。
 
@@ -179,7 +195,7 @@ docker compose up -d
 
 ### 打包与冒烟测试语义（build_exe.py）
 
-- 打包入口一次产出 CLI / GUI / Web 三个 exe + 共享 `_internal/`（`.github/workflows/build-release.yml` 三平台跑 `--smoke`）。
+- 打包入口一次产出 CLI / GUI / Web 三个 exe + 共享 `_internal/`（`.github/workflows/build-release.yml` 的 build job 逐平台跑 `--smoke`；平台数与 runner 标签以同节「CI / workflow 约定」的「**发布矩阵为四平台，runner 标签↔运行时键的映射单点登记**」条目为唯一事实源，此处不重复列举）。
 - 冒烟判定：`FATAL_MARKERS = ("Traceback (most recent call last)", "ModuleNotFoundError", "ImportError")`；`_finish()` 仅当进程已退出且输出含 FATAL_MARKERS 才判失败（进程存活时 Traceback 视为良性）；GUI 冒烟用 `ignore_patterns=("Failed to dock icon",)` 忽略 headless 良性堆栈。
 
 ### 产物体积门禁（2026-09-24 定稿）
@@ -197,16 +213,19 @@ docker compose up -d
 - **actions 大版本基线 v7**: `checkout`/`setup-python`/`setup-node`/`upload-artifact` 统一 v7；第三方非认证动作的 ref 口径见「已知坑」MIN-17。
 - **版本常量跨 workflow 同值**: `python_build`(3.14) 与 `node_version`(24) 在 ci.yml 与 build-release.yml 各自声明，改一处须同步另一处。
 - **触发与并发策略区分**: ci.yml 限 main 的 push/PR + `cancel-in-progress: true`；build-release.yml 由 `v*` tag 触发 + `cancel-in-progress: false`。
-- **dockerignore / gitignore 同源约定**: 本地工具生成目录（`.mimosa/`/`.qoder/`/`.qoder-credits/`/`.agents/`/`.pnpm-store/`/`.npm-cache/`/`.dsh-validation/`/`.ego-browser-test/`/`.plugin-src/`/`.tmp-dps-extract/`/`.v2c/`/`pytest-cache-files-*/`）与运行期产物目录（`downloads/`/`recordings/`/`logs/`/`backup_config/`）须在两份 ignore 文件与 pyproject 各工具排除列表（black/isort/mypy/basedpyright/coverage）同步维护，漏一处即「未跟踪目录 / 误入镜像 / 工具误扫描」。
+- **发布矩阵为四平台，runner 标签↔运行时键的映射单点登记**: `.github/workflows/build-release.yml` 的 `matrix.include` 含 `windows-latest`/`ubuntu-latest`/`ubuntu-24.04-arm`/`macos-latest`（`platform` 依次 `windows`/`linux`/`linux-arm64`/`macos`），一次发布产出 4 ×（lite+full）= **8 个 zip**，`Verify artifact completeness` 的判据随之为 `-lt 8`。**runner 标签↔运行时键映射的唯一登记点是 `scripts/check_runtime_pins.py::RUNNER_TO_RUNTIME_KEY`**，新增 runner 必须同批登记，否则该脚本按「未登记标签」走 `sys.exit(2)`（属「门禁本身失效」档，发布链在 prepare 即断、根本走不到构建）。矩阵条目的**插入位置也是契约**——`_runtime_matrix_keys()` 按 `os:` 行出现顺序返回键列表，`tests/test_check_runtime_pins.py::test_workflow_matrix_and_test_constant_stay_in_sync` 断言与 `_MATRIX_KEYS` **逐序相等**而非集合比较。Linux 两支共用家族判定 `if: startsWith(matrix.platform, 'linux')`（装 ffmpeg+xvfb 与 `xvfb-run` 冒烟两步），取反那步的标量**必须带引号**写成 `if: "!startsWith(matrix.platform, 'linux')"`：YAML 把行首 `!` 当 tag 指令，无引号实测 `ParserError`。
+- **多架构镜像只走「原生双 runner 各出一层 + imagetools 按 digest 合成」**: `.github/workflows/docker-publish.yml`（仅 `v*` tag 触发、推 GHCR）由 `docker-build-amd64`(`ubuntu-latest`) 与 `docker-build-arm64`(`ubuntu-24.04-arm`) 各推一个**分架构临时 tag**，merge job 用 `docker buildx imagetools create` 按两个构建 job **提升到 job 级 `outputs:` 的 digest** 合成 `latest` 与版本 tag——漏提升时 `needs.*.outputs.digest` 取到空串、合成步骤报无效引用而构建本身全绿。**禁止单 job QEMU 交叉双平台**：本镜像构建期含 `apt install ffmpeg/nodejs` + `pip install -r requirements.txt`，QEMU 下模拟 aarch64 是整层重活。凭据固定为自动注入的 `GITHUB_TOKEN`，发布链**不得**引用任何其它 `secrets.*`；`latest` 只能由 `v*` tag 推出，**不得**为「方便重跑」加回 `workflow_dispatch`/`schedule` 覆盖它的口子（那等于把不可变发布物变成可反复改写的别名）。结构锁 `tests/test_docker_publish_workflow.py`（12 条，含两处 `provenance: false` 承重与「`:latest` 全清单恰一次」）。GHCR 匿名 `docker pull` 另需把包可见性设为 **public**，那是仓库设置层面的一次性人工动作，`GITHUB_TOKEN` 不会代为放开。
+- **dockerignore / gitignore 同源约定**: 本地工具生成目录（`.mimosa/`/`.qoder/`/`.qoder-credits/`/`.agents/`/`.pnpm-store/`/`.npm-cache/`/`.dsh-validation/`/`.ego-browser-test/`/`.plugin-src/`/`.tmp-dps-extract/`/`.v2c/`/`.superpowers/`/`pytest-cache-files-*/`）与运行期产物目录（`downloads/`/`recordings/`/`logs/`/`backup_config/`）须在两份 ignore 文件与 pyproject 各工具排除列表（black/isort/mypy/basedpyright/coverage）同步维护，漏一处即「未跟踪目录 / 误入镜像 / 工具误扫描」。`.superpowers/`（SDD/治理式流程技能的工作区，含 brief/report/review/diff 与运行日志快照）2026-10-03 前四处均未登记，实测后果正是这三种形态的第三与第一种：被 `black`/`check_annotations.py` 扫进仓库面（Python 文件数 216→203），且 `Dockerfile:112` 的 `COPY . ./` 会把它整体打进对外镜像。**第五处同源点**是 `scripts/check_annotations.py::EXCLUDE_DIRS`——它由 `tests/test_run_gates.py::test_check_annotations_exclude_dirs_cover_pyproject_excludes` 与 pyproject 的 black/isort/coverage 三份清单逐名比对（方向为「那边有、这里也得有」），漏登记会让该锁直接变红。
 - **配置键审计须先归一化大小写**: 核对「代码读取的键」与 `config/config.ini` 实际键时先转小写再比对（configparser 大小写不敏感，代码常量大写、配置文件小写，精确比对会误报缺失键）。仓库当前把 `config/config.ini` 作为**已跟踪的脱敏基线模板**；`.gitignore` 的同名规则只对未跟踪副本生效。模板默认值须与代码 fallback、README 配置块逐项对账；**禁止**把真实凭据写入提交或以任何形式外传（红线见「风险控制（前置）·凭据与敏感配置红线」）。
 - **venv 依赖修复分级处置**: 批量 `pip install --force-reinstall` 会被沙箱拦截且拦截在卸载之后，清空包目录（`ImportError: cannot import name 'x' from 'y' (unknown location)`，`pip check` 查不出）。三级：① **一级（代理自行）**单/少数包破损——wheel 直解绕开卸载：`pip download --no-deps -d <tmpdir> <pkg>` → `zipfile.ZipFile(wheel).extractall(<site-packages>)`；② **二级（代理可试）**常规补装单个小包 `HTTP_PROXY="" HTTPS_PROXY="" pip install --proxy "" <pkg>`，被拦立即转三级；③ **三级（交回用户）**批量重装 `pip install --ignore-installed --no-deps -r requirements.txt`。**破损检测三查法**：① 包目录递归数 `.py`/`.pyd` 为 0；② 目录整体消失逐个 import 实测；③ RECORD 对账只作辅助。
 - **覆盖率排除规则两 job 同源**: `pyproject [tool.coverage.report]` 与 `.coveragerc-concurrency` 排除条目必须一致且一律用 `exclude_also`（追加）而非 `exclude_lines`（替换，会丢三条默认排除规则）。
 - **镜像额外排除集**（仅 `.dockerignore`）：`uv.lock`/`scripts/`/`AGENTS.md`/`README_EN.md`/`CODE_WIKI_EN.md`/`.coveragerc-concurrency` 及审查记录通配 `CODE_REVIEW_*.md`/`DIAGNOSIS_*.md`/`PERF_REVIEW_*.md`/`PROPOSAL_*.md`（随仓库分发，不得加进 `.gitignore`；换用新前缀必须三处同改）。
 - **门禁环境变量 `PYTHONUTF8=1`**: 见「格式化命令」MID-63 条目。
 - **`deps-audit` job**: `ci.yml` 中 `pip-audit -r requirements.txt`（按 OSV 审镜像与 CI 实际消费清单），独立成 job 且是 `ci-summary.needs` 的一部分（required check 唯一暴露面）。本地复现须自带 `PYTHONUTF8=1`（中文 Windows 下 pip-audit 读中文注释行会 `UnicodeDecodeError`）。
+- **漏洞审查双防线策略（`deps-audit` 阻断 + Trivy advisory）**: 两条覆盖面互不重叠——`deps-audit` 审 Python 依赖清单（blocking，已抓出 starlette / urllib3 / h2 / protobuf 历次 CVE 并抬下限）；`trivy.yml` 扫 Docker 镜像全层（apt / ffmpeg / node / 基础镜像 libssl 等 Python 清单之外的东西，advisory only，结果进 GitHub Security → Code scanning alerts）。**Trivy 维持 advisory-only 不升级为阻断**：镜像层漏洞多来自上游基础镜像与系统包，无法通过改 Python 依赖修复，需维护者人工判定阈值与忽略口径；cron 触发无人值守时变红会造成无意义噪声。替代审查流程：`deps-audit` 在每次 PR / push 阻断 Python 侧；Trivy 在 push / PR / 每周一 cron 把镜像层结论写入 Security 标签页，维护者定期查看 GitHub Security → Code scanning alerts 完成镜像侧审查。升级 Trivy 为阻断门禁属维护者决策（需先定 `exit-code` 阈值与 `trivyignore` 口径），不在代理权限内。
 - **`static` job 的派生元数据一致性校验（`sync_metadata.py --check`）**: `uv.lock` 与 `DouyinLiveRecorder.egg-info` 是 `pyproject.toml` 的派生产物（见「关键约定」#1 与下方 egg-info 条目），不得手改版本字段。`ci.yml` 的 `static` job 在 `Check version consistency` 之后跑 `--check`——纯读 `uv.lock`/`egg-info/PKG-INFO`/`pyproject.toml` 比对，**不调 uv/setuptools、不联网、无需装项目依赖**，与元数据回归锁同口径；路径过滤已把 `uv.lock`/`DouyinLiveRecorder.egg-info/**` 纳入 `python` 组，手动改这两个文件也会触发本步。漂移修复：`python scripts/sync_metadata.py` 重新生成。
 - **发布链运行时钉定在 prepare 单点收敛（SEV-10）**: 钉定值事实源是 `build_exe.py`，不得把哈希副本写进 workflow（见「已知坑」发布钉定条目）。
-- **build 失败会留下空 Release，须由 `release-guard` 回收（2026-09-27）**: `release-create` 为消除三平台并发创建竞态，在 build **之前**预建 Release 记录；任一平台 build 失败（典型：`_download_file` 的 SHA256 校验 `SystemExit` → `dist/` 无 zip → 上传步骤报 `Pattern 'dist/*-lite.zip' does not match any files`）时，收尾 `release` job 因 `needs: build` 被跳过，那条记录就以**空 Release** 留在仓库里。`release-guard`（`needs: [prepare, build]`、`if: always() && ... && needs.build.result != 'success'`）按「残缺即不发布」删除它并留 warning；`gh release delete` 默认**不删 tag**，修好后重跑工作流即可重新发布。不得为「让流水线变绿」给上传步骤关掉 `fail_on_unmatched_files`——那条红是产物缺失的唯一可见信号。
+- **build 失败会留下空 Release，须由 `release-guard` 回收（2026-09-27）**: `release-create` 为消除 build 矩阵各平台的并发创建竞态（平台数见本节「发布矩阵为四平台」条目，不在此重复），在 build **之前**预建 Release 记录；任一平台 build 失败（典型：`_download_file` 的 SHA256 校验 `SystemExit` → `dist/` 无 zip → 上传步骤报 `Pattern 'dist/*-lite.zip' does not match any files`）时，收尾 `release` job 因 `needs: build` 被跳过，那条记录就以**空 Release** 留在仓库里。`release-guard`（`needs: [prepare, build]`、`if: always() && ... && needs.build.result != 'success'`）按「残缺即不发布」删除它并留 warning；`gh release delete` 默认**不删 tag**，修好后重跑工作流即可重新发布。不得为「让流水线变绿」给上传步骤关掉 `fail_on_unmatched_files`——那条红是产物缺失的唯一可见信号。
 - **维护脚本里「按名字起子进程」必须 `shutil.which` 早退或捕 `OSError`**: PATH 无该命令时 `subprocess.run(["uv", ...])` 抛 FileNotFoundError 而非回非零码，「命令不存在→友好降级」的 else 分支根本不可达，且其后**不依赖它**的步骤（egg-info 重建）被一并带走（M-32①）。降级段不得与后续独立步骤共享同一 try 作用域；`--check` 这类只读路径必须零子进程、零联网（由 tripwire 用例钉住）。
 - **`scripts/smoke_test.py` 的配置形态畸形一律 rc=2，校验点唯一在 `load_config`（M-32②）**: 消费方 `scripts/_ci_web_smoke.sh` 靠 rc=2 区分「配置问题」与「面板故障（可重试）」，让 `.items()`/`.get()` 抛 AttributeError 变成 rc=1 会触发无谓网络重试。显式 `null` 与「键缺失」等价放行，但取值处必须写成 `x.get("headers") or {}`——`dict.get` 的默认值只在**键缺失**时生效，放行 null 再配 `.get(..., {})` 会重开同族崩口。rc=2 现在能真的立刻停：`.github/actions/retry` 自 2026-09-30 起支持可选入参 `fail_fast_codes`（默认空串＝既有调用点行为逐字不变），仅 web smoke 调用点传 `"2"`，命中即带**原退出码**失败、不进入退避。**不得**为了「让流水线变绿」把 rc=2 退成 0 或降级成 warning——那是假绿。回归锁 `tests/test_ci_retry_action.py`（结构锁 + 真 bash 行为锁 8 格）。
 
@@ -219,16 +238,18 @@ docker compose up -d
 # 抛 'gbk' codec can't encode 并静默跳过、rc 仍 0——本地与 CI 都没查。
 PYTHONUTF8=1 python -m black --check --diff --line-length 120 --target-version py314 .
 PYTHONUTF8=1 python -m isort --check-only --diff --profile black --line-length 120 .
-mypy                      # 不带路径，范围取 pyproject [tool.mypy].files
-mypy --platform linux     # 涉及平台专属符号时增跑
+mypy                      # 不带路径，范围取 pyproject [tool.mypy].files（本机平台目标）
+mypy --platform linux     # 平台双跑：本机非 linux 时补测 linux 目标（涉平台专属符号必查）
+mypy --platform win32     # 平台双跑：本机非 win32（含 Linux CI）时补测 win32 目标（同范围、不带路径）
 python scripts/check_annotations.py
 python scripts/compile_po.py --check
 python scripts/check_version.py
 python scripts/check_runtime_pins.py  # 只查结构；--strict（发布路径）见「CI / workflow 约定」
+python scripts/check_skill_agents_consistency.py  # Skill 目录与 AGENTS.md 表格一致性
 ```
 
 - **`check_annotations.py` 不止查注释**: 常驻符号可达性检查，报告「引用了全仓都没有绑定的名字」（删除模块级函数/常量却留调用点的形态）。该命令在上方清单内，CI 与 `run_gates.py` 两侧都跑。
-- **本地一次性触发点**: `python scripts/run_gates.py` 按原顺序跑完全部 `--check` 型门禁（含条件增跑的 `mypy --platform linux`），任一失败非 0 退出；`--list`/`--only`/`--keep-going` 用于排障。脚本运行时解析本节 bash 块，**本节仍是唯一事实源**，禁止另建并行清单。给门禁写行尾注释安全，写行首注释会被整行跳过。
+- **本地一次性触发点**: `python scripts/run_gates.py` 按原顺序跑完全部 `--check` 型门禁（含平台双跑增跑的 `mypy --platform linux` / `mypy --platform win32`），任一失败非 0 退出；`--list`/`--only`/`--keep-going` 用于排障。脚本运行时解析本节 bash 块，**本节仍是唯一事实源**，禁止另建并行清单。给门禁写行尾注释安全，写行首注释会被整行跳过。
 - **一律显式传参**（`--line-length 120 --target-version py314`/`--profile black`）：配置会继承，但显式参数避免本地配置漂移造成「本地过、CI 挂」，也与 CI 逐字对齐。排除目录不需传（由 pyproject 生效）。
 - **本地门禁可外推的前提：工具版本与 `ci.yml` consts 钉定值逐一同值**: `run_gates.py` 以 `sys.executable -m black/-m isort` 与 venv 内 `mypy` 起子进程，故「本地全绿」只有在 black/isort/mypy/pytest 版本与 CI 的 `black_version`/`isort_version`/`mypy_version`/`pytest_version` 相等时才等于「CI 会绿」。任一项不一致时，报告必须写明「本地口径，未经 CI 同版本验证」并列出差异项（2026-09-30 全量核查：black 26.5.1 / mypy 2.3.1 / pytest 9.1.1 同值，isort 本机 9.0.2 对 CI 钉定 9.0.1 差一个补丁位）。**不得**为凑同值擅自改 workflow 常量或批量重装 venv 依赖（后者见「风险控制（前置）」）。
 - **`PYTHONUTF8=1` 必须同时覆盖子进程与转发输出的父进程，且「告警即失败」同回路判定（MID-63）**: ① isort 读文件用平台默认编码，GBK locale 下遇中文注释只发 `UserWarning: Unable to parse file …` 就**跳过该文件**、rc 仍 0。两条配套：`run_gates.py` 把行首 `NAME=value` 转子进程环境变量并对 stderr 中 `Unable to parse file` 判失败；`ci.yml` 用 step 级 `env: PYTHONUTF8: "1"` + 独立 silent-skip 兜底步骤。② `reconfigure(encoding="utf-8")` 必须显式写 `errors="replace"`（只传 `encoding` 不传 `errors` 会把错误处理器重置为 `'strict'`）；`run_gates.ensure_utf8_streams()` 修的是中文 Windows 下本进程 stdout 为 cp936、转发 black emoji 行抛 `UnicodeEncodeError` 炸门禁进程的根因——`errors="replace"` 只是兜底，**不得**改用「只判断退出码」或「过滤 emoji」绕过。③ 本仓「Windows 控制台 UTF-8 补丁」重复实现于 6 处，`build_exe._ensure_utf8_streams()` 曾漏写 `errors`，而 `tests/test_build_exe.py` 在 pytest 进程内调 `build_exe.main()`，pytest 的 fd 捕获包装器被就地翻成 strict，会话收尾读回捕获文件抛 `UnicodeDecodeError`。④ 配套约束三条：任何 `reconfigure` 显式给 `errors`；`tests/conftest.py` 的 `_guard_stdio_encoding_policy` 逐用例校对 `(encoding, errors)`，宿主进程编码策略属框架资产、用例不得改；`gui._install_crash_sink()` 仅 `__name__ == "__main__"` 时装进程级钩子。
@@ -258,7 +279,7 @@ find . -name "*.isorted" -delete
 
 代码通过门禁 **不等于** 完成。改动落地后按序执行 1→6，任一条不满足即未完成：
 
-1. **门禁全绿**: `python scripts/run_gates.py` + `pytest`（0 警告）+ `scripts/check_coverage.py`；basedpyright 本地核一次。
+1. **门禁全绿**: `python scripts/run_gates.py` + `pytest`（0 警告）+ `scripts/check_coverage.py`；basedpyright 本地核一次。**大批量改动收尾时，被引用为「门禁全绿」证据的那次运行必须发生在整批最后一次编辑之后**——中途跑绿后又改了文件不得沿用旧结果（否则会把「改前的绿」当作「改后的绿」）。收尾须对「本次改动」记录三元组「**最终修订**（最后一次编辑落到的文件/提交点）+ **实际执行的命令** + **通过/失败**」，并确认该运行指向最后一次编辑之后而非之前。此判定与留痕走本入口（第 1 步），**不另建并行清单**；`/dlr-dod` 命令第 1 步与本步同源，冲突时以本节为准。
 2. **端到端真机验证**: 涉及录制链路/选源/ffmpeg 参数/平台解析的改动必须用**真实 URL** 增量跑（至少一受影响平台）并写进回复——只有单测绿不算验证过。判定口径：回复含脚本名（`test_{bili,douyin,douyu,huya,twitch}_live_collector.py`）+ 脱敏 URL + 结果状态（PASS/WARN/FAIL）+ 可核对读数（消息数/SRT 字节数）。无法执行（无外网/无活房间）时记「未执行 + 原因 + 交回用户的动作」且**不得宣布完成**。验证结论同时写进 `CODE_WIKI.md`/`CODE_WIKI_EN.md` 更新日志。
 3. **回归锁**: 动到带「回归锁」标注的行为时确认对应用例存在且覆盖；缺则补。
 4. **文档同源**: `CODE_WIKI.md`/`CODE_WIKI_EN.md` 更新日志追加本次变更（中英双份）；新增长期约定写回本文件。
@@ -321,6 +342,7 @@ find . -name "*.isorted" -delete
 12. **修复类注释必须附可复核判据**: 注释写「已修 X」或「回归锁：`tests/…::test_xxx`」时该用例必须真实存在且能因该修复被破坏而变红；否则如实写「待办+为何未做」。判据 `grep -rn "回归锁：tests/" main.py src/ | 逐条 grep 用例名` 复核。
 13. **跨模块字符串契约不得靠自然语言子串**: 面板/GUI 解析录制端日志时 `if "没有正在录制" in msg` 在 `language=en_US/en_GB/zh_TW` 下恒假（正文经 `i18n.tr()`）。比较对象一律取 `i18n.tr(...)` 后形态，不得直接拿简中常量；结构化前缀（`#DLRQ|` 键值协议）属待批准长期方案。
 14. **i18n 扫描盲区清单**: `scripts/extract_i18n_strings.py` 扫不到 ①`color_obj.print_colored(...)` ②`messagebox.show*` ③**推送正文**（`msg_push.py` 裸字面量+`str.replace` 模板）——三类新增用户可见文案必须手工补进 `zh_CN.po`/`en_US.json`/`en_GB.json`/`zh_TW.yaml` 并重编 `.mo`，否则提取器报「0 缺失」假绿；并行修复中间态落 `_i18n_pending*.json` 由中央合并脚本一次性落四目录。
+15. **启动期陈旧字节码缓存清理只在白名单根内、判定必须用源码内容哈希**: `src/startup_cleanup.py` 由 `main()` 在 `utils.remove_duplicate_lines` 之后调用，开关键 `是否启动时清理陈旧字节码缓存(是/否)` 走 `read_config_bool`（默认「是」，`config.ini`/中英 README 配置块三处同值）。扫描根**只有**「程序目录顶层 + `src/` 下直接含 `.py` 的目录」，删除对象**只有**其下 `__pycache__/` 里的 `.pyc`/`.pyo`；**禁止**改成 `rglob`/全树递归或去掉「含 .py」判据（会删进 `tests/`/`scripts/`/`.venv/`/`downloads/`；2026-10-02 变异验证实测这两种改法均被 `tests/test_startup_cleanup.py::test_purges_only_whitelisted_roots` 抓红）。判定基线为 `sha256(相对路径 + 文件字节)`，与版本号一起落 `logs/.pyc_stamp`（`版本|哈希` 两字段）——**不得**退化为 `(size, mtime)`：覆盖升级时复制工具常保留 mtime，同字节数改动会让 CPython 的 timestamp 失效判定与 mtime 式指纹同时失明（回归锁 `test_same_size_same_mtime_content_change_is_detected`）。基线缺失或读失败按「无法证明缓存新鲜」处理 = 清一次；写失败仍然清并 warning（退化成用户手工删缓存的语义，不得静默失效）。`_IS_FROZEN` 与开关关闭两条路径一律零 I/O（不遍历、不哈希、不碰哨兵）。新增运行期文件一律优先考虑 `logs/`——该目录已在 `RUNTIME_ARTIFACT_DIR_NAMES`/`.gitignore`/`.dockerignore` 三处排除，不必再改第四处排除口径。
 
 ## 已知坑（避免回归）
 
@@ -366,6 +388,7 @@ find . -name "*.isorted" -delete
 - **抖音接口风控信号是「HTTP 200 + 空响应体」不是 4xx**: 解析失败先看 `len(response.text)`，为 0 基本是 UA/Cookie 被拒。三条配套：① UA 敏感——`src/room.py` 模块级 `HEADERS` 是 2020 三星安卓 UA，`iesdouyin.com/web/api/v2/user/info/` 用它必被静默拒，此类接口一律用 `room.DESKTOP_UA`；② `iesdouyin.com/share/user/<sec_uid>` 已是 JS 反爬壳页，取 `unique_id` 请走 `https://www.iesdouyin.com/web/api/v2/user/info/?sec_uid=<sec_uid>`；③ `webcast.amemv.com/webcast/room/reflow/info/` 用占位 `room_id=2`+`sec_user_id` 解析主页行不通（status_code=10011）。
 - **`live.douyin.com` 的 `web_rid` 同时接受数字房间号与抖音号**: `webcast/room/web/enter/` 两者皆可，`live.douyin.com/<抖音号>` 不重定向。**不要写「抖音号需先重定向解析成数字」的逻辑**（已被实测证伪并删除）。`main.py` 以 `port_info["anchor_name"]` 为空作「网址内容获取失败」判据。
 - **`hevc_flv_url` 必须带 `codec=h265` 标记**（src/spider.py::extract_douyin_hevc_flv_url）: 正则抠出的 HEVC 地址必须补 `&codec=h265`（已带则原样返回）。下游 `_is_h265()`/`main.py` 的 h265 兜底**只认 URL 上的 codec 查询参数**。注意 `utils.get_query_params` 返回 **list**（`spider.get_params` 返回 str，不可混用）。
+- **斗鱼房间号提取只认数字，且新域名必须两处同时登记**（2026-10-03 接入 `m.douyu.com` 时定稿）: 提取走 `spider.extract_douyu_rid_param()`（锚定 `[?&]rid=`，值非数字时**不作数**、回落路径首段）与 `spider.extract_douyu_room_id()`（`urlsplit` 取路径**首个非空段**，天然剥掉尾斜杠 / query / fragment，scheme 无关；无 scheme 时按准入侧同一规则补 `https://`，否则首段取到的是主机名）。取代的两处整串正则各有洞：`rid=(.*?)(?=&|$)` 会被 `?xyzrid=123` 误命中，`douyu.com/(.*?)(?=\?|$)` 会把尾斜杠与后续路径段带进房间号（`/8751648/` → `8751648/`）→ `betard` 拿不到 room、用户只看到「房间不存在」这类误导。字母号仍走移动端 `vike_pageContext` 还原，**还原产物非数字必须在还原出口报错**（`betard` / `getH5PlayV1` 只吃数字 rid）。新增斗鱼域名须**同时**登记 `main.py` 的 `PLATFORM_HOST` 与分发表匹配片段：缺前者链接在读取 URL 配置阶段就被判「未知链接」并注释掉，缺后者落入 `_resolve_unrecognized` 无限空转（SEV-2203 同型）。另：往分发表**插入**表项会挪动其后所有下标，`tests/test_platform_dispatch.py::test_resolver_table_priority_head` 的顺序锁必须同步改。
 
 ### 画质档位与选源映射
 
@@ -448,6 +471,7 @@ find . -name "*.isorted" -delete
 - **删除模块级函数/常量前必须 grep 全部调用点**: `main.py` 曾删 `_ffmpeg_reported_output_failure()` 但留调用点，mypy/basedpyright/tests 三面同时转红，且因调用点在 `and` 右侧短路、在 Linux CI 上恰不炸（典型「本地红、CI 绿」）。执行「删除符号」改动：① grep 收全调用点再删；② 删完立刻跑 mypy+完整 pytest；③ 用例输出路径必须用 `tempfile.gettempdir()`（旧 `"/tmp/out.ts"` 在 Windows 父目录不存在，两端语义相反）。`check_annotations.py` 已常驻符号可达性检查兜底。
 - **测试桩转发函数里 `*args`/`**kwargs` 一律注解 `Any`（写成 `object` 只有 basedpyright 报错）**: `monkeypatch.setattr(Path, "unlink", stub)` 类转发桩若 `*a: object, **k: object` 转发，basedpyright 会按声明类型逐个匹配形参报 `reportArgumentType`；mypy 不报故只跑 mypy 会漏。统一 `*args: Any, **kwargs: Any`（必要时 `cast` 收窄返回值）。
 - **CI 的 typecheck job 必须装 pytest，否则 `tests/` 的类型检查是半盲的**（2026-09-26 修）: 该 job 若只装 `requirements.txt + mypy`，`tests/` 里的 `pytest.*` 全按 `Any` 检查——fixture / `MonkeyPatch` 免检不说，`pytest.fail()` 的 `NoReturn` 也丢失，于是「声明了非 `None` 返回类型、却以 `pytest.fail()` 收尾」的辅助函数被判成 `[return]`（`tests/test_proto_runtime_compat.py::_declared_protobuf_specifier` 实测只在 CI 红、本机恒绿，无法本地复现）。现随 consts 补装固定版本 `pytest==9.1.1`（与 black / isort / mypy 同口径，防「代码未改动却 CI 变红」）。长期约定：辅助函数走不到终点时统一 `raise AssertionError(...)`（天然 `NoReturn`，不依赖 pytest 是否可见），**不要**依赖 `pytest.fail()` 的返回类型，**也不要**在其后补不可达语句（basedpyright 报 `reportUnreachable`）。复现「pytest 不可见」的老环境：`mypy --no-site-packages`（该模式下 `src/` 多出的 5 条 `no-any-return` 属过度剥离噪声，非真实问题）。
+- **`[tool.mypy].exclude` 里的裸 `"ffmpeg"` 是路径子串正则，使 `src/ffmpeg_*` 与 `tests/test_ffmpeg_*` 对「不带路径的 mypy」门禁失明**: mypy 的 `exclude` 按**正则子串**匹配完整路径，而 black（`/( … )/` 只命中目录段）、isort（`extend_skip` 按名）、basedpyright（`**/ffmpeg` 目录 glob）三者的同名排除都只作用于**名为 `ffmpeg` 的目录**——同一份排除清单里只有 mypy 会把模块名含 `ffmpeg` 的源码一并吞掉。实测读数：2026-10-02 新增 `src/ffmpeg_linux_download.py` + `tests/test_ffmpeg_linux_download.py` 前后，无参 `mypy` 同为 `Success: no issues found in 189 source files`（显式传这两个文件才报 `checked 2 source files`）；2026-10-03 加入名字不含 `ffmpeg` 的 `tests/test_docker_publish_workflow.py` 后同一命令读到 `190 source files`，差的正是整个 `ffmpeg_*` 家族。**因此「mypy 全绿」不得当作这批文件的类型门禁证据**。代偿口径（本轮采用）：显式传参 `python -m mypy src/ffmpeg_<x>.py tests/test_ffmpeg_<x>.py` + `basedpyright`（其排除是目录 glob，新模块在扫描面内，2026-10-02 实测 `filesAnalyzed: 2`、`errorCount: 0`/`warningCount: 0`）。**改 exclude 形态**（如锚定成 `^ffmpeg/` 一类）＝全仓 ffmpeg 系文件首次进 mypy 门禁、必一次性暴露存量错误，属**独立工作包、待维护者决策**，不得在日常改动里顺手改 `pyproject.toml`。
 
 ### 热路径性能（数据结构 / 正则）
 
@@ -467,6 +491,8 @@ find . -name "*.isorted" -delete
 - **发布链运行时二进制必须 fail-closed 钉定（SEV-10）**: 三层防线缺一不可：① `_PINNED_RUNTIME_SHA256`（64 位小写十六进制，占位/空串=未钉定，不得回填本地自算哈希）；② `--require-pinned` 缺钉定即 `SystemExit`；③ `check_runtime_pins.py` 表为空/缺平台/缺槽位 rc=2。Linux 取数端点必须是 `releases/tags/<月末标签>`，不得用 `releases/latest`。详细验证流程见 `.agents/skills/runtime-pin-verification/SKILL.md`。回归锁 `tests/test_build_exe.py::test_linux_ffmpeg_urls_pin_an_immutable_release_tag`。
 - **三类「钉定/校验」互不覆盖**: ① 发布期运行时二进制（含官方签名档）；② 运行期自动安装 TOFU 基线；③ 签名脚本层 `_JS_SHA256_EXPECTED`。新增远程执行代码必须落进三类之一。详细边界判定见 `.agents/skills/runtime-pin-verification/SKILL.md`「三类钉定/校验互不覆盖」章。
 - **发布面 ffmpeg 来源增删必须同批改三处**: ① `_FFMPEG_DOWNLOAD_URLS`；② 钉定取值或签名档标记；③ `_ALLOWED_HOSTS` 主机白名单（退役主机须移出）。归档层级经 `_extract_linux_ffmpeg_binaries()` 递归按名取件，不得写死 `bin/` 或平铺。详细流程见 `.agents/skills/runtime-pin-verification/SKILL.md`「发布面 ffmpeg 来源增删」章。
+- **运行期 Linux 直下的 URL 与发布链是两份物理副本，换月末标签必须同批改两处并重取钉定值**: `src/ffmpeg_linux_download._LINUX_FFMPEG_URLS`（键 `linux64`/`linuxarm64`）与 `build_exe._FFMPEG_DOWNLOAD_URLS` 的 Linux 两项**逐字相同但各存一份**——冻结 exe 在 import 期拿不到根目录的 build 脚本，「让运行期去读发布链常量」等于给打包产物加一个不存在的依赖。等价性由 `tests/test_ffmpeg_linux_download.py::TestUrlParityWithBuildExe` 机检（测试直接 `from build_exe import _FFMPEG_DOWNLOAD_URLS`——`tests/__init__.py` 使仓库根成为 import 基准目录，故根目录脚本可普通 import，取到的是与 `check_runtime_pins._load_build_exe` 按路径加载**同一份**常量；[历史注] 本句原写作「`importlib` 按文件路径加载 `build_exe.py`，与 `check_runtime_pins._load_build_exe` 同先例」，2026-10-03 经 final-review M-1 对照测试本体证伪，按路径加载的是另一支 `tests/test_check_runtime_pins.py`），漏改一侧即红；改标签的同时必须**重取** `_PINNED_RUNTIME_SHA256` 的两个 Linux 槽。同一模块的期望值通道 `api.github.com` 属**同源一致性校验而非来源认证**——它与产物**同平台、异服务**（API 域 ↔ 对象存储域），强度与 gyan.dev 的 `.sha256` 文档同级（MIN-2258 同一措辞），**注释与日志一律不得写成「已认证来源」**；真正多出来的那半只是「URL 里的月末 autobuild 标签不可变，期望值不随上游重发漂移」。故 `tests/test_ffmpeg_install.py::DOWNLOAD_SOURCES` 保持**两条**：`api.github.com` = `官方哈希`、`github.com` 仍 = `TOFU`（master-latest 那条路还在），**不得合并**成一条。
+- **运行期 Linux 直下的两条「不得回退」实现形态**: ① `master_allowed` **由调用方传参**——实参位是 `install_ffmpeg_linux()` **函数体内**调用直下入口的那一处（`src/ffmpeg_install.py:583` 的 `install_ffmpeg_linux_native(execute_dir, master_allowed=_master_source_allowed())`，入口签名为 `install_ffmpeg_linux_native(dest_dir, arch=None, *, master_allowed=False)`），新模块**不得**自己读 `FFMPEG_MASTER_ALLOWED` 环境变量——`ffmpeg_install` 已 import 本模块，反向 import 判据函数即构成循环依赖；[历史注] 本条原把实参位写作 `install_ffmpeg_linux(..., master_allowed=…)`，2026-10-03 经 final-review M-2 对照源码改正（`install_ffmpeg_linux()` 自身不收该关键字，写成它的形参会造出一条不存在的参数）；② `_install_binaries()` 是**两趟**（先全量递归定位 `ffmpeg`/`ffprobe`、缺件即返回且 dest 侧零改动，两件齐了才 mkdir + copy + 补执行位），不得复原成「边找边拷」——那会留下半截安装，且 `dest/ffmpeg/` 空壳本身成为「装过了」的假证据（回归锁 `tests/test_ffmpeg_linux_download.py::TestBinaryLayoutDiscovery::test_missing_companion_leaves_no_half_install`）。接线处另有「`apt update` 失败不再在 apt 块内早退，改落函数末尾统一出口」的形态改动（非 root 的 Debian/Ubuntu arm64 机器上 `apt update` 失败是常态，而这类机器正是直下的目标人群），回滚 S2 时须连同该 `else:` 嵌套一起还原才等价，见 `docs/worklog/PROPOSAL_2026-10-02_linux-arm64-ffmpeg.md`「九、回滚方案」。
 - **`Dockerfile` 的 `ARG` 必须声明在使用它的指令之前，且门禁要断言行序（MIN-14）**: `LABEL version="${APP_VERSION}"` 写在 `ARG APP_VERSION` 之前会固化空串且构建期不报错。现 `check_version.py` 另断言「`ARG APP_VERSION` 声明行 < 使用点所在指令起始行」（多行续写须回溯指令头、跳过注释行）。新增 ARG/ENV 消费点同理。
 - **`scripts/check_coverage.py` 无数据即 rc=2 硬失败，不得退回 WARN（MIN-19）**: 「数据文件不存在」「JSON 读不出」「files 为空」三类都必须走 rc=2 并打印 `pytest --cov=src` 下一步命令（与「模块查不到按失败处理」同族防线，不可互替）。CI test job 顺序固定 `pytest --cov=src` → `check_coverage.py`。
 - **不可信输入不得跑浮动 ref 的第三方动作（MIN-17）**: `issue-translator.yml` 触发源是任意外部贡献者正文，已降级为仅 `workflow_dispatch`+降权。不得凭记忆填 SHA、不得为恢复便利加回触发器；其余第三方非认证动作（`trivy-action` 已 SHA 钉定等）按同判据区分。

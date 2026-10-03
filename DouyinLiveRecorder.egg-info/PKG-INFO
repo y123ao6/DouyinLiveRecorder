@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: DouyinLiveRecorder
-Version: 4.4.0
+Version: 4.5.0
 Summary: 支持抖音、TikTok、YouTube、快手等60+平台的直播录制工具，支持循环录制、多人录制、消息推送
 Author-email: y123ao6 <zmzx0690@agent.qq.com>
 License: MIT
@@ -55,6 +55,7 @@ Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
 Requires-Dist: black>=23.0.0; extra == "dev"
 Requires-Dist: isort>=5.12.0; extra == "dev"
 Requires-Dist: mypy>=1.5.0; extra == "dev"
+Requires-Dist: pre-commit>=3.6.0; extra == "dev"
 Provides-Extra: gui
 Requires-Dist: customtkinter>=6.0.0; extra == "gui"
 Requires-Dist: pystray>=0.19.5; extra == "gui"
@@ -300,7 +301,7 @@ DouyinLiveRecorder/
 ```ini
 [录制设置]
 # 界面语言：zh_CN | en_US | en_GB | zh_TW（留空跟随系统语言；值支持 zh_cn/zh-CN/en/en-GB/zh-Hant 等写法，自动归一；对应语言文件缺失时回退 en_US）
-language = zh_CN
+language =
 # 是否跳过代理检测(是/否)
 是否跳过代理检测(是/否) = 是
 # 是否启用日志文件(是/否)
@@ -334,8 +335,8 @@ language = zh_CN
 同一时间访问网络的线程数 = 3
 # 最大同时录制数 - 全局并发录制上限，0 为不限制（默认 0）；改值后下一轮检测循环生效
 最大同时录制数(0为不限制) = 0
-# 循环时间(秒) - 直播状态检测间隔（默认 120）
-循环时间(秒) = 120
+# 循环时间(秒) - 直播状态检测间隔（默认 60）
+循环时间(秒) = 60
 # 排队读取网址时间(秒)
 排队读取网址时间(秒) = 0
 # 是否显示循环秒数
@@ -348,11 +349,11 @@ language = zh_CN
 是否启用HLS采集(是/否) = 是
 # HLS采集排除平台(逗号分隔) - 命中平台无视「是否启用HLS采集」配置、恒按 FLV 采集
 # （平台名须与日志/配置中显示的完全一致，如：斗鱼直播,虎牙直播；留空不排除任何平台）
-HLS采集排除平台(逗号分隔) =
+HLS采集排除平台(逗号分隔) = 虎牙直播
 # 是否启用https录制 - 已整合原「是否强制启用https录制」与「是否禁用SSL证书验证(是/否)」：
 # 开启 = 流地址以 https 拉流并跳过 SSL 证书校验；关闭 = 流地址以 http 拉流并恢复默认证书校验
 # （旧键「是否强制启用https录制」的值会自动迁移继承；TikTok/YouTube 等 https-only 海外平台在关闭时保持原样）
-是否启用https录制 = 否
+是否启用https录制 = 是
 # 禁用SSL证书验证的平台(逗号分隔) - 仅在「是否启用https录制 = 否」（http 模式、需证书校验）时生效。
 # FFmpeg 9.0 起 TLS 证书验证默认开启，证书异常平台需在此豁免；启动时会自动追加必需平台
 # （虎牙直播 / B站直播），只追加不移除用户手填项
@@ -378,15 +379,15 @@ mp4格式重新编码为h264 = 否
 # 额外使用代理录制的平台(逗号分隔)
 额外使用代理录制的平台(逗号分隔) =
 # 是否录制弹幕(是/否) - 开启后弹幕落为 SRT 字幕文件，与视频录制同起同停
-是否录制弹幕(是/否) = 否
+是否录制弹幕(是/否) = 是
 # 是否弹幕监控(是/否) - 仅实时查看弹幕、不写 SRT（与弹幕录制解耦，可单独开启）
-是否弹幕监控(是/否) = 否
+是否弹幕监控(是/否) = 是
 # 弹幕分片时长(秒) - SRT 分片粒度，建议与「视频分段时间(秒)」一致
 弹幕分片时长(秒) = 1800
 # 弹幕录制平台(逗号分隔) - 目前支持的 5 个平台
 弹幕录制平台(逗号分隔) = 斗鱼直播,B站直播,虎牙直播,抖音直播,TwitchTV
-# 单次录制时长上限（秒）；0 表示不限制，默认 6 小时
-单次录制时长上限(秒,0为不限制) = 21600
+# 单次录制时长上限（秒）；0 表示不限制
+单次录制时长上限(秒,0为不限制) = 0
 ```
 
 ### 推送配置 (config/config.ini)
@@ -399,24 +400,24 @@ mp4格式重新编码为h264 = 否
 微信推送接口链接 =
 bark推送接口链接 =
 bark推送中断级别 = active
-bark推送铃声 =
+bark推送铃声 = bell
 钉钉通知@对象(填手机号) =
 钉钉通知@全体(是/否) = 否
 tgapi令牌 =
 tg聊天id(个人或者群组id) =
 smtp邮件服务器 =
-是否使用SMTP服务SSL加密(是/否) =
-SMTP邮件服务器端口 =
+是否使用smtp服务ssl加密(是/否) = 是
+smtp邮件服务器端口 =
 邮箱登录账号 =
 发件人密码(授权码) =
 发件人邮箱 =
 发件人显示昵称 =
 收件人邮箱 =
-ntfy推送地址 = https://ntfy.sh/xxxx
+ntfy推送地址 =
 ntfy推送标签 = tada
 ntfy推送邮箱 =
 pushplus推送token =
-自定义推送标题 =
+自定义推送标题 = 直播间状态更新通知
 自定义开播推送内容 =
 自定义关播推送内容 =
 只推送通知不录制(是/否) = 否
@@ -434,16 +435,17 @@ pushplus推送token =
 抖音cookie =
 # 单独指定抖音 ttwid（留空则由 src/ttwid.py 自动获取并进程级缓存）
 ttwid =
-# 小红书 app 端接口的会话 sid（xy-common-params 头），留空则用内置缺省（可能已过期）
-# 优先级：环境变量 XHS_SESSION_SID > 本键 > 内置缺省
-xhs_session_sid =
 快手cookie =
 tiktok_cookie =
+tiktok_guest_cookie =
 虎牙cookie =
 斗鱼cookie =
 yy_cookie =
 b站cookie =
 小红书cookie =
+# 小红书 app 端接口的会话 sid（xy-common-params 头），留空则用内置缺省（可能已过期）
+# 优先级：环境变量 XHS_SESSION_SID > 本键 > 内置缺省
+xhs_session_sid =
 bigo_cookie =
 # ... 共 51 个平台 cookie 键，其余详见 config.ini
 ```
@@ -508,7 +510,7 @@ web_allowed_hosts =
 ```ini
 [GUI]
 # 界面主题：light | dark | high_contrast（留空跟随系统外观明暗；GUI 侧边栏「界面主题」菜单选择后自动写回）
-gui_theme =
+gui_theme = light
 ```
 
 ### 直播间配置 (config/URL_config.ini)
@@ -1029,7 +1031,7 @@ brew install node
 
 **🧪 测试与验证**
 - 全量 `pytest` **3690 passed / 14 skipped / 0 failed / 0 警告**（2026-10-01 本机实测；14 条 skip 均为平台条件性：符号链接特权缺失、Windows chmod 只读位语义、SIGKILL POSIX 形态、h2 已装致缺依赖分支不可达等）。
-- 覆盖率 44 模块全部达阈（总 84.76%，09-30 实测）；basedpyright 0 error / 0 warning；`run_gates.py` 8/8 全绿。
+- 覆盖率 44 模块全部达阈（总 85%，coverage.json 实测）；basedpyright 0 error / 0 warning；`run_gates.py` 8/8 全绿。
 - 真机验证（09-29 ~ 09-30）：抖音 PASS（59 条 / SRT 4518 字节）、B站 PASS（9 条 / 678 字节）、虎牙 WARN（连接正常、该时段无弹幕）、Twitch WARN、斗鱼 SKIP(房间未开播，解析链正常)、TikTok SKIP(无出境网络)；standalone `--dry-run` 虎牙真实在播房间 PASS（S-01/S-02 增量验证）；公网 HLS 分片探针走通且四类内网目标全拒。GUI 目视项、斗鱼/TikTok 活房间复跑、打包体积复测等交回动作见 [CODE_WIKI.md](CODE_WIKI.md)。
 
 ### v4.3.0 (2026-09-16 ~ 2026-09-27) — P0 修复 ffmpeg master 构建下录制 100% 失败（`-thread_queue_size` 被上游收窄为输出专属选项）/ 布尔配置解析口径统一（`true/false` 致 8 项配置静默失效、9 个海外平台无法录制）/ 两轮全量代码审查（62 + 106 项分级修复）/ 供应链加固（官方哈希优先 + GPG 验签 + 删除蓝奏云兜底）/ 发布链四处故障修复（**对外分发的 lite 包一度从未真正存在**）/ Apple Silicon 的 ffmpeg PATH 让位策略 / 日志房间关联字段与 `/health` 探活端点 / 构建产物体积 −21.6% / 覆盖率 73.28% → 82.03%（专项）与 83.91%（09-27 终态）

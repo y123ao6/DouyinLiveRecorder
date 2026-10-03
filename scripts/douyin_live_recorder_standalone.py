@@ -120,6 +120,25 @@ _print_lock = threading.Lock()
 # 可选文件日志路径：Recorder 初始化时按配置赋值；空串表示关闭
 _LOG_FILE_PATH = ""
 
+# L-47（2026-10-02）：日志轮转阈值。standalone.log 与 ffmpeg.log 均为无上限 append
+# （S-02 只解决了凭据明文问题，磁盘占满这一半未闭合），长跑数周可写满磁盘。
+_LOG_ROTATE_BYTES = 10 * 1024 * 1024
+
+
+def _rotate_log_if_needed(path: str) -> None:
+    # 单代轮转：超阈值时 rename 为 .1（旧 .1 直接覆盖）。只保两代（当前 + .1），
+    # 与主程序 loguru rotation 的最小可用形态对齐；调用点持 _print_lock 或在
+    # run_ffmpeg 单线程打开前执行，无并发窗口。Windows 下文件被占用时 os.replace
+    # 抛 PermissionError——静默跳过本轮轮转，日志继续 append（不能影响录制主链路）。
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) >= _LOG_ROTATE_BYTES:
+            rotated = path + ".1"
+            if os.path.exists(rotated):
+                os.remove(rotated)
+            os.replace(path, rotated)
+    except OSError:
+        pass
+
 
 def log(level: str, msg: str) -> None:
     # 线程安全的日志输出：stdout 可用时打印，启用文件日志时同步落盘。
@@ -130,6 +149,7 @@ def log(level: str, msg: str) -> None:
         if sys.stdout is not None:
             print(line, flush=True)
         if _LOG_FILE_PATH:
+            _rotate_log_if_needed(_LOG_FILE_PATH)
             try:
                 with open(_LOG_FILE_PATH, "a", encoding="utf-8", errors="replace") as f:
                     f.write(line + "\n")
@@ -185,11 +205,31 @@ class ProbeResult:
 # handler，白名单外协议经 UnknownHandler 统一抛 URLError('unknown url type: …')，响应体
 # 一步都不读。UnknownHandler 必须保留：它是白名单外协议的统一拒绝口。
 # 残余缺口（登记，与主线同边界）：DNS 重绑定窗口不在本层闭合。
+# [历史注] SR-02（2026-10-02）前本集用的是裸 HTTPRedirectHandler——探针自动跟随重定向且每跳
+# 不复检，公网候选 302 到内网/云元数据时逐跳判定缺失；现改挂下方 _HopGuardRedirectHandler。
+class _HopGuardRedirectHandler(urllib.request.HTTPRedirectHandler):
+    # SR-02（2026-10-02）：重定向逐跳复检（主线防线回灌）。主线同层防线是探针客户端挂
+    # src/async_http.build_sync_hop_guard（response 事件钩子，每跳含落地跳均判内网/协议，
+    # 命中即断），本副本按设计不 import src，故在 urllib 的重定向单点复刻同判据：
+    # HTTPRedirectHandler 的 301/302/303/307/308 全部经 redirect_request() 发起下一跳，
+    # 在此复用 _untrusted_stream_target_reason(newurl)（定义在下方，与初始候选同一份判定，
+    # 不另写 urlparse/内网名单）复检目标，不通过即抛 URLError 断链——请求不发出，fp 由
+    # HTTPErrorProcessor/DefaultErrorHandler 既有链路关闭。
+    # 与主线触发时机的差异（判据注释互点名）：主线钩子在「该跳响应头已收到后」触发，闭合的是
+    # 「不再跟随 + 响应不外流」，不是「不建连」；本 handler 在发起下一跳**之前**拦截，跳转目标
+    # 的连接根本不发生。两者同样不闭合 DNS 重绑定窗口（残余缺口与主线一致）。
+    def redirect_request(self, req: urllib.request.Request, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        reason = _untrusted_stream_target_reason(newurl)
+        if reason is not None:
+            raise urllib.error.URLError(f"重定向目标不可信({reason}): {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 _HTTP_ONLY_HANDLERS: tuple[type[urllib.request.BaseHandler], ...] = (
     urllib.request.UnknownHandler,
     urllib.request.HTTPHandler,
     urllib.request.HTTPDefaultErrorHandler,
-    urllib.request.HTTPRedirectHandler,
+    _HopGuardRedirectHandler,
     urllib.request.HTTPErrorProcessor,
 )
 
@@ -1350,6 +1390,130 @@ def clear_probe_reject(url: str, platform: str) -> None:
         _probe_reject_until.pop(_probe_key(url), None)
 
 
+def _registrable_domain_lite(host: str) -> str:
+    # 近似注册域（末两段），仅用于派生跳的 Cookie 裁决（主线 src/stream_select.py
+    # _registrable_domain 同判据）；IP 字面量与双段主机返回空串（不成域、只认精确相等）。
+    if _parse_ip_literal(host) is not None or ":" in host:
+        return ""
+    labels = host.split(".")
+    if len(labels) < 3:
+        return ""
+    return ".".join(labels[-2:])
+
+
+def _is_same_probe_scope_lite(base_url: str, derived_url: str) -> bool:
+    # 派生地址与播放列表是否同 host 或同（近似）注册域
+    base_host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
+    derived_host = (urllib.parse.urlsplit(derived_url).hostname or "").lower()
+    if not base_host or not derived_host:
+        return False
+    if base_host == derived_host:
+        return True
+    base_domain = _registrable_domain_lite(base_host)
+    return bool(base_domain) and base_domain == _registrable_domain_lite(derived_host)
+
+
+def _headers_for_derived_hop_lite(base_url: str, derived_url: str, headers: dict[str, str]) -> dict[str, str]:
+    # 派生跳的 Cookie 裁决（主线 _headers_for_derived_hop 同判据）：与播放列表同 host/注册域
+    # 才沿用原头；跨域只剥 Cookie、继续探测（凭据外泄面已消除，指纹头保留）。跨域即整体跳过
+    # 会把「列表 200、分片 404 判假绿」能力废掉，故剥离而非跳过。
+    if _is_same_probe_scope_lite(base_url, derived_url):
+        return dict(headers)
+    debug(f"流地址校验: {strip_query(derived_url)} - 派生地址与播放列表不同域，剥离 Cookie 后探测")
+    return {name: value for name, value in headers.items() if name.lower() != "cookie"}
+
+
+def _pick_master_variant_lite(text: str, base_url: str) -> str | None:
+    # 从 master playlist 取带宽最高的变体 URL（主线 _pick_master_variant 同判据）：
+    # 缺 BANDWIDTH 的变体记 -1（任何带带宽的变体都优先于它），全缺时按出现序取首个。
+    variants: list[tuple[int, str]] = []
+    pending_bw: int | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if line.startswith("#EXT-X-STREAM-INF"):
+                m = re.search(r"BANDWIDTH=(\d+)", line)
+                pending_bw = int(m.group(1)) if m else None
+            continue
+        variants.append((pending_bw if pending_bw is not None else -1, urllib.parse.urljoin(base_url, line)))
+        pending_bw = None
+    if not variants:
+        return None
+    best_bw = max(bw for bw, _ in variants)
+    return next(u for bw, u in variants if bw == best_bw)
+
+
+def _probe_hls_segment_lite(url: str, headers: dict[str, str], proxy: str | None) -> bool:
+    # M-17（2026-10-02 回灌主线分片级探测）：「播放列表 200」≠ 可录制——CDN 动态合成的
+    # 列表恒 200 但分片可能 404（2026-09-13 斗鱼 hw 事故形态：ffmpeg 逐分片失败、零字节
+    # 产出）。列表 200 后再探一层：master playlist 跟随带宽最高变体（最多两层，覆盖
+    # 变体→子列表嵌套）→ 取末行分片（最新，避开滚出窗口的旧分片误杀）→ Range bytes=0-0
+    # GET 探测。判定原则与主线 _probe_hls_segment 一致（保守优先，不误杀可用源）：
+    #   分片明确 4xx/5xx → 列表假绿、判不可达（回退下一候选）；
+    #   解析不出分片（空列表/非分片行/取不到变体/请求异常）→ 维持「列表可达」交 ffmpeg 定夺；
+    #   派生地址（变体/分片）先过 _untrusted_stream_target_reason 闸，不通过判**不可达**——
+    #   SR-01 同判据：内网/不合规目标面前维持可达就等于把它经播放列表正文交给 ffmpeg，
+    #   本副本逐跳复检 handler 拦不住「正文内嵌地址」（那不是 HTTP 重定向）。
+    try:
+        resp = http_request(url, headers=dict(headers), timeout=_PROBE_TIMEOUT, proxy=proxy)
+    except Exception:
+        return True  # 列表 GET 失败（HEAD/Range-GET 已通过）——不据此推翻，交由 ffmpeg
+    if resp.status != 200:
+        return True
+    text = resp.text or ""
+    media_url = url
+    seg_url = ""
+    for _ in range(2):
+        if "#EXT-X-STREAM-INF" not in text:
+            break
+        variant = _pick_master_variant_lite(text, media_url)
+        if not variant:
+            return True  # 只有标签行、取不到变体 URL——保守维持列表可达
+        if _untrusted_stream_target_reason(variant) is not None:
+            warn(f"流地址形态不合规，已丢弃（不交给 ffmpeg -i）: {strip_query(variant)}")
+            return False
+        try:
+            sub = http_request(variant, headers=_headers_for_derived_hop_lite(url, variant, headers), proxy=proxy)
+        except Exception:
+            return True  # 子列表取不到——保守，不下分片结论
+        if sub.status != 200:
+            return True
+        media_url = variant
+        text = sub.text or ""
+    media_lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+    if not media_lines:
+        return True  # 空列表（直播刚结束/未推流）——无分片可探，维持列表可达
+    seg_line = media_lines[-1]
+    is_media = seg_line.endswith((".ts", ".mp4", ".m4s")) or any(
+        ext + "?" in seg_line for ext in (".ts", ".mp4", ".m4s")
+    )
+    if not is_media:
+        return True  # 非标准分片行（加密/自定义格式）——保守放行
+    seg_url = urllib.parse.urljoin(media_url, seg_line)
+    if _untrusted_stream_target_reason(seg_url) is not None:
+        warn(f"流地址形态不合规，已丢弃（不交给 ffmpeg -i）: {strip_query(seg_url)}")
+        return False
+    try:
+        seg = http_probe(
+            seg_url,
+            method="GET",
+            headers={**_headers_for_derived_hop_lite(url, seg_url, headers), "Range": "bytes=0-0"},
+            timeout=_PROBE_TIMEOUT,
+            proxy=proxy,
+        )
+    except Exception:
+        return True  # 分片探测异常——保守维持列表可达
+    if seg.status in (200, 206):
+        return True
+    if 400 <= seg.status < 600:
+        # 分片「不存在/被拒」是确定性信号：列表可达但不可录制，判假绿回退下一候选
+        debug(f"流地址校验: {strip_query(url)} - 播放列表 200 但分片探测得 {seg.status}，判列表假绿")
+        return False
+    return True  # 3xx 及其它非常规状态——保守，不据此推翻列表结论
+
+
 def _confirm_get_ok(
     url: str, headers: dict[str, str], head_status: int, proxy: str | None, platform: str, last_resort: bool
 ) -> bool:
@@ -1438,7 +1602,9 @@ def validate_stream_url(
 
         if ".m3u8" in url_lower:
             if status == 200 or any(k in ctype for k in _STREAM_MEDIA_TYPES):
-                return True
+                # M-17：列表 200 不再直接判可达——补分片级探测，拦「列表 200 但分片 404」
+                # 的假绿候选（2026-09-13 斗鱼 hw 事故整改回灌）
+                return _probe_hls_segment_lite(url, headers, proxy)
             # HEAD 不可靠 → Range GET 探测(200/206 判可达)，401/403 重试一次再定罪
             last_gs = status
             for attempt in range(2):
@@ -1449,7 +1615,7 @@ def validate_stream_url(
                 if gs.status in (200, 206):
                     if attempt:
                         debug(f"流地址校验: {strip_query(url)} - Range-GET 重试通过({gs.status})，先前拒绝为偶发")
-                    return True
+                    return _probe_hls_segment_lite(url, headers, proxy)
                 if gs.status not in (401, 403):
                     break  # 非探针误杀类拒绝(如 404)，不重试
                 _mark_probe_reject(url, platform)
@@ -1489,7 +1655,15 @@ def validate_stream_url(
         return False
 
 
-def select_source_url(stream: StreamInfo, proxy: str | None = None) -> str | None:
+def _h265_copy_format_supported_standalone(record_format: str) -> bool:
+    # 判定「视频保存格式」的容器能否直拷(-c copy) HEVC（L-45，2026-10-02 回灌主线
+    # _h265_copy_format_supported 同判据）：TS(mpegts)/MKV(matroska)/MP4 三个 muxer 均支持
+    # 写 HEVC；FLV（HEVC-in-FLV 属 Enhanced-FLV 扩展，仓库口径不支持）与未识别取值不支持
+    # （保守默认）。standalone 无 main 热更新全局，格式由调用方从 Settings 传入。
+    return (record_format or "").strip().upper() in ("TS", "MKV", "MP4")
+
+
+def select_source_url(stream: StreamInfo, proxy: str | None = None, record_format: str = "") -> str | None:
     # 从解析结果中挑选本轮实际录制地址。
     # 顺序：默认 HLS 优先(斗鱼等平台游客态 FLV 长连接约 70 秒会被掐断)，
     # 虎牙为 FLV 优先(实测其 HLS 三条线路冷启动探针假绿)。
@@ -1504,10 +1678,16 @@ def select_source_url(stream: StreamInfo, proxy: str | None = None) -> str | Non
     # 虎牙 FLV-first(实测结论)，其余平台 HLS-first
     flv_first = stream.platform == "虎牙直播"
     seq: list[str] = (flv + hls) if flv_first else (hls + flv)
-    # h265 无法 -c copy 进 flv 容器，直接剔除(大小写不敏感)
-    seq = [u for u in seq if "h265" not in u.lower()]
-    if rec and "h265" not in rec.lower():
-        seq.append(rec)
+    # L-45：h265 候选按保存格式放行——TS/MKV/MP4 可直拷 HEVC，保留参与探针；
+    # FLV/未识别取值仍无条件剔除(大小写不敏感)。原实现无条件剔除，mp4/ts 输出下
+    # 白白丢弃 h265-only 房间的可用源。
+    if _h265_copy_format_supported_standalone(record_format):
+        if rec:
+            seq.append(rec)
+    else:
+        seq = [u for u in seq if "h265" not in u.lower()]
+        if rec and "h265" not in rec.lower():
+            seq.append(rec)
     # S-01(2026-09-30)：不可信候选(协议不在白名单/指向本机/内网/云元数据)先丢弃再探针——
     # 绝不交给探针与 ffmpeg。逐条留日志(带 strip_query 后的地址)保证「候选为何没录」可归因。
     trusted: list[str] = []
@@ -1701,6 +1881,11 @@ def terminate_all_ffmpeg() -> int:
     # 时间 flush 缓冲并写 mp4 的 moov box，调用方（Ctrl+C / 停止流程）紧接着退出或
     # 删除句柄，会把输出文件截断成「不可播放」（moov 缺失，播放器报 invalid data）。
     # 改为 terminate → 宽限 wait(3s) → 仍存活才 kill 的两级终止。
+    # M-16（2026-10-02 回灌主线三级终止链）：在最前增加「写 q 到 stdin + 关闭」一级——
+    # Windows 下 terminate() 即 TerminateProcess 硬杀，上方 3 秒宽限对它毫无作用，
+    # 只有 ffmpeg 自己读到 q/SIGINT 才会走收尾流程补写 moov。主线实现见
+    # src/ffmpeg_proc.py::_terminate_ffmpeg_process（写 q / SIGINT → terminate → kill）。
+    # run_ffmpeg 的 Popen 须配 stdin=PIPE 才有管道可写（同批修改）。
     with _ACTIVE_FFMPEG_LOCK:
         procs = list(_ACTIVE_FFMPEG)
     killed = 0
@@ -1708,8 +1893,25 @@ def terminate_all_ffmpeg() -> int:
         try:
             if proc.poll() is not None:
                 continue  # 已自然退出，无需终止
-            proc.terminate()
             try:
+                if proc.stdin:
+                    try:
+                        proc.stdin.write(b"q")
+                        proc.stdin.flush()
+                    except Exception:
+                        # 吞没即正确（与主线同判据）：ffmpeg 已卡死且不读 stdin 时，管道缓冲
+                        # 满会让 write/flush 永久阻塞，唯一出路是下面的 terminate → kill 兜底
+                        pass
+                    finally:
+                        # 部分构建要读到 EOF 才处理 'q'，写完（无论成败）必须关闭
+                        try:
+                            proc.stdin.close()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                proc.terminate()
                 proc.wait(timeout=_TERMINATE_GRACE_SECONDS)
             except subprocess.TimeoutExpired:
                 # 宽限期未退出（卡在写盘/网络读）：强制 kill 并再回收一次，避免僵尸
@@ -1739,6 +1941,7 @@ def run_ffmpeg(
     header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
     duration_cap = str(int(duration)) if duration > 0 else _RECORD_UNLIMITED_CAP
     try:
+        _rotate_log_if_needed(log_path)
         logf = open(log_path, "a", encoding="utf-8", errors="replace")
     except OSError as e:
         return 1, f"ffmpeg 日志文件打开失败: {type(e).__name__}: {e} | path={log_path}"
@@ -1782,6 +1985,7 @@ def run_ffmpeg(
             del proc_args[_eof_idx : _eof_idx + 2]
         proc = subprocess.Popen(
             proc_args,
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=logf,
             text=True,
@@ -1805,6 +2009,29 @@ def run_ffmpeg(
 # =============================================================================
 # 8. 配置
 # =============================================================================
+
+# 布尔配置值解析（M-18，2026-10-02 回灌主线 src/config_bool.py 统一口径）：旧前缀判断
+# (`startswith("是")` / `not startswith("否")`) 在 true/false、1/0、yes/no、on/off 取值下
+# 静默反向生效（主线 2026-09-17 P0 同款：8 项配置漂移、9 个海外平台 100% 无法录制）。
+# token 集与主线逐字同源（比较前 strip + lower）；空值与未识别值返回 default，调用方传
+# 该配置项的文档默认值（DEFAULT_CONFIG 同值）。孪生约定：改本表须与主线 config_bool.py
+# 同批同步（AGENTS「主线修复必须核对 standalone 孪生副本」）。
+_TRUE_TOKENS = frozenset({"是", "true", "t", "yes", "y", "on", "1"})
+_FALSE_TOKENS = frozenset({"否", "false", "f", "no", "n", "off", "0"})
+
+
+def parse_config_bool(raw: str | bool | int | None, default: bool) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    token = str(raw).strip().lower()
+    if token in _TRUE_TOKENS:
+        return True
+    if token in _FALSE_TOKENS:
+        return False
+    return default
+
 
 DEFAULT_CONFIG: dict[str, str] = {
     "是否启用代理": "否",
@@ -1851,7 +2078,10 @@ def load_settings(config_path: str) -> Settings:
             # utf-8-sig 兼容 Windows 记事本写入的 BOM
             parser.read(config_path, encoding="utf-8-sig")
             read_ok = True
-        except configparser.Error as e:
+        except (configparser.Error, UnicodeDecodeError) as e:
+            # L-46：UnicodeDecodeError 也要兜住——ANSI/GBK 编码的 config.ini(旧版记事本默认)
+            # 在 utf-8-sig 解码期直接抛，此前会启动即崩。降级为默认配置并告警，与 load_urls
+            # 的 errors="replace" 容错口径对齐。
             warn(f"配置文件解析失败，使用默认配置: {type(e).__name__}: {e}")
 
     def get(key: str) -> str:
@@ -1859,7 +2089,7 @@ def load_settings(config_path: str) -> Settings:
             return parser.get("录制设置", key).strip()
         return DEFAULT_CONFIG.get(key, "")
 
-    if get("是否启用代理").startswith("是"):
+    if parse_config_bool(get("是否启用代理"), default=False):
         st.proxy = get("代理地址").strip()
         # 启用代理但地址为空时，下游 `proxy or None` 会把空串判成 falsy → 静默直连：
         # 用户以为流量走了代理（往往正是为了隐藏出口 IP / 绕过地域限制），实际全部裸连，
@@ -1876,14 +2106,14 @@ def load_settings(config_path: str) -> Settings:
     st.record_limit = _safe_int(get("最大同时录制数(0为不限制)"), 0)
     st.network_limit = max(1, _safe_int(get("同一时间访问网络的线程数"), 8))
     st.duration = _safe_float(get("单次录制时长(秒,0为不限制)"), 0.0)
-    st.remove_emoji = not get("是否去除表情").startswith("否")
+    st.remove_emoji = parse_config_bool(get("是否去除表情"), default=True)
     fmt = get("录制文件格式").lower()
     if fmt not in _RECORD_FORMATS:
         if fmt:
             warn(f"录制文件格式={fmt!r} 不受支持(仅 flv/mp4/ts)，已回退 flv")
         fmt = "flv"
     st.record_format = fmt
-    st.log_file = not get("是否启用日志文件").startswith("否")
+    st.log_file = parse_config_bool(get("是否启用日志文件"), default=True)
     st.cookies = {
         "抖音直播": get("抖音cookie"),
         "虎牙直播": get("虎牙cookie"),
@@ -1981,7 +2211,7 @@ class Recorder:
         stream.cookies = cookies
 
         with self.scheduler.network_semaphore:
-            src = select_source_url(stream, proxy=self.st.proxy or None)
+            src = select_source_url(stream, proxy=self.st.proxy or None, record_format=self.st.record_format)
 
         if not src:
             # 解析已成功，线路校验失败不记熔断样本(CDN 线路健康度由 ffmpeg 退出码采样)；
@@ -1994,6 +2224,7 @@ class Recorder:
             info(f"[dry-run] 选中流地址: {strip_query(src)}")
             return True
 
+        record_started = time.monotonic()
         with self.scheduler.recording_semaphore:
             rc, err = self._do_record(stream, src)
 
@@ -2006,6 +2237,12 @@ class Recorder:
             info(f"录制结束(正常): {stream.anchor_name} | rc=0")
             return True
         self.scheduler.record_failure(host)
+        # M-17：快速失败(≤20s，主线 _FFMPEG_FAST_FAIL_SECONDS 同值)记探针退避——
+        # 「探针通过 → ffmpeg 打开即被拒」的探针假绿在探针侧永远观测不到(httpx/urllib 与
+        # ffmpeg 指纹不同)，不标记就是逐轮 parse+probe+ffmpeg 失败死循环；白名单(仅虎牙)
+        # 由 _mark_probe_reject 自行判定。慢速失败只记失败样本不记退避。
+        if time.monotonic() - record_started <= 20.0:
+            _mark_probe_reject(src, platform)
         error(f"录制失败: rc={rc} {err} | {stream.anchor_name or url} | 详见 logs/ffmpeg.log")
         return False
 

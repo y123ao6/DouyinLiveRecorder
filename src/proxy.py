@@ -291,5 +291,13 @@ class ProxyDetector:
         return ProxyInfo()
 
     def _is_proxy_enabled_linux(self) -> bool:
-        # Linux：与 _get_proxy_info_linux 同源判定（同一份候选集合，见其 MIN-2233① 说明）
-        return bool(self._linux_proxy_values())
+        # Linux：与 _get_proxy_info_linux 同源判定（同一份候选集合，见其 MIN-2233① 说明）。
+        # L-17（2026-10-02）：判定口径对齐 _get_proxy_info_linux 的「解析出 ip+port 才算有代理」
+        # ——原先只判环境变量非空，无端口的代理写法（如 http://127.0.0.1:80，端口缺失形态）
+        # 会出现「面板显示有代理、实际直连」的矛盾（MIN-20① 同型归因带偏）。
+        for raw in self._linux_proxy_values():
+            _scheme, hostport = self._split_scheme(raw)
+            ip, port, _user, _password = self._split_host_port(hostport)
+            if ip and port:
+                return True
+        return False

@@ -221,6 +221,26 @@ def remove_file_sinks() -> None:
         _playurl_sink_id = None
 
 
+# M-13（2026-10-02）：两个录制 sink **逐个独立**注册——原先两处调用点都把
+# _add_streamget_sink / _add_playurl_sink 放在同一个 try/except OSError 里，第二个失败时
+# 已注册成功的 streamget sink 的 handler id 被一并置 None，该 sink 从此无法经
+# remove_file_sinks() 关闭（L-37 同根：Windows 下 streamget.log 的归档改名自此永久
+# PermissionError，日志归档链路对该文件失效）。id 只清各自的；第一个失败不阻止第二个
+# 尝试（不同文件，一个不可写不代表另一个不可写）。
+def _register_recording_sinks() -> None:
+    global _streamget_sink_id, _playurl_sink_id
+    if _streamget_sink_id is None:
+        try:
+            _streamget_sink_id = _add_streamget_sink()
+        except OSError:
+            _streamget_sink_id = None
+    if _playurl_sink_id is None:
+        try:
+            _playurl_sink_id = _add_playurl_sink()
+        except OSError:
+            _playurl_sink_id = None
+
+
 # 重新注册录制日志文件 sink（归档改名后恢复日志写入，loguru add() 即创建全新同名文件）。
 # 与导入期注册同参数；GUI 父进程或「是否启用日志文件」关闭时不注册。
 def add_file_sinks() -> None:
@@ -228,12 +248,9 @@ def add_file_sinks() -> None:
     if _gui_parent or not _log_to_file:
         return
     # MI-14：加异常兜底——本函数由日志归档流程在改名后调用，此处抛错会连带中断归档调用方，
-    # 且失败原因只会出现在 stderr。
+    # 且失败原因只会出现在 stderr。OSError 的逐 sink 处理见 _register_recording_sinks。
     try:
-        if _streamget_sink_id is None:
-            _streamget_sink_id = _add_streamget_sink()
-        if _playurl_sink_id is None:
-            _playurl_sink_id = _add_playurl_sink()
+        _register_recording_sinks()
     except OSError:
         # 降级为仅控制台：日志文件不可写不应阻断归档等业务流程
         _streamget_sink_id = None
@@ -283,11 +300,6 @@ if _log_to_file:
             # 落盘不可用：降级为仅控制台，绝不因日志文件问题阻断启动
             _log_to_file = False
     else:
-        try:
-            _streamget_sink_id = _add_streamget_sink()
-
-            # 两个录制文件 sink 分档注册（INFO 与其余级别的口径见上方两个 _add_*_sink）
-            _playurl_sink_id = _add_playurl_sink()
-        except OSError:
-            _streamget_sink_id = None
-            _playurl_sink_id = None
+        # 两个录制文件 sink 分档注册（INFO 与其余级别的口径见上方两个 _add_*_sink）
+        # M-13：逐 sink 独立注册（原因见 _register_recording_sinks 注释）
+        _register_recording_sinks()

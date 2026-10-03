@@ -34,6 +34,7 @@
 │   ├── stream.py        # 流录制逻辑
 │   ├── stream_select.py # 选源与流地址可达性校验（探针/节流/退避）
 │   ├── scheduler.py     # 并发调度中枢（自适应容量 + 按平台熔断）
+│   ├── startup_cleanup.py # 启动期陈旧字节码缓存回收（白名单根 + 内容哈希哨兵）
 │   ├── notify.py        # 错误/成功计数与消息推送接线
 │   ├── collector.py     # 弹幕采集器 + DanmakuMonitorHub
 │   ├── danmaku_monitor.py # 弹幕监控数据面（Web/GUI 消费）
@@ -107,6 +108,8 @@
 │   ├── check_runtime_pins.py  # 运行时二进制 SHA256 钉定表检查：默认只查结构（rc=2 表缺陷），
 │   │                          #   --strict 供 build-release.yml 拦发布，--emit-env 输出 DLR_RUNTIME_SHA256
 │   ├── smoke_test.py           # Web/接口冒烟测试工具（JSON 配置驱动，纯标准库）
+│   ├── check_skill_agents_consistency.py # AGENTS.md「项目级 Skill」表与 .agents/skills/ 目录同源校验（已入门禁清单）
+│   ├── agent_hook_guard.py     # 项目级 Hook 执行体：stdin 收 Qoder 事件 JSON，拦「风险控制（前置）」红线 + 报「对门禁三面隐形」的回归（注册在 .qoder/settings.json）
 │   ├── smoke_web.json          # 冒烟测试接口配置
 │   ├── patch_i18n_2026_09_12.py # 一次性 i18n 目录补齐脚本（2026-09-12 审查遗留；已执行完毕，保留作审计留痕）
 │   └── douyin_live_recorder_standalone.py # 单文件整合版录制脚本（抖音/虎牙/B站/斗鱼，零第三方依赖）
@@ -115,7 +118,7 @@
     ├── actions/retry/   # 复合动作：网络安装重试包装（ci.yml / build-release.yml 共用）
     ├── ISSUE_TEMPLATE/  # 议题模板（中英双语：bug / feature / question）
     ├── PULL_REQUEST_TEMPLATE.md
-    └── workflows/       # CI/CD：ci.yml（门禁 + deps-audit）/ build-release.yml（三平台构建发布）
+    └── workflows/       # CI/CD：ci.yml（门禁 + deps-audit）/ build-release.yml（四平台构建发布，含 linux aarch64）
                        #   / trivy.yml（镜像漏洞扫描，本地构建不推送）/ issue-translator.yml（已降级为仅手动）
 
 # 根目录文档与分发脚本（不进镜像，见 .dockerignore）

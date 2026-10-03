@@ -731,3 +731,47 @@ class TestSevN02PopkonBearerPrefix:
         _, sent_auth = await self._call(f"Bearer   {self._TOKEN}  ", [self._OK])
         assert sent_auth == [f"Bearer {self._TOKEN}"]
         assert sent_auth[0].count("Bearer ") == 1
+
+
+# ── M-05：popkontv mc_isPrivate 的形态判定（CODE_REVIEW_2026-10-02）────────────────
+
+
+class TestPopkontvIsPrivateParsing:
+    # 开播判定链上 mc_isPrivate 有三种现实下发形态：JSON 数字 0/1、JSON 布尔 false/true、
+    # 字符串 "0"/"1"。旧实现 `int(cast(str, is_private))` 只对第一种成立——布尔经 str() 成
+    # "True" 后 int() 抛 ValueError，被兜底装饰器吞成 {"is_live": False}，开播房间恒判未开播。
+    # 变异判据：判定改成裸真值 `if is_private` → 字符串 "0" 的用例变红（bool("0") 是 True，
+    # 公开房间被误判私有而整轮报错）；判定改回 int(str(...)) → 布尔与 "true"/"false" 变红。
+    # 只打桩传输层（async_req / login_popkontv / get_popkontv_stream_data），
+    # parse_config_bool 归一、statusCd 分支与结果组装一律走真实代码。
+    _TOKEN = "K" * 640
+    _OK = '{"statusCd":"L0000","statusMsg":"ok","data":{"castHlsUrl":"https://p/h.m3u8"}}'
+    _URL = "https://www.popkontv.com/live/view?castId=cast1&partnerCode=P-00001"
+
+    async def _resolve(self, is_private: object) -> tuple[dict[str, object] | None, str]:
+        # 返回 (解析结果, 异常消息)：非私有形态应正常出流，私有形态应抛「private room」提示。
+        raw = _unwrap(get_popkontv_stream_url)
+        room_info = ["20260921", "P-00002", "cast1", 1, is_private]
+        with (
+            patch.object(sp, "get_popkontv_stream_data", new=AsyncMock(return_value=("anchor1", room_info))),
+            patch.object(sp, "login_popkontv", new=AsyncMock(return_value=(self._TOKEN, "P-00002"))),
+            patch.object(sp, "async_req", new=AsyncMock(return_value=self._OK)),
+            patch.object(sp, "logger", _fake_logger()),
+        ):
+            try:
+                result = await raw(self._URL, access_token=self._TOKEN, username="user1", password="password125")
+            except Exception as exc:
+                return None, f"{type(exc).__name__}: {exc}"
+        return cast("dict[str, object]", result), ""
+
+    @pytest.mark.parametrize("is_private", [0, "0", False, "", "false", None])
+    async def test_public_room_forms_are_not_private(self, is_private: object) -> None:
+        result, err = await self._resolve(is_private)
+        assert err == "", f"公开房间形态 {is_private!r} 被判成私有/失败: {err}"
+        assert result is not None and result.get("m3u8_url") == "https://p/h.m3u8"
+
+    @pytest.mark.parametrize("is_private", [1, "1", True, "true"])
+    async def test_private_room_forms_demand_password(self, is_private: object) -> None:
+        # URL 不带 pwd：私有房必须给出「配置密码后重试」的可动作错误，而不是静默未开播。
+        result, err = await self._resolve(is_private)
+        assert result is None and "private room" in err, f"私有形态 {is_private!r} 未判定为私有: {err!r}"

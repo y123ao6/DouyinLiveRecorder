@@ -415,20 +415,33 @@ class TestDerivedHopScope:
         assert sent.get("Range") == "bytes=0-0"
 
     def test_internal_target_is_not_requested(self) -> None:
-        # 内网/本机目标：一个请求都不发，按保守分支维持「列表可达」
+        # 内网/本机目标：一个请求都不发。[历史注] SR-01 修复（2026-10-02）前此处断言 True——
+        # 安全拒绝分支错误沿用「保守维持列表可达」，内网地址经播放列表正文交给 ffmpeg -i。
         client = _RecordingClient(
             {_PLAYLIST: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nhttp://127.0.0.1:8080/x.m3u8\n"}
         )
         with patch("src.stream_select.logger.warning") as warn:
-            assert ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS) is True  # type: ignore[arg-type]
+            assert ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS) is False  # type: ignore[arg-type]
         assert [url for url, _ in client.calls] == [_PLAYLIST]
         assert any("形态不合规" in str(c.args[0]) for c in warn.call_args_list)
 
     def test_non_recordable_variant_is_not_requested(self) -> None:
+        # 形态不合规变体（file://）：同 SR-01 判据，候选判失败而非维持可达
         client = _RecordingClient({_PLAYLIST: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nfile:///etc/passwd\n"})
         with patch("src.stream_select.logger.warning"):
-            assert ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS) is True  # type: ignore[arg-type]
+            assert ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS) is False  # type: ignore[arg-type]
         assert [url for url, _ in client.calls] == [_PLAYLIST]
+
+    def test_internal_segment_target_rejects_candidate(self) -> None:
+        # SR-01 行为锁（2026-10-02）：变体合法但媒体分片行携带内网地址——
+        # 分片派生跳的安全拒绝必须判候选失败（return False），
+        # 否则被劫持播放列表把 http://127.0.0.1:6379/ 形态目标经 -i 交给 ffmpeg。
+        # 对照：修复前该形态维持可达，逐跳钩子拦不住（正文请求不走客户端钩子）。
+        client = _RecordingClient({_PLAYLIST: "#EXTM3U\n#EXTINF:4.0,\nhttp://127.0.0.1:6379/seg.ts\n"})
+        with patch("src.stream_select.logger.warning") as warn:
+            assert ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS) is False  # type: ignore[arg-type]
+        assert [url for url, _ in client.calls] == [_PLAYLIST]
+        assert any("形态不合规" in str(c.args[0]) for c in warn.call_args_list)
 
 
 # ────────────────────────────────────────────────────────────

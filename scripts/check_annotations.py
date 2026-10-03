@@ -99,6 +99,8 @@ EXCLUDE_DIRS = (
     ".mimosa",
     ".tmp-dps-extract",
     ".v2c",
+    # SDD/治理式流程技能在仓库内留下的工作区（与 .gitignore/.dockerignore/pyproject 同源登记，2026-10-03）
+    ".superpowers",
 )
 
 # 不参与检查的文件：protoc 生成物（自带 docstring 且标注 DO NOT EDIT）、

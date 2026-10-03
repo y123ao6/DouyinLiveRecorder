@@ -247,7 +247,10 @@ def main() -> None:
             "③ 遍历并下载 downloads 下全部录制文件；④ 增删改直播间并可提交任意地址"
             "（存在被用作内网探测跳板的风险）；⑤ 启停录制。\n"
             "建议立即在 config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password，"
-            "然后删除环境变量 DOUYIN_WEB_ALLOW_INSECURE 并重启。"
+            "然后删除环境变量 DOUYIN_WEB_ALLOW_INSECURE 并重启。\n"
+            "另请注意（M-10）：绑定 0.0.0.0/:: 的远程部署下，写操作另受 Origin 同源校验约束——"
+            "未在 config.ini 的 web_allowed_hosts 登记访问用主机名/IP 时，面板会「读得到、写不了」；"
+            "该登记须手工编辑 config.ini 完成。"
         )
         print(_insecure_msg)
         try:

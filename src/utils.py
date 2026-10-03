@@ -83,16 +83,20 @@ _js_compile_lock = threading.Lock()
 # 登记了哈希——若将来确有必须不钉定的脚本，须在此注明理由并同步放宽那条用例，
 # 不要靠 _check_js_hash 的静默分支。
 _JS_SHA256_EXPECTED: dict[str, str] = {
-    "crypto-js.min.js": "769a555de553babc35a3338f344dd7aa16260c93cea2c7db290707c90484e7cc",
+    # 2026-10-02 重算四条（crypto-js / x-bogus / haixiu / liveme）：pre-commit 的 end-of-file-fixer 给这四个
+    # 脚本尾部各追加一个换行，原始字节变化使旧值全部失配——内容零改动、仅尾字节（x-bogus 即抖音签名链，
+    # 默认告警、DLR_JS_STRICT_HASH=1 时拒绝执行）；migu.js 未被改写、旧值仍匹配。旧值作废：
+    # crypto-js 769a555d…、x-bogus 12077d60…、haixiu 8d46bb83…、liveme 62199fc7…。口径同下（原始字节）。
+    "crypto-js.min.js": "9d13c4dba10bbf2b04d6c4e21c2246abf43be0fd356596c402d08eb4f9f0aecd",
     # haixiu.js 2026-09-21 重算（MIN-N39）：尾部注释样例换成 <REDACTED> 占位 + 删除引用 jQuery $
     # 的 bnu/bn 死代码（均为注释/死代码级改动，签名链路 bsq→pf→as→brm→cls→pt 未动），旧值作废。
     # 口径同下。
-    "haixiu.js": "8d46bb8334067334530b642fead56de022db0103622a563f796617d2aa88b6a3",
-    "liveme.js": "62199fc7847c157d2f0554e6a4f6447208b391ad19db8211251522d487e5d27d",
+    "haixiu.js": "20814a32fd9efa5e6f05490d1cf79b5258004918d2a204f7c1617822b8d79cd8",
+    "liveme.js": "48f75bfac464afa0469ddde4a5281db72274dcb57b21b8b3e59a8980cf7b91c5",
     # migu.js 2026-09-21 重算：已按补-03/补-04 之后的 wasm 接口重写，旧值 01bf22bd… 不再匹配。
     # 口径与本表校验侧一致 = 对 *.js 的**原始字节**求 SHA256（rb 读取，不受 CRLF/LF 转换影响）
     "migu.js": "65d9ebedad8a7ddd830175c989440c2d5b3770bc3913f965af6930d2a9e2c39a",
-    "x-bogus.js": "12077d60606ee652ef218e21440db47d6604a9647517beaa05e6d262555badd0",
+    "x-bogus.js": "41b3f4def2486df1008730e74590352fbe29a0f411509cbecc108b8eebf4a529",
 }
 
 
@@ -322,9 +326,13 @@ def _make_trace_error_guard(func: Callable[P, R], fallback: R) -> Callable[P, R]
             except Exception as e:
                 tb = traceback.extract_tb(e.__traceback__) if e.__traceback__ else None
                 error_line = tb[-1].lineno if tb else "unknown"
+                # L-32（2026-10-02）：str(e) 须过码——本装饰器是 76 处平台解析的中心异常漏斗，
+                # InvalidURL/TooManyRedirects 等异常的 str 内嵌完整 URL（可能带 token 参数），
+                # 直落日志即凭据明文持久化。防御纵深：现网 raise 点已手工过码，此处兜住
+                # 未来新增路径。
                 error_info = (
-                    f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
-                    f", fallback type: {type(fallback).__name__}"
+                    f"message: type: {type(e).__name__}, {mask_credentials(str(e))} in function {func.__name__}"
+                    f" at line: {error_line}, fallback type: {type(fallback).__name__}"
                 )
                 logger.error(error_info)
                 return fallback
@@ -341,9 +349,10 @@ def _make_trace_error_guard(func: Callable[P, R], fallback: R) -> Callable[P, R]
         except Exception as e:
             tb = traceback.extract_tb(e.__traceback__) if e.__traceback__ else None
             error_line = tb[-1].lineno if tb else "unknown"
+            # L-32：同 async_wrapper——异常文本过码后再落日志
             error_info = (
-                f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
-                f", fallback type: {type(fallback).__name__}"
+                f"message: type: {type(e).__name__}, {mask_credentials(str(e))} in function {func.__name__}"
+                f" at line: {error_line}, fallback type: {type(fallback).__name__}"
             )
             logger.error(error_info)
             return fallback
@@ -597,6 +606,12 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     # 更新 ini 中单个配置项：整文件重解析后由 atomic_write_text 原子写回。
     # 关闭插值以避免 cookie 等含 % 的值被 BasicInterpolation 转义/反解析。
     #
+    # M-11（2026-10-02）：读改写全程持 main.file_update_lock（复用 _url_config_write_lock 的
+    # 惰性取法，取不到退本地锁）——本函数被多个房间线程并发调用（cookie/token 刷新回写），
+    # 「整文件读 → 改单键 → 原子写回」不持锁时两个线程各自基于同一份旧快照，后写者覆盖
+    # 前写者的单键改动（os.replace 保证文件不损坏，但更新静默丢失），与 MID-29 已修的
+    # URL_config.ini 侧丢写同族。锁必须盖住 config.read 与 config.write 全程。
+    #
     # 写法语义（勿与「直写 open(path,"w")」的旧实现混淆）：WD-15 起本函数经 atomic_write_text
     # （同目录 tmp + os.replace），不再先把文件截断为 0 字节。连带后果——os.replace 只校验目标
     # **所在目录**的写权限，与目标文件自身的权限位无关，故「把文件 chmod 成只读」在这里**不保证**
@@ -604,25 +619,26 @@ def update_config(file_path: str | Path, section: str, key: str, new_value: str)
     # 的只读用例因此只断言「不抛异常 + 原内容不丢」，不得按「必然失败」写。
     #   [历史注] AGENTS 里「utils.update_config 仍是 open(path,"w") 直写、其只读用例可沿用
     #   chmod 断言失败」的表述针对 WD-15 之前的实现，现已不成立，不得据此互推 config_io。
-    config = configparser.ConfigParser(interpolation=None)
+    with _url_config_write_lock():
+        config = configparser.ConfigParser(interpolation=None)
 
-    try:
-        _ = config.read(file_path, encoding="utf-8-sig")
-    except Exception as e:
-        logger.warning(i18n.tr("An error occurred while reading the configuration file: {e}", e=e))
-        return
+        try:
+            _ = config.read(file_path, encoding="utf-8-sig")
+        except Exception as e:
+            logger.warning(i18n.tr("An error occurred while reading the configuration file: {e}", e=e))
+            return
 
-    if section not in config:
-        logger.warning(i18n.tr("Section [{section}] does not exist in the file.", section=section))
-        return
+        if section not in config:
+            logger.warning(i18n.tr("Section [{section}] does not exist in the file.", section=section))
+            return
 
-    config[section][key] = new_value
+        config[section][key] = new_value
 
-    buf = io.StringIO()
-    config.write(buf)
-    if not atomic_write_text(file_path, buf.getvalue()):
-        # atomic_write_text 内部已按 i18n 打印了失败原因，此处只中止后续步骤
-        return
+        buf = io.StringIO()
+        config.write(buf)
+        if not atomic_write_text(file_path, buf.getvalue()):
+            # atomic_write_text 内部已按 i18n 打印了失败原因，此处只中止后续步骤
+            return
     # CR-07：config.ini 含 [Cookie]/[账号密码] 等明文凭据，写入后收紧为仅属主可读写
     # （best-effort：Windows 上 os.chmod 仅影响只读属性，失败忽略）
     try:
@@ -904,6 +920,14 @@ _SECRET_KEYS: tuple[str, ...] = (
     "csrftoken",
     "xsrf",
     "xsrftoken",
+    # M-01（2026-10-02）：B 站主会话凭据与 CSRF 键、抖音 Cookie 会话键——四个键此前整体逃逸
+    # （query 形态实测原样返回）。`sessionid`/`sid` 已在表内但覆盖不到带后缀的变体
+    # （sessionid_ss 的 ss 前是 _、sid_tt 同理，交替式要求整段命中），须按整段小写补录。
+    # 复核判据是「值确实消失」，见 tests/test_utils.py::TestMaskCredentialsCoverage。
+    "sessdata",
+    "bili_jct",
+    "sessionid_ss",
+    "sid_tt",
 )
 # 长名排在前面：交替式虽会回溯，但「先试长名」明显减少无谓回溯（sid/sid_guard、token/access_token）。
 # SEV-2210 复核：短名（tk/key/nonce）不得把长名切碎——交替式在匹配点从最左分支依次尝试，

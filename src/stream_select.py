@@ -536,7 +536,10 @@ def _probe_hls_segment(
                         url=utils.mask_credentials(variant_url),
                     )
                 )
-                return True
+                # SR-01：安全闸拒绝是确定性失败，不是「解析不出分片」的保守兜底——维持可达等于把
+                # 内网地址经播放列表正文交给 ffmpeg -i（与下方 RedirectHopRejected 分支同一判据），
+                # 候选判失败、回退下一候选。
+                return False
             sub = client.get(
                 variant_url,
                 headers=_headers_for_derived_hop(playlist_url, variant_url, headers),
@@ -565,7 +568,8 @@ def _probe_hls_segment(
                     url=utils.mask_credentials(seg_url),
                 )
             )
-            return True
+            # SR-01：与变体派生跳同判据——安全闸拒绝判候选失败，不得维持可达
+            return False
         seg_headers = _headers_for_derived_hop(playlist_url, seg_url, headers)
     except RedirectHopRejected:
         # WP-J：本函数每一条「保守维持列表可达」的兜底都不得吞掉内部控制流异常——在内网落地目标面前，
@@ -1203,7 +1207,10 @@ def select_source_url(
         probe_client = _probe_client(
             _PROBE_TIMEOUT_SECONDS, proxy_addr, _http_config.get_effective_ssl_verify(platform)
         )
-    except ValueError, TypeError:
+    # M-06：httpx.InvalidURL 直继 Exception（httpx 0.28.1 实测 MRO：InvalidURL → Exception），
+    # 不是 ValueError 子类——裸 IPv6 形态的代理（handle_proxy_addr 补全后构造期即抛）会逃出本分支
+    # 每轮抛穿房间线程。归入「本轮无可用探针客户端」，走下方既有自建降级路径。
+    except ValueError, TypeError, httpx.InvalidURL:
         probe_client = None
     try:
         # MID-19：record_url 通道先过形态白名单——不合规直接摘掉该档（连探针都不发），
@@ -1296,9 +1303,10 @@ def select_source_url(
         for idx, (cand, is_hls) in enumerate(usable):
             if prev_kind is not None and is_hls != prev_kind:
                 if prev_kind:
-                    logger.warning("HLS URL validation failed, falling back to FLV")
+                    # L-16（2026-10-02）：用户可见回退告警统一走 i18n（原为裸英文常量）
+                    logger.warning(i18n.tr("HLS 候选校验失败，回退 FLV"))
                 else:
-                    logger.warning("FLV URL validation failed, falling back to HLS")
+                    logger.warning(i18n.tr("FLV 候选校验失败，回退 HLS"))
             prev_kind = is_hls
             is_last = idx == len(usable) - 1
             reachable = _validate_stream_url(
@@ -1330,11 +1338,11 @@ def select_source_url(
                         )
                     )
         if usable and record_url_enabled:
-            logger.warning("HLS/FLV URL validation failed, trying record_url fallback")
+            logger.warning(i18n.tr("HLS/FLV 全部候选校验失败，尝试 record_url 兜底"))
 
         if record_url_enabled:
             if _is_h265(record_url_str):
-                logger.warning("record_url has h265 codec, but no HLS or FLV fallback available")
+                logger.warning(i18n.tr("record_url 含 h265 编码，且无 HLS/FLV 兜底可用"))
             if record_url_str in probed:
                 # MID-18：同一地址本轮已探过——复用结论、零新增探针。record_url 是末位档，
                 # 沿用「探针拒绝 ≠ ffmpeg 不可拉流」的既有语义：即便上一轮探针判失败，

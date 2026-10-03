@@ -6,7 +6,7 @@
 #   build-verify）与本地开发 `pip install -r` 的实际输入；static job 只装固定版本 lint 工具，不经本文件。
 #   两侧包名集合的一致性由 tests/test_regression_2026_09_22_gates.py 锁死（单侧遗漏直接判红）。
 # 构建期 / 开发期依赖不入本清单：PyInstaller 见 [project.optional-dependencies].build（>=6.10.0）、
-#   pytest / black / isort / mypy 见 .dev，分别经 `pip install .[build]` / `.[dev]` 安装；
+#   pytest / black / isort / mypy / pre-commit 见 .dev，分别经 `pip install .[build]` / `.[dev]` 安装；
 #   GUI 专属依赖在 .gui，本清单已含同名包，pip 安装时一并拉取。
 # 前端用例（tests/frontend/*.mjs）用 Node 内置 node:test，零 npm 依赖，无需新增 Python 包。
 # 下限口径：全清单只设下限、不设上限（唯一例外 protobuf，理由见该行上方注释）。

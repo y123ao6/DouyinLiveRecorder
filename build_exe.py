@@ -422,7 +422,7 @@ RUNTIME_SLOTS: tuple[str, ...] = ("ffmpeg", "node")
 # 下载槽位。这类槽位按运行时键登记在 _EXTRA_EXECUTABLE_URLS，**不并进本元组**：并进来会让
 # windows/linux 三键凭空多出没有公布值的钉定义务。查「这个键该有几个槽」一律用 runtime_slots_for()。
 
-# 发布矩阵覆盖的运行时键（<os>-<arch>），与 .github/workflows/build-release.yml 的三平台矩阵同源；
+# 发布矩阵覆盖的运行时键（<os>-<arch>），与 .github/workflows/build-release.yml 的四平台矩阵同源；
 # scripts/check_runtime_pins.py 校验钉定表对它的覆盖完整性。
 RELEASE_RUNTIME_KEYS: tuple[str, ...] = ("windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64")
 

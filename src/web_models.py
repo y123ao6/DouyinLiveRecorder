@@ -50,8 +50,9 @@ def _as_str_list(value: Any, field: str) -> list[str]:
 
 
 def _require_dict(data: Any) -> dict[str, Any]:
-    # 请求体必须是 JSON 对象；body 读取层（web_api._read_json）已先把非 dict / 非法 JSON
+    # 请求体必须是 JSON 对象；body 读取层（web_api._read_json_body）已先把非 dict / 非法 JSON
     # 转成 HTTPException(422)，这里再兜一层类型，避免 None / list 透传到字段解析。
+    # [历史注] L-27（2026-10-02）：原注释误写 web_api._read_json，符号不存在，已更正。
     if not isinstance(data, dict):
         raise ValueError("请求体必须是 JSON 对象")
     return data

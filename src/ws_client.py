@@ -93,7 +93,12 @@ def decompress_limited(data: bytes, limit: int = _MAX_DECOMPRESSED_BYTES, wbits:
 
 # 带输出上限的 brotli 解压（MI-01）：brotli 的 Python 绑定没有 max_output_size 参数
 # （decompress(data) 仅接一个参数），故改用 Decompressor 分块喂入并在累计输出超限时抛错。
-# 分块粒度决定单步膨胀上界，从而把总内存收敛到 limit + 单块膨胀量。
+# [历史注] M-08（2026-10-02）更正失实声明：原注释称「把总内存收敛到 limit + 单块膨胀量」
+# ——不成立。brotli.Decompressor.process() 无输出上限形参，`out += obj.process(chunk)` 会
+# 先把该块的全部输出物化后才做 len(out) 检查，复制链允许极小输入膨胀出 MB~GB 级单块输出；
+# 本函数对 brotli 路径只是**事后检测**（消费侧最多多付一块的瞬时内存，不会累积），不与
+# decompress_limited（zlib max_length 在 C 层硬截断）的真上限同强度。根治需换支持输出上限
+# 的 brotli 绑定或对 brotli 帧单独收紧 _MAX_FRAME_BYTES，均超出本轮范围。
 def decompress_brotli_limited(data: bytes, limit: int = _MAX_DECOMPRESSED_BYTES, chunk: int = 4096) -> bytes:
     import brotli
 
@@ -324,11 +329,12 @@ class WsClient:
                 self._reconnect_count += 1
                 if self._reconnect_count <= self.max_reconnect:
                     if self._on_reconnect:
-                        self._on_reconnect("连接已关闭，正在尝试重连")
+                        # L-24（2026-10-02）：reason 文案经 i18n——面板非中文语言下混入简中
+                        self._on_reconnect(i18n.tr("连接已关闭，正在尝试重连"))
                     # WD-05：同上，指数退避 + 抖动
                     await asyncio.sleep(_backoff_delay(self.reconnect_interval, self._reconnect_count))
                     continue
-                self._report_close("重连超过最大次数，与服务器断开连接")
+                self._report_close(i18n.tr("重连超过最大次数，与服务器断开连接"))
                 break
 
     # MID-2232：本轮连接若「已证明健康」则把重连计数归零（在 ++ 之前调用，故归零后本轮计 1）。

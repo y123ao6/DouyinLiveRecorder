@@ -145,6 +145,7 @@ from src.recorder_status import (
     get_status,
 )
 from src.scheduler import ConcurrencyScheduler, ResizableSemaphore, host_of
+from src.startup_cleanup import purge_stale_bytecode_caches
 from src.stream_select import (
     MOBILE_UA,
     _douyin_rate_limit,
@@ -225,7 +226,6 @@ recording_enabled: bool = True
 
 # 错误控制和动态调优
 error_count: int = 0  # 累计错误计数（自进程启动起单调递增，不做周期清零；窗口口径见 error_window）
-pre_max_request: int = 10  # 之前的最大请求数
 max_request: int = 3  # 同一时间访问网络的线程数（由 main() 读取配置后覆盖）
 max_request_lock: threading.Lock = threading.Lock()  # 最大请求数的线程锁
 error_window_size: int = 10  # 错误窗口大小
@@ -273,7 +273,6 @@ enable_danmaku: bool = False  # 是否录制弹幕
 enable_danmaku_monitor: bool = False  # 是否弹幕监控（与弹幕录制解耦：仅监控不落 SRT）
 danmaku_split_time: float = 1800.0  # 弹幕分片时长(秒)
 danmaku_platforms: list[str] = []  # 弹幕录制平台列表
-record_danmaku_args: dict[str, Any] | None = None  # 当前录制房间的弹幕参数(平台相关)
 
 # ==================== 路径和配置 ====================
 
@@ -480,7 +479,6 @@ quality: str = "原画"
 replace_words: list[str] = []
 running_snapshot: list[str] = []
 running_url: str = ""
-seen_urls: set[str] = set()
 split_line: list[str] = []
 start_with: str | None = None
 t: threading.Thread | None = None
@@ -562,7 +560,9 @@ if hasattr(signal, "SIGBREAK"):
 # 收尾日志一并收进归档文件，四个运行日志统一按「原名_YYYYMMDD_HHMMSS.扩展名」改名
 _atexit_result_0 = atexit.register(archive_runtime_logs, reopen_streams=False)
 _atexit_result_1 = atexit.register(cleanup_all_ffmpeg_processes)
-from src.async_http import close_all_clients_sync
+# async_req 供 _resolve_hy_fan_room_segment 解析虎牙移动端短链（redirect_url=True 契约）；
+# 与 close_all_clients_sync 同源：src.async_http 本就是 main 的直接依赖，无新增导入环。
+from src.async_http import async_req, close_all_clients_sync
 
 _atexit_result_2 = atexit.register(close_all_clients_sync)
 
@@ -593,9 +593,26 @@ PLATFORM_HOST = [
     "www.douyin.com",
     "live.kuaishou.com",
     "www.huya.com",
+    # 虎牙移动端分享短链 host（https://hy.fan/JbmwoV）：路径段为纯数字时即房间号，
+    # 否则是短码、需跟随 301 跳转解析出真实房间段；两种形态都由 _resolve_hy_fan 归一成
+    # www.huya.com 房间链接后复用桌面解析链路。与 m.douyu.com 同理：准入按
+    # `url_host in PLATFORM_HOST` 精确匹配，缺此项时短链在读取 URL 配置阶段就被判
+    # 「本行包含未知链接.此条跳过」并注释掉，根本走不到解析。
+    "hy.fan",
     "www.douyu.com",
+    # 斗鱼移动端页面 host（https://m.douyu.com/8751648）：房间信息与取流接口只认数字 rid、
+    # 与来源域名无关，故与 www 共用 _resolve_douyu_com（详见 spider.get_douyu_info_data 注释）。
+    # 准入侧按 `url_host in PLATFORM_HOST` 精确匹配，缺此项时移动端链接在读取 URL 配置阶段
+    # 就被判「本行包含未知链接.此条跳过」并注释掉，根本走不到解析。
+    "m.douyu.com",
     "www.yy.com",
     "live.bilibili.com",
+    # B站移动端分享短链 host（https://b23.tv/ZyQrgYf）：路径段为纯数字时即房间号，
+    # 否则是短码、需跟随 302 跳转解析出真实房间号；两种形态都由 _resolve_b23_tv 归一成
+    # live.bilibili.com 房间链接后复用桌面解析链路。与 hy.fan / m.douyu.com 同理：准入按
+    # `url_host in PLATFORM_HOST` 精确匹配，缺此项时短链在读取 URL 配置阶段就被判
+    # 「本行包含未知链接.此条跳过」并注释掉，根本走不到解析。
+    "b23.tv",
     # MID-04 修复（2026-09-20）：摘除 www.redelight.cn —— 该 host 无任何解析入口
     # （spider/stream/JS 签名脚本全仓零引用，平台清单亦无对应平台名），留着只会让用户配一个
     # 「每轮一条 error、永不录制、也不记 record_error」的地址：房间线程走 _resolve_unrecognized
@@ -1179,7 +1196,13 @@ def check_subprocess(
             create_var[subs_thread_name] = threading.Thread(
                 target=_subtitle_thread_target, name=subs_thread_name, daemon=True
             )
-            create_var[subs_thread_name].start()
+            # L-02（2026-10-02）：start() 抛 RuntimeError（can't start new thread）时 target 未运行、
+            # finally 清理不执行，create_var 条目缓慢累积；失败即移除登记。
+            try:
+                create_var[subs_thread_name].start()
+            except RuntimeError:
+                create_var.pop(subs_thread_name, None)
+                raise
 
         # 内部包装：转调模块级 _terminate_ffmpeg_process（复用公共终止逻辑，避免在此重复实现
         # 导致逻辑漂移），timeout 为总等待秒数，返回是否已退出
@@ -1616,13 +1639,26 @@ def _merge_anchor_directory(old_dir: str, new_dir: str) -> None:
         except OSError as e:
             # 单条目移动失败（文件被转码/播放器占用）：告警后继续其余条目，下轮整体重试
             logger.warning(
-                i18n.tr("合并主播目录条目失败（下轮重试）: {path} -> {dst}: {e}", path=entry.path, dst=dst, e=e)
+                i18n.tr(
+                    "合并主播目录条目失败（下轮重试）: {path} -> {dst}: {type_name}: {e}",
+                    path=entry.path,
+                    dst=dst,
+                    type_name=type(e).__name__,
+                    e=e,
+                )
             )
     try:
         if not os.listdir(old_dir):
             os.rmdir(old_dir)
     except OSError as e:
-        logger.warning(i18n.tr("删除旧主播目录失败（已忽略）: {old_dir}: {e}", old_dir=old_dir, e=e))
+        logger.warning(
+            i18n.tr(
+                "删除旧主播目录失败（已忽略）: {old_dir}: {type_name}: {e}",
+                old_dir=old_dir,
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
 
 
 # 递归把 base_dir 下以 "{old_name}_" 开头的文件改名为 "{new_name}_" 前缀，
@@ -1644,7 +1680,14 @@ def _rename_prefixed_entries(base_dir: str, old_name: str, new_name: str) -> Non
             elif entry.name.startswith(f"{old_name}_"):
                 os.rename(entry.path, os.path.join(base_dir, f"{new_name}_{entry.name[len(old_name) + 1 :]}"))
         except OSError as e:
-            logger.warning(i18n.tr("主播名变更重命名失败（已跳过，不影响其余文件）: {path}: {e}", path=entry.path, e=e))
+            logger.warning(
+                i18n.tr(
+                    "主播名变更重命名失败（已跳过，不影响其余文件）: {path}: {type_name}: {e}",
+                    path=entry.path,
+                    type_name=type(e).__name__,
+                    e=e,
+                )
+            )
 
 
 # 平台分派解析：把直播间地址按域名路由到对应平台的爬虫与流地址解析模块，得到本轮 port_info。
@@ -1674,8 +1717,25 @@ class _PlatformResolveContext:
 
 # 平台匹配器工厂：语义与迁移前的 `record_url.find(片段) > -1` 完全一致，多片段为 or。
 def _match_host(*fragments: str) -> Callable[[str], bool]:
+    # M-03（2026-10-02）：匹配对象从「整串子串」收窄为「scheme://host/ 归一串」。旧写法
+    # url.find(frag) 是整串子串匹配，https://attacker.com/xhslink.com/x 会在**路径**里命中
+    # xhslink.com/ 而被路由进小红书解析（并在解析函数入口白名单校验之前，就以带凭据的
+    # headers 请求攻击者 host）。按 urlsplit 解析出的 hostname 归一后，fragment 只能与真实
+    # host 匹配，路径/query 里出现的域名词不再参与平台路由。fragment 形态（host 或其子域
+    # 后缀 + 可选尾部斜杠）在归一串上的命中语义与旧实现对全部合法输入一致：
+    #   https://live.douyin.com/1  -> https://live.douyin.com/  命中 douyin.com/
+    #   http://www.xiaohongshu.com/1 -> http://www.xiaohongshu.com/ 命中 www.xiaohongshu.com/
+    # 无 scheme 输入（准入侧未补齐的极端形态）scheme 段为空串，host 命中语义不变。
     def _m(url: str) -> bool:
-        return any(url.find(frag) > -1 for frag in fragments)
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return False
+        host = (parts.hostname or "").lower()
+        if not host:
+            return False
+        normalized = f"{(parts.scheme or '').lower()}://{host}/"
+        return any(frag.lower() in normalized for frag in fragments)
 
     return _m
 
@@ -1878,6 +1938,133 @@ def _resolve_huya_com(ctx: _PlatformResolveContext) -> None:
     ctx.new_record_url = new_record_url
 
 
+# ---------------------- 虎牙移动端分享短链（hy.fan）----------------------
+# hy.fan 是虎牙移动端分享域：路径段为纯数字时即房间号，否则是短码（如 JbmwoV），
+# 需跟随 301 跳转解析出真实房间段。两种形态都归一成 https://www.huya.com/<房间段>
+# 后委托 _resolve_huya_com —— 拉流/画质/弹幕/录制与桌面链接走同一条链路，不新增分支。
+# 刻意不在准入层改写配置行：跳转解析依赖网络，放主循环准入会把一次网络抖动放大成
+# 「配置行被注释/改写」；放解析函数内每轮重试天然兜住瞬态故障，成功结果由下方缓存摊薄。
+# 布局注记：本节函数置于 _resolve_huya_com 之后、分发表之前，与「新增平台在此追加」的
+# F-01c 约定一致；表项登记见 _PLATFORM_RESOLVERS（虎牙条目之后）。
+
+# 短码 → 房间段解析结果缓存：短链与房间的映射是稳定事实，进程内缓存避免每个监测轮都
+# 多发一次 301 跟随请求。dict 单键读写受 GIL 保护且同键写入值幂等，最坏并发后果只是
+# 重复解析一次，无需加锁；条目上界是配置里的 hy.fan 行数（含历史变体），无淘汰必要。
+_HY_FAN_ROOM_CACHE: dict[str, str] = {}
+
+
+def _hy_fan_path_segment(record_url: str) -> str:
+    # 取 hy.fan 链接的唯一路径段（房间号或短码）；形态不合法抛 ValueError，
+    # 消息即用户日志里的失败原因——错误提示必须点名「缺什么 / 为什么不合法」。
+    try:
+        path = urlsplit(record_url).path
+    except ValueError:
+        # 含控制字符 / 非法端口等畸形入参：urlsplit 抛 ValueError，按「无法解析」定因
+        raise ValueError("URL 无法解析")
+    segments = [seg for seg in path.split("/") if seg]
+    if not segments:
+        raise ValueError("路径为空，缺少房间号")
+    if len(segments) > 1:
+        raise ValueError("路径含多级目录，不是标准房间链接")
+    segment = segments[0]
+    # isascii 收紧 isalnum 的 Unicode 宽字符误判：全角数字（３０７…）不是合法房间号，
+    # 不能流向虎牙接口。与 spider.get_huya_app_stream_url 的 room_id.isdigit() 判定同口径，
+    # 这里在入口先挡一层，短码侧同理（base62 短码本身就是 ASCII）。
+    if not (segment.isascii() and segment.isalnum()):
+        raise ValueError("房间号含非法字符")
+    return segment
+
+
+def _huya_room_segment_from_landing(final_url: str) -> str:
+    # 从短链跳转落地页提取虎牙房间段；非虎牙域 / 形态不符一律返回空串（本函数只做
+    # 「能不能提取」的判定，失败原因由调用方统一表述）。接受字母段：主播自定义号
+    # www.huya.com/<字母号> 本就是合法房间形态，下游 app 路径已有 ProfileRoom 反查
+    # 数字房间号的既有链路（spider.get_huya_app_stream_url），不在此重复实现。
+    try:
+        parts = urlsplit(final_url)
+    except ValueError:
+        return ""
+    host = (parts.hostname or "").lower()
+    if host != "huya.com" and not host.endswith(".huya.com"):
+        return ""
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if len(segments) != 1:
+        return ""
+    segment = segments[0]
+    if not (segment.isascii() and segment.isalnum()):
+        return ""
+    return segment
+
+
+async def _resolve_hy_fan_room_segment(record_url: str, proxy_addr: str | None) -> str:
+    # 短码 → 真实房间段：走 async_req(redirect_url=True)，与 xhslink.com 短链解析同一契约——
+    # 成功回最终落地 URL（httpx 已跟随重定向，逐跳 SSRF 复检由 async_http 的响应钩子承担，
+    # 本函数只解析、不请求落地页）；失败回空串（网络异常 / 内网跳转拒绝已在 async_req
+    # 内部记日志），这里统一转成带原因的 ValueError 交调用方写用户日志。
+    # UA 取与 spider.get_huya_stream_data 同值的桌面 Firefox UA；不动 MOBILE_UA 那组
+    # 四处同步约定（那是虎牙流地址侧的另一条 UA）。
+    final_url = await async_req(
+        url=record_url,
+        proxy_addr=proxy_addr,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
+        },
+        redirect_url=True,
+    )
+    # async_req 声明返回是覆盖 redirect_url/cookies 组合的联合类型，redirect_url=True 的运行时
+    # 契约是「成功回最终 URL、失败回空串」（MID-2225）：按既有调用点口径 isinstance+非空收窄，
+    # 空串与非 str 一律归为「未获取到跳转地址」。
+    if not isinstance(final_url, str) or not final_url:
+        raise ValueError("未获取到跳转地址")
+    segment = _huya_room_segment_from_landing(final_url)
+    if not segment:
+        raise ValueError("跳转地址不是虎牙直播间")
+    return segment
+
+
+def _resolve_hy_fan(ctx: _PlatformResolveContext) -> None:
+    # hy.fan 入口：归一为桌面链接后委托 _resolve_huya_com 回写 ctx 四字段（platform /
+    # port_info / 弹幕参数 / new_record_url），本函数不重复赋值。表项置于虎牙之后：
+    # test_resolver_table_priority_head 钉死前五项为迁移前 elif 链顺序，且 hy.fan 与
+    # www.huya.com 的匹配片段互不重叠，先后不产生遮蔽。房间线程侧 record_host 仍是
+    # hy.fan——按 host 隔离的熔断桶把「短链解析失败」与桌面链接的取流失败分开计数，
+    # 语义反而更准，不需要回填成 www.huya.com。
+    try:
+        segment = _hy_fan_path_segment(ctx.record_url)
+    except ValueError as err:
+        logger.error(
+            i18n.tr(
+                "虎牙移动端链接缺少有效房间号，本轮跳过: {record_url} - {reason}",
+                record_url=utils.mask_credentials(ctx.record_url),
+                reason=str(err),
+            )
+        )
+        ctx.unrecognized = True
+        return
+    if segment.isascii() and segment.isdigit():
+        # 纯数字段就是房间号：零网络直接归一，覆盖标准 / 尾斜杠 / 带 query / http 四种形态
+        room_segment = segment
+    else:
+        room_segment = _HY_FAN_ROOM_CACHE.get(segment, "")
+        if not room_segment:
+            try:
+                room_segment = asyncio.run(_resolve_hy_fan_room_segment(ctx.record_url, ctx.proxy_address))
+            except Exception as err:
+                # reason 统一带异常类型：与 MIN-2223 口径一致（str() 为空的异常类型也要可见）
+                logger.error(
+                    i18n.tr(
+                        "虎牙移动端短链解析失败，本轮跳过: {record_url} - {reason}",
+                        record_url=utils.mask_credentials(ctx.record_url),
+                        reason=f"{type(err).__name__}: {err}",
+                    )
+                )
+                ctx.unrecognized = True
+                return
+            _HY_FAN_ROOM_CACHE[segment] = room_segment
+    ctx.record_url = f"https://www.huya.com/{room_segment}"
+    _resolve_huya_com(ctx)
+
+
 def _resolve_douyu_com(ctx: _PlatformResolveContext) -> None:
     record_url = ctx.record_url
     proxy_address = ctx.proxy_address
@@ -1964,6 +2151,135 @@ def _resolve_live_bilibili_com(ctx: _PlatformResolveContext) -> None:
     ctx.port_info = port_info
     ctx.record_danmaku_args = record_danmaku_args
     ctx.new_record_url = new_record_url
+
+
+# ---------------------- B站移动端分享短链（b23.tv）----------------------
+# b23.tv 是B站移动端分享域：路径段为纯数字时即房间号（标准 / 尾斜杠 / 带 query / http 四种
+# 形态），否则是短码（如 ZyQrgYf），需跟随 302 跳转解析出真实房间号。两种形态都归一成
+# https://live.bilibili.com/<房间号> 后委托 _resolve_live_bilibili_com —— 拉流/画质/弹幕/录制
+# 与桌面链接走同一条链路，不新增分支。与 hy.fan 同款布局：刻意不在准入层改写配置行
+# （跳转解析依赖网络，放主循环准入会把一次网络抖动放大成「配置行被注释/改写」），放解析
+# 函数内每轮重试天然兜住瞬态故障，成功结果由下方缓存摊薄。
+# 布局注记：本节函数置于 _resolve_live_bilibili_com 之后、分发表之前，与「新增平台在此追加」
+# 的 F-01c 约定一致；表项登记见 _PLATFORM_RESOLVERS（B站条目之后）。
+
+# 短码 → 房间号解析结果缓存：短链与房间的映射是稳定事实，进程内缓存避免每个监测轮都
+# 多发一次 302 跟随请求。dict 单键读写受 GIL 保护且同键写入值幂等，最坏并发后果只是
+# 重复解析一次，无需加锁；条目上界是配置里的 b23.tv 行数（含历史变体），无淘汰必要。
+_B23_TV_ROOM_CACHE: dict[str, str] = {}
+
+
+def _b23_tv_path_segment(record_url: str) -> str:
+    # 取 b23.tv 链接的唯一路径段（房间号或短码）；形态不合法抛 ValueError，
+    # 消息即用户日志里的失败原因——错误提示必须点名「缺什么 / 为什么不合法」。
+    try:
+        path = urlsplit(record_url).path
+    except ValueError:
+        # 含控制字符 / 非法端口等畸形入参：urlsplit 抛 ValueError，按「无法解析」定因
+        raise ValueError("URL 无法解析")
+    segments = [seg for seg in path.split("/") if seg]
+    if not segments:
+        raise ValueError("路径为空，缺少房间号")
+    if len(segments) > 1:
+        raise ValueError("路径含多级目录，不是标准房间链接")
+    segment = segments[0]
+    # isascii 收紧 isalnum 的 Unicode 宽字符误判：全角数字（２２７…）不是合法房间号/短码，
+    # 不能流向B站接口。与 _hy_fan_path_segment 同口径，这里在入口先挡一层
+    if not (segment.isascii() and segment.isalnum()):
+        raise ValueError("房间号含非法字符")
+    return segment
+
+
+def _bilibili_room_id_from_landing(final_url: str) -> str:
+    # 从 b23.tv 短链跳转落地页提取B站房间号；非B站直播域 / 形态不符一律返回空串（本函数只做
+    # 「能不能提取」的判定，失败原因由调用方统一表述）。与虎牙不同，live.bilibili.com 的房间号
+    # 只有纯数字形态（短号也是数字），故这里必须 isdigit；移动端落地页还存在 /h5/<房间号>
+    # 形态，一并接受。落地 query（share_session_id 等分享参数）不参与判定。
+    try:
+        parts = urlsplit(final_url)
+    except ValueError:
+        return ""
+    host = (parts.hostname or "").lower()
+    if host != "live.bilibili.com" and not host.endswith(".live.bilibili.com"):
+        return ""
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if len(segments) == 1:
+        room_id = segments[0]
+    elif len(segments) == 2 and segments[0] == "h5":
+        room_id = segments[1]
+    else:
+        return ""
+    if not (room_id.isascii() and room_id.isdigit()):
+        return ""
+    return room_id
+
+
+async def _resolve_b23_tv_room_segment(record_url: str, proxy_addr: str | None) -> str:
+    # 短码 → 真实房间号：走 async_req(redirect_url=True)，与 hy.fan / xhslink.com 短链解析
+    # 同一契约——成功回最终落地 URL（httpx 已跟随重定向，逐跳 SSRF 复检由 async_http 的
+    # 响应钩子承担，本函数只解析、不请求落地页）；失败回空串（网络异常 / 内网跳转拒绝已在
+    # async_req 内部记日志），这里统一转成带原因的 ValueError 交调用方写用户日志。
+    # UA 取与 spider.get_bilibili_room_info 同值的桌面 Firefox UA；b23.tv 是纯 302 跳转服务，
+    # 不校验 UA。
+    final_url = await async_req(
+        url=record_url,
+        proxy_addr=proxy_addr,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
+        },
+        redirect_url=True,
+    )
+    # async_req 声明返回是覆盖 redirect_url/cookies 组合的联合类型，redirect_url=True 的运行时
+    # 契约是「成功回最终 URL、失败回空串」（MID-2225）：按既有调用点口径 isinstance+非空收窄，
+    # 空串与非 str 一律归为「未获取到跳转地址」。
+    if not isinstance(final_url, str) or not final_url:
+        raise ValueError("未获取到跳转地址")
+    room_id = _bilibili_room_id_from_landing(final_url)
+    if not room_id:
+        raise ValueError("跳转地址不是B站直播间")
+    return room_id
+
+
+def _resolve_b23_tv(ctx: _PlatformResolveContext) -> None:
+    # b23.tv 入口：归一为桌面链接后委托 _resolve_live_bilibili_com 回写 ctx 四字段（platform /
+    # port_info / 弹幕参数 / new_record_url），本函数不重复赋值。表项置于B站之后：两者匹配
+    # 片段互不重叠，先后不产生遮蔽。房间线程侧 record_host 仍是 b23.tv——按 host 隔离的
+    # 熔断桶把「短链解析失败」与桌面链接的取流失败分开计数，语义反而更准，不需要回填成
+    # live.bilibili.com（与 _resolve_hy_fan 同判据）。
+    try:
+        segment = _b23_tv_path_segment(ctx.record_url)
+    except ValueError as err:
+        logger.error(
+            i18n.tr(
+                "B站移动端链接缺少有效房间号，本轮跳过: {record_url} - {reason}",
+                record_url=utils.mask_credentials(ctx.record_url),
+                reason=str(err),
+            )
+        )
+        ctx.unrecognized = True
+        return
+    if segment.isascii() and segment.isdigit():
+        # 纯数字段就是房间号：零网络直接归一，覆盖标准 / 尾斜杠 / 带 query / http 四种形态
+        room_id = segment
+    else:
+        room_id = _B23_TV_ROOM_CACHE.get(segment, "")
+        if not room_id:
+            try:
+                room_id = asyncio.run(_resolve_b23_tv_room_segment(ctx.record_url, ctx.proxy_address))
+            except Exception as err:
+                # reason 统一带异常类型：与 MIN-2223 口径一致（str() 为空的异常类型也要可见）
+                logger.error(
+                    i18n.tr(
+                        "B站移动端短链解析失败，本轮跳过: {record_url} - {reason}",
+                        record_url=utils.mask_credentials(ctx.record_url),
+                        reason=f"{type(err).__name__}: {err}",
+                    )
+                )
+                ctx.unrecognized = True
+                return
+            _B23_TV_ROOM_CACHE[segment] = room_id
+    ctx.record_url = f"https://live.bilibili.com/{room_id}"
+    _resolve_live_bilibili_com(ctx)
 
 
 def _resolve_xhslink_com(ctx: _PlatformResolveContext) -> None:
@@ -2423,7 +2739,13 @@ def _resolve_twitch_tv(ctx: _PlatformResolveContext) -> None:
                         _danmaku_extra["proxy"] = proxy_address
                     record_danmaku_args = {"channel": _twitch_channel, **_danmaku_extra}
             except Exception as e:
-                logger.warning(i18n.tr("[TwitchTV]弹幕 channel 提取失败: {e}", e=e))
+                logger.warning(
+                    i18n.tr(
+                        "[TwitchTV]弹幕 channel 提取失败: {type_name}: {e}",
+                        type_name=type(e).__name__,
+                        e=e,
+                    )
+                )
         else:
             logger.error("错误信息: 网络异常，请检查本网络是否能正常访问TwitchTV直播平台")
     ctx.platform = platform
@@ -3064,9 +3386,19 @@ _PLATFORM_RESOLVERS: tuple[tuple[Callable[[str], bool], Callable[[_PlatformResol
     (_match_host("www.tiktok.com/"), _resolve_tiktok_com),
     (_match_host("live.kuaishou.com/"), _resolve_live_kuaishou_com),
     (_match_host("www.huya.com/"), _resolve_huya_com),
-    (_match_host("www.douyu.com/"), _resolve_douyu_com),
+    # 虎牙移动端分享短链：路径段是房间号或短码，短码先经 301 跳转解析出真实房间段，
+    # 再归一成 www.huya.com 链接委托 _resolve_huya_com（与斗鱼 m.douyu.com「同 resolver」
+    # 思路同源，只是多了短码解析一步，见 _resolve_hy_fan）。PLATFORM_HOST 已同批登记
+    # hy.fan（MID-04 契约：白名单每项必被某个 resolver 片段命中）。
+    (_match_host("hy.fan/"), _resolve_hy_fan),
+    # 斗鱼移动端域名与 www 同表项：二者只影响 URL 形态，解析与取流链路完全一致
+    # （同一个 _resolve_douyu_com），不新增分支。
+    (_match_host("www.douyu.com/", "m.douyu.com/"), _resolve_douyu_com),
     (_match_host("www.yy.com/"), _resolve_yy_com),
     (_match_host("live.bilibili.com/"), _resolve_live_bilibili_com),
+    # B站移动端分享短链：与桌面链路同源，只是多了短码解析一步，见 _resolve_b23_tv。
+    # PLATFORM_HOST 已同批登记 b23.tv（MID-04 契约：白名单每项必被某个 resolver 片段命中）。
+    (_match_host("b23.tv/"), _resolve_b23_tv),
     # MID-04（2026-09-20）+ SEV-2203 残留（2026-09-23）：两个片段一律 scheme 无关。
     # 白名单里的 xhslink.com 不限协议、get_xhs_note_info 侧判据也是 "xhslink.com" in url，
     # 而本表项曾写死 http://、第二个片段曾留着 https:// —— 于是 https://xhslink.com/... 与
@@ -3611,7 +3943,14 @@ def _run_ffmpeg_record(
         # ffmpeg 启动失败抛 FileNotFoundError / PermissionError 等 OSError 子类；
         # subprocess.CalledProcessError 仅在 subprocess.run(check=True) 时触发，
         # ffmpeg Popen 流程下永不会抛——原写法（2026-09-12 审查 6.1）是死代码。
-        logger.error(i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e)))
+        logger.error(
+            i18n.tr(
+                "错误信息: {type_name}: {e} 发生错误的行数: {get_error_line}",
+                type_name=type(e).__name__,
+                e=e,
+                get_error_line=_get_error_line(e),
+            )
+        )
         # 启动失败时 recording 集合中本房间条目已先于 Popen 加入（见 start_record
         # 内的 with record_state_lock 块），此处必须同步 discard，否则「正在录制」
         # 快照长期幽灵存在，磁盘满时的 sys.exit 判定、通知推送、UI 状态都会基于
@@ -3665,7 +4004,7 @@ def _convert_after_record(save_file_path: str, split_video_by_time: bool) -> Non
         for seg_file in seg_files:
             _submit_postprocess(converts_mp4, str(seg_file), delete_origin_file)
     except Exception as e:
-        logger.error(i18n.tr("转码失败: {e} ", e=e))
+        logger.error(i18n.tr("转码失败: {type_name}: {e} ", type_name=type(e).__name__, e=e))
 
 
 # 单个直播间的录制线程主体：循环「解析平台 → 选源 → 起 ffmpeg / 直下」直到该 URL 被注释、
@@ -3805,7 +4144,13 @@ def start_record(
                             i18n.tr(
                                 "序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}",
                                 count_variable=count_variable,
-                                url_data=url_data,
+                                # M-02（2026-10-02）：自定义流地址可能带 user:pass@ 凭据，print 进
+                                # 控制台与 web_console.log（后者不轮转），实参必须过码。
+                                # 过码对象取 str(tuple) 而非元组本身：mask_credentials 只接受 str
+                                # （内部全是 re.sub），直接把 (画质, url, 主播名) 元组递进去会抛
+                                # TypeError，把这条「获取失败重试」print 变成穿透到外层 except 的异常。
+                                # 目录里该 msgid 的占位符就是 {url_data}，故只换实参、不动模板。
+                                url_data=utils.mask_credentials(str(url_data)),
                             )
                         )
                         record_error(record_host)
@@ -3988,6 +4333,15 @@ def start_record(
                                 "微博直播": weibo_cookie,
                                 "酷狗直播": kugou_cookie,
                                 "LiveMe": liveme_cookie,
+                                # L-04（2026-10-02）：补齐两个「强制直下」平台（only_flv_platform_list =
+                                # shopee / 花椒直播）。二者的 [Cookie] 配置项在本文件已有读取点并透传给
+                                # 解析函数（get_shopee_stream_url / get_huajiao_stream_url），却不进本表，
+                                # 于是同一份用户 Cookie 在「解析」与「探针 / ffmpeg 录制头 / 直下」两条路上
+                                # 口径不一——直下路径拿不到登录态，CDN 按游客态钳制或 403。
+                                # 其余 25 个已声明却未入表的 *_cookie 不在本批补：逐平台是否需要登录态
+                                # 取流未经现网抓包确认，盲加等于改变 25 个平台的出站请求头。
+                                "shopee": shopee_cookie,
+                                "花椒直播": huajiao_cookie,
                             }.get(platform, "")
 
                             real_url = select_source_url(port_info, proxy_address, platform, cookies=platform_cookie)
@@ -4034,7 +4388,8 @@ def start_record(
                             except Exception as e:
                                 logger.error(
                                     i18n.tr(
-                                        "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                        "错误信息: {type_name}: {e} 发生错误的行数: {get_error_line}",
+                                        type_name=type(e).__name__,
                                         e=e,
                                         get_error_line=_get_error_line(e),
                                     )
@@ -4397,7 +4752,8 @@ def start_record(
                                     )
                                     logger.error(
                                         i18n.tr(
-                                            "错误信息: {e} 发生错误的行数: {get_error_line}",
+                                            "错误信息: {type_name}: {e} 发生错误的行数: {get_error_line}",
+                                            type_name=type(e).__name__,
                                             e=e,
                                             get_error_line=_get_error_line(e),
                                         )
@@ -4504,7 +4860,10 @@ def start_record(
                 except Exception as e:
                     logger.error(
                         i18n.tr(
-                            "错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e)
+                            "错误信息: {type_name}: {e} 发生错误的行数: {get_error_line}",
+                            type_name=type(e).__name__,
+                            e=e,
+                            get_error_line=_get_error_line(e),
                         )
                     )
                     record_error(record_host)
@@ -4530,8 +4889,11 @@ def start_record(
 
                 # 正常循环等待：逐秒递减，且停止录制时立即打断剩余等待、回到循环顶检测退出标志
                 # （否则空闲房间线程会残留最长一个完整循环周期才退出）
+                # L-01（2026-10-02）：等待条件补齐三信号（与上方主循环顶部 1061 行及
+                # disable_record 等待同口径）——原只查 recording_enabled，URL 被注释/移除
+                # 或进程退出标志已置时，线程仍要把剩余等待耗完才回到循环顶。
                 while x:
-                    if not recording_enabled:
+                    if record_url in url_comments or exit_recording or not recording_enabled:
                         break
                     x = x - 1
                     if loop_time:
@@ -4541,7 +4903,12 @@ def start_record(
                     print("\r检测直播间中...", end="")
         except Exception as e:
             logger.error(
-                i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e))
+                i18n.tr(
+                    "错误信息: {type_name}: {e} 发生错误的行数: {get_error_line}",
+                    type_name=type(e).__name__,
+                    e=e,
+                    get_error_line=_get_error_line(e),
+                )
             )
             record_error(record_host)
             time.sleep(2)
@@ -4571,7 +4938,15 @@ def check_ffmpeg_existence() -> bool:
         if built_line:
             print(built_line)
     except subprocess.CalledProcessError as e:
-        logger.error(e)
+        # L-03（2026-10-02）：裸 logger.error(e) 在 CalledProcessError 的 str 为空（部分场景
+        # 只含 returncode）或异常 str() 语义不明时无法归因，改为 i18n 模板带 type_name
+        logger.error(
+            i18n.tr(
+                "ffmpeg 版本检查命令执行失败: {type_name}: {e}",
+                type_name=type(e).__name__,
+                e=e,
+            )
+        )
     except FileNotFoundError:
         pass
     if check_ffmpeg():
@@ -4784,7 +5159,7 @@ def main(non_interactive: bool = False) -> None:
     global look_cookie, loop_time, maoerfm_cookie, max_request, middle, migu_cookie, monitoring, name, netease_cookie, new_line, new_url, new_word
     global ntfy_api, ntfy_email, ntfy_tags, open_smtp_ssl, origin_line, over_push_message_text, over_show_push, pandatv_cookie, picarto_cookie, popkontv_access_token, popkontv_partner_code, popkontv_password
     global popkontv_username, pplive_cookie, proxy_addr, proxy_addr_bak, push_check_seconds, push_message_title, pushplus_token, qiandurebo_cookie, quality, replace_words, running_snapshot, running_url
-    global seen_urls, semaphore, sender_email, sender_name, shopee_cookie, show_url, showroom_cookie, six_room_cookie, smtp_port, sooplive_cookie, sooplive_password, sooplive_username
+    global semaphore, sender_email, sender_name, shopee_cookie, show_url, showroom_cookie, six_room_cookie, smtp_port, sooplive_cookie, sooplive_password, sooplive_username
     global scheduler, recording_semaphore
     # MID-07 / MID-10：主循环热加载写回的两个模块全局（单次录制时长上限、SSL 豁免平台的
     # 上一次原始配置值，用于「值变化时才重跑」的幂等判定）
@@ -4804,6 +5179,12 @@ def main(non_interactive: bool = False) -> None:
     # 启动时清理 URL_config.ini 重复行（原为模块级副作用，移入入口处执行）
     if os.path.isfile(url_config_file):
         utils.remove_duplicate_lines(url_config_file)
+
+    # 启动期陈旧字节码缓存清理（判定基线与被删范围见 src/startup_cleanup.py）。放在此处而非模块顶部：
+    # 此刻 src.* 已 import 完毕，本轮启动不受影响，只有源码/版本真的变化时下一次启动才付重编译成本。
+    purge_stale_bytecode_caches(
+        script_path, version, read_config_bool(config, "录制设置", "是否启动时清理陈旧字节码缓存(是/否)", True)
+    )
 
     # 初始化并发调度器（自适应全局容量 + 按平台熔断降级 + 可选录制并发软上限）。
     # 在 while 循环前创建，确保 start_record 线程启动前 scheduler/semaphore 已就绪。
@@ -5163,6 +5544,10 @@ def main(non_interactive: bool = False) -> None:
             _line_list: set[str] = set()
             _url_line_list: set[str] = set()
             _seen_urls: set[str] = set()
+            # L-06（2026-10-02）：清空移到每轮解析开始处——原在 try 尾部（拉起循环之后）才清，
+            # 解析中途抛错走外层 except 时旧条目残留，下一轮解析结果叠加其上（幽灵拉起）。
+            # 拉起循环消费的 text_no_repeat_url 已先取了快照，此处提前清空不影响本轮。
+            url_tuples_list = []
             # 2026-09-12 审查 6.1：原代码在此迭代同一文件，循环体内调 delete_line / update_file
             # （两者均 truncate 重写整个 URL_config.ini）。文件较大（>8KB）时迭代器底层
             # 文件指针已被 truncate，for origin_line in file: 漏读后半段；此外重复 I/O
@@ -5182,7 +5567,10 @@ def main(non_interactive: bool = False) -> None:
                         # 时不得误报失败）。
                         if delete_line(url_config_file, origin_line) is False:
                             logger.warning(
-                                i18n.tr("删除重复配置行失败: {origin_line}", origin_line=origin_line.strip())
+                                i18n.tr(
+                                    "删除重复配置行失败: {origin_line}",
+                                    origin_line=utils.mask_credentials(origin_line.strip()),
+                                )
                             )
                     _line_list.add(origin_line)
                     line = origin_line.strip()
@@ -5249,7 +5637,10 @@ def main(non_interactive: bool = False) -> None:
                         # SEV-05 调用侧修复：同上，按返回值告警（URL 归一后重复，但文件里删不掉）
                         if delete_line(url_config_file, origin_line) is False:
                             logger.warning(
-                                i18n.tr("删除重复配置行失败: {origin_line}", origin_line=origin_line.strip())
+                                i18n.tr(
+                                    "删除重复配置行失败: {origin_line}",
+                                    origin_line=utils.mask_credentials(origin_line.strip()),
+                                )
                             )
                     else:
                         _url_line_list.add(url)
@@ -5291,7 +5682,10 @@ def main(non_interactive: bool = False) -> None:
                             # print 首参也非 logger/tr 首参 → 提取器扫不到「本行包含未知链接」。
                             # 改为常量模板 tr 预格式化后整体传入（print_colored 第二参是颜色，不可传 kw）。
                             color_obj.print_colored(
-                                i18n.tr("\r{line} 本行包含未知链接.此条跳过", line=origin_line.strip()),
+                                i18n.tr(
+                                    "\r{line} 本行包含未知链接.此条跳过",
+                                    line=utils.mask_credentials(origin_line.strip()),
+                                ),
                                 color_obj.YELLOW,
                             )
                             _ = update_file(url_config_file, old_str=origin_line, new_str=origin_line, start_str="#")
@@ -5302,7 +5696,7 @@ def main(non_interactive: bool = False) -> None:
                     logger.error(
                         i18n.tr(
                             "直播间配置行解析失败（已跳过该行）: {line} - {err}",
-                            line=origin_line.strip(),
+                            line=utils.mask_credentials(origin_line.strip()),
                             err=err,
                         )
                     )
@@ -5324,12 +5718,14 @@ def main(non_interactive: bool = False) -> None:
                     _url_comments.add(running_url)
 
             # MID-2203（2026-09-22）：整轮解析（含上面 running_snapshot 归并）走完且未抛错，
-            # 此刻才把四个集合整体换位。解析中途抛错时全局集合保持上一轮的值，
+            # 此刻才把三个集合整体换位。解析中途抛错时全局集合保持上一轮的值，
             # 房间线程看到的始终是「一份完整、自洽的注释/去重状态」，而不是空集。
+            # L-05（2026-10-02）：换位项由四项减为三项——模块级 seen_urls 全局是「只写不读」的死
+            # 变量（去重实际消费的是局部 _seen_urls），删全局声明后本行只会绑定一个无人读取的
+            # 函数局部名，一并删除。
             url_comments = _url_comments
             line_list = _line_list
             url_line_list = _url_line_list
-            seen_urls = _seen_urls
 
             # 原为 list(set(...))：去重的同时把配置顺序打乱，导致每轮启动/新增房间的顺序随机
             # （日志与「序号N」提示随之抖动）。dict.fromkeys 保序去重，且同为 O(N)。
@@ -5358,7 +5754,7 @@ def main(non_interactive: bool = False) -> None:
                             i18n.tr(
                                 "\r{first_start}地址: {url_tuple}",
                                 first_start="新增" if not first_start else "传入",
-                                url_tuple=url_tuple[1],
+                                url_tuple=utils.mask_credentials(url_tuple[1]),
                             )
                         )
                         with record_state_lock:
@@ -5455,7 +5851,6 @@ def main(non_interactive: bool = False) -> None:
             # 上报当前活跃监控数，供调度器自适应全局并发容量（解除多任务排队瓶颈）
             if scheduler is not None:
                 scheduler.set_active_count(monitoring)
-            url_tuples_list = []
             first_start = False
 
         except Exception as err:

@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-_MATRIX_KEYS = ["windows-x64", "linux-x64", "macos-arm64"]
+_MATRIX_KEYS = ["windows-x64", "linux-x64", "linux-arm64", "macos-arm64"]
 _ALL_KEYS = ("windows-x64", "linux-x64", "linux-arm64", "macos-x64", "macos-arm64")
 
 
@@ -77,7 +77,7 @@ def _fake_module(
 
 @pytest.fixture(autouse=True)
 def _matrix_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 矩阵固定成 CI 真实三平台，避免本用例随 build-release.yml 的矩阵调整而误红/误绿
+    # 矩阵固定成 CI 真实四平台，避免本用例随 build-release.yml 的矩阵调整而误红/误绿
     monkeypatch.setattr(checker, "_runtime_matrix_keys", lambda: list(_MATRIX_KEYS))
 
 
@@ -120,10 +120,16 @@ def test_real_matrix_parser_reads_workflow_runner_tags(tmp_path: Path, monkeypat
 def test_real_matrix_parser_rejects_unregistered_runner_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # 新 runner 标签未登记进 RUNNER_TO_RUNTIME_KEY 时必须 rc=2（SystemExit(2)）：
     # 「静默丢掉一个平台」正是「表里五键都管住了」错觉的来源。
+    # 样本标签刻意用 ubuntu-24.04-arm64：ubuntu-24.04-arm 已随 linux-arm64 接入发布矩阵被登记进映射，
+    # 不再属于「未登记」标签，拿它当反例会让本用例从「验证拒绝未知标签」退化成「验证接受已知标签」。
+    # 下一行先行断言样本确实不在映射里——若将来有人把该样本也登记了，本用例会以明确信息变红而非静默失去拦截面。
     _restore_real_matrix(monkeypatch)
+    assert (
+        "ubuntu-24.04-arm64" not in checker.RUNNER_TO_RUNTIME_KEY
+    ), "样本标签已被登记进映射，请更换一个真正未登记的 runner 标签"
     workflow = tmp_path / "build-release.yml"
     workflow.write_text(
-        "        include:\n          - os: windows-latest\n          - os: ubuntu-24.04-arm\n",
+        "        include:\n          - os: windows-latest\n          - os: ubuntu-24.04-arm64\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(checker, "_WORKFLOW", workflow)
@@ -145,7 +151,7 @@ def test_real_matrix_parser_rejects_workflow_without_os_lines(tmp_path: Path, mo
 
 
 def test_workflow_matrix_and_test_constant_stay_in_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 跨文件同源锁：本文件把矩阵「固定成三平台」这件事必须与真 workflow 一致。
+    # 跨文件同源锁：本文件把矩阵「固定成四平台」这件事必须与真 workflow 一致。
     # _MATRIX_KEYS 漂移（矩阵加/删平台而测试没跟）时，autouse fixture 会把真缺口桩掉。
     _restore_real_matrix(monkeypatch)
     assert checker._runtime_matrix_keys() == list(_MATRIX_KEYS), (

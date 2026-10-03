@@ -14,7 +14,7 @@
 #     故 pip 缓存 key 以这两个文件的 hash 为准。
 #   · 打包由根目录 build_exe.py（PyInstaller）承担，本地与 CI 行为一致。
 #
-# Job 拓扑（lint / audit / type / test / build 七路并行，收尾串行汇总）：
+# Job 拓扑（lint / audit / type / test / build 七路并行 + Windows VBS 行为锁，收尾串行汇总）：
 #
 #   setup ──┬── static             格式 / 导入序 / 版本一致性 / 派生元数据一致性 / 运行时钉定表结构 / i18n po-mo 同步
 #           ├── deps-audit         pip-audit 按 OSV 审计 requirements.txt（补-05）
@@ -23,6 +23,7 @@
 #           ├── concurrency-test   线程安全 / 跨事件循环锁 / 速率限制专项
 #           ├── integration-verify ffmpeg / node 真实环境探测验证
 #           └── build-verify       PyInstaller lite 打包 + CLI/Web/GUI 三入口冒烟
+#   StopRecording.vbs ──── vbs-behavior-test  Windows runner，仅 VBS 变更时触发
 #                            └────► ci-summary（唯一 required check，汇总上游结果）
 #
 #   职责边界：**本工作流止于验证，不含部署 / 发布**——Release 产出由
@@ -46,18 +47,13 @@
 #     （apt 自身网络重试）+ --no-install-recommends（免装推荐包，更快更省盘）。
 #
 # ---------------------------------------------------------------------------
-# 已接受的残余缺口（刻意不在本工作流覆盖，勿「顺手补」）
+# 已关闭的残余缺口
 # ---------------------------------------------------------------------------
-#   · tests/test_stop_recording_vbs.py 的 4 条 **cscript 行为锁**（:167/:178/:192/:201，
-#     skip 条件为 :27 的 `CSCRIPT = shutil.which("cscript")` 取不到）在本 workflow
-#     的全部 ubuntu job 上**永不执行**——它们验证的是 StopRecording.vbs 杀进程树的真实行为
-#     （按映像名/命令行/父进程三层匹配、先杀主进程后清孤儿 ffmpeg）。为它们加一个 Windows
-#     runner 的额度成本远高于收益（该脚本变更频率极低、且有静态锁在 ubuntu 上生效），
-#     故按「**仅本地执行、不属 required check**」处理：改动 StopRecording.vbs 时必须在
-#     Windows 上手动跑 `pytest tests/test_stop_recording_vbs.py` 并把结果写进更新日志
-#     （见 AGENTS.md「完成定义」第 2 步的 SKIP(原因) 口径）。
-#     同一文件里的静态/AST 类断言（编码为 UTF-16 LE、进程名清单与 build_exe.py 对齐等）
-#     在 ubuntu 上照常执行，本缺口仅指需要真起 cscript 进程的那 4 条。
+#   · tests/test_stop_recording_vbs.py 的 4 条 cscript 行为锁（:167/:178/:192/:201）
+#     现已由 vbs-behavior-test job 覆盖：仅当 StopRecording.vbs 变更时在 windows-latest
+#     触发，用 cscript 驱动真函数原文验证进程匹配判据（按映像名/命令行/父进程三层匹配、
+#     先杀主进程后清孤儿 ffmpeg）。同一文件里的静态/AST 类断言（编码 UTF-16 LE、进程名
+#     清单与 build_exe.py 对齐等）在 ubuntu 的 test job 中照常执行。
 #
 # ---------------------------------------------------------------------------
 # 环境变量与 Secrets 说明
@@ -201,6 +197,15 @@ jobs:
               - 'docker-compose.yaml'
               - '.github/workflows/**'
               - '.github/actions/**'
+              # StopRecording.vbs 变更时也须触发 ubuntu 侧的静态/AST 断言
+              #（编码、映像名清单、杀进程顺序等），行为锁则由 vbs filter 单独控制。
+              - 'StopRecording.vbs'
+            # StopRecording.vbs 单独分组：其 4 条 cscript 行为锁需 Windows runner，
+            # 仅该文件变更时才启动 windows-latest（成本远高于 ubuntu），
+            # 测试文件变更也须触发（验证判据本身改动）。
+            vbs:
+              - 'StopRecording.vbs'
+              - 'tests/test_stop_recording_vbs.py'
 
   # ── 1. 静态检查（格式 / 导入序 / 版本一致性 / 钉定表结构 / 翻译同步 / 注释规范）─
   # 各项检查都是「秒级、零运行时依赖」，合并进同一 job 可省去多次 runner 冷启动
@@ -274,6 +279,12 @@ jobs:
       - name: Check version consistency
         run: python scripts/check_version.py
 
+      # 校验 ci.yml 与 build-release.yml 的版本常量一致性（python_build / node_version）：
+      # 两份 workflow 各自在 consts 步骤声明同一组常量，改一处须同步另一处
+      # （AGENTS.md「CI / workflow 约定」）。纯标准库实现，无需安装项目依赖。
+      - name: Check workflow version constants consistency
+        run: python scripts/check_workflow_constants.py
+
       # 校验「派生元数据一致性」：uv.lock 与 DouyinLiveRecorder.egg-info 必须从 pyproject.toml
       # 重新生成，不允许手改版本号（手写版本是 4.3.0 -> 4.4.0 那次 egg-info / uv.lock 没跟上的
       # 根因，见 AGENTS.md「关键约定」#1 与 scripts/sync_metadata.py 头部说明）。
@@ -299,6 +310,12 @@ jobs:
       # 大批量「只改注释」的改动另可先 --snapshot 建基线、改完 --baseline 验证逻辑未动。
       - name: Check annotation conventions
         run: python scripts/check_annotations.py
+
+      # 校验 Skill 目录与 AGENTS.md「项目级 Skill」表格一致性：
+      # 表格条目必须指向存在的目录与 SKILL.md，frontmatter name 必须与目录名一致，
+      # SKILL.md 引用的 AGENTS.md 章节必须实际存在。纯标准库实现，无需装项目依赖。
+      - name: Check skill-AGENTS.md consistency
+        run: python scripts/check_skill_agents_consistency.py
 
   # ── 1.5 依赖漏洞审计（pip-audit，补-05）────────────────────────────────
   # 本仓运行时清单刻意「只有下限、无上限」（唯一例外 protobuf<8），且 uv.lock 不参与
@@ -382,8 +399,10 @@ jobs:
   # ── 2. 静态类型检查 ──────────────────────────────────────────────────────
   # 按 pyproject [tool.mypy] python_version = "3.14" 使用最低支持版本运行，
   # 保证类型结论对最老解释器成立。
-  # ubuntu runner 默认即为 linux 平台，等价于本地双跑门禁中的 `mypy --platform linux`
-  # （AGENTS.md 平台符号门控约定；两条命令均不带路径参数，范围取 [tool.mypy].files）。
+  # 平台符号门控双跑（AGENTS.md 约定）已补齐到合并边界：ubuntu runner 裸跑 `mypy` 默认即
+  # linux 目标，本 job 再对称增跑一次 `mypy --platform win32`，使 CI 同时覆盖 sys.platform
+  # 两侧门控分支——此前 win32 侧只在 Windows 开发机上被顺带检查、合并边界从不验证。
+  # 两条命令均不带路径参数、共用同一 [tool.mypy].files 范围（见下方 Run mypy 两步）。
   #
   # 检查范围**不再写在命令行**：pyproject [tool.mypy].files 是唯一事实源
   # （src/ + 根入口 main.py/gui.py/web.py/i18n.py/msg_push.py + build_exe.py +
@@ -423,9 +442,17 @@ jobs:
             python -m pip install --upgrade pip
             && pip install -r requirements.txt "mypy==${{ needs.setup.outputs.mypy_version }}" "pytest==${{ needs.setup.outputs.pytest_version }}"
 
-      - name: Run mypy
-        # 不带路径参数：范围由 pyproject [tool.mypy].files 定义（本地同款命令）
+      # 平台双跑第一步：不带路径参数，范围由 pyproject [tool.mypy].files 定义（本地同款命令）；
+      # ubuntu runner 上即 linux 目标。
+      - name: Run mypy (linux target)
         run: mypy
+
+      # 平台双跑第二步：与上一条对称增跑 win32 目标。win32 专属符号（ctypes.windll、
+      # subprocess.STARTUPINFO 等）与 `if sys.platform == "win32":` 门控分支只在 win32 目标下
+      # 参与类型检查；同范围、同样不带路径参数。2026-10-02 本机实测 win32 与 linux 判定面逐行一致，
+      # 不与既有 `# type: ignore` 冲突。
+      - name: Run mypy (win32 target)
+        run: mypy --platform win32
 
   # ── 3. 单元测试 + 覆盖率门禁 ─────────────────────────────────────────────
   test:
@@ -552,6 +579,10 @@ jobs:
       # `skipif(sys.platform != "win32")`，在 ubuntu 上必然 skip——整模块跑会让下面的「有 skip 即红」
       # 判据被这两条平台专属用例误触发（本 job 全程跑在 ubuntu）。只点名这几条「装了 node 就该跑」
       # 的入口，平台无关，判据才干净。
+      # 2026-10-02 补：下方清单里 `tests/test_ci_frontend_registration.py` 不驱动任何 .mjs，它反过来比对
+      # 「本清单点名的入口」与 `tests/frontend/*.mjs` 的差集——把「新增 .mjs 必须同批登记」从靠人记 +
+      # 本机 Hook（`.qoder/` 不随仓库分发）升级成随仓库分发的机检锁。点名进本步骤而不是只靠全量 pytest
+      # 收集，是为了让清单与该锁在**同一步**里互相见证：从清单里摘掉它，该锁自身即报红。
       - name: Gate frontend tests not skipped
         shell: bash
         run: |
@@ -562,6 +593,7 @@ jobs:
             tests/test_frontend_regression_gates.py::test_frontend_regression_gates \
             tests/frontend/test_motion.py::test_motion_frontend \
             tests/frontend/test_auth_reauth.py::test_auth_reauth \
+            tests/test_ci_frontend_registration.py::test_every_frontend_mjs_is_registered \
             -q -rs 2>&1); then
             printf '::error::前端用例执行失败：\n%s\n' "$out"
             exit 1
@@ -820,7 +852,35 @@ jobs:
       - name: Build (lite) + smoke test CLI/Web/GUI
         run: xvfb-run -a python build_exe.py --smoke --no-runtime --no-zip
 
-  # ── 7. 汇总门禁 ─────────────────────────────────────────────────────────
+  # ── 7. VBS 行为锁（Windows runner，仅 StopRecording.vbs 变更时触发）──────
+  # StopRecording.vbs 的 4 条 cscript 行为用例需要真 Windows cscript 解释器，
+  # ubuntu runner 上永远 skip。用 paths 过滤只在 VBS 文件变更时启动 Windows runner，
+  # 避免每次 PR 付出 Windows 分钟额度（该脚本变更频率极低，通常只在功能迭代时改动）。
+  # 静态/AST 类断言（编码、映像名清单、杀进程顺序等）已在 ubuntu test job 覆盖。
+  vbs-behavior-test:
+    name: VBS Behavior Test (Windows cscript)
+    needs: setup
+    runs-on: windows-latest
+    timeout-minutes: 10
+    # 仅当 StopRecording.vbs 或其测试文件变更时触发；
+    # workflow_dispatch 手动触发时始终执行。其它 PR 自动 skip，ci-summary 视 skip 为通过。
+    if: github.event_name == 'workflow_dispatch' || contains(fromJSON(needs.setup.outputs.filters), 'vbs')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip && pip install pytest
+
+      - name: Run VBS behavior tests (cscript)
+        run: python -m pytest tests/test_stop_recording_vbs.py -v
+
+  # ── 8. 汇总门禁 ─────────────────────────────────────────────────────────
   # 上游 job 会被路径过滤跳过，分支保护若直接勾选它们会「永久 pending」。
   # 因此对外只暴露本 job 作为唯一 required check：
   #   skipped / success → 通过；failure / cancelled → 失败。
@@ -836,6 +896,7 @@ jobs:
       - concurrency-test
       - integration-verify
       - build-verify
+      - vbs-behavior-test
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

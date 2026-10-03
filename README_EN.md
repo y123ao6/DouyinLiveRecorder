@@ -4,13 +4,14 @@ English&nbsp;&nbsp;|&nbsp;&nbsp;[简体中文](README.md)
 
 ## 💡 Introduction
 
-[![Python Version](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
-[![Supported Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)](https://github.com/y123ao6/DouyinLiveRecorder)
-[![GitHub issues](https://img.shields.io/github/issues/y123ao6/DouyinLiveRecorder.svg)](https://github.com/y123ao6/DouyinLiveRecorder/issues)
-[![Latest Release](https://img.shields.io/github/v/release/y123ao6/DouyinLiveRecorder)](https://github.com/y123ao6/DouyinLiveRecorder/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/y123ao6/DouyinLiveRecorder/total)](https://github.com/y123ao6/DouyinLiveRecorder/releases/latest)
+![Python Version](https://img.shields.io/badge/python-3.14%2B-blue?logo=Python&link=https%3A%2F%2Fwww.python.org%2Fdownloads%2F)
+![Supported Platforms](https://img.shields.io/badge/platforms-Windows%7CLinux%7CmacOS-blue?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder)
+![GitHub issues](https://img.shields.io/github%2Fissues%2Fy123ao6%2FDouyinLiveRecorder?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Fissues)
+![Latest Release](https://img.shields.io/github%2Fv%2Frelease%2Fy123ao6%2FDouyinLiveRecorder?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Freleases%2Flatest)
+![Downloads](https://img.shields.io/github%2Fdownloads%2Fy123ao6%2FDouyinLiveRecorder%2Ftotal?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Freleases%2Flatest)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/y123ao6/DouyinLiveRecorder?style=flat-square)](https://github.com/y123ao6/DouyinLiveRecorder/stargazers)
+![License](https://img.shields.io/badge/license-MIT-blue?link=LICENSE)
+![Stars](https://img.shields.io/github%2Fstars%2Fy123ao6%2FDouyinLiveRecorder?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Fstargazers)
 
 A **lightweight** loop-monitoring live-stream recording tool that uses FFmpeg to record live sources from multiple platforms, supporting custom recording configuration and live-status notifications.
 
@@ -38,7 +39,25 @@ Upstream project: [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLi
 
 ### Method 1: Download the release package (recommended for beginners)
 
-1. Go to [Releases](https://github.com/ihmily/DouyinLiveRecorder/releases) and download the latest released zip archive
+1. Go to [Releases](https://github.com/ihmily/DouyinLiveRecorder/releases) and download the latest released zip archive.
+   Each platform ships two packages — **lite** (no bundled ffmpeg/node; the app tries to fetch them on first start)
+   and **full** (runtime bundled). The **platform** segment of the attachment name is produced by
+   `build_exe.make_zip()`, which reads `sys.platform` and normalizes it through
+   `{"win32": "windows", "darwin": "macos"}` (anything else maps to `linux`); only the **architecture**
+   segment is the literal value of `platform.machine().lower()`:
+
+   | Target platform | Attachment name |
+   | --- | --- |
+   | Windows x64 | `DouyinLiveRecorder-v<version>-windows-amd64-lite.zip` / `-full.zip` |
+   | Linux x86_64 | `DouyinLiveRecorder-v<version>-linux-x86_64-lite.zip` / `-full.zip` |
+   | **Linux arm64** | `DouyinLiveRecorder-v<version>-linux-aarch64-lite.zip` / `-full.zip` |
+   | macOS (Apple Silicon) | `DouyinLiveRecorder-v<version>-macos-arm64-lite.zip` / `-full.zip` |
+
+   > The architecture segment for Linux arm64 reads **`aarch64`** — that is what `platform.machine().lower()` actually
+   > returns on that architecture, **not** `arm64`; the package comes out of the four-platform release matrix
+   > (`windows` / `linux` / `linux-arm64` / `macos`). On Linux a lite package is fetched in this order:
+   > `yum` → `apt` → the official month-end build downloaded directly (verified against the asset digest published by
+   > `api.github.com`); only when all of those fail does the app ask you to install ffmpeg manually.
 2. After extracting, add live-room URLs to `URL_config.ini` inside the `config` folder
 3. Run `DouyinLiveRecorder.exe` to start recording
 
@@ -79,11 +98,13 @@ docker run -d -v ./config:/app/config -v ./downloads:/app/downloads -v ./logs:/a
 
 > Inside the container, FFmpeg and Node.js are provided by the image itself (installed via apt) — no need to mount the local `ffmpeg/`, `node/` directories;
 > `config/`, `downloads/`, `logs/`, and `backup_config/` are persisted via volume mounts.
+> If you would rather not build locally, a prebuilt multi-architecture image (`linux/amd64` + `linux/arm64`) is published
+> on GHCR — see the "Pull the prebuilt multi-arch image (GHCR)" subsection of the "🐋 Docker Deployment" chapter below.
 
 ### Installing ffmpeg manually (Windows user guide)
 
 On Windows the app downloads ffmpeg from the official gyan.dev source at startup — **that is the only
-automatic route** (no mirror fallback is offered, because mirror artefacts have no official digest to check
+automatic route on Windows** (no mirror fallback is offered, because mirror artefacts have no official digest to check
 against). If the automatic install fails (usually gyan.dev unreachable, a proxy/firewall blocking it, or a
 SHA256 baseline mismatch), install it yourself in three steps:
 
@@ -117,14 +138,22 @@ independent trust root and does not replace the official digest document.)
 
 > Scope: **full** release packages already bundle ffmpeg, so normally nothing has to be installed; **lite**
 > packages and the single-file script do not, and need either the automatic install or the steps above.
-> On macOS/Linux the automatic install uses Homebrew / yum / apt respectively — install manually through your
-> distribution if that fails. For the Apple Silicon choice between the bundled build and a native one, see the FAQ below.
+> On macOS the automatic install uses Homebrew; on Linux the order is `yum` → `apt` → the official month-end
+> build downloaded directly (verified against the asset digest published by `api.github.com`, which has to be
+> reachable) — install manually through your distribution if all three routes fail. For the Apple Silicon choice
+> between the bundled build and a native one, see the FAQ below.
 
 ## 🎈 Supported Platforms
 
 **Domestic sites (37)**: Douyin | Kuaishou | Huya | Douyu | YY | Bilibili | Xiaohongshu | bigo | blued | NetEase CC | Qiandu Rebo | MaoerFM | Look Live | TwitCasting | Baidu | Weibo | Kugou | Huajiao | Liuxing | Acfun | Changliao | Inke | Yinbo | Zhihu | Haixiu | VV Planet | 17Live | LangLive | Piaopiao | 6Rooms | Lehai | Huamao | Taobao | JD | Migu | Lianjie | Laixiu
 
 **Overseas sites (14)**: TikTok | SOOP (formerly AfreecaTV) | PandaTV | WinkTV | TTingLive (formerly Flextv) | PopkonTV | TwitchTV | LiveMe | ShowRoom | CHZZK | Shopee | YouTube | Faceit | Picarto
+
+**Douyu link formats (both domains share one recording pipeline)**: `https://www.douyu.com/8751648` | `https://m.douyu.com/8751648` (mobile). Trailing slashes (`.../8751648/`), query strings (`...?rid=8751648`, `...?dyshid=...`), the `http://` scheme and extra path segments are all accepted; alphanumeric room ids and share links are resolved back to the numeric room id before pulling the stream. A link with no room id, or an invalid one, produces an explicit error message (links are masked before they reach the logs).
+
+**Bilibili link formats (both domains share one recording pipeline)**: `https://live.bilibili.com/22747736` | `https://b23.tv/22747736` (mobile share domain, numeric room id; trailing slashes, query strings and the `http://` scheme are all accepted). Alphanumeric short codes (e.g. `https://b23.tv/ZyQrgYf`) are resolved to the real room id by following the 302 redirect (results are cached in-process, no repeated requests) before pulling the stream; a landing page that is not a Bilibili live room, or a link with no room id / an invalid one, produces an explicit error message (links are masked before they reach the logs).
+
+**Huya link formats (mobile share domain and desktop link share one recording pipeline)**: `https://www.huya.com/30764624` | `https://hy.fan/30764624` (mobile share domain, a purely numeric path segment is the room id; trailing slashes, query strings and the `http://` scheme are all accepted). Alphanumeric short codes (e.g. `https://hy.fan/JbmwoV`) are resolved to the real room id by following the 301 redirect (results are cached in-process, no repeated requests) and normalised to the desktop link before pulling the stream; a landing page that is not a Huya live room, or a link with no room id / an invalid one, produces an explicit error message (links are masked before they reach the logs).
 
 > Total of **51** platforms (marketed as 60+, including platforms being added). Platform data-fetching functions are in `src/spider.py`, and stream-URL parsing is in `src/stream.py`.
 
@@ -242,11 +271,15 @@ DouyinLiveRecorder/
 ```ini
 [录制设置]
 # UI language: zh_CN | en_US | en_GB | zh_TW (empty = follow system language; values such as zh_cn/zh-CN/en/en-GB/zh-Hant are also accepted and auto-normalized; falls back to en_US if the language file is missing)
-language = zh_CN
+language =
 # Whether to skip proxy detection (yes/no)
 是否跳过代理检测(是/否) = 是
 # Whether to enable log files (yes/no)
 是否启用日志文件(是/否) = 是
+# Purge stale bytecode caches at startup: runs only when the version or source content changed
+# (no-op otherwise). Scope is __pycache__ under the app folder and src/ only - never tests/,
+# scripts/, downloads/ and similar directories
+是否启动时清理陈旧字节码缓存(是/否) = 是
 # Live save path (defaults to downloads/ if empty)
 直播保存路径(不填则默认) =
 # When the anchor renames, automatically update URL_config.ini and rename the recording directory/files (default: yes)
@@ -276,8 +309,8 @@ language = zh_CN
 同一时间访问网络的线程数 = 3
 # Max concurrent recordings — global concurrency cap, 0 means unlimited (default 0); changes take effect on the next check cycle
 最大同时录制数(0为不限制) = 0
-# Loop interval (seconds) — live-status check interval (default 120)
-循环时间(秒) = 120
+# Loop interval (seconds) — live-status check interval (default 60)
+循环时间(秒) = 60
 # Queue read URL time (seconds)
 排队读取网址时间(秒) = 0
 # Whether to show the loop countdown
@@ -290,11 +323,11 @@ language = zh_CN
 是否启用HLS采集(是/否) = 是
 # HLS capture exclusion platforms (comma-separated) — listed platforms ignore the "是否启用HLS采集" setting and always use FLV capture
 # (platform names must exactly match those shown in logs/config, e.g. 斗鱼直播,虎牙直播; leave empty to exclude nothing)
-HLS采集排除平台(逗号分隔) =
+HLS采集排除平台(逗号分隔) = 虎牙直播
 # Whether https recording is enabled — consolidates the former "是否强制启用https录制" and "是否禁用SSL证书验证(是/否)":
 # enabled = stream pulled over https and SSL cert verification skipped; disabled = stream pulled over http and default cert verification restored
 # (the value of the old key "是否强制启用https录制" is auto-migrated and inherited; https-only overseas platforms like TikTok/YouTube keep their original form when disabled)
-是否启用https录制 = 否
+是否启用https录制 = 是
 # Platforms exempt from SSL cert verification (comma-separated) — only takes effect when "是否启用https录制 = 否" (http mode, cert verification required).
 # Since FFmpeg 9.0, TLS cert verification is on by default; platforms with cert anomalies must be exempted here; required platforms are auto-appended at startup
 # (Huya Live / Bilibili Live), with only appends and no removal of user-entered items
@@ -320,15 +353,15 @@ mp4格式重新编码为h264 = 否
 # Additional platforms recorded using a proxy (comma-separated)
 额外使用代理录制的平台(逗号分隔) =
 # Whether to record danmaku (yes/no) — when enabled, danmaku is written to SRT subtitle files, synced with video start/stop
-是否录制弹幕(是/否) = 否
+是否录制弹幕(是/否) = 是
 # Whether danmaku monitoring is enabled (yes/no) — real-time danmaku viewing only, no SRT written (decoupled from danmaku recording, can be enabled separately)
-是否弹幕监控(是/否) = 否
+是否弹幕监控(是/否) = 是
 # Danmaku segment duration (seconds) — SRT segment granularity, recommended to match "视频分段时间(秒)"
 弹幕分片时长(秒) = 1800
 # Danmaku recording platforms (comma-separated) — the 5 currently supported platforms
 弹幕录制平台(逗号分隔) = 斗鱼直播,B站直播,虎牙直播,抖音直播,TwitchTV
-# Per-recording duration limit in seconds; 0 means unlimited, default is 6 hours
-单次录制时长上限(秒,0为不限制) = 21600
+# Per-recording duration limit in seconds; 0 means unlimited
+单次录制时长上限(秒,0为不限制) = 0
 ```
 
 ### Push config (config/config.ini)
@@ -341,24 +374,24 @@ mp4格式重新编码为h264 = 否
 微信推送接口链接 =
 bark推送接口链接 =
 bark推送中断级别 = active
-bark推送铃声 =
+bark推送铃声 = bell
 钉钉通知@对象(填手机号) =
 钉钉通知@全体(是/否) = 否
 tgapi令牌 =
 tg聊天id(个人或者群组id) =
 smtp邮件服务器 =
-是否使用SMTP服务SSL加密(是/否) =
-SMTP邮件服务器端口 =
+是否使用smtp服务ssl加密(是/否) = 是
+smtp邮件服务器端口 =
 邮箱登录账号 =
 发件人密码(授权码) =
 发件人邮箱 =
 发件人显示昵称 =
 收件人邮箱 =
-ntfy推送地址 = https://ntfy.sh/xxxx
+ntfy推送地址 =
 ntfy推送标签 = tada
 ntfy推送邮箱 =
 pushplus推送token =
-自定义推送标题 =
+自定义推送标题 = 直播间状态更新通知
 自定义开播推送内容 =
 自定义关播推送内容 =
 只推送通知不录制(是/否) = 否
@@ -376,17 +409,18 @@ pushplus推送token =
 抖音cookie =
 # Specify Douyin ttwid separately (left empty, it is fetched and process-level cached by src/ttwid.py)
 ttwid =
-# XHS (Xiaohongshu) app-side session sid carried in the xy-common-params header;
-# left empty the built-in default is used (it may already have expired).
-# Priority: environment variable XHS_SESSION_SID > this key > built-in default
-xhs_session_sid =
 快手cookie =
 tiktok_cookie =
+tiktok_guest_cookie =
 虎牙cookie =
 斗鱼cookie =
 yy_cookie =
 b站cookie =
 小红书cookie =
+# XHS (Xiaohongshu) app-side session sid carried in the xy-common-params header;
+# left empty the built-in default is used (it may already have expired).
+# Priority: environment variable XHS_SESSION_SID > this key > built-in default
+xhs_session_sid =
 bigo_cookie =
 # ... a total of 51 platform cookie keys; see config.ini for the rest
 ```
@@ -680,6 +714,29 @@ docker compose up -d
 docker compose logs -f
 ```
 
+### Pull the prebuilt multi-arch image (GHCR)
+
+The `.github/workflows/docker-publish.yml` workflow builds and pushes one layer per native runner (amd64 and arm64)
+on every `v*` tag and then merges them by manifest digest — so **a single `docker pull` resolves to the layer matching
+the host architecture**:
+
+```bash
+# Replace <owner> with the GitHub account that owns the image (GHCR namespaces are always lower-cased)
+docker pull ghcr.io/<owner>/douyin-live-recorder:latest
+docker run -d -v ./config:/app/config -v ./downloads:/app/downloads \
+  -v ./logs:/app/logs -v ./backup_config:/app/backup_config \
+  ghcr.io/<owner>/douyin-live-recorder:latest
+```
+
+- Tags: `latest` and `vX.Y.Z`; `latest` is produced only from a `v*` tag and cannot be overwritten by a manual run.
+  The two per-architecture tags (`:vX.Y.Z-amd64` / `-arm64`) are intermediate products of the merge step and are not
+  cleaned up automatically at the moment.
+- Anonymous pulls require the GHCR package visibility to be **public** — a one-off manual action in the repository settings.
+- This is **deliberately a different name** from `image: ihmily/douyin-live-recorder:latest` in `docker-compose.yaml`:
+  compose goes through `pull_policy: build` and builds in place (it does not pull a same-named registry image), so the
+  "Quick start" instructions above stay as they are. Use the `docker run` line above for the GHCR image; on an arm64
+  host the in-place compose build works just as well.
+
 ### Switch run mode
 
 `docker-compose.yaml` has three built-in services (recorder / web / gui) that you switch via profile without editing the file:
@@ -740,8 +797,12 @@ ports:
 ### Environment requirements
 
 - Python >= 3.14
-- FFmpeg (manual install required on Linux/macOS)
-- Node.js (auto-installed on Windows, manual install required on Linux/macOS)
+- FFmpeg (downloaded automatically from the official source on Windows at startup; on Linux the app tries
+  `yum` → `apt` → the official month-end build, on macOS it uses Homebrew — the package-manager routes need
+  root/administrator, so install manually when all of them fail)
+- Node.js (downloaded and unpacked into the program directory automatically on Windows; on Linux the app uses
+  `yum` (RHEL-family, requires EPEL) or `apt`, on macOS it uses Homebrew — the package-manager routes need
+  root/administrator, so install manually when they fail)
 
 ### Install dev dependencies
 
@@ -929,9 +990,9 @@ This project is open-sourced under the [MIT License](LICENSE). Stars and Forks a
 
 ## ⏳ Changelog
 
-### v4.4.0 (2026-09-29 ~ 2026-10-01) — Web panel migrated from FastAPI to Starlette (fastapi/pydantic removed, 24 route contracts preserved verbatim) / Web frontend motion layer & mobile adaptation / GUI theme layer (phase 3) and adaptive label wrapping eradicating the DPI freeze / two full code-review rounds with P0 fixes (standalone SSRF triple guard, ffmpeg command log masking, etc.) / i18n blind-spot backfill / dependency & doc reconciliations
+### v4.4.0 (2026-09-29 ~ 2026-10-01) — Web panel migrated from FastAPI to Starlette (fastapi/pydantic removed, 24 route contracts preserved verbatim) / Web frontend motion layer & mobile adaptation / GUI theme layer (phase 3) and adaptive label wrapping eradicating the DPI freeze / root cure for the douyin HEVC-origin-room "no usable source" deadlock & h265 candidates admitted by save format / two full code-review rounds with P0 fixes (standalone SSRF triple guard, ffmpeg command log masking, etc.) / i18n blind-spot backfill / dependency & doc reconciliations
 
-> This release (v4.4.0, 2026-09-29 ~ 10-01) is a "UI modernization + full review fixes" cycle. Three things matter most: ① **the Web panel backend moved from FastAPI to a Starlette-driven design** — a self-built route adapter plus a zero-dependency validation layer, with all 24 route contracts and every security invariant preserved verbatim, and runtime dependencies 23 → 21; ② **two full code-review rounds** (`CODE_REVIEW_2026-09-29_2` with all 31 numbered fixes landed + `CODE_REVIEW_2026-09-30` with Critical 2 / Medium 51 / Minor 160, P0 fixed) cleared a batch of silent-failure modes — the standalone edition's SSRF/local-file-read chain and ffmpeg commands writing credentials to disk in plaintext among them; ③ **the GUI theme layer (phase 3)** and **the Web frontend motion layer (phase 1)** shipped, and adaptive label wrapping eradicated both-side clipping and the DPI-rescale freeze. **There are breaking changes (dependency surface)** — see the dedicated section below. Full root-cause analysis and verification are in [CODE_WIKI.md](CODE_WIKI.md).
+> This release (v4.4.0, 2026-09-29 ~ 10-01) is a "UI modernization + full review fixes" cycle. Four things matter most: ① **the Web panel backend moved from FastAPI to a Starlette-driven design** — a self-built route adapter plus a zero-dependency validation layer, with all 24 route contracts and every security invariant preserved verbatim, and runtime dependencies 23 → 21; ② **two full code-review rounds** (`CODE_REVIEW_2026-09-29_2` with all 31 numbered fixes landed + `CODE_REVIEW_2026-09-30` with Critical 2 / Medium 51 / Minor 160, P0 fixed) cleared a batch of silent-failure modes — the standalone edition's SSRF/local-file-read chain and ffmpeg commands writing credentials to disk in plaintext among them; ③ **the douyin HEVC-origin-room deadlock is cured** — live streamers whose rooms logged "no usable source this round" every round and never recorded (three individually-correct rules stacking: hevc substitution, the pre-probe h265 candidate drop, and the silent HLS-config drop) now record again; h265 candidates are admitted by save format (TS/MKV/MP4) and a zero-source observability warning was added; ④ **the GUI theme layer (phase 3)** and **the Web frontend motion layer (phase 1)** shipped, and adaptive label wrapping eradicated both-side clipping and the DPI-rescale freeze. **There are breaking changes (dependency surface)** — see the dedicated section below. Full root-cause analysis and verification are in [CODE_WIKI.md](CODE_WIKI.md).
 
 **✨ New Features / Improvements**
 - **GUI theme layer (phase 3)**: new `src/ui_theme.py` (zero display dependencies, safe to import headlessly) — 13 semantic token slots × three themes (light / dark / high contrast), a sidebar theme menu that switches at runtime and persists to `config.ini [GUI] gui_theme`; WCAG contrast checks (body text 4.5 / non-text & disabled 3.0) continuously enforced by `tests/test_ui_theme.py` (34 tests).
@@ -940,33 +1001,38 @@ This project is open-sourced under the [MIT License](LICENSE). Stars and Forks a
 - **The `retry` composite action gains a `fail_fast_codes` input (exit-code tiering)**: with it omitted, the behavior of all 16 existing call sites is byte-identical; the web smoke call site passes `"2"` so configuration-class errors fail immediately without entering backoff — never rewritten to 0 or downgraded to a warning just to make the pipeline green.
 - **Two new test defenses**: R7, an AST gate over the real-device collector script template (`__main__` guard / zero collection-time side effects / two-step argv guard / platform-prefixed cleanup, with all 5 live_collector scripts hardened in the same batch); R8, a repo-wide scan for leftover `MUTATION-` markers (a mutation not reverted turns the gate red, with the three hard rules written back into AGENTS.md).
 - **New dynamic route-contract lock** `tests/test_web_api_routes.py` (exact set of 24 method/path pairs + the `/web` mount), replacing the static baseline JSON that the secret-scanning gate blocked.
+- **h265 candidates admitted by save format (TS/MKV/MP4 can stream-copy HEVC) + zero-source observability for the silent HLS drop**: `_h265_copy_format_supported()` reads main's hot-reloaded `video_save_type` and admits HEVC stream copy for TS/MKV/MP4 (the h265 primary candidate now enters the regular probe sequence) while FLV (HEVC-in-FLV is an Enhanced-FLV extension), MP3/M4A and out-of-domain values stay conservatively dropped; main.py's h265→TS forcing block gains the same-predicate guard (no takeover and no "use TS format instead" warning when the save format is already TS/MKV/MP4). When m3u8 candidates are dropped as a whole by the HLS config (global switch / exclusion list) and the round ends with no usable source, a new warning names the cause, the candidate count and the recovery switches — closing the only "zero-log" source-selection cause; healthy rounds that do select a source stay silent.
 
 **🐛 Fixes**
+- **Root cure for the douyin HEVC-origin-room "no usable source this round" deadlock**: streamers were live yet recording was skipped every round, with the status line's cumulative error count stuck at 0 (source-selection failures don't feed error samples, so the status line alone looks healthy). Three individually-correct rules stacked into the deadlock — at the origin tier with `hevc_flv_url` published, the h265 FLV **replaced** the h264 one as the only FLV candidate; `select_source_url` dropped every `codec=h265` candidate before probing; with HLS collection disabled the h264 m3u8 group was dropped silently and record_url (an `.m3u8`) was disabled in tandem — zero usable candidates after filtering. Fix: before the hevc substitution, the replaced h264 origin URL is stored into `flv_url_list` (the fallback takes over when HLS is off/unreachable; entries byte-identical to the hevc URL or already carrying the `codec=h265` marker are not collected). Live verification on a live HEVC-origin room: with HLS off the h264 FLV fallback was selected (this shape was always "no usable source" pre-fix) → `E2E_RESULT: CURED`.
 - **Standalone-edition twin drift (Critical, 2 items)**: ① the probe/recording SSRF and local-file-read chain (default `build_opener` registering FileHandler + no protocol/internal-IP vetting of candidates + ffmpeg lacking `-protocol_whitelist` — three layers stacked so `file://` and cloud-metadata addresses could go from probe to allowed to recorded on disk) — fixed with an explicit handler whitelist, an `_untrusted_stream_target_reason` internal-IP check (covering abbreviated forms like `2130706433`/`0x7f000001`), and `-protocol_whitelist` at both command definition points; ② the full ffmpeg command (Cookie headers and token-bearing stream URLs included) was written round after round in plaintext to `logs/ffmpeg.log` — now masked via `_mask_ffmpeg_cmd_for_log` before writing.
 - **P0 six-pack**: rooms that exit while paused on "disk full" no longer stay in `running_list` forever (the root cause of every room refusing to restart after space recovers); GUI config saving now does a real atomic write (no longer re-tightening 0600 to umask permissions on POSIX); Web password handling unified to strip in three places (passwords with leading/trailing spaces no longer self-lock authentication with 403); `update_config_line` drops the unquoted-value inline-comment fallback heuristic (config values containing ` #` are no longer silently polluted); camelCase credentials in header form (`myToken:`/`sessionKey:`) are masked again; `replace_url` switched to segment-exact matching (sibling room lines whose URLs share a prefix are no longer wrongly commented out by the "dead address auto-comment" path).
 - **31 numbered fixes from the full review**: Shopee short-link landing pages get the double gate (domain-family whitelist + internal-IP check; untrusted → drop the redirect and strip cookies); per-hop internal-IP re-checking on async HTTP redirects; a scheme-whitelist opener for `sync_req` (file/ftp/data handlers no longer registered); raw URLs reaching logs on PandaTV/WinkTV and similar platforms are masked; Kuaishou did / Bilibili buvid device fingerprints no longer shared across proxy exits; an `anchor_name` of None no longer crashes the whole parsing round; the TikTok quality-selection defect where HLS-only rooms "requested smooth but pulled original" with no downgrade notice; Bilibili danmaku host rotation swallowing real disconnects as "fake closes"; the Web auth refusal message no longer swallowed by stdio redirection; `tr()` secondary exceptions no longer replacing the original one; the frontend reauth password moved to a masked dialog and generation tokens on the three polling chains preventing orphaned timer chains; GUI status-line matchers recomputed lazily per language, `after` self-rescheduling chains wrapped in `try/finally` against permanent breakage, a single-flight entry shared by "stop recording"/"quit", per-event fault tolerance in the tail thread; and the collection-time pollution from real-device scripts (real platform connections / output-dir wipes; `pytest --collect-only` 20.55 s → 0.81 s).
 - **Sync-probe internal-IP closure**: the synchronous probe previously had no internal/loopback/cloud-metadata vetting of even the initial URL (the protocol-shape whitelist blocks `file://` but not `http://127.0.0.1:6379`) — a single `_probe_client()` factory + pre-request initial vetting + `RedirectHopRejected` convergence; verified with real egress: public HLS passes while `127.0.0.1:6379`/`169.254.169.254`/`10.0.0.5`/CGNAT are all rejected (including the last-resort candidate).
 - **GUI label clipping on both sides and the DPI freeze (two batches, same root cause)**: `_bind_adaptive_wraplength` adaptive wrapping eradicates pack's symmetric clipping (5 occurrences fixed together); then the synchronous write inside `<Configure>` was replaced with "true debounce (settle only after the storm stays quiet for 120 ms) + hysteresis (skip writes when |Δ| ≤ max(12, 2%)) + TclError race guarding", eradicating the event-storm mutual pumping with CTk's DPI rescaling (whole-window freeze / flickering text / partially rendered elements).
 - **Web panel mobile adaptation**: two-row top bar (fixed 56px → min-height + wrap at ≤768px), `viewport-fit=cover` + `env(safe-area-inset-*)` safe-area handling, `100dvh` dynamic viewport, and in-panel horizontal scrolling for the three data tables on narrow screens — eliminating the top-bar clipping and whole-page horizontal scrolling seen on iPhone 16 Pro Max / Pixel 10.
-- **i18n blind-spot backfill**: user-visible text in the extractor's three blind spots (`print_colored` / `messagebox` / push bodies) all routed through `tr()`, 16 new entries registered across the four language catalogs and the `.mo` recompiled; zh_TW also deduplicated 7 duplicate keys, restoring strict key-set parity across the four catalogs (808 keys).
+- **i18n blind-spot backfill**: user-visible text in the extractor's three blind spots (`print_colored` / `messagebox` / push bodies) all routed through `tr()`, 16 new entries registered across the four language catalogs and the `.mo` recompiled; zh_TW also deduplicated 7 duplicate keys, restoring strict key-set parity across the four catalogs (808 keys; one more entry registered on 10-01 for the h265 zero-source observability warning, 809 keys in the final state).
 
 **⚠️ Breaking Changes / Behavior Changes**
 - **The `fastapi` / `pydantic` runtime dependencies are removed** (details under "Dependency Changes" below): the panel's 24 routes, request/response shapes, security headers, and auth middleware behave identically; the internal request models are read via `.parse()`, with no API-surface change for external consumers. Only custom deployments importing these two packages outside the panel need adjusting.
 
 **📦 Dependency Changes**
 - **Runtime dependencies 23 → 21**: `fastapi>=0.140.0` and `pydantic>=2.13.4` removed; the package-name sets of `requirements.txt` and `pyproject.toml [project.dependencies]` are equal item by item (regression lock `tests/test_regression_2026_09_22_gates.py`), and `uv.lock` plus `DouyinLiveRecorder.egg-info` were rebuilt via `scripts/sync_metadata.py` (zero residue of either package).
+- **`urllib3` declared floor 2.7.0 → 2.8.0**: the CI `deps-audit` "floor re-check" measured the old floor itself inside the affected band of CVE-2026-97687 / CVE-2026-97688 / CVE-2026-97689 (all fixed in 2.8.0); `requirements.txt` and `pyproject.toml [project.dependencies]` raised in sync (still 21 entries, package-name sets unchanged), with `uv.lock` and `DouyinLiveRecorder.egg-info` rebuilt via `sync_metadata.py`; the local venv already had 2.8.0 installed, so the resolved set is unchanged.
 - **CI typecheck job now installs pinned `pytest==9.1.1`**: type checking over `tests/` is no longer half-blind (fixtures and the `NoReturn` of `pytest.fail()` are visible again).
 - **Doc-level dependency-notation fix**: the dev-dependency pip line in both READMEs went from 5 packages (missing `pytest-cov`; an environment set up that way cannot run the coverage gate) to the canonical `pip install .[dev]` (pointing at the six entries of `[project.optional-dependencies].dev`).
 
 **🛠️ Repo Maintenance & Docs**
 - **Two full code-review rounds**: `docs/worklog/CODE_REVIEW_2026-09-29_2.md` (all 31 numbered items landed as P0+P1+P2) and the root-level `CODE_REVIEW_2026-09-30.md` (18 per-file deep-audit batches over ≈42,000 lines of production code + 56,200 lines of tests — Critical 2 / Medium 51 / Minor 160, with Mimosa deep-scan cross evidence); P0 is fixed, P1/P2 await later batches, and a dedicated "twin back-port" project is suggested for standalone.
-- **Multiple reconciliations and a slim-down of `AGENTS.md`**: 7 fact syncs (stale readings of test counts / symbol names / call-site counts corrected) + a fidelity-preserving slim-down in 19 places (110,287 → 108,469 bytes; the gate-command bash block and every section heading byte-identical; the three doc locks unchanged at 73 passed / 1 skipped); a stop-hook credential-risk flag was assessed as a false positive and the red-line wording made explicit per the suggestion.
+- **Multiple reconciliations and a slim-down of `AGENTS.md`**: 7 fact syncs (stale readings of test counts / symbol names / call-site counts corrected) + a fidelity-preserving slim-down in 19 places (110,287 → 108,469 bytes; the gate-command bash block and every section heading byte-identical; the three doc locks unchanged at 73 passed / 1 skipped) plus three gate-wording corrections (quality gates now defer to the "Formatting commands (single gate baseline)" section; `pyright`/Pylance positioning clarified as non-gates; a new premise that local gate results extrapolate only when tool versions match the `ci.yml` pinned values); a stop-hook credential-risk flag was assessed as a false positive and the red-line wording made explicit per the suggestion.
 - **Metadata reconciliation**: 15 files fully checked against `pyproject.toml` (version 4.4.0 / 21 dependencies / image & service names / ports & mounts / packaging parameters), with the only drift being the README dev-deps line above; the two `filterwarnings` comment attributions in `pyproject` were corrected from "fastapi testclient" to the `starlette.testclient` body.
+- **Two test-side fixes (no production-code changes)**: the 4 false-reds of `test_gui_stop_exit_singleflight` on Linux CI came from the test double stubbing only the win32 signal branch (POSIX uses `os.kill`) — after adding the POSIX-side stub per the "stdlib stand-ins go through the tested module's namespace" rule, faking `sys.platform` locally reproduces the POSIX path with all 25 criteria of the four scenarios passing; and the wall-clock margin of the `test_notify` timeout case is now derived from the production constants (`taskkill /F /PID` measured at a steady 2.5~3.1s, so the 1s timeout plus ~3s landing exactly on the hand-tuned 4.0s margin is no longer a machine-state false alarm).
 
 **🧪 Tests & Verification**
-- Full `pytest` **3690 passed / 14 skipped / 0 failed / 0 warnings** (measured locally on 2026-10-01; all 14 skips are platform-conditional: missing symlink privileges, Windows chmod read-only-bit semantics, the POSIX-shaped SIGKILL case, h2 installed so the missing-dependency branch is unreachable, etc.).
-- Coverage: all 44 modules above threshold (84.76% overall, measured 09-30); basedpyright 0 errors / 0 warnings; `run_gates.py` 8/8 green.
+- Full `pytest` **3721 passed / 14 skipped / 0 failed / 0 warnings** (measured locally on 2026-10-01, final state; all 14 skips are platform-conditional: missing symlink privileges, Windows chmod read-only-bit semantics, the POSIX-shaped SIGKILL case, h2 installed so the missing-dependency branch is unreachable, etc.).
+- Coverage: all 44 modules above threshold (84.9% overall, per coverage.json); basedpyright 0 errors / 0 warnings; `run_gates.py` 8/8 green.
 - Live verification (09-29 ~ 09-30): Douyin PASS (59 messages / SRT 4,518 bytes), Bilibili PASS (9 / 678 bytes), Huya WARN (connected, no danmaku in that window), Twitch WARN, Douyu SKIP(room offline, parsing healthy), TikTok SKIP(no egress network); standalone `--dry-run` PASS on a real live Huya room (incremental verification of S-01/S-02); the public-HLS segment probe passes while all four classes of internal targets are rejected. Hand-back actions (GUI visual checks, Douyu/TikTok re-runs on live rooms, bundle-size re-measurement) are in [CODE_WIKI.md](CODE_WIKI.md).
+- Live verification (10-01, a live douyin HEVC-origin room "央视网快看"): all three states PASS — HLS off + ts save format → the h265 FLV primary was admitted and selected (codec=h265 probed for real); HLS off + FLV → fell onto the h264 origin fallback (codec=h264); fallback stripped → None with the new zero-source observability warning fired for real.
 
 ### v4.3.0 (2026-09-16 ~ 2026-09-27) — P0 fix for 100% recording failure on ffmpeg master builds (`-thread_queue_size` narrowed upstream to an output-only option) / boolean config parsing unified (`true/false` silently broke 8 settings and blocked 9 overseas platforms) / two full code-review rounds (62 + 106 graded fixes) / supply-chain hardening (official hashes first + GPG verification + Lanzou fallback removed) / four release-chain faults fixed (**the lite package shipped to users briefly never existed**) / Apple Silicon ffmpeg PATH yield policy / per-room log correlation field & `/health` probe endpoint / build artifact size −21.6% / coverage 73.28% → 82.03% (dedicated push) and 83.91% (final, 09-27)
 

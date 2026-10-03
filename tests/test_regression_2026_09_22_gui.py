@@ -241,7 +241,12 @@ class TestZombieCleanupJudgesReturnCode:
             for n in ast.walk(fn)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "run"
         ]
-        assert len(runs) == 4, f"应覆盖 4 处进程工具调用，实得 {len(runs)}"
+        # [历史注] 原断言 `len(runs) == 4`：L-40（CODE_REVIEW_2026-10-02）删掉两段结构性无法
+        # 命中的兜底过滤器（Windows PARENTPID / POSIX pkill -P 都只匹配 GUI 直接派生的 ffmpeg，
+        # 而 ffmpeg 的父进程恒为 main.py），扫描面随之从 4 降到 2。写死条数只会跟着每次合法增删
+        # 漂移、不表达任何判据，故改为「非空反向见证 + 逐个断言」：0 处（扫描口径失效）即红，
+        # 新增的第 N+1 处 run 会被 ast.walk 自动纳入并由下方逐条断言检查。
+        assert runs, "未在 _cleanup_zombie_ffmpeg 内找到任何 subprocess.run（扫描口径失效即假绿）"
         for run in runs:
             keywords = {k.arg for k in run.keywords}
             assert "capture_output" in keywords

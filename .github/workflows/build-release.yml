@@ -1,8 +1,8 @@
 # =============================================================================
-# Build & Release —— 三平台可执行文件构建与 GitHub Release 发布
+# Build & Release —— 四平台（含 linux aarch64）可执行文件构建与 GitHub Release 发布
 # -----------------------------------------------------------------------------
 # 触发条件：
-#   1. push tag `v*`（如 v4.0.8.2）→ 构建三平台产物 + 自动创建 GitHub Release
+#   1. push tag `v*`（如 v4.0.8.2）→ 构建四平台产物 + 自动创建 GitHub Release
 #   2. workflow_dispatch（手动）    → 默认仅构建并上传 artifact；勾选 create_release 输入后亦创建 Release
 #
 # 构建逻辑统一由仓库根目录 build_exe.py 承担（本地 / CI 行为一致）：
@@ -135,6 +135,11 @@ jobs:
       - name: Check version consistency across consumers
         run: python scripts/check_version.py
 
+      # 校验 build-release.yml 与 ci.yml 的版本常量一致性（python_build / node_version）：
+      # 与 CI static job 同口径，双侧互验防止单侧漂移
+      - name: Check workflow version constants consistency
+        run: python scripts/check_workflow_constants.py
+
       # SEV-10：发布路径 fail-closed 的前半段。build_exe.py --dual 会从 gyan.dev /
       # evermeet.ca / github.com(BtbN) / nodejs.org 拉取约 300MB 的 ffmpeg+node 并打进
       # 对外分发的 full zip（这些二进制以子进程方式执行）。本步在**任何平台开始构建之前**
@@ -168,7 +173,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ── 0.5 预创建 Release（消除 build job 并发创建竞态）──────────────────
-  # 仅建立 Release 记录，build job 随后并发把 6 个 zip 追加为附件，
+  # 仅建立 Release 记录，build job 随后并发把 8 个 zip 追加为附件，
   # 不会出现「多个 build job 同时创建同一 Release」的竞态。
   # 注意：job 级不挂 if（否则被 skip 后会级联 skip 依赖它的 build），
   #       是否真正创建由步骤级 if 控制。
@@ -234,7 +239,7 @@ jobs:
           draft: false
           prerelease: false
 
-  # ── 1. 三平台构建 + 冒烟 ─────────────────────────────────────────────────
+  # ── 1. 四平台构建 + 冒烟 ─────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.platform }})
     needs: [prepare, release-create]
@@ -254,6 +259,8 @@ jobs:
             platform: windows
           - os: ubuntu-latest
             platform: linux
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
           - os: macos-latest
             platform: macos
 
@@ -278,7 +285,7 @@ jobs:
           node-version: ${{ needs.prepare.outputs.node_version }}
 
       # ── ffmpeg：冒烟测试需要（main.py 启动即检查）──────────────────────
-      # 冒烟跑在 lite 产物上（不含内置运行时），故三平台都用系统包管理器装一份。
+      # 冒烟跑在 lite 产物上（不含内置运行时），故四平台都用系统包管理器装一份。
       # full 版本内置的 ffmpeg 由 build_exe.py --dual 在打包阶段单独下载。
       # Linux 额外装 xvfb：GUI（tkinter/pystray）冒烟需要虚拟显示。
       - name: Install ffmpeg (Windows)
@@ -289,8 +296,10 @@ jobs:
           backoff: "15"
           command: choco install ffmpeg -y --no-progress
 
+      # 两个 Linux 分支按**家族**判定而不是精确等于：linux-arm64 与 linux-x64 需要同一条
+      # xvfb + 包管理器安装链，差别只在 runner 架构（build_exe.py 自己按 runtime_slot_key() 取对应产物）。
       - name: Install ffmpeg + xvfb (Linux)
-        if: matrix.platform == 'linux'
+        if: startsWith(matrix.platform, 'linux')
         uses: ./.github/actions/retry
         with:
           label: apt 安装 ffmpeg/xvfb
@@ -359,14 +368,16 @@ jobs:
       # --require-pinned：显式表达「发布路径缺钉定即终止」（build_exe.py 在 CI 下本来也
       # 会因 GITHUB_ACTIONS=true 默认开启，这里写出来是为了让发布命令自解释）。
       # DLR_RUNTIME_SHA256 由 prepare 的校验步骤透传，与 build_exe.py 的钉定表同一份值。
+      # 家族判定（同上方 Install 步骤）：arm64 job 若不落进本 xvfb 分支，GUI 冒烟在无头 aarch64 上必红；
+      # 若又落进下方通用分支，它拿到的是 tee build_exe.log 而没有 xvfb-run——两条都不接受。
       - name: Build executables + smoke test (Linux, xvfb)
-        if: matrix.platform == 'linux'
+        if: startsWith(matrix.platform, 'linux')
         env:
           DLR_RUNTIME_SHA256: ${{ needs.prepare.outputs.runtime_pins }}
         run: xvfb-run -a python build_exe.py --smoke --dual --require-pinned
 
       - name: Build executables + smoke test
-        if: matrix.platform != 'linux'
+        if: "!startsWith(matrix.platform, 'linux')"
         env:
           DLR_RUNTIME_SHA256: ${{ needs.prepare.outputs.runtime_pins }}
         shell: bash
@@ -435,11 +446,11 @@ jobs:
           retention-days: 30
 
   # ── 1.5 失败护栏：build 未全绿时回收预建的（空/残缺）Release ──────────────
-  # 为什么需要单独一个 job：release-create 为消除「三平台 build 并发创建同一 Release」的竞态，
+  # 为什么需要单独一个 job：release-create 为消除「四平台 build 并发创建同一 Release」的竞态，
   # 刻意在 build **之前**就把 Release 记录建好；一旦任一平台 build 失败（如 ffmpeg 钉定漂移 →
   # 校验处 SystemExit → dist/ 无 zip），那条记录会以**空 Release** 形态留在仓库里：用户点进去
   # 一个附件都没有，而收尾的 release job 因 `needs: build` 被跳过，无从补救。
-  # 判据沿用 release job 的同一口径（6 个 zip 才算完整，残缺即不发布）：build 结果非 success
+  # 判据沿用 release job 的同一口径（8 个 zip 才算完整，残缺即不发布）：build 结果非 success
   # 时把该 Release 删掉并留 warning。刻意**不删 tag**——`gh release delete` 默认只删 Release 记录，
   # 修好后重跑本工作流即可重新发布，不必重新打 tag。
   release-guard:
@@ -468,7 +479,7 @@ jobs:
             exit 0
           fi
           count=$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets | length')
-          echo "build 结果=${{ needs.build.result }}；Release ${TAG} 现有 ${count} 个附件（完整应为 6 个）"
+          echo "build 结果=${{ needs.build.result }}；Release ${TAG} 现有 ${count} 个附件（完整应为 8 个）"
           gh release delete "$TAG" --repo "$REPO" --yes
           echo "::warning::已回收残缺 Release ${TAG}（原附件数 ${count}）。修复后重跑本工作流即可重新发布；tag 保留。"
 
@@ -501,7 +512,7 @@ jobs:
         shell: bash
         run: ls -lh artifacts/
 
-      # 校验产物齐全：3 平台 × (lite + full) = 6 个 zip。
+      # 校验产物齐全：4 平台 × 2 = 8 个 zip。
       # 缺失说明某平台构建被跳过或上传失败，此时不应发布残缺 Release。
       - name: Verify artifact completeness
         shell: bash
@@ -510,8 +521,8 @@ jobs:
           count=$(find artifacts -name '*.zip' -type f | wc -l)
           echo "找到 ${count} 个 zip 产物"
           find artifacts -name '*.zip' -type f | sort
-          if [ "$count" -lt 6 ]; then
-            echo "::error::产物数量不足（期望 6 个：windows/linux/macos × lite/full，实际 ${count} 个）"
+          if [ "$count" -lt 8 ]; then
+            echo "::error::产物数量不足（期望 8 个：windows/linux/linux-arm64/macos × lite/full，实际 ${count} 个）"
             exit 1
           fi
 
@@ -523,7 +534,7 @@ jobs:
           cd artifacts
           sha256sum *.zip | tee SHA256SUMS.txt
 
-      # 收尾：build job 已直传 6 个 zip，这里仅补充 SHA256SUMS 附件并写发版说明。
+      # 收尾：build job 已直传 8 个 zip，这里仅补充 SHA256SUMS 附件并写发版说明。
       # 不重复列 *.zip（已存在），仅追加校验和文件，避免重复上传。
       - name: Finalize Release (notes + checksums)
         uses: softprops/action-gh-release@v3
@@ -553,8 +564,8 @@ jobs:
             sha256sum -c SHA256SUMS.txt --ignore-missing
             ```
 
-            > 产物由 GitHub Actions 在 `windows-latest` / `ubuntu-latest` / `macos-latest`
-            > 上经 `build_exe.py --smoke --dual` 构建，并已通过 CLI / Web / GUI 三入口启动冒烟测试。
+            > 产物由 GitHub Actions 在 `windows-latest` / `ubuntu-latest` / `ubuntu-24.04-arm` / `macos-latest`
+            > 四个平台上经 `build_exe.py --smoke --dual` 构建，并已通过 CLI / Web / GUI 三入口启动冒烟测试。
             > 可执行文件**未做代码签名**，首次运行时系统可能提示未知发布者。
 
       - name: Write job summary

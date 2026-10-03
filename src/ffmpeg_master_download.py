@@ -297,9 +297,10 @@ def _tofu_verify_or_record(zip_path: Path, hash_file: Path, source_url: str) -> 
             # 必须拒装。旧实现只 warning 后 return，调用方把 None 当成校验通过，于是
             # 「唯一一道完整性检查在磁盘异常时静默失效」（与本仓 MID-63/MID-68/MIN-19
             # 「不得用捕获异常后跳过让它变绿」同一族禁令）。只有「基准确实不存在」才走首次记账。
-            # 与 ffmpeg_install._check_or_record_zip_sha256 的同形分支刻意不同：那边前面还有
-            # 一道官方哈希（同源一致性校验），TOFU 只是第三道；本模块 TOFU 就是**唯一**一道，
-            # 所以它没有「降级后仍可安装」的余量。
+            # [历史注] 本段注释曾称与 ffmpeg_install._check_or_record_zip_sha256 的同形分支
+            # 「刻意不同」（理由：那边前面还有官方哈希一道）——L-44（2026-10-02）复核认为
+            # 该理由对降级分支不成立（官方文档不可达时那边 TOFU 同样是最后一道），两侧已
+            # 统一收紧为拒装，不再存在口径分叉。
             _discard_master_zip(zip_path)
             raise IntegrityError(
                 i18n.tr(

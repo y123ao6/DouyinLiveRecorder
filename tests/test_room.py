@@ -189,72 +189,8 @@ class TestGetUniqueId:
                 await get_unique_id("https://v.douyin.com/iQLgKSj/")
 
 
-class TestGetLiveRoomId:
-    # Test get_live_room_id function.
-
-    @pytest.mark.asyncio
-    async def test_function_exists(self) -> None:
-        # Test function is importable.
-        from src.room import get_live_room_id
-
-        assert callable(get_live_room_id)
-
-    @pytest.mark.asyncio
-    async def test_function_is_async(self) -> None:
-        # Test function is async.
-        import inspect
-
-        from src.room import get_live_room_id
-
-        assert inspect.iscoroutinefunction(get_live_room_id)
-
-    @pytest.mark.asyncio
-    # 正常路径：API 返回 JSON，正确提取 web_rid
-    async def test_normal_extraction(self) -> None:
-        # 正常路径：API 返回 JSON，正确提取 web_rid。
-        from src.room import get_live_room_id
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status.return_value = None
-        mock_response.json.return_value = {"data": {"room": {"owner": {"web_rid": "web_rid_78901"}}}}
-
-        mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("src.room.httpx.AsyncClient", return_value=mock_client),
-            patch("src.room.get_xbogus", new_callable=AsyncMock, return_value="fake_xbogus"),
-        ):
-            result = await get_live_room_id("7318293442", "MS4wLjABAAAA_sec123")
-
-        assert result == "web_rid_78901"
-
-    @pytest.mark.asyncio
-    async def test_http_error_raises(self) -> None:
-        # 异常路径：API 返回 HTTP 错误状态码，抛出 HTTPStatusError。
-        from src.room import get_live_room_id
-
-        mock_request = httpx.Request("GET", "https://webcast.amemv.com/webcast/room/reflow/info/")
-        mock_response = MagicMock()
-        mock_response.status_code = 403  # 403 代表被风控/鉴权失败，必须冒泡 HTTPStatusError 而非返回假 room
-        mock_response.request = mock_request
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Forbidden", request=mock_request, response=mock_response
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("src.room.httpx.AsyncClient", return_value=mock_client),
-            patch("src.room.get_xbogus", new_callable=AsyncMock, return_value="fake_xbogus"),
-        ):
-            with pytest.raises(httpx.HTTPStatusError):
-                await get_live_room_id("7318293442", "MS4wLjABAAAA_sec123")
+# [历史注] L-13（2026-10-02）：原 TestGetLiveRoomId 类（4 用例）随 get_live_room_id 一并删除
+# ——该函数全仓无生产调用点且键缺失分支返回值与注解矛盾，生产代码已移除。
 
 
 # get_xbogus 是抖音请求签名入口；守卫函数存在性与协程形态，供调用方 await。

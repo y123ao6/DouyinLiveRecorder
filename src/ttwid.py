@@ -189,7 +189,10 @@ async def get_ttwid(proxy_addr: OptionalStr = None) -> str:
     if cfg:
         _cache_ttwid(cfg, proxy_addr)
         logger.debug("使用配置文件中的 ttwid")
-        return _cached_ttwid
+        # L-22（2026-10-02）：返回本地 cfg 而非全局镜像 _cached_ttwid——并发下全局可能已被
+        # 其它出口的调用改写，返回镜像即违反 MIN-2220 自封的不变量「不得把别的出口的值当
+        # 本出口的值」。本次调用拿到的确定值就是 cfg，直接返回。
+        return cfg
 
     async def _fetch() -> str:
         return await _fetch_ttwid(proxy_addr)

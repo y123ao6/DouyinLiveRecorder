@@ -206,7 +206,14 @@ def _run_ffmpeg_checked(command: list[str], timeout: int = 600) -> str:
             out, _ = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
-            out, _ = process.communicate()
+            # L-36（2026-10-02）：第二次 communicate 必须带超时（对齐 notify.py M-5 同款防线）——
+            # kill() 只杀直接子进程，孙进程握着管道写端时无超时的读取会永久挂住后处理线程；
+            # 超时后抛 TimeoutExpired 交上层兜底，输出取「已读到的部分」。
+            try:
+                out, _ = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                out = b""
+                raise
             raise
         if process.returncode != 0:
             raise subprocess.CalledProcessError(process.returncode, command, output=out)

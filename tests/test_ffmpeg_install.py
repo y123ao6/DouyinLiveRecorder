@@ -74,7 +74,12 @@ ZIP_B = b"fake-ffmpeg-build-B-different-content"
 #      守护线程与其它库（AGENTS.md「patch subprocess 必须替换模块全局引用、不能改 stdlib
 #      模块本体」同一族理由），且一旦某线程正在用旧引用还会产生跨用例噪声。
 # 注册表与「src/ 全量下载常量白名单反查」共用一份事实源（见 _assert_download_sources_registered）。
-DOWNLOAD_MODULES: tuple[str, ...] = ("src.ffmpeg_install", "src.ffmpeg_master_download", "src.node_install")
+DOWNLOAD_MODULES: tuple[str, ...] = (
+    "src.ffmpeg_install",
+    "src.ffmpeg_master_download",
+    "src.ffmpeg_linux_download",
+    "src.node_install",
+)
 
 
 def _download_module_files() -> set[str]:
@@ -117,6 +122,15 @@ def _no_real_egress(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in DOWNLOAD_MODULES:
         module = importlib.import_module(name)
         monkeypatch.setattr(module, "requests", _EgressTripwire(name))
+    # 2026-10-02 接线之后（install_ffmpeg_linux 末尾多了「官方月末构建直下」兜底），本文件所有
+    # 「两条包管理器都没装上 → 返回 False」的既有用例都会**真走进** src.ffmpeg_linux_download，
+    # 执行一整条它们并不想测的下载链（取官方哈希 → 下载 → 解包 → 前置 os.environ["PATH"]）。
+    # 实测该链路在哨兵下恰好也返 False，于是既有用例「测的是包管理器结论」这件事失去全部可见证据
+    # —— 属 AGENTS.md 禁止的「绿着但没在测」形态。统一在此钉成 False，使既有用例的语义逐字保持
+    # 「包管理器结果」；确需测兜底的 TestInstallFfmpegLinuxNativeFallback 各用例在自己的函数体里
+    # 再 setattr 覆盖本桩（fixture 先于用例执行，覆盖必然生效），两条「兜底被触达」的判据仍由它们真锁。
+    # 出站哨兵本身的强度不因这一桩降低：DOWNLOAD_MODULES 每个模块的 requests 仍然逐个装着。
+    monkeypatch.setattr(ffmpeg_install, "install_ffmpeg_linux_native", lambda *args, **kwargs: False)
 
 
 def _sha256(data: bytes) -> str:
@@ -167,6 +181,30 @@ class TestBuildIdentityKeying:
         # 第二次（同标识、同内容）走比对分支而非重复记录
         assert ffmpeg_install._check_or_record_zip_sha256(zip_path, build_id) is True
 
+    def test_corrupt_baseline_file_refuses_instead_of_skipping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # L-44（2026-10-02，对齐 SEV-2222 口径）：基准**存在**但读取失败（磁盘异常/杀软占用）
+        # 时必须拒装（fail-closed），不得 warning 后 return True 放行未校验的二进制——
+        # 官方文档不可达时 TOFU 就是最后一道完整性检查。zip 一并被删除（不执行的路径）。
+        zip_path = _write_zip(tmp_path, ZIP_A)
+        build_id = ffmpeg_install._build_identity({"Content-Length": str(len(ZIP_A))})
+        hash_file = tmp_path / ffmpeg_install._hash_file_name(build_id)
+        hash_file.write_text("0" * 64, encoding="ascii")
+
+        real_read_text = Path.read_text
+
+        def _deny_sidecar_read(self: Path, *args: Any, **kwargs: Any) -> str:
+            # 只拦基准文件本身，其余读不受影响（替身必须收窄到目标路径）
+            if self.name == hash_file.name:
+                raise PermissionError(13, "模拟杀软占用基准文件")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _deny_sidecar_read)
+        assert ffmpeg_install._check_or_record_zip_sha256(zip_path, build_id) is False
+        # 拒装路径必须删包：未校验的二进制不得留在待解压位置
+        assert not zip_path.exists()
+
     # MID-59 的核心回归：上游换构建（标识变化、内容随之变化）不得判成篡改。
     # 把 _check_or_record_zip_sha256 的 hash_file 改回固定 _FFMPEG_HASH_FILE 即在此变红。
     def test_new_build_records_new_baseline_instead_of_refusing(self, tmp_path: Path) -> None:
@@ -192,18 +230,26 @@ class TestBuildIdentityKeying:
         assert ffmpeg_install._check_or_record_zip_sha256(_write_zip(tmp_path, ZIP_A), build_id) is True
         assert ffmpeg_install._check_or_record_zip_sha256(_write_zip(tmp_path, ZIP_B), build_id) is False
 
-    def test_corrupt_sidecar_read_failure_degrades_to_pass(self, tmp_path: Path) -> None:
+    def test_corrupt_sidecar_read_failure_refuses_install(self, tmp_path: Path) -> None:
+        # [历史注] 旧名 test_corrupt_sidecar_read_failure_degrades_to_pass，锁定旧 fail-open
+        # 行为（读取失败 → 跳过校验放行）。L-44（2026-10-02）对齐 ffmpeg_master_download 的
+        # SEV-2222 口径：官方文档不可达时 TOFU 就是最后一道完整性检查，基准存在却读不出来
+        # = 可信基准处于不可信状态，必须拒装（fail-closed）并删包。
         zip_path = _write_zip(tmp_path, ZIP_A)
         sidecar = tmp_path / ffmpeg_install._hash_file_name("x" * 12)
-        # 目录当文件读 → OSError：按「跳过校验」放行（安装优先于校验可用性）
+        # 目录当文件读 → OSError（PermissionError）
         sidecar.mkdir()
-        assert ffmpeg_install._check_or_record_zip_sha256(zip_path, "x" * 12) is True
+        assert ffmpeg_install._check_or_record_zip_sha256(zip_path, "x" * 12) is False
+        assert not zip_path.exists()
 
-    def test_unwritable_sidecar_does_not_fail_install(self, tmp_path: Path) -> None:
-        # 旁路文件位置被同名目录占住 → write_text 抛 OSError：只告警、不阻断安装
+    def test_sidecar_path_occupied_by_directory_refuses_install(self, tmp_path: Path) -> None:
+        # [历史注] 旧名 test_unwritable_sidecar_does_not_fail_install，注释称走 write_text
+        # 分支——实测（含旧实现）读侧先触发：sidecar 是目录时 hash_file.exists() 为 True、
+        # read_text 抛 PermissionError，与上一条同走「基准读取失败」路径。L-44 收紧后同样拒装。
         zip_path = _write_zip(tmp_path, ZIP_A)
         (tmp_path / ffmpeg_install._hash_file_name("y" * 12)).mkdir()
-        assert ffmpeg_install._check_or_record_zip_sha256(zip_path, "y" * 12) is True
+        assert ffmpeg_install._check_or_record_zip_sha256(zip_path, "y" * 12) is False
+        assert not zip_path.exists()
 
 
 class TestOfficialFailureHint:
@@ -861,6 +907,14 @@ DOWNLOAD_SOURCES: dict[str, tuple[str, str]] = {
         "BtbN/FFmpeg-Builds 的 master-latest 滚动构建：权威上游，但不公布 latest 的 SHA256；"
         "需 FFMPEG_MASTER_ALLOWED 显式开启，候选顺序必须排在任何镜像之前（SEV-2218）",
     ),
+    # 与上一条同主机族但**异服务**：github.com 那条记的是「产物下载域」（master-latest 无公布哈希 →
+    # TOFU），本条记的是「release asset 的 digest 字段」（月末 autobuild 标签不可变 → 官方哈希）。
+    # 两条不得合并成一条，否则要么把已校验的 Linux 直下错标成 TOFU、要么把 master 那条 TOFU 洗白。
+    "api.github.com": (
+        "官方哈希",
+        "Linux 运行期直下的期望值来源（release asset 的 digest 字段，与产物下载域异服务）；"
+        "URL 里的月末 autobuild 标签不可变，故期望值不随上游重发漂移",
+    ),
     "fyhub.cn": (
         "TOFU",
         "BtbN master 的个人镜像：直链实测回人机验证页、.sha256 文档 404；只作镜像兜底项",
@@ -967,6 +1021,13 @@ class TestDownloadSourceWhitelist:
             "fyhub.cn",
         }, f"TOFU 源集合变化，须复核默认关闭的开关是否覆盖：{sorted(tofu_hosts)}"
 
+    def test_api_github_com_is_registered_as_official_hash(self) -> None:
+        assert DOWNLOAD_SOURCES["api.github.com"][0] == "官方哈希"
+        assert DOWNLOAD_SOURCES["api.github.com"][1].strip(), "白名单要写清「为什么这一档可接受」"
+        assert "src.ffmpeg_linux_download" in DOWNLOAD_MODULES
+        # TOFU 源集合不得因本次改动扩大或缩小：github.com 的 master-latest 路径仍是默认关闭的 TOFU。
+        assert {h for h, (m, _n) in DOWNLOAD_SOURCES.items() if m == "TOFU"} == {"github.com", "fyhub.cn"}
+
 
 class TestInstallFfmpegMac:
     def test_brew_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1062,6 +1123,156 @@ class TestLinuxExtraBranches:
         monkeypatch.setattr(ffmpeg_install, "subprocess", shim)
         assert ffmpeg_install.install_ffmpeg_linux() is False
         assert calls == ["yum install -y ffmpeg", "apt update", "apt install -y ffmpeg"]
+
+
+# 直下兜底的接线锁（2026-10-02 Linux arm64 支持，Task 4 Step 1；fix round 2 补到六条）：
+# install_ffmpeg_linux() 在「yum、apt 两条包管理器路径都试过且都没装上」之后、给出「请手动安装」
+# 提示之前，必须触达官方月末构建直下（src.ffmpeg_linux_download.install_ffmpeg_linux_native）。
+# 逐条判据（不得笼统读成「四条都要恰好一次」——① 要求的恰恰是 0 次触达）：
+#   ① test_package_manager_success_skips_native_download：包管理器已成功 → 触达即回归（优先级锁）。
+#   ② test_both_package_managers_missing_falls_back_exactly_once：两条都不存在 → 恰好一次 + 实参逐项。
+#   ③ test_native_failure_still_ends_with_manual_hint：apt update 失败 + 兜底返假 → 恰好一次 + 有手动提示。
+#   ④ test_native_reached_when_apt_install_fails_reports_false：apt install 失败 + 兜底返假 → 恰好一次。
+#   ⑤ test_master_switch_on_is_passed_to_native_fallback：开关取真 → master_allowed=True 传到兜底。
+#   ⑥ test_apt_update_failure_fallback_success_skips_manual_hint：update 失败 + 兜底返真 → 恰好一次、
+#      整体 True、且**不得**打印手动安装提示。
+# 按 M-26 一律写「谁被调用、传了什么」的行为锁：顺序判据取 calls 记录的真实调用次序，
+# 不用正则扫源码字面量（契约一改名，文本锁就静默空洞成立）。
+# [历史注] 本类初版（Unit B 首轮）只有四条，其中 ③ 按 brief 的实参形态（apt update 非零）
+# 对「接线存在与否」零敏感——当时实现里该分支在 apt 块内就 `return False` 早退、根本到不了兜底。
+# 2026-10-02 R-11 删除该早退后：③ 改判据成真锁，并新增 ⑤（开关传递）与 ⑥（update 失败支的成功侧）。
+class TestInstallFfmpegLinuxNativeFallback:
+    def test_package_manager_success_skips_native_download(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # apt/yum 天然给原生 arch 且带发行版自己的签名链，直下只是「拿不到包管理器」时的兜底，
+        # 优先级不得颠倒：包管理器已成功时触达直下即视为回归。
+        calls: list[str] = []
+        # yum 一步返回 0 → _proc_shim 默认码即 0，无需枚举；断言看的是「有没有第二次调用」。
+        monkeypatch.setattr(ffmpeg_install, "subprocess", _proc_shim({}, calls))
+        monkeypatch.setattr(
+            ffmpeg_install,
+            "install_ffmpeg_linux_native",
+            lambda *args, **kwargs: pytest.fail("包管理器已成功，不得触达直下路径"),
+        )
+        assert ffmpeg_install.install_ffmpeg_linux() is True
+        assert calls == ["yum install -y ffmpeg"]
+
+    def test_both_package_managers_missing_falls_back_exactly_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[dict[str, Any]] = []
+        calls: list[str] = []
+
+        def _native(dest_dir: str, arch: str | None = None, *, master_allowed: bool = False) -> bool:
+            seen.append({"dest_dir": dest_dir, "arch": arch, "master_allowed": master_allowed})
+            return True
+
+        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+            calls.append(" ".join(cmd))
+            # 既无 yum 也无 apt（轻量发行版/容器的真实形态）：两条包管理器路径都以 FileNotFoundError 收场。
+            raise FileNotFoundError(cmd[0])
+
+        shim = types.SimpleNamespace(**vars(subprocess))
+        shim.run = fake_run
+        monkeypatch.setattr(ffmpeg_install, "subprocess", shim)
+        monkeypatch.setattr(ffmpeg_install, "install_ffmpeg_linux_native", _native)
+        monkeypatch.delenv("FFMPEG_MASTER_ALLOWED", raising=False)
+        assert ffmpeg_install.install_ffmpeg_linux() is True
+        assert calls == ["yum install -y ffmpeg", "apt update"]
+        assert len(seen) == 1, f"直下兜底必须恰好触达一次：{seen}"
+        assert seen[0]["dest_dir"] == ffmpeg_install.execute_dir
+        # arch 一律不传：分流由新模块自己的 _linux_arch()（platform.machine()）负责，调用方传死 arch
+        # （如 linux64）会把 aarch64 机器钉在 x86_64 构建上，故「没传」本身要有锁。
+        assert seen[0]["arch"] is None
+        # 开关默认关：master_allowed 必须原样是 False，而不是新模块自己去读环境变量。
+        assert seen[0]["master_allowed"] is False
+
+    def test_native_failure_still_ends_with_manual_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 实参形态＝「yum 非零 + apt update 非零」（无 root 的 Debian/Ubuntu 常态：update 要写
+        # /var/lib/apt/lists）。R-11 前本条只断 `is False`，对「接线存在与否」零敏感（当时该分支
+        # 在 apt 块内就 return False 早退，压根到不了兜底）；早退删除后本条改判据成真锁：
+        # 兜底恰好触达一次 + 兜底返假时手动安装提示确实打印出来。
+        # [历史注] brief 原文那句「apt update 也要给非零，否则永远走不到兜底」与当时的实现正好相反
+        # （非零正是走不到的原因），2026-10-02 按「被证伪的事实陈述改正原文」口径移除。
+        seen: list[str] = []
+        calls: list[str] = []
+        errors: list[str] = []
+
+        def _native(dest_dir: str, arch: str | None = None, *, master_allowed: bool = False) -> bool:
+            seen.append(dest_dir)
+            return False
+
+        shim = _proc_shim({("yum", "install", "-y", "ffmpeg"): 1, ("apt", "update"): 1}, calls)
+        monkeypatch.setattr(ffmpeg_install, "subprocess", shim)
+        monkeypatch.setattr(ffmpeg_install, "install_ffmpeg_linux_native", _native)
+        monkeypatch.setattr(ffmpeg_install.logger, "error", lambda msg, *a, **k: errors.append(str(msg)))
+        assert ffmpeg_install.install_ffmpeg_linux() is False
+        # update 失败后不白跑 apt install（既有取舍保留），但必须落到函数末尾的统一出口。
+        assert calls == ["yum install -y ffmpeg", "apt update"]
+        assert len(seen) == 1, f"apt update 失败时兜底须恰好触达一次：{seen}"
+        hint = " ".join(errors)
+        assert "Manual installation of ffmpeg is required" in hint, f"兜底返假后必须给出手动安装提示：{hint}"
+
+    def test_native_reached_when_apt_install_fails_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 与上一条同族但失败点后移一格：apt update 成功、apt install 装不上（发行版仓库里没有
+        # ffmpeg 的常态）。两支各自独立抵达统一出口，缺任何一支都会让「apt 这条路白跑」重新出现。
+        seen: list[dict[str, Any]] = []
+        calls: list[str] = []
+
+        def _native(dest_dir: str, arch: str | None = None, *, master_allowed: bool = False) -> bool:
+            seen.append({"dest_dir": dest_dir, "arch": arch, "master_allowed": master_allowed})
+            return False
+
+        shim = _proc_shim({("yum", "install", "-y", "ffmpeg"): 1, ("apt", "install", "-y", "ffmpeg"): 1}, calls)
+        monkeypatch.setattr(ffmpeg_install, "subprocess", shim)
+        monkeypatch.setattr(ffmpeg_install, "install_ffmpeg_linux_native", _native)
+        assert ffmpeg_install.install_ffmpeg_linux() is False
+        assert calls == ["yum install -y ffmpeg", "apt update", "apt install -y ffmpeg"]
+        assert len(seen) == 1, f"apt 装不上时兜底须恰好触达一次：{seen}"
+        # 收集了就断言：只断 len(seen) 会让「传错实参」这一半无人看守。
+        assert seen[0]["dest_dir"] == ffmpeg_install.execute_dir
+        assert seen[0]["arch"] is None
+        assert seen[0]["master_allowed"] is False
+
+    def test_master_switch_on_is_passed_to_native_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 开关传递锁（Linux 接线面与 Windows 侧 TestMasterSourceGate 的 setenv 锁同等待遇）：
+        # FFMPEG_MASTER_ALLOWED 取真时调用方必须把 master_allowed=True 原样传下去。把接线调用点的
+        # `master_allowed=_master_source_allowed()` 写成字面 False 或漏传该关键字，本条即红——否则
+        # 「取不到官方哈希 → TOFU 降级」那一档在 Linux 上永久不可达，开关形同虚设且零可见证据
+        # （也顺带证明开关真读到了环境，不是「读不到但静默当 False」）。
+        seen: list[bool] = []
+        calls: list[str] = []
+
+        def _native(dest_dir: str, arch: str | None = None, *, master_allowed: bool = False) -> bool:
+            seen.append(master_allowed)
+            return False
+
+        shim = _proc_shim({("yum", "install", "-y", "ffmpeg"): 1, ("apt", "install", "-y", "ffmpeg"): 1}, calls)
+        monkeypatch.setattr(ffmpeg_install, "subprocess", shim)
+        monkeypatch.setattr(ffmpeg_install, "install_ffmpeg_linux_native", _native)
+        monkeypatch.setenv(ffmpeg_install._FFMPEG_MASTER_ENV, "1")
+        assert ffmpeg_install.install_ffmpeg_linux() is False
+        assert len(seen) == 1, f"兜底须恰好触达一次：{seen}"
+        assert seen[0] is True, f"{ffmpeg_install._FFMPEG_MASTER_ENV} 取真时 master_allowed 必须传成 True"
+
+    def test_apt_update_failure_fallback_success_skips_manual_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ③ 的另一侧（同一实参形态、只在兜底返回值上分叉）：apt update 失败 → 兜底恰触达一次 →
+        # 兜底成功即整体 True，且**不得**再打印手动安装提示（否则「装了却又叫用户自己装」）。
+        # 这一支正是 R-11 闭合的目标人群：非 root 的 Debian/Ubuntu arm64 上 update 失败是常态。
+        seen: list[dict[str, Any]] = []
+        calls: list[str] = []
+        errors: list[str] = []
+
+        def _native(dest_dir: str, arch: str | None = None, *, master_allowed: bool = False) -> bool:
+            seen.append({"dest_dir": dest_dir, "arch": arch, "master_allowed": master_allowed})
+            return True
+
+        shim = _proc_shim({("yum", "install", "-y", "ffmpeg"): 1, ("apt", "update"): 1}, calls)
+        monkeypatch.setattr(ffmpeg_install, "subprocess", shim)
+        monkeypatch.setattr(ffmpeg_install, "install_ffmpeg_linux_native", _native)
+        monkeypatch.setattr(ffmpeg_install.logger, "error", lambda msg, *a, **k: errors.append(str(msg)))
+        assert ffmpeg_install.install_ffmpeg_linux() is True
+        assert len(seen) == 1, f"apt update 失败时兜底须恰好触达一次：{seen}"
+        assert seen[0]["dest_dir"] == ffmpeg_install.execute_dir
+        hint = " ".join(errors)
+        assert "Manual installation of ffmpeg is required" not in hint, f"兜底成功不得再给手动提示：{hint}"
 
 
 class TestPlatformDispatch:

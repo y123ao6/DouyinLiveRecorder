@@ -600,29 +600,43 @@ async def get_tiktok_stream_url(
         # 从流列表中按画质索引选择 URL
         play_list: list[StreamQuality] = []
         for key in stream:
-            url_info = cast(dict[str, object], stream[key])
-            main_info = cast(dict[str, object], url_info.get("main") or {})
-            sdk_params_raw = main_info.get("sdk_params")
-            sdk_params: TiktokSdkParams = {}
-            if isinstance(sdk_params_raw, str):
-                sdk_params = cast(TiktokSdkParams, json.loads(sdk_params_raw))
-            vbitrate = int(sdk_params.get("vbitrate", 0))
-            v_codec = sdk_params.get("VCodec", "")
+            # L-14（2026-10-02）：单条脏数据不得穿透整个候选构建——sdk_params 的
+            # json.loads / resolution 的 split("x") 都会抛（上游 JSON 被截断或字段改版），
+            # 原先无保护，一条坏条目会让装饰器把整个 TikTok 房间吞成未开播。
+            try:
+                url_info = cast(dict[str, object], stream[key])
+                main_info = cast(dict[str, object], url_info.get("main") or {})
+                sdk_params_raw = main_info.get("sdk_params")
+                sdk_params: TiktokSdkParams = {}
+                if isinstance(sdk_params_raw, str):
+                    sdk_params = cast(TiktokSdkParams, json.loads(sdk_params_raw))
+                vbitrate = int(sdk_params.get("vbitrate", 0))
+                v_codec = sdk_params.get("VCodec", "")
 
-            play_url = ""
-            url_value = cast(str, url_info.get(q_key) or "")
-            if url_value:
-                # 区分 URL 是否自带 query：带 .flv/.m3u8 后缀通常无 query 用 ? 拼接 codec；
-                # 其余（已含 query 的地址）用 & 追加，避免破坏原查询串。
-                if url_value.endswith(".flv") or url_value.endswith(".m3u8"):
-                    play_url = url_value + "?codec=" + v_codec
-                else:
-                    play_url = url_value + "&codec=" + v_codec
+                play_url = ""
+                url_value = cast(str, url_info.get(q_key) or "")
+                if url_value:
+                    # 区分 URL 是否自带 query：带 .flv/.m3u8 后缀通常无 query 用 ? 拼接 codec；
+                    # 其余（已含 query 的地址）用 & 追加，避免破坏原查询串。
+                    if url_value.endswith(".flv") or url_value.endswith(".m3u8"):
+                        play_url = url_value + "?codec=" + v_codec
+                    else:
+                        play_url = url_value + "&codec=" + v_codec
 
-            resolution = sdk_params.get("resolution", "")
-            if vbitrate != 0 and resolution:
-                width, height = map(int, resolution.split("x"))
-                play_list.append({"url": play_url, "vbitrate": vbitrate, "resolution": (width, height)})
+                resolution = sdk_params.get("resolution", "")
+                if vbitrate != 0 and resolution:
+                    width, height = map(int, resolution.split("x"))
+                    play_list.append({"url": play_url, "vbitrate": vbitrate, "resolution": (width, height)})
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                logger.debug(
+                    i18n.tr(
+                        "TikTok 流条目解析异常，跳过该条目: {key} - {type_name}: {e}",
+                        key=str(key),
+                        type_name=type(e).__name__,
+                        e=e,
+                    )
+                )
+                continue
 
         play_list.sort(
             key=lambda x: (-x.get("vbitrate", 0), -x.get("resolution", (0, 0))[0], -x.get("resolution", (0, 0))[1])
@@ -1215,8 +1229,10 @@ async def get_netease_stream_url(json_data: dict[str, object], video_quality: st
         available_qualities = [NETEASE_QUALITY_MAP.get(k, k.upper()) for k in sorted_keys]
         flv_url_list = stream_list[selected_quality].get("cdn") or {}
         # 网易 CDN 取首个 key，未做连通性校验/多 CDN 回退；首路失败会直接影响该画质录制可用性。
-        selected_cdn = list(flv_url_list.keys())[0]
-        flv_url = flv_url_list[selected_cdn]
+        # L-15（2026-10-02）：cdn 映射为空 dict 时 list(keys())[0] 抛 IndexError → 装饰器把
+        # 可录房间吞成未开播；此时跳过 flv 选择，回退 m3u8（record_url 跟随）。
+        selected_cdn = next(iter(flv_url_list), None)
+        flv_url = flv_url_list[selected_cdn] if selected_cdn is not None else ""
 
     return {
         "is_live": True,

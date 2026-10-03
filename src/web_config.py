@@ -75,8 +75,13 @@ WEB_DEFAULTS: dict[str, str | int | bool] = {
     # 可信代理列表（逗号分隔）：仅当直连对端在列表中才信任 X-Forwarded-For
     "web_trusted_proxy": "",
     # MID-36：除回环/监听地址外，还允许哪些 Host/Origin 访问面板（逗号分隔）。
-    # 仅在把 web_host 绑到 0.0.0.0/:: 并以域名（而非 IP）访问面板时才需要配置；
     # 未列出的**多级域名** Host 会被拒绝，以阻断 DNS 重绑定（attacker.tld → 127.0.0.1）。
+    # [历史注] M-10（2026-10-02）更正：原注释称「仅在以域名（而非 IP）访问时才需要配置」
+    # ——不成立。绑定 0.0.0.0/:: 的远程部署中，浏览器对同源 POST 也带 Origin
+    # （http://<LAN_IP>:<port>），_is_same_origin 对非回环 IP 的判定恒否，面板会
+    # 「读得到、写不了」；此时必须把访问用 IP/域名登记进本键（手工编辑 config.ini——
+    # 该写入本身也被 403，无法经面板完成）。行为侧（如信任 Sec-Fetch-Site: same-origin）
+    # 是否放宽属维护者裁决，见 CODE_REVIEW_2026-10-02.md M-10。
     "web_allowed_hosts": "",
 }
 
@@ -776,25 +781,28 @@ def update_room_quality(url_config_file: str | Path, url: str, quality: str | No
     if not path.exists():
         return False
     # newline=""：读/写均不做换行符翻译，保留文件原有的 \n / \r\n 行尾风格
-    with path.open("r", encoding=TEXT_ENCODING, newline="") as f:
-        lines = f.readlines()
-
-    changed = False
-    out_lines: list[str] = []
-    for raw_line in lines:
-        rewritten = _rewrite_quality_field(raw_line, target, new_quality)
-        if rewritten is not None:
-            changed = True
-            out_lines.append(rewritten)
-        else:
-            out_lines.append(raw_line)
-    if not changed:
-        return False
-
-    joined = "".join(out_lines)
-    # 持串行锁原子写（2026-09-12 审查 H-6）：GUI 与 Web 可并发切同一房间画质，
-    # 无锁时两次 read-modify-write 交错会丢失一次变更
+    # L-25（2026-10-02）：读必须与写同在 _config_write_lock 内——原注释声称锁能「防
+    # read-modify-write 交错丢变更」，但读取在锁外时两个线程的 read-modify-write 仍可
+    # 交错（后写者基于旧快照覆盖前写者）。注意本锁是**进程内**锁：GUI 与 Web 分属两个
+    # 进程时仍靠 config_io 侧的 main.file_update_lock（跨进程写同一文件的顺序性）兜底，
+    # 本锁只保证本进程内读写不交错。
     with _config_write_lock:
+        with path.open("r", encoding=TEXT_ENCODING, newline="") as f:
+            lines = f.readlines()
+
+        changed = False
+        out_lines: list[str] = []
+        for raw_line in lines:
+            rewritten = _rewrite_quality_field(raw_line, target, new_quality)
+            if rewritten is not None:
+                changed = True
+                out_lines.append(rewritten)
+            else:
+                out_lines.append(raw_line)
+        if not changed:
+            return False
+
+        joined = "".join(out_lines)
         _atomic_write_text(path, joined)
     return True
 

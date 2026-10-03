@@ -3,6 +3,7 @@ import hashlib
 import os
 import platform
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -341,10 +342,8 @@ def install_nodejs_mac() -> bool:
         else:
             logger.error("Node.js installation failed")
             return False
-    except subprocess.CalledProcessError as e:
-        logger.error(i18n.tr("Failed to install Node.js using Homebrew. {e}", e=e))
-        logger.error("Please install Node.js manually or check your Homebrew installation.")
-        return False
+    # L-43（2026-10-02）：原在此处的 except subprocess.CalledProcessError 不可达——
+    # subprocess.run 未传 check=True 永不抛该异常，删除；通用兜底分支保留。
     except Exception as e:
         logger.error(i18n.tr("An unexpected error occurred: {e}", e=e))
         return False
@@ -386,14 +385,33 @@ def install_nodejs() -> bool:
 def check_nodejs_installed() -> bool:
     # 仅校验 `node` 命令存在即视为已安装；不检查 npm。若 Node 存在但 npm 缺失，
     # 依赖 npm 的下游功能仍会失败，此处不感知（false positive）。
+    # M-15（2026-10-02）：异常集必须补 TimeoutExpired/OSError——`node -v` 卡死（杀毒软件
+    # 拦截扫描、残缺安装）抛 TimeoutExpired、二进制损坏抛 OSError，此前直接穿出本函数；
+    # 本函数经 check_node() 在 import src 导入期被调用（仅测试开关豁免），抛穿即 CLI/GUI/Web
+    # 三入口启动崩溃。对齐 check_ffmpeg_installed 的既有硬化口径（同族场景已留注释）。
     try:
         result = subprocess.run(["node", "-v"], capture_output=True, timeout=15)
         version = result.stdout.strip()
         if result.returncode == 0 and version:
             return True
-    # 命令不存在（FileNotFoundError）即视为未安装、静默返 False 触发自动安装；其它异常也吞掉返 False。
+    # 命令不存在（FileNotFoundError）即视为未安装、静默返 False 触发自动安装。
     except FileNotFoundError:
         pass
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            i18n.tr(
+                "node -v 执行超时（15 秒），按未安装处理: {node_path}",
+                node_path=shutil.which("node") or "unknown",
+            )
+        )
+    except OSError as e:
+        logger.warning(
+            i18n.tr(
+                "OSError occurred: {e}. node may not be installed correctly or is not available in the system PATH.",
+                e=e,
+            )
+        )
+        logger.warning("Please delete the node directory and try to download and install again.")
     return False
 
 

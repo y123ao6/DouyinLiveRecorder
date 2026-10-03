@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from typing import Optional, TextIO
@@ -46,10 +47,16 @@ def _format_ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+# L-19（2026-10-02）：按 Unicode 行界切分的解析器会把 U+2028/U+2029、U+0085 视为换行、
+# \x0b/\x0c/NUL 同样破坏 SRT 块结构——清洗集对齐 clean_name 的控制字符口径，把这些
+# 字符统一替换为空格（\r\n 与 "-->" 仍由 _sanitize_srt_text 单独处理）。
+_SRT_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0085\u2028\u2029]")
+
+
 # 清洗弹幕文本，避免污染 SRT 结构：user_name/message 均为外部可控输入，换行会截断字幕块、
 # "-->" 会被解析器当成新的时间轴行（可伪造任意字幕）；替换为可见字符而非直接删除，保留可读性。
 def _sanitize_srt_text(text: str) -> str:
-    return text.replace("\r", " ").replace("\n", " ").replace("-->", "->")
+    return _SRT_CONTROL_CHARS_RE.sub(" ", text).replace("\r", " ").replace("\n", " ").replace("-->", "->")
 
 
 # SRT 字幕写入器：线程安全地按分片时长切换输出文件，并把弹幕按片内相对时间写成 SRT 条目。
@@ -74,6 +81,7 @@ class SrtWriter:
         self._fp: Optional[TextIO] = None
         self._last_end: Optional[float] = None  # 上一条结束时间，用于密集弹幕错开
         self._last_open_attempt = 0.0  # WD-03：句柄打开失败的退避基准（monotonic）
+        self._last_open_error = ""  # L-18：最近一次句柄打开失败的异常类型名（供重试失败告警）
         # MIN-2236③：close() 之后不再接受任何写入（终态位），_discarded_after_count
         # 只在首条丢弃时留一条 debug，避免高频房间刷屏
         self._closed = False
@@ -117,10 +125,14 @@ class SrtWriter:
         # 追加模式：若文件已存在（如重连后继续），保留已有内容续写
         try:
             self._fp = open(path, "a", encoding="utf-8")
-        except OSError:
+            self._last_open_error = ""
+        except OSError as e:
             # 目录被删/权限不足/磁盘满：保持 _fp 为 None，由 write() 按间隔重试。原实现让异常冒泡到
             # 调用方，而 _open_segment 只在分片切换时被调用——于是本片剩余时间（默认 1800s）内再不
             # 会重试，write 里的 `if self._fp is not None` 把整片弹幕静默跳过，且只在首次失败时有 1 条 warning。
+            # L-18：记录失败原因供 write() 的节流重试失败时留痕（否则 SRT 目录被删/磁盘满时
+            # 弹幕永久全丢且静默，与 WD-03「自愈」目标矛盾）。
+            self._last_open_error = type(e).__name__
             self._fp = None
         self._index = 0
         self._last_end = None
@@ -170,6 +182,17 @@ class SrtWriter:
                 if _now - self._last_open_attempt >= _OPEN_RETRY_INTERVAL:
                     self._last_open_attempt = _now
                     self._open_segment(self._current_seg)
+                    if self._fp is None:
+                        # L-18（2026-10-02）：重试仍失败补 warning——原实现重试失败零日志，
+                        # SRT 目录被删/磁盘满时弹幕永久全丢且静默。告警与重试同频（每
+                        # _OPEN_RETRY_INTERVAL 至多一条），不刷屏。
+                        logger.warning(
+                            i18n.tr(
+                                "SRT 字幕文件打开失败（弹幕暂时无法落盘，将按间隔重试）: {path} - {type_name}",
+                                path=self._segment_path(self._current_seg),
+                                type_name=self._last_open_error or "OSError",
+                            )
+                        )
 
             # 计算结束时间：至少 display_duration，且不与上一条重叠过紧
             end = start + self._display_duration

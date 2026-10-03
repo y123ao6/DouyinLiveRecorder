@@ -132,7 +132,11 @@ def _vb_bool(value: bool) -> str:
 def _drive(tmp_path: Path, consts: str, func_name: str, cases: list[tuple[str, bool]]) -> None:
     assert CSCRIPT is not None
     text = _vbs_text()
-    deps = {"IsRecorderPython": ["HasShimToken"], "HasShimToken": []}.get(func_name, [])
+    deps = {
+        # L-41（2026-10-02）：IsRecorderPython 的入口命中二次确认调用了 ContainsAtWordBoundary
+        "IsRecorderPython": ["HasShimToken", "ContainsAtWordBoundary"],
+        "HasShimToken": [],
+    }.get(func_name, [])
     bodies = [_extract_block(text, name) for name in [func_name, *deps]]
     lines = ["Option Explicit", consts, *bodies, ""]
     for idx, (cmd, _expected) in enumerate(cases):
@@ -161,6 +165,8 @@ class TestRecorderPythonMatching:
         [
             'Const ENTRY_SCRIPTS = "main.py|gui.py|web.py"',
             'Const ENTRY_SHIM_KEY = "douyin-recorder"',
+            # L-41（2026-10-02）：IsRecorderPython 入口名命中后需按程序目录词边界二次确认
+            'Const APP_DIR_KEY = "douyinliverecorder"',
         ]
     )
 
@@ -178,10 +184,13 @@ class TestRecorderPythonMatching:
     @pytest.mark.skipif(CSCRIPT is None, reason="cscript 仅存在于 Windows（环境限制，非失败）")
     def test_real_recorder_shapes_still_match(self, tmp_path: Path) -> None:
         cases = [
-            # 源码启动：命令行含入口脚本
-            (r'"C:\venv\x\Scripts\python.exe" D:\proj\main.py', True),
-            (r'"C:\venv\x\Scripts\pythonw.exe" "D:\proj\gui.py"', True),
-            # pip 启动器形态：启动器 exe 作为首个 token
+            # 源码启动：命令行含入口脚本且路径锚定到程序目录（L-41 二次确认后仍命中）
+            (r'"C:\venv\x\Scripts\python.exe" D:\douyinliverecorder\main.py', True),
+            (r'"C:\venv\x\Scripts\pythonw.exe" "D:\proj\DouyinLiveRecorder\gui.py"', True),
+            # [历史注] L-41（2026-10-02）收窄：入口名命中但命令行不含程序目录 → 不再定罪。
+            # 旧用例预期 D:\proj\main.py 为 True——那正是「其他项目 main.py 被误杀」的形态。
+            (r'"C:\venv\x\Scripts\python.exe" D:\proj\main.py', False),
+            # pip 启动器形态：启动器 exe 作为首个 token（shim 分支不受 L-41 影响）
             (r'"C:\venv\x\Scripts\douyin-recorder.exe"', True),
             # 旧式 setuptools 脚本：启动器脚本作为第二个 token
             (r'"C:\venv\x\Scripts\python.exe" C:\venv\x\Scripts\douyin-recorder-script.py', True),
@@ -194,7 +203,10 @@ class TestRecorderPythonMatching:
         # 既有加固不得回退：test_main.py 里的 "main.py" 前面是 '_'，不算入口脚本
         cases = [
             (r"C:\tools\pytest.exe tests/test_main.py", False),
-            (r"C:\tools\runner.exe --target main.py", True),
+            # [历史注] L-41（2026-10-02）：入口名命中还需程序目录词边界锚定——
+            # 「--target main.py 且路径无关」的裸命中不再定罪；命令行含程序目录才命中。
+            (r"C:\tools\runner.exe --target main.py", False),
+            (r"C:\tools\runner.exe --target D:\douyinliverecorder\main.py", True),
         ]
         _drive(tmp_path, self.CONSTS, "IsRecorderPython", cases)
 

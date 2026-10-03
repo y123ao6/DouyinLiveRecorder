@@ -532,6 +532,30 @@ class TestMaskCredentialsCoverage:
         assert "SECRETVALUE" not in mask_credentials("https://x.example/a?my_token=SECRETVALUE")
         assert "SIGNATUREVALUE" not in mask_credentials("https://x.example/a?x-signature=SIGNATUREVALUE")
 
+    @pytest.mark.parametrize(
+        ("raw", "secret"),
+        [
+            # M-01（2026-10-02）：B 站主会话凭据与 CSRF 键、抖音 Cookie 会话键——修复前四键
+            # 整体逃逸（query 形态实测原样返回）。判据是「值确实消失」，不只断言调用了过码。
+            ("https://api.bilibili.com/x?SESSDATA=SESSVALUE123", "SESSVALUE123"),
+            ("https://api.bilibili.com/x?bili_jct=JCTVALUE456", "JCTVALUE456"),
+            ("sessionid_ss=SESSSSVAL; sid_tt=SIDTTVAL", "SESSSSVAL"),
+            ("https://webcast.amemv.com/x?sid_tt=SIDTTVAL789", "SIDTTVAL789"),
+        ],
+    )
+    def test_bili_douyin_session_keys_masked(self, raw: str, secret: str) -> None:
+        assert secret not in mask_credentials(raw)
+        assert "***" in mask_credentials(raw)
+
+    def test_cookie_header_multi_segment_all_masked(self) -> None:
+        # Cookie 头形态多段凭据：_SECRET_HEADER_RE 的值在首个 `;` 截断只抹第一段，
+        # 剩余段由 query 形态正则逐段兜底（`bili_jct` 等键以 `=` 相连仍被认出）——
+        # 修复前 `bili_jct` 不在黑名单、整段明文。每一段的值都必须确实消失。
+        text = "Cookie: SESSDATA=SESSVAL1; bili_jct=JCTVAL2; sessionid_ss=SSVAL3; sid_tt=TTVAL4"
+        masked = mask_credentials(text)
+        for secret in ("SESSVAL1", "JCTVAL2", "SSVAL3", "TTVAL4"):
+            assert secret not in masked
+
 
 # ── MID-57 / MIN-21：原子写的耐久、临时名唯一性与权限保留 ───────
 class TestAtomicWriteTextDurability:

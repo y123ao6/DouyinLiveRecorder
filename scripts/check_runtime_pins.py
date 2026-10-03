@@ -27,9 +27,11 @@
 # 同理**不得**把哈希副本写进 workflow：CI 用 --emit-env 的输出注入 DLR_RUNTIME_SHA256，
 # 换版本只改 build_exe.py 一处。
 # --strict 的失败集合只覆盖**发布矩阵真正构建的运行时键**；表里为本地/未来构建方保留的额外键
-# （如 macos-x64、linux-arm64）未钉定时只告警、且**必须把告警打出来**——没有 runner 产出它们，
+# （如 macos-x64）未钉定时只告警、且**必须把告警打出来**——没有 runner 产出它们，
 # 要求钉定既不拦下任何真实产物，又制造「每个键都被管住了」的错觉。矩阵覆盖检查（第 4 段）才
 # 是防漏的那半。
+#   [历史注 2026-10-02] 上一行原举例含 linux-arm64；本键经发布矩阵接入后已进入 --strict 失败集合，
+#   不再是「矩阵外只告警」的键，故从举例中移出（否则该注释会与「接入即受 --strict 管住」的结论相矛盾）。
 #   [历史注] 2026-09-22 W1 前判据是 build_exe._is_pinned()，只认官方哈希那一类满足方式。
 #
 # 用法：
@@ -52,13 +54,14 @@ from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# runner 标签 → 运行时键。与 build-release.yml 的 matrix.include 三平台一致：
-# windows-latest / ubuntu-latest 为 x64，macos-latest 为 arm64（Apple Silicon）。
-# 若矩阵将来改用显式架构标签或加入 linux-arm64，须同步这张映射，否则会出现
+# runner 标签 → 运行时键。与 build-release.yml 的 matrix.include 四平台一致：
+# windows-latest / ubuntu-latest 为 x64，ubuntu-24.04-arm 为 linux aarch64，macos-latest 为 arm64（Apple Silicon）。
+# 若矩阵将来改用显式架构标签或再加平台，须同步这张映射，否则会出现
 # 「表里有键、矩阵里没平台」（无害）或「矩阵有平台、表里缺键」（本脚本报红）。
 RUNNER_TO_RUNTIME_KEY = {
     "windows-latest": "windows-x64",
     "ubuntu-latest": "linux-x64",
+    "ubuntu-24.04-arm": "linux-arm64",
     "macos-latest": "macos-arm64",
 }
 

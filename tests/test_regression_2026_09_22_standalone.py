@@ -23,6 +23,8 @@ import subprocess
 import sys
 import threading
 import types
+import urllib.error
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -363,6 +365,80 @@ class TestWhitelistOpener:
             SA.http_request("file:///C:/Windows/win.ini")
         with pytest.raises(RuntimeError):
             SA.http_probe("file:///etc/passwd")
+
+
+class TestRedirectHopGuard:
+    # SR-02（2026-10-02）：探针 opener 不得自动跟随重定向且每跳不复检——公网候选 302 到
+    # 内网/云元数据时，旧裸 HTTPRedirectHandler 会把跳转请求真的发出去（逐跳判定缺失），
+    # 末位候选的告警放行再把该地址交给 ffmpeg。主线同层防线是探针客户端挂
+    # src/async_http.build_sync_hop_guard（response 事件钩子），副本在 urllib 的重定向单点
+    # redirect_request() 复刻同判据（复用 _untrusted_stream_target_reason，不另写名单）。
+
+    @pytest.mark.parametrize("code", [301, 302, 303, 307])
+    def test_redirect_to_internal_target_is_refused(self, code: int) -> None:
+        handler = SA._HopGuardRedirectHandler()
+        req = urllib.request.Request("https://cdn.example/live/a.flv")
+        for target in (
+            "http://127.0.0.1:6379/x.flv",
+            "http://169.254.169.254/latest/meta-data/",
+            "file:///C:/Windows/win.ini",
+        ):
+            with pytest.raises(urllib.error.URLError, match="重定向目标不可信"):
+                handler.redirect_request(req, None, code, "Found", {}, target)
+
+    def test_redirect_to_public_target_still_follows(self) -> None:
+        # 判据只拒不可信目标，公网跳转不得被误杀（虎牙/斗鱼等 CDN 302 归一是常态）
+        handler = SA._HopGuardRedirectHandler()
+        req = urllib.request.Request("https://cdn.example/live/a.flv")
+        new = handler.redirect_request(req, None, 302, "Found", {}, "https://cdn.example/live/b.flv")
+        assert new is not None
+        assert new.full_url == "https://cdn.example/live/b.flv"
+
+    def test_opener_installs_guarded_redirect_handler(self) -> None:
+        # 结构锁：opener 必须挂的是守卫子类，裸 HTTPRedirectHandler 不得再次出现——
+        # 回退成裸版时本条与上面两条行为锁同红
+        opener = SA._build_opener(None)
+        assert any(isinstance(h, SA._HopGuardRedirectHandler) for h in opener.handlers)
+        assert not any(type(h) is urllib.request.HTTPRedirectHandler for h in opener.handlers)
+
+
+class TestHlsSegmentProbeLite:
+    # M-17（2026-10-02）：HLS「播放列表 200」≠ 可录制——分片级探测回灌。判定原则与主线
+    # _probe_hls_segment 一致（保守优先）：分片明确 4xx/5xx 判假绿；解析不出分片/异常维持
+    # 列表可达；派生地址过不可信目标闸，不通过判不可达（SR-01 同判据）。
+
+    def test_segment_404_rejects_playlist(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 斗鱼 hw 事故形态：列表恒 200（CDN 动态合成），分片 404 —— 必须判假绿回退
+        def _fake_request(url: str, **kwargs: Any) -> Any:
+            return types.SimpleNamespace(status=200, text="#EXTM3U\n#EXTINF:4.0,\nhttps://edge.example.com/x.ts\n")
+
+        seen: dict[str, int] = {}
+
+        def _fake_probe(url: str, **kwargs: Any) -> Any:
+            seen["seg"] = seen.get("seg", 0) + 1
+            return types.SimpleNamespace(status=404)
+
+        monkeypatch.setattr(SA, "http_request", _fake_request)
+        monkeypatch.setattr(SA, "http_probe", _fake_probe)
+        assert SA._probe_hls_segment_lite("https://cdn.example/a.m3u8", {}, None) is False
+        assert seen.get("seg") == 1, "分片探测必须真的发出 Range GET"
+
+    def test_internal_segment_target_rejects_without_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # SR-01 同判据：正文派生的分片指向内网时判不可达，且分片请求一个都不发
+        def _fake_request(url: str, **kwargs: Any) -> Any:
+            return types.SimpleNamespace(status=200, text="#EXTM3U\n#EXTINF:4.0,\nhttp://127.0.0.1:6379/x.ts\n")
+
+        def _boom(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("内网分片地址不允许发出请求")
+
+        monkeypatch.setattr(SA, "http_request", _fake_request)
+        monkeypatch.setattr(SA, "http_probe", _boom)
+        assert SA._probe_hls_segment_lite("https://cdn.example/a.m3u8", {}, None) is False
+
+    def test_unparseable_playlist_stays_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 保守兜底：解析不出分片（空列表）时维持「列表可达」，交由 ffmpeg 定夺
+        monkeypatch.setattr(SA, "http_request", lambda url, **k: types.SimpleNamespace(status=200, text="#EXTM3U\n"))
+        assert SA._probe_hls_segment_lite("https://cdn.example/a.m3u8", {}, None) is True
 
 
 class TestFfmpegCommandHardening:

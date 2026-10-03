@@ -122,9 +122,20 @@ _QUERY_DEFAULTS: dict[str, dict[str, tuple[object, int | None, int | None]]] = {
 }
 
 
+# L-30（2026-10-02）：JSON 请求体大小上限。认证关闭（出厂默认）时局域网任一主机可单请求
+# 超大 JSON 耗内存（json.loads 全量物化后才谈得上校验），解析前先按 Content-Length 拒绝。
+# 面板全部请求体（登录口令/房间/配置节）远小于该值，不影响正常使用。
+_JSON_BODY_MAX_BYTES = 1 * 1024 * 1024
+
+
 async def _read_json_body(request: Request) -> object:
     # 解析 JSON 请求体；非法/空体统一转 422（对齐旧 pydantic 的 422 契约）。
     # 仅当端点有模型参数时适配器才会调用，GET/无 body 端点不会走到这里。
+    # L-30：Content-Length 缺失（chunked 传输）时不拦——保守启发式，只挡「声明了超大体积」
+    # 的低成本放大面；逐字节读入后的上限由 Starlette 的流式读取与调用方超时兜底。
+    content_length = request.headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > _JSON_BODY_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="请求体过大")
     try:
         return await request.json()
     except Exception:
@@ -517,8 +528,9 @@ def create_app(
     setattr(app.state, "bind_host", bind_host)
     setattr(app.state, "bind_port", bind_port)
 
-    web_cfg = read_web_config(config_file)
-    setattr(app.state, "web_cfg", web_cfg)
+    # L-28（2026-10-02）：原「web_cfg = read_web_config(...) + setattr(app.state, "web_cfg", ...)」
+    # 已删除——该快照只写不读（认证中间件与各端点一律经 _read_web_config_cached 实时取带缓存的
+    # 配置），且启动后即刻陈旧，留着会误导「改这里能影响行为」的读者。
 
     # 认证中间件：每次请求重新读取配置，保证面板内修改配置即时生效。
     # WD-06：读配置走带 mtime+size 失效的进程内缓存。原实现每请求全量 configparser.read + 逐键解析
@@ -915,6 +927,12 @@ def create_app(
         replaced = False
         with _rooms_config_lock, _main.file_update_lock:
             old_rooms = parse_url_config(cast(str, app.state.url_config_file))
+            # L-29（2026-10-02）：与新 URL 查重（POST /api/rooms 有 409 查重，PUT 此前漏检）——
+            # 查重缺失时成功保存后配置出现重复 URL 行，删除/画质操作命中不确定。
+            # 排除 old_url 自身：仅改画质/名字（new_url == old_url）不得被误杀。
+            new_url = normalize_url(req.url)
+            if any(r["url"] == new_url and r["url"] != old_url for r in old_rooms):
+                raise HTTPException(409, "直播间已存在")
             # 找到匹配行（含注释状态）
             for r in old_rooms:
                 if r["url"] == old_url:

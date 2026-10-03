@@ -455,7 +455,22 @@ async def async_req(
         # ImportError 的子类，列出来是为了让「缺包」这一类在代码里显式成立，不必读者再查继承关系。
         # 返回契约不变（仍走 _failure_result 的空值）：调用方全部按「本轮没拿到数据」处理，
         # 改成抛异常会击穿 50+ 平台函数的兜底装饰器语义。
-        _log_dependency_missing(e, url)
+        # M-07（2026-10-02）：只有「确实能从异常里识别出缺失模块」才走缺包告警——原实现把
+        # 整个请求路径都包在本分支里，请求在途时任何真 RuntimeError（anyio 取消作用域错乱、
+        # 房间线程退出竞态的 Event loop is closed 等）都会被系统性误报成「缺少可选依赖」
+        # （module 为空时模板出现空缺省名）。非缺包的真 RuntimeError 落下方通用分支同款
+        # debug 处理，返回契约不变。
+        if _missing_dependency_name(e):
+            _log_dependency_missing(e, url)
+            return _failure_result(redirect_url, return_cookies, include_cookies)
+        logger.debug(
+            i18n.tr(
+                "async_req 请求失败: {masked_url} - {type_name}: {e}",
+                masked_url=utils.mask_credentials(url),
+                type_name=type(e).__name__,
+                e=utils.mask_credentials(str(e)),
+            )
+        )
         return _failure_result(redirect_url, return_cookies, include_cookies)
     except _RedirectHopRejected as e:
         # M-1：某一跳（含 3xx 落地跳）命中内网/保留目标或非白名单协议 → 该候选本轮按「没拿到数据」

@@ -232,3 +232,47 @@ Qoder CN 发行版的实际数据根（`.qoder-cn`）不一致，属外部工具
   Windows 本机复现 POSIX 路径的技巧：子进程里 **`import gui` 之后**再改 `sys.platform = "linux"`——导入前改会让
   loguru 的 `enqueue=True` 按 posix 初始化 multiprocessing、撞 `No module named '_posixsubprocess'`（平台分支在
   方法调用期求值，导入后再改即可生效）。 | `tests/test_gui_stop_exit_singleflight.py`
+
+## 2026-10-02 — 把 AGENTS.md 的 prose 约束落成项目级 Hook / Command
+
+- **新写 Hook / 规则类文件时，注释里不得出现它自己检测的标记字面量**：`tests/test_test_hygiene.py` 的 R8 是全仓扫描（含注释），本会话在 `scripts/agent_hook_guard.py` 的模块头注释里写了变异标记的原文，门禁当场判红——检测器把自己的说明当成待还原的变异改动。口径与 R8 自身的自指规避一致：需要提及标记形态时用拼接常量（`"MUTA" + "TION-"`）或纯中文描述，别写完整字面量。 | `scripts/agent_hook_guard.py`
+- **「资产已配置」与「Hook 已执行」是两级证据，必须分开写**：`.qoder/settings.json` 的 `hooks` 注册能被 provider 侧确认（`asset-integrity` 报 `hooks.enabledHookCount` 由 0 变 2、`inventory` 列出 command 与 scriptPath），但同会话内一条无害探针（`python -c "print('probe: Remove-Item ... ./downloads/')"`）未被拦，说明当前 IDE 会话尚未热加载该配置。报告里只能声明「已配置 + 行为由脚本级用例自证」，不得声明「已在会话中生效」；执行证据要么由重载后的探针给出，要么写成交回用户的动作。
+- **本地跑覆盖率门禁不必污染已跟踪的 `coverage.json`**：`check_coverage.py` 的新鲜度判据是数据文件 mtime vs `src/`+`tests/` 最新 mtime（陈旧一律 rc=2），故把 `COVERAGE_FILE` 指到 `%TEMP%` 跑 `pytest --cov=src`（不带 `--cov-report=json`），再直接跑 `check_coverage.py`（它自己用 NamedTemporaryFile 生成 JSON）即可评完 44 个模块阈值，同时仓库内数据文件与文档读数不被本轮环境噪声改写。
+
+## 2026-10-02 — 启动期字节码缓存清理：越界防护用例的真假绿与 heredoc 锚点
+
+- **「越界防护」用例必须让越界目录里也放一份「被保护规则一旦失效就会被命中」的输入**：首版 `tests/test_startup_cleanup.py` 在 `downloads/`、`tests/`、`scripts/` 等越界位置只造了缓存目录本体，而扫描根的判据是「目录直接含 `.py`」——于是把实现改成「从程序目录起全树递归」后用例**仍然全绿**（这些目录里没有 `.py`，递归也删不到它们）。变异验证一跑即暴露：改动落地后整文件 9 条用例 rc=0、零失败。补成两类分轴才真正锁住：①类「含 `.py` 但不在白名单根」（真实对应 `tests/`、`scripts/`，本机实测 `tests/__pycache__` 有 128 个 `.pyc`）只由「正向白名单」这条规则救；②类「在白名单树内但不含 `.py`」（真实对应 `src/javascript/`）只由「须含 `.py`」救。写清理/扫描类用例时先问一句：把实现退化成「无差别全树删」，我的用例会不会红？不会红就是假绿。 | `tests/test_startup_cleanup.py`
+- **Bash heredoc 里的 Python 锚点与文本一律不得含反斜杠转义序列**：用 `python - <<'PY'` 内联做「读源码→字符串替换→跑测试→还原」时，锚点里若写了反斜杠接 n 的转义（本意是匹配源文件中同样字面写的换行转义），转义层会先把它解成真换行，导致 `text.count(anchor)` 恒 0 → 替换静默不发生 → 测试照常绿，看起来像「变异没被抓到」；同一机制还会把真换行写进 Markdown 文档，造成 CRLF 文件里混进裸 LF（本会话两次中招）。三条对策：① 变异/补丁脚本先 `assert count == 1` 再写盘（本仓按此形态跑，第二条锚点就是被这条断言当场拦下的）；② 优先选**不含任何转义**的整行作锚点；③ 需要构造含转义语义的文本时用 `chr(10)` 或字符串拼接，别把反斜杠序列写在 heredoc 里。
+- **「每次启动都删」这类性能论断必须先实测**：本机读数——源码树 sha256 全树（51 文件 / 2,268,108 B）8.8 ms，同集合全量重编译 345 ms，现存运行期缓存 4 个目录 / 1,758,820 B（`.venv` 除外）。结论直接决定设计：内容哈希便宜到每轮都算，因此用「版本 + 哈希」哨兵把删除压成「源码真的变过才删一次」，而不是每轮付重编译。体积/耗时类论断写进设计前一律本机实跑取数，不估算。
+- **subprocess 类用例的红要先测「是不是导入顺序问题」再归因**：本机六个驱动子进程的文件（`tests/test_ci_retry_action.py`/`test_build_exe.py`/`test_notify.py`/`test_notify_script_guard.py`/`test_stop_recording_vbs.py`/`test_regression_2026_09_22_standalone.py`）单独跑固定红 20 条，但把**任意**一个先导入过 `src` 侧模块的测试文件排在前面就 0 红——用与本批无关的 `tests/test_config_bool.py`（261 passed）作对照与用本批新文件（208 passed）作对照，结果同形。所以「全量运行失败数在 3↔24 间摆动」不是代码回归，而是这些用例对模块导入次序的隐式依赖（子进程继承已关闭 stdin，`WinError 6` 在失败输出里出现 23 次）。判据：怀疑自己引入回归前，先跑一次「换一个无关文件作前置」的对照，再谈归因。 | `tests/test_ci_retry_action.py`
+
+## 2026-10-02 — 整改批收尾：审查建议本身可能是错的，以及「补日志/过码/移动状态位」三类改动的隐性破坏面
+
+- **落地外部审查的修法建议前，先给它构造一格反例**：`CODE_REVIEW_2026-10-02` M-05 的建议是「`int(cast(str, is_private))` 改按真值判定」。照抄后 `bool("0")` 是 True，API 以字符串 `"0"` 下发时**公开房间被误判私有**、整轮报错——即修复把「恒判未开播」换成了「恒报错」，而实现者还在注释里写「对 "0"/0/False 均语义正确」。判据：凡「换一种判定写法」类建议，先列出该字段的**全部现实下发形态**（JSON 数字 / 布尔 / 字符串 / null）做成矩阵用例，再决定写法；本仓已有 `src/config_bool.parse_config_bool` 这一份统一 token 口径，外部 API 的字符串布尔字段同样该复用它，而不是新写一套真值判断。 | `src/spider.py`
+- **「补一条日志」与「补一次过码」这两类看似零风险的改动，各自有一类只有静态检查能发现的崩法**：L-10 把裸 `except Exception:` 后面加了引用 `type(e)`/`{e}` 的 debug 日志却没绑 `as e` → 走到即 `NameError`；M-02 把 `mask_credentials(...)` 包到 print 实参上，但实参是 `tuple[str, str, str]` 而该函数内部全是 `re.sub` → `TypeError` 穿透主循环。两条都由 **mypy 一遍抓红**、却对 black / isort / 注释检查 / 用例断言（只要那条分支没人跑）四面隐形。推论：整改批的收尾**必须跑完整 `run_gates.py`**，不能在任何一条（尤其第一条 black）失败后就宣布「门禁大致过」——本批接手时上一轮正停在这里，后面 9 条从未执行，这两个崩点因此带病入库。 | `src/spider.py` / `main.py`
+- **移动一个「链是否续期」的状态位，可能同时满足一把锁、打穿另一把锁**：L-39 把 `gui._log_queue_has_data = False` 从「渲染成功后」上移到「取空队列即清」，正确修掉了哨兵单独取空时的永久空转；但 M-15 的锁 `test_log_flush_chain_rearms_when_render_raises` 依赖的正是「渲染中途抛错 ⇒ has_data 仍为 True ⇒ finally 照常续期」，上移即打穿（jobs 变空 + `still_has_data` 变假）。两条约束可以共存：清除留在原地，由**持有续期决策的那一站**（`_schedule_log_flush` 的 except 分支）在异常路径上复位。判据：改自续期链附近的共享状态位之前，先跑 `tests/test_gui_tail_robustness.py`；改完再跑一次，别只看目标用例变绿。 | `gui.py`
+- **写死条数的 AST 锁在合法删除后必须改成反向见证，而不是把数字改小**：`assert len(runs) == 4` 的本意是「扫描面非空、别假绿」，L-40 删掉两段不可达兜底后实际只剩 2，改数字会让这把锁继续跟着每次合法增删漂移且不表达任何判据。正确形态：`assert runs`（0 处即红，保住反假绿的那一半）+ 对 `ast.walk` 自动纳入的每一个调用点逐条断言（新增的第 N+1 处照样被检查）。 | `tests/test_regression_2026_09_22_gui.py`
+- **子进程用例的红要按「文件内 / 文件间」两层分别测，别把两种形态混成一句「环境噪声」**：本会话对上一轮记录的补正——那六个（本批实测八个）驱动子进程的文件**逐文件独跑全绿**（build_exe 105 / ci_retry_action 12 / notify 4 / notify_script_guard 18 / stop_recording_vbs 11 / regression_2026_09_22_standalone 49 / run_gates 42+1 skipped / regression_2026_09_22_gates 27 = 276 passed）；把其中几个**放在同一条命令里**且前面没有任何「先导入过 `src` 侧」的用例时才红，堆栈一律停在 `subprocess._make_inheritable`（`WinError 6` / `WinError 50`），无一条是断言失败。另实测：给 shell 重定向 stdin（`< /dev/null` 或 `< 某文件`）**不能**消除，说明不是「句柄不可继承」这一种成因。判据顺序：先单文件独跑定是不是代码，再看换前置文件后是否转绿，最后才归因环境。 | `tests/test_run_gates.py`
+- **子进程用例的红还存在第三层：同一命令秒级间隔内绿↔红自翻转（2026-10-03 补充）**：`tests/test_stop_recording_vbs.py` 单文件独跑连续两次（同一代码状态、零编辑间隔），11 passed → 4 failed；另一轮 `test_stop_recording_vbs.py + test_regression_2026_09_22_standalone.py` 两文件合跑先 6 failed、数分钟后 3 failed，失败集合每次不同；同日 run_gates 内置全量 pytest 对同一代码 3977 passed / 0 警告。即「逐文件独跑全绿」并非恒稳判据，失败集合是随机抽样的，`WinError 6` 抖动可以独立于导入序发生。判据补充：连续两次同命令结果不一致 + 失败集合漂移 + 堆栈停在 `_make_inheritable`，三条齐了即可直接归因环境，不必再找代码侧原因。 | `tests/test_stop_recording_vbs.py`
+- **覆盖率门禁的「数据陈旧」rc=2 会被同字节重写触发**：`check_coverage.py` 比的是 `.coverage` mtime 与 `src/` 最新 mtime；收尾时发现 `src/ffmpeg_linux_download.py` 与 `tests/test_ffmpeg_linux_download.py` 被**内容零差异**地重写（`git diff` 对 HEAD 与索引均空、行尾形态不变），仅 mtime 变新即足以让门禁拒评。遇到这条红先看 `git diff` 有没有实际内容变化，再决定是重跑采集还是查改动来源。 | `scripts/check_coverage.py`
+- **`cat >>` 追加是纯 CRLF 文件里孤立 LF 的一个静默来源**：本会话给两份测试文件 heredoc 追加用例后实测 44 / 18 条 lone LF（两文件原本纯 CRLF），`ast.dump` 等价校验与 `black --check` 对此完全隐形（AGENTS「三个盲点」第 3 条已记整文件重写这一形态，追加是同一判据的第二条路径）。对策：向 CRLF 文件追加后立刻 `re.sub(rb'(?<!\r)\n', b'\r\n', b)` 归一并复测 lone-LF=0；或直接用 Edit 工具（它按文件既有形态落笔）。 | `tests/test_spider_platforms.py`
+
+## 2026-10-03 — 虎牙 hy.fan 短链接入：同树并行会话、直喂短链的真机脚本边界与熔断桶口径
+
+- **同树并行会话是本仓的现实工作形态，编辑前必须重 Read**：同一天里斗鱼（m.douyu.com）、虎牙（hy.fan，本批）、B站（b23.tv）三个同构工作包在同一工作区并行落地，后启动的会话把先落地者的代码当模板并在注释里逐字引用（b23.tv 注释写「与 `_hy_fan_path_segment` 同口径」），还会替你同步被你插入扰动的锁（`test_resolver_table_priority_head` 由斗鱼批次按含我方表项的实际顺序同步为前六项）；`.mo` 条目数在会话中途 856→858→860 递增。判据与对策：Edit 报「多 matches」时先用多行锚点消歧；三个短链 resolver 的归一化行**逐字相同**，变异验证必须带上下文多行替换并 `assert count == 1`；全量 pytest 一次红（459.7s）复跑全绿，先疑并行批次的编辑中间态再归因自己。 | `main.py`
+- **「直喂短链给平台函数」的真机脚本红是脚本边界，不是功能回归**：`tests/test_huya_live_collector.py` 把 URL 直接传给 `spider.get_huya_app_stream_url`，绕过 main.py 解析层——短码形态在 ProfileRoom 反查处失败（app UA 下 301 落地页正则未命中）→ 脚本报 FAIL/SKIP。生产链路中 resolver 先行归一、spider 只收数字房间链接，该路径不可达。判据：真机脚本红先画调用链，看失败点在「本批改动面」还是「被本批归一化绕开的既有路径」；是后者就归档为已知边界（写进 CODE_WIKI），不为让脚本变绿去改生产函数。 | `tests/test_huya_live_collector.py` / `src/spider.py`
+- **短链房间的 `record_host` 保留短链域是特性不是遗漏**：按 host 隔离的熔断桶把「短链解析失败」与桌面链接的取流失败分开计数，桶隔离语义比回填成桌面域更准。同日三个短链工作包（hy.fan / b23.tv，m.douyu.com 走同表项不经此路径）都按此口径；后续新增短链域照抄，不要「顺手统一」record_host。 | `main.py`
+
+## 2026-10-03 — Linux arm64 ffmpeg 支持批次取到的四条可复用判据
+
+1. **`[tool.mypy].exclude` 的裸名字是路径子串正则，不是目录名**：`"ffmpeg"` 会把 `src/ffmpeg_*.py`、
+   `tests/test_ffmpeg_*.py` 一并吞出无参 `mypy` 的扫描面（实测加不加这两个文件都是同一个 source files 计数）。
+   black/isort/basedpyright 的同名排除只作用于**目录**，所以「同一份清单四个工具」里只有 mypy 会静默失明。
+   新增名字含被排除词的模块时，必须显式传参补跑一次 `python -m mypy <那些文件>` 才能宣称类型门禁过。
+2. **`docker buildx` 推 GHCR 时 `provenance: false` 是承重取值**：buildx 默认给 push 产物附加 SLSA provenance
+   attestation，于是该步 push 出去的是「镜像 + attestation」的 **index**，`steps.*.outputs.digest` 退化成 index digest，
+   下游 `imagetools create` 按它合成的对外清单会混入非镜像条目，而整条流水线全绿、只在用户 `docker pull` 时暴露。
+3. **`build-push-action` 的 digest 必须显式提升为 job 级 `outputs:`**：merge job 用 `needs.<job>.outputs.digest`
+   取值，漏声明时拿到的是空串 → 合成步骤报无效引用，而两个构建 job 本身全绿（最难归因的一种红）。
+4. **Actions YAML 里以 `!` 开头的 `if:` 标量必须加引号**（`if: "!startsWith(...)"`）：无引号时 YAML 把行首 `!`
+   当 tag 指令，解析直接 `ParserError`；GitHub Actions 求值的是引号内那个字符串，语义不变。

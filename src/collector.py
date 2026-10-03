@@ -27,10 +27,19 @@ from src.srt_writer import SrtWriter
 # SRT 待写队列上限（WD-02）：10000 条 × 约 80 字节量级远低于任何现实内存压力，
 # 而对高热度直播间（数十条/秒 + 慢盘）足以吸收数分钟抖动；超出即计数丢弃并聚合告警，
 # 保证内存有界而不是静默增长到 OOM。
+# [历史注] M-09（2026-10-02）前该界建立在「每条约 80 字节」的假设上，超大消息可放大到
+# 条数上限 × 单帧 8MiB；现 _on_message 入口统一截断单条文本（_DANMAKU_TEXT_LIMIT），
+# 单条最坏 ≈ 2000 字符（UTF-8 中文约 6KB + 元组开销），本队列最坏 ≈ 数十 MB、真有界。
 _SRT_QUEUE_MAXSIZE = 10000
 # SRT 写盘连续失败时的告警间隔（秒，WD-03）：逐条告警会在磁盘满时刷屏并放大 IO，
 # 改按时间窗聚合，兼顾可观测性与日志量。
 _SRT_WARN_INTERVAL = 60.0
+# M-09（2026-10-02）：单条弹幕文本（user_name/message）统一截断上限（字符）。上游只限
+# 单帧解压 8MiB，一条批量帧可解析出大量大文本消息，SRT 队列/边车队列/监控流都只按条数
+# 封顶——「按条数封顶」的内存界在超大消息面前名不副实（条数上限 × 单帧 8MiB 的理论
+# 上界）。在公共入口 _on_message 统一截断，SRT 与监控流共用同一口径；2000 字符远超
+# 现实弹幕长度（直播弹幕以几十字符为主），不影响任何正常内容。
+_DANMAKU_TEXT_LIMIT = 2000
 
 # 弹幕客户端 stop() 的等待上限（秒）：SDK 因半开连接挂住时若无限等待，
 # 关闭协程里的 loop.stop() 永不执行，采集线程永久驻留（join 超时后线程与 SRT 句柄双泄漏）。
@@ -250,7 +259,8 @@ class DanmakuCollector:
         # 上报监控枢纽：房间采集结束（连接状态置离线）
         hub = self._monitor_hub()
         if hub is not None:
-            hub.room_closed(self._room_name, "采集停止")
+            # L-24（2026-10-02）：reason 文案经 i18n——面板非中文语言下混入简中
+            hub.room_closed(self._room_name, i18n.tr("采集停止"))
         if not self._started:
             # 未启动也要尝试关 SRT（空文件）
             if self._srt is not None:
@@ -421,11 +431,25 @@ class DanmakuCollector:
             try:
                 # start() 内部会阻塞直到连接关闭或 stop() 被调用（stop 经 call_soon_threadsafe 关闭 ws）
                 loop.run_until_complete(self._start_task)
-            except asyncio.CancelledError, RuntimeError:
-                # 吞没即正确：这两类正是「正常停止」的形态——任务被 _shutdown 取消，
-                # 或 loop 被 _shutdown 停掉导致 run_until_complete 提前返回。
+            except asyncio.CancelledError:
+                # 吞没即正确：任务被 _shutdown 取消正是「正常停止」的形态，
                 # 重抛会把停止动作误报成采集失败。
                 pass
+            except RuntimeError as e:
+                # L-21（2026-10-02）：原实现把 CancelledError 与 RuntimeError 一并吞掉——
+                # 平台 danmaku.start() 内部冒出的真 RuntimeError（参数错误、回调抛错等）
+                # 也被静默归为「正常停止」。现按任务是否真被取消区分：被取消（_shutdown
+                # 路径）吞掉；非取消态的 RuntimeError 补 warning 留线索。
+                if self._start_task is not None and self._start_task.cancelled():
+                    pass
+                else:
+                    logger.warning(
+                        i18n.tr(
+                            "[弹幕采集]{cls_name} 运行异常,不影响录制: {e}",
+                            cls_name=self._cls_name,
+                            e=e,
+                        )
+                    )
             except Exception as e:
                 logger.warning(
                     i18n.tr(
@@ -512,16 +536,19 @@ class DanmakuCollector:
     # 收到弹幕回调：全部类型转发监控枢纽；SRT 仅记录 CHAT 且用户名或内容非空的消息，
     # 计数后按当前 monotonic 时间写入 SRT。
     def _on_message(self, msg: DanmakuMessage) -> None:
+        # M-09：入队/上报前统一截断（口径见 _DANMAKU_TEXT_LIMIT 注释）；SRT 与监控流共用。
+        user_name = msg.user_name[:_DANMAKU_TEXT_LIMIT]
+        message = msg.message[:_DANMAKU_TEXT_LIMIT]
         # 监控侧不过滤消息类型（聊天/礼物/在线人数/SC 全部上报，由枢纽分别处理）
         hub = self._monitor_hub()
         if hub is not None:
             # WD-20 修复：在线人数由各平台放在 msg.data（B站/虎牙的 ONLINE 消息 message 为空串），
             # 原实现只透传 message，导致枢纽侧 _parse_online("") 恒返回 0——「在线人数」列
             # 对所有平台永远显示 0 且无任何日志线索。这里把 data 一并透传。
-            hub.room_message(self._room_name, msg.type.value, msg.user_name, msg.message, data=msg.data)
+            hub.room_message(self._room_name, msg.type.value, user_name, message, data=msg.data)
         if msg.type != DanmakuMessageType.CHAT:
             return  # SRT 当前只录普通弹幕
-        if not msg.user_name and not msg.message:
+        if not user_name and not message:
             return
         self._msg_count += 1
         # DEBUG 状态噪音(每条弹幕都给一条),已按要求注释:
@@ -535,7 +562,7 @@ class DanmakuCollector:
             # 此时丢弃最新的弹幕并计数——保持内存有界，且丢弃量在下一批告警里可观测。
             # 用 put_nowait 而非 put：本函数跑在事件循环线程上，阻塞入队会卡住 ws_recv。
             try:
-                self._srt_queue.put_nowait((msg.user_name, msg.message, now))
+                self._srt_queue.put_nowait((user_name, message, now))
             except queue.Full:
                 self._srt_dropped += 1
                 if self._srt_dropped == 1 or self._srt_dropped % 1000 == 0:

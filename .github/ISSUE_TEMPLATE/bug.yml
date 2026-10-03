@@ -12,7 +12,7 @@ body:
     attributes:
       label: ⚠️ 确认是否已存在类似问题
       description: >
-        🔍 [点击这里搜索历史issue](https://github.com/ihmily/DouyinLiveRecorder/issues?q=is%3Aissue) 
+        🔍 [点击这里搜索历史issue](https://github.com/ihmily/DouyinLiveRecorder/issues?q=is%3Aissue)
         请确保你的问题没有被报告过。
       options:
         - label: 我已经搜索过issues，没有找到类似问题

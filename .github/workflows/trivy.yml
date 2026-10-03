@@ -20,6 +20,7 @@
 #   check（ci-summary）无关——它不在 ci-summary.needs 里，所以也**不会**变成阻断合并的门禁。
 #   「要不要把它升级为阻断门禁」属维护者决策（需先确定阈值与忽略口径），不在代理权限内。
 # 因此读结论的正确方式：看 GitHub Security → Code scanning alerts，而不是看本 job 的红绿。
+# 双防线分工与升级判据见 AGENTS.md「漏洞审查双防线策略」条目。
 # =============================================================================
 
 name: trivy
@@ -82,7 +83,10 @@ jobs:
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
 
+      # fork PR 下 GitHub 不注入 write 权限 token，SARIF 上传必 403 红 check——
+      # 与代码无关的假失败。push / schedule / workflow_dispatch 与同仓库 PR 不受影响。
       - name: Upload Trivy scan results to GitHub Security tab
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'

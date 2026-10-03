@@ -2,6 +2,7 @@
 import configparser
 import datetime
 import io
+import math
 import os
 import re
 import shutil
@@ -60,9 +61,19 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str | Non
                     if text_line not in seen:
                         seen.add(text_line)
                         file_data.append(text_line)
-        except (RuntimeError, UnicodeDecodeError) as e:
+        # M-12（2026-10-02）：OSError 必须入组——open() 的 FileNotFoundError/PermissionError
+        # （Windows 杀软扫描占用、只读挂载）此前直接外抛：Web 编辑房间端点以裸 500 收场而非
+        # 按设计「负信号 + 重解析裁决」（web_api.py 的 MIN-2243 注释明确依赖「update_file 失败
+        # 时返回 old_str」契约），主循环侧落入通用 except，与同族 update_anchor_name/delete_line
+        # （均捕 OSError）口径不一。读失败无需快照恢复，返回 old_str 即可。
+        except (RuntimeError, UnicodeDecodeError, OSError) as e:
             logger.error(
-                i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e))
+                i18n.tr(
+                    "错误信息: {type_name}: {e} 发生错误的行数: {get_error_line}",
+                    type_name=type(e).__name__,
+                    e=e,
+                    get_error_line=_get_error_line(e),
+                )
             )
             # 读取失败时用导入期快照恢复，避免整份 URL 配置被写成空文件
             if main.ini_URL_content:
@@ -284,7 +295,12 @@ def read_config_bool(
 def _safe_int(value: str | None, default: int) -> int:
     # 非法值必须告警后回退：直接 int() 抛 ValueError 会让 main() 主循环整体崩溃
     try:
-        return int(str(value).strip())
+        text = str(value).strip()
+        if "_" in text:
+            # L-35（2026-10-02）：int("1_0") 按 Python 字面量规则合法（=10），用户手误静默变成
+            # 另一个值；配置项不接受数字分隔符写法
+            raise ValueError("underscore in numeric config value")
+        return int(text)
     except TypeError, ValueError:
         logger.warning(i18n.tr("配置项数值非法: {value}，使用默认值 {default}", value=repr(value), default=default))
         return default
@@ -293,7 +309,16 @@ def _safe_int(value: str | None, default: int) -> int:
 # 把配置项 value 安全转为 float；为空或非法时打印告警并返回 default
 def _safe_float(value: str | None, default: float) -> float:
     try:
-        return float(str(value).strip())
+        text = str(value).strip()
+        if "_" in text:
+            # L-35：同 _safe_int，拒绝数字分隔符手误
+            raise ValueError("underscore in numeric config value")
+        result = float(text)
+        # L-35（2026-10-02）：nan/inf 静默通过的后果——用户误填 nan 时「磁盘满/阈值」类比较
+        # 恒为 False，保护静默失效（nan 与任何值比较均为 False）。非有限值一律告警回默认。
+        if not math.isfinite(result):
+            raise ValueError("non-finite value")
+        return result
     except TypeError, ValueError:
         logger.warning(i18n.tr("配置项数值非法: {value}，使用默认值 {default}", value=repr(value), default=default))
         return default
@@ -309,8 +334,11 @@ def _backup_mask_secrets() -> bool:
     return os.environ.get("DLR_BACKUP_KEEP_SECRETS", "").strip().lower() not in ("1", "true", "yes")
 
 
-# 备份内容的凭据脱敏：按「节/键名命中 **或** 值本身形如凭据」两道判据把敏感值替换为 ***，
-# 节名与键名保留；解析失败（非 ini / 编码异常）时返回原文本——不因脱敏失败而丢掉整份备份。
+# 备份内容的凭据脱敏：按「节/键名命中 **或** 值本身形如凭据」两道判据把敏感值替换为 ***。
+# [历史注] L-33（2026-10-02）更正：本段原声称「节名与键名保留」并暗示产物与原文形态一致，
+# 实际经 ConfigParser 重写后 optionxform 小写化键名、原注释与空行全部丢失——脱敏备份是
+# **归一化产物**，仅适合对照排查、不适合直接还原。解析失败（非 ini / 编码异常）时返回
+# 原文本——不因脱敏失败而丢掉整份备份。
 # MID-N57（2026-09-21）：此前只接了 is_sensitive_item 一道判据，与面板侧 read_config_safe
 # （web_config.py CR-10）的双口径分叉——键名黑名单天然滞后于平台命名，仅值形态命中的键会明文
 # 进 backup_config/ 并常驻 6 份副本。
@@ -362,8 +390,11 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
             try:
                 with open(file_path, "r", encoding=main.text_encoding, errors="replace") as src_f:
                     content = src_f.read()
-                with open(backup_file_path, "w", encoding=main.text_encoding, newline="") as dst_f:
-                    _ = dst_f.write(_redact_ini_secrets(content))
+                # L-34（2026-10-02）：备份落盘改走 _atomic_write_text——原 open(...,"w") 直写
+                # 在中途崩溃（磁盘满/断电）时留下半份备份进 6 份轮转，可能恰被用户选来恢复
+                # 成损坏配置。写失败时落入下方 except 退回 copy2（宁留明文不丢备份的既有语义）。
+                if not _atomic_write_text(backup_file_path, _redact_ini_secrets(content)):
+                    raise OSError(f"atomic write failed: {backup_file_path}")
             except OSError:
                 # 读不到就退回原样复制，宁可留下明文备份也不要备份缺失
                 _ = shutil.copy2(file_path, backup_file_path)

@@ -49,6 +49,7 @@ omit =
     */.plugin-src/*
     */.tmp-dps-extract/*
     */.v2c/*
+    */.superpowers/*
     */pytest-cache-files-*/*
 
 [report]

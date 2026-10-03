@@ -1,6 +1,6 @@
 [project]
 name = "DouyinLiveRecorder"
-version = "4.4.0"
+version = "4.5.0"
 description = "支持抖音、TikTok、YouTube、快手等60+平台的直播录制工具，支持循环录制、多人录制、消息推送"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -99,6 +99,7 @@ dev = [
     "black>=23.0.0",
     "isort>=5.12.0",
     "mypy>=1.5.0",
+    "pre-commit>=3.6.0",
 ]
 gui = [
     "customtkinter>=6.0.0",
@@ -177,6 +178,7 @@ exclude = '''
     | \.mimosa
     | \.tmp-dps-extract
     | \.v2c
+    | \.superpowers
     | typings
     | pytest-cache-files-[^/]*
 )/
@@ -209,6 +211,8 @@ extend_skip = [
     ".mimosa",
     ".tmp-dps-extract",
     ".v2c",
+    # SDD/治理式流程技能在仓库内留下的工作区目录（与 .gitignore/.dockerignore 同源维护）
+    ".superpowers",
 ]
 extend_skip_glob = ["*.pyc", "pytest-cache-files-*"]
 
@@ -259,6 +263,7 @@ exclude = [
     "\\.plugin-src",
     "\\.tmp-dps-extract",
     "\\.v2c",
+    "\\.superpowers",
     "pytest-cache-files-",
 ]
 
@@ -312,6 +317,7 @@ omit = [
     "*/.plugin-src/*",
     "*/.tmp-dps-extract/*",
     "*/.v2c/*",
+    "*/.superpowers/*",
     "*/pytest-cache-files-*/*",
 ]
 
@@ -368,6 +374,7 @@ exclude = [
     ".plugin-src",
     ".tmp-dps-extract",
     ".v2c",
+    ".superpowers",
     "**/.mimosa",
     "**/pytest-cache-files-*",
 ]

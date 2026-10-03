@@ -28,18 +28,16 @@ class DanmakuMessageType(Enum):
 
 
 # 单条弹幕消息数据类（对标 dart LiveMessage）：type 消息类型、user_name 用户名、
-# message 正文、data 平台原始数据、color 显示颜色、timestamp_ms 相对时间戳。
+# message 正文、data 平台原始数据、color 显示颜色。
+# [历史注] L-20（2026-10-02）：原 timestamp_ms 字段（注释称「由 DanmakuCollector 收到时注入」）
+# 全仓无写入无读取，已删除；若未来需要时间戳，届时再加。
 @dataclass
 class DanmakuMessage:
-    # timestamp_ms 由 DanmakuCollector 在收到时注入（time.monotonic 基准的相对秒），
-    # 平台实现不写该字段。
-
     type: DanmakuMessageType
     user_name: str
     message: str
     data: Any = None
     color: str = "#FFFFFF"
-    timestamp_ms: float = 0.0
 
 
 # 后台弹幕协程的统一异常落盘（2026-09-12 审查）：裸 asyncio.ensure_future 的异常仅在

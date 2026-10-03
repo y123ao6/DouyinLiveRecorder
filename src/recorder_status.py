@@ -79,7 +79,9 @@ def get_status() -> dict[str, object]:
         engine_alive = main._recorder_thread.is_alive()
     # MI-09：用 process_start_time（进程启动即固定）而非 start_display_time——
     # 后者被 display_info 每 5 秒重置为当前时刻，会让 uptime 恒定在 0~5 秒之间。
-    _proc_start = getattr(main, "process_start_time", None)
+    # L-31（2026-10-02）：模块级已声明属性直接访问（同文件对 main.scheduler 已是正确形态）；
+    # 三参 getattr 返回 Any，warn_return_any 下泄漏类型且属性链检查全部失效。
+    _proc_start = main.process_start_time
     uptime = str(now - _proc_start).split(".")[0] if _proc_start else "0:00:00"
     return {
         "version": main.version,
@@ -232,7 +234,12 @@ def display_info() -> None:
         except Exception as e:
             consecutive_failures += 1
             logger.error(
-                i18n.tr("错误信息: {e} 发生错误的行数: {get_error_line}", e=e, get_error_line=_get_error_line(e))
+                i18n.tr(
+                    "错误信息: {type_name}: {e} 发生错误的行数: {get_error_line}",
+                    type_name=type(e).__name__,
+                    e=e,
+                    get_error_line=_get_error_line(e),
+                )
             )
         # 节拍控制放 try 之外（finally 亦可，根因见 MID-31）：flush 自身抛错（Web 后台模式下
         # logs/web_console.log 被归档改名、句柄已关时抛 ValueError: I/O operation on closed

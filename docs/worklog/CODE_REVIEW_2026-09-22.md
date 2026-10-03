@@ -1122,5 +1122,3 @@ def _candidate_urls(arch: str) -> list[str]:
 | C-3 | `socksio` 入运行时清单 vs `_PROXY_SCHEMES` 收窄到 http/https（`SEV-2216`） | 二选一，两处口径同源 | 影响镜像体积与既有用户配置的兼容性 |
 | C-4 | 四个未跟踪文件是否随下一次提交入库（`MIN-2268`） | `git add` 后提交；或回退 `src/ffmpeg_install.py` 的模块级硬 import | 涉及本次未提交工作的归属，须由作者确认 |
 | C-5 | 本轮请用户补跑的动作 | ① 在有外网的隔离副本执行一次 `pytest tests/test_ffmpeg_install.py::TestWindowsInstallSingleSource -v` 以确认 `SEV-2208` 的破坏后果；② 在任一**开启分段录制**且主播名含 `%` 的房间跑 `tests/test_douyin_live_collector.py` 同形态的真实 URL 以复核 `SEV-2202`；③ 若现网确有 HEVC-only 快手房间，回填 `SEV-2204` 的判定 | 均需活房间或真机 ffmpeg 行为，本审查环境不具备 |
-
-
