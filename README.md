@@ -4,16 +4,15 @@
 
 ## 💡 简介
 
-
-![Python Version](https://img.shields.io/badge/python-3.14%2B-blue?logo=Python&link=https%3A%2F%2Fwww.python.org%2Fdownloads%2F)
-![Supported Platforms](https://img.shields.io/badge/platforms-Windows%7CLinux%7CmacOS-blue?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder)
-![GitHub issues](https://img.shields.io/github%2Fissues%2Fy123ao6%2FDouyinLiveRecorder?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Fissues)
-![Latest Release](https://img.shields.io/github%2Fv%2Frelease%2Fy123ao6%2FDouyinLiveRecorder?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Freleases%2Flatest)
-![Downloads](https://img.shields.io/github%2Fdownloads%2Fy123ao6%2FDouyinLiveRecorder%2Ftotal?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Freleases%2Flatest)
+[![Python Version](https://img.shields.io/badge/python-v3.14%2B-blue?logo=python)](https://www.python.org/downloads/)
+[![Node.js Version](https://img.shields.io/badge/node.js-LTS_v24%2B-blue?logo=node.js)](https://nodejs.org/en/download)
+[![FFmpeg Version](https://img.shields.io/badge/ffmpeg-v9.0%2B-blue?logo=ffmpeg)](https://www.ffmpeg.org/download.html)
+[![Supported Platforms](https://img.shields.io/badge/platforms-Windows%7CLinux%7CmacOS-blue)](https://github.com/y123ao6/DouyinLiveRecorder)
+[![GitHub issues](https://img.shields.io/github/issues/y123ao6/DouyinLiveRecorder)](https://github.com/y123ao6/DouyinLiveRecorder/issues)
+[![Latest Release](https://img.shields.io/github/v/release/y123ao6/DouyinLiveRecorder)](https://github.com/y123ao6/DouyinLiveRecorder/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/y123ao6/DouyinLiveRecorder/total)](https://github.com/y123ao6/DouyinLiveRecorder/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![License](https://img.shields.io/badge/license-MIT-blue?link=LICENSE)
-![Stars](https://img.shields.io/github%2Fstars%2Fy123ao6%2FDouyinLiveRecorder?link=https%3A%2F%2Fgithub.com%2Fy123ao6%2FDouyinLiveRecorder%2Fstargazers)
-
+[![Stars](https://img.shields.io/github/stars/y123ao6/DouyinLiveRecorder)](https://github.com/y123ao6/DouyinLiveRecorder/stargazers)
 
 一款**简易**的可循环值守的直播录制工具，基于 FFmpeg 实现多平台直播源录制，支持自定义配置录制以及直播状态推送。
 
