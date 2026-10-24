@@ -66,10 +66,44 @@ agent_created: true
 | 用户粘贴运行时日志要求解读 / 排查 / 修复 | [`references/log-fault-triage.md`](references/log-fault-triage.md) | — |
 | mypy / basedpyright 报平台专属符号，或 Windows 过而 CI 红 | [`references/platform-type-gating.md`](references/platform-type-gating.md) | — |
 | 有人报告语法错误 / 静态检查结论待裁定 | [`references/static-check-adjudication.md`](references/static-check-adjudication.md) | — |
+| 改锁 / 事件循环 / 信号量 / 并发模型 | [`references/concurrency-model.md`](references/concurrency-model.md) | — |
+| 改 CI 配置（`.github/workflows/`、`.github/actions/`） | [`references/ci-workflow.md`](references/ci-workflow.md) | — |
+| 打包（`build_exe.py`）或查产物体积 | [`references/build-details.md`](references/build-details.md) | — |
+| 跑 `scripts/check_annotations.py` 或排查注释盲点 | [`references/annotation-tools.md`](references/annotation-tools.md) | — |
+| 查阅关键约定 #3–#16 详情 | [`references/key-conventions.md`](references/key-conventions.md) | — |
+| 查阅已知坑（平台/子系统事故沉淀） | [`references/known-pitfalls.md`](references/known-pitfalls.md) | — |
 
 **不属于本手册范围**：真正的崩溃栈回溯（走 systematic-debugging）、纯日志格式美化、一键式 trivial 改动。
 
 ## 验证
+
+### 最小验证步骤
+
+1. **项目级门禁（统一入口）**：
+   ```bash
+   python scripts/run_gates.py
+   ```
+   预期：退出码 0（全部门禁通过）。
+
+   退出码语义：`0` 通过 / `1` 门禁红（代码问题）/ `2` 清单缺失或含写型命令 / `3` 可执行文件缺失。
+
+2. **单任务验证补充**（随配方执行）：
+   ```bash
+   # 改动模块的测试
+   pytest tests/test_<module>.py -v
+   # 预期：0 warnings
+
+   # 语法检查
+   python -m py_compile src/<module>.py
+   # 预期：无输出
+
+   # 覆盖率检查
+   python scripts/check_coverage.py
+   # 预期：退出码 0
+   ```
+
+3. **变更与测试关联性验证（relevant-check）**：
+   代码变更后必须额外运行与变更文件直接相关的测试子集，并在回复内保留 `## [reviewed-relevant-check]` 证据块。详细步骤见 [`references/testing-conventions.md`](references/testing-conventions.md) 第 11 节。
 
 ### 项目级门禁（统一入口，不复制命令清单）
 
@@ -78,6 +112,8 @@ agent_created: true
 退出码语义：`0` 通过 / `1` 门禁红（代码问题）/ `2` 清单缺失或含写型命令（属「没跑」）/ `3` 可执行文件缺失（环境问题）。后两者不是代码不合格，别当成回归。
 
 **单任务验证补充**（随配方执行，非 CI 门禁清单）：改动模块跑 `pytest tests/test_<module>.py -v` → **0 warnings**，涉及子进程输出时再单独跑一次该文件（抓 GBK/UTF-8 代码页问题）；改动文件用 `python -m py_compile` 或 `compileall src` 做语法检查，跑完按铁律 1 清 `__pycache__`；覆盖率跑 `scripts/check_coverage.py`（口径见 `AGENTS.md`「测试」与「完成定义」）。
+
+**变更与测试关联性验证（relevant-check）**：代码变更后必须额外运行与变更文件直接相关的测试子集，并在回复内保留 `## [reviewed-relevant-check]` 证据块（受影响文件清单 + 实际命令 + 退出码 + 结果摘要）。这是对全量门禁的补充，证明「本次改动点有对应测试真跑过」，而非替代。无对应测试时显式声明「需补」。详细步骤与格式示例见 [`references/testing-conventions.md`](references/testing-conventions.md) 第 11 节；约束本体在 `AGENTS.md`「测试」的「创建/更新测试」条及 `references/testing-conventions.md` 第 11 节。
 
 安全不变量类测试必须做**变异验证**：临时改坏生产代码，确认测试转红；仅被既有测试覆盖的平凡断言可豁免。
 
@@ -109,6 +145,7 @@ agent_created: true
 - 测试里自己实现一遍被测逻辑（假绿）。
 - 把门禁命令清单复制到文档或 skill 里。
 - 改完代码不同步 `CODE_WIKI.md` / `CODE_WIKI_EN.md` 更新日志。
+- 只跑全量门禁不跑受影响测试子集——门禁证明「整体没坏」但不能证明「本次改动点有对应测试覆盖」，缺 `[reviewed-relevant-check]` 证据块等于关联性验证没做。
 
 ## 目录结构
 
@@ -122,7 +159,13 @@ dlr-dev-playbook/
 │   ├── testing-conventions.md                # 测试编写强制约定 + stdlib 替身配方
 │   ├── log-fault-triage.md                   # 日志分诊 + 三个已验证修复配方
 │   ├── platform-type-gating.md               # mypy/basedpyright 平台专属符号门控
-│   └── static-check-adjudication.md           # 静态检查结论的实测裁定（PEP 758 等）
+│   ├── static-check-adjudication.md           # 静态检查结论的实测裁定（PEP 758 等）+ typings/ 存根告警
+│   ├── concurrency-model.md                  # 并发、事件循环与锁详情
+│   ├── ci-workflow.md                        # CI / workflow 约定详情
+│   ├── build-details.md                      # 打包与冒烟测试 / 产物体积详情
+│   ├── annotation-tools.md                   # 注释检查工具详情与盲点
+│   ├── key-conventions.md                    # 关键约定 #3–#16 详情
+│   └── known-pitfalls.md                     # 已知坑（平台/子系统事故沉淀）
 ├── assets/
 │   └── spec-reviewer-prompt.md               # 规格文档评审子代理的派发模板
 └── scripts/                                  # 可视化伴侣服务端（frame/helper/server/启停脚本）

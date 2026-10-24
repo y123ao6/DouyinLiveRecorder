@@ -10,7 +10,7 @@ description: >
 
 # ffmpeg 命令构造与容器格式
 
-> **约束事实源**: `AGENTS.md`「已知坑 → ffmpeg 命令构造与容器格式」章节。
+> **约束事实源**: dlr-dev-playbook `references/known-pitfalls.md`「ffmpeg 命令构造与容器格式」章节。
 > 本 Skill 提取高频复用内容供按需加载；约束变更以 AGENTS.md 为准。
 
 ## 何时加载
@@ -90,7 +90,48 @@ description: >
 
 ## 验证
 
-### 项目级门禁（由 `python scripts/run_gates.py` 统一兜底，Skill 不重复）
+### 最小验证步骤
+
+1. **项目级门禁（由 `python scripts/run_gates.py` 统一兖底，Skill 不重复）**：
+   ```bash
+   python scripts/run_gates.py
+   ```
+   预期：退出码 0。
+
+2. **本领域专项检查**：
+   ```bash
+   # 1. ffmpeg 重连参数检查
+   pytest tests/test_ffmpeg_reconnect_args.py -v
+   # 预期：全绿
+
+   # 2. 录制容器格式检查
+   pytest tests/test_record_container.py -v
+   # 预期：全绿
+
+   # 3. 黄金命令比对检查
+   pytest tests/test_start_record_command_golden.py -v
+   # 预期：全绿
+
+   # 4. 平台分发检查
+   pytest tests/test_platform_dispatch.py -v
+   # 预期：全绿
+
+   # 5. 录制失败反馈检查
+   pytest tests/test_record_failure_feedback.py -v
+   # 预期：全绿
+   ```
+
+3. **AST 检查**（跨平台 Python 命令）：
+   ```bash
+   # 检查无 `-reconnect*` 出现在 `-i` 之后
+   python -c "import sys,re; c=open('main.py',encoding='utf-8').read(); m=re.search(r'-i.*-reconnect',c,re.DOTALL); print('FAIL' if m else 'OK'); sys.exit(1 if m else 0)"
+
+   # 检查无 `-segment_format` 裸字面量
+   python -c "import sys,re; c=open('main.py',encoding='utf-8').read(); m=re.findall(r'-segment_format\s+\w+',c); print('FAIL' if m else 'OK'); sys.exit(1 if m else 0)"
+   ```
+   预期：两行均输出 `OK`，退出码 0。
+
+### 项目级门禁（由 `python scripts/run_gates.py` 统一兖底，Skill 不重复）
 
 - `black --check`、`isort --check-only`、`mypy`（含 `--platform linux` / `--platform win32`）、`check_annotations.py`
 
@@ -101,4 +142,4 @@ description: >
 3. `pytest tests/test_start_record_command_golden.py` — 全绿
 4. `pytest tests/test_platform_dispatch.py` — 全绿
 5. `pytest tests/test_record_failure_feedback.py` — 全绿
-6. AST 检查：grep 确认无 `-reconnect*` 出现在 `-i` 之后、无 `-segment_format` 裸字面量
+6. AST 检查：用上方跨平台 Python 命令确认无 `-reconnect*` 出现在 `-i` 之后、无 `-segment_format` 裸字面量

@@ -11,7 +11,7 @@ description: >
 
 # 运行时钉定验证
 
-> **约束事实源**: `AGENTS.md`「已知坑 → 构建产物、依赖与运行时基线」下的
+> **约束事实源**: dlr-dev-playbook `references/known-pitfalls.md`「构建产物、依赖与运行时基线」下的
 > 「发布链运行时二进制必须 fail-closed 钉定」及「三类钉定/校验互不覆盖」。
 > 本 Skill 提取高频复用内容供按需加载；约束变更以 AGENTS.md 为准。
 
@@ -100,7 +100,40 @@ description: >
 
 ## 验证
 
-### 项目级门禁（由 `python scripts/run_gates.py` 统一兜底，Skill 不重复）
+### 最小验证步骤
+
+1. **项目级门禁（由 `python scripts/run_gates.py` 统一兖底，Skill 不重复）**：
+   ```bash
+   python scripts/run_gates.py
+   ```
+   预期：退出码 0。
+
+2. **本领域专项检查**：
+   ```bash
+   # 1. 运行时钉定检查（严格模式）
+   python scripts/check_runtime_pins.py --strict
+   # 预期：退出码 0
+
+   # 2. 构建脚本测试
+   pytest tests/test_build_exe.py -v
+   # 预期：全绿（钉定/签名/主机白名单/不可变标签）
+
+   # 3. ffmpeg 安装测试
+   pytest tests/test_ffmpeg_install.py -v
+   # 预期：全绿（TOFU/下载源白名单）
+   ```
+
+3. **配置检查**（跨平台 Python 命令）：
+   ```bash
+   # 确认退役主机已移出白名单
+   python -c "import sys; c=open('tests/test_build_exe.py',encoding='utf-8').read(); m=[l for l in c.split('\n') if '_ALLOWED_HOSTS' in l]; print('OK: 检查 _ALLOWED_HOSTS 定义' if m else 'FAIL'); sys.exit(0 if m else 1)"
+
+   # 确认无 /releases/download/latest/ 路径
+   python -c "import sys; c=open('tests/test_build_exe.py',encoding='utf-8').read(); m=[l for l in c.split('\n') if 'releases/latest' in l]; print('OK: 无 latest 路径' if not m else 'FAIL'); sys.exit(0 if not m else 1)"
+   ```
+   预期：两行均输出 `OK`，退出码 0。
+
+### 项目级门禁（由 `python scripts/run_gates.py` 统一兖底，Skill 不重复）
 
 - `python scripts/check_runtime_pins.py`（已在门禁清单内）
 
@@ -109,5 +142,4 @@ description: >
 1. `python scripts/check_runtime_pins.py --strict` — rc=0
 2. `pytest tests/test_build_exe.py` — 全绿（钉定/签名/主机白名单/不可变标签）
 3. `pytest tests/test_ffmpeg_install.py` — 全绿（TOFU/下载源白名单）
-4. `grep -n "_ALLOWED_HOSTS" tests/test_build_exe.py` — 确认退役主机已移出
-5. `grep -n "releases/latest" tests/test_build_exe.py` — 确认无 `/releases/download/latest/`
+4. 配置检查：用上方跨平台 Python 命令确认退役主机已移出白名单、无 `/releases/download/latest/` 路径

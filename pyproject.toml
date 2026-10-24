@@ -330,7 +330,10 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 50
+# 全库总闸。必须 <= scripts/check_coverage.py 的 GLOBAL_FLOOR（逐模块闸不得比总闸更宽，
+# 否则「新模块零测试」能绕过逐模块闸）。2026-10-24 两侧同批由 50 提到 60：全库实测 83.9%，
+# 50% 对新建模块已失去区分力。
+fail_under = 60
 # 用 exclude_also（追加）而非 exclude_lines（替换）：后者会整体丢掉 coverage 的三条默认排除
 # 规则（pragma 大小写变体 / `...` 省略号函数体 / `if TYPE_CHECKING:`），使覆盖率被系统性低估。
 # 四条须与 .coveragerc-concurrency（并发 job）逐条一致：pragma: no cover / def __repr__ /

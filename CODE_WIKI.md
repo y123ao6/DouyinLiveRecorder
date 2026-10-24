@@ -1573,16 +1573,8 @@ async with websockets.connect(
 ### 测试与覆盖率
 
 - 运行测试: `pytest`（`asyncio_mode = "auto"`，异步用例无需显式标记）；当前 4590 passed / 14 skipped，总覆盖率 83.75%（coverage.json 实测，2026-10-20 清理轮）
-- 覆盖率配置集中在 `pyproject.toml`：`source = ["src"]`，全局门禁 `fail_under = 50`
-- 高频变更核心模块设独立覆盖率门禁（记录于 `pyproject.toml` 注释，CI 中通过 `--cov-fail-under` 或脚本检查）：
-
-| 模块 | 门禁 | 当前覆盖 |
-| --- | --- | --- |
-| `spider.py` | ≥50% | 76.1% |
-| `stream.py` | ≥70% | 95.5% |
-| `utils.py` | ≥80% | 87.9% |
-| `ttwid.py` | ≥85% | 100.0% |
-| `proxy.py` | ≥50% | 84.8% |
+- 覆盖率配置集中在 `pyproject.toml`：`source = ["src"]`，全局门禁 `fail_under = 60`
+- 高频变更核心模块的逐模块阈值只在 `scripts/check_coverage.py` 的 `MODULE_THRESHOLDS` 维护（该表是唯一事实源；未登记模块按 `GLOBAL_FLOOR` 判定）。**本文不复写数值**——旧表就因双写漂移过（阈值仍写 50 而实测已抬升）；登记面现覆盖平台解析/选源、录制与调度核心、出站 HTTP/Web 面与基础库。
 
 - 并发专项测试（`test_concurrency.py` / `test_concurrency_rate_limit.py`）使用专用配置 `.coveragerc-concurrency`（不设全局阈值），验证 `threading.Lock` 去重与抖音速率限制在多线程环境下的正确性
 

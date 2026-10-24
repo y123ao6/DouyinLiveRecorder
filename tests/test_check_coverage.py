@@ -203,7 +203,7 @@ def test_unregistered_module_at_global_floor_passes(tmp_path: Path) -> None:
 
 
 def test_registered_module_still_uses_its_own_higher_threshold(tmp_path: Path) -> None:
-    # 反向锁：登记了 85% 的模块不得被 50% 的下限放水（否则「登记」这层毫无意义）。
+    # 反向锁：登记了 85% 的模块不得被 60% 的下限放水（否则「登记」这层毫无意义）。
     root = _make_root(tmp_path)
     ttwid_threshold = check_coverage.MODULE_THRESHOLDS["src/ttwid.py"]
     assert ttwid_threshold > check_coverage.GLOBAL_FLOOR, "用例前提失效：ttwid 阈值须高于全局下限"

@@ -167,6 +167,30 @@ def extract_gate_env(agants_path: Path) -> dict[str, str]:
     return env
 
 
+def _diagnose_empty_source(agants_path: Path) -> str:
+    # 当 extract_gate_commands 返回空清单时，给出**具体的章节漂移诊断**。
+    # 把「rc=2 但只给一句笼统提示」细化到「哪个解析步骤断了」：文件不存在、章节标题漂移、
+    # 缺 bash 围栏、围栏内容为空——四种失败模式各有不同修法，诊断必须指向具体动作。
+    if not agants_path.exists():
+        return f"文件不存在: {agants_path}"
+    lines = agants_path.read_text(encoding="utf-8").splitlines()
+    span = _section_span(lines)
+    if span is None:
+        # 尝试发现近似标题（如「## 格式化命令」被改成「## 格式化命令表」以外的名字）
+        similar = [ln.strip() for ln in lines if ln.strip().startswith("## ") and "格式化" in ln]
+        hint = ""
+        if similar:
+            hint = f"（发现近似标题: {similar}）"
+        return f"未找到以 {SECTION_PREFIX!r} 开头的章节{hint}。" f"请检查 AGENTS.md 是否存在以 ## 格式化命令 开头的章节"
+    block = _first_fenced_block(lines[span[0] : span[1]])
+    if not block:
+        return f"章节 {SECTION_PREFIX!r} 内未找到 ```bash 代码块"
+    non_empty = [ln for ln in block if ln.strip() and not ln.strip().startswith("#")]
+    if not non_empty:
+        return f"章节 {SECTION_PREFIX!r} 的 ```bash 代码块内没有有效命令行"
+    return "原因未知：解析函数返回空但章节/围栏/命令行均存在"
+
+
 def extract_gate_commands(agants_path: Path) -> list[str]:
     # 从 AGENTS.md「格式化命令」章节的第一个 bash 代码块逐行提取门禁命令。
     # 返回按原顺序排列的命令字符串列表；章节缺失时返回空列表，交调用方判定 rc=2。
@@ -585,7 +609,9 @@ def main(argv: list[str] | None = None) -> int:
 
     cmds = extract_gate_commands(ROOT / "AGENTS.md")
     if not cmds:
+        diag = _diagnose_empty_source(ROOT / "AGENTS.md")
         print("ERROR: 无法从 AGENTS.md「格式化命令」章节解析出门禁命令清单", file=sys.stderr)
+        print(f"       诊断: {diag}", file=sys.stderr)
         print("       本地门禁是「没有跑」而不是「跑过了」，请勿宣布完成。", file=sys.stderr)
         return 2
 

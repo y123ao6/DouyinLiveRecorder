@@ -1558,16 +1558,8 @@ This fix uniformly takes effect for **all platforms** (Bilibili/Douyu/Huya/Douyi
 ### Testing and Coverage
 
 - Run tests: `pytest` (`asyncio_mode = "auto"`, async cases need no explicit marker); currently 4590 passed / 14 skipped, total coverage 83.75% (from coverage.json, 2026-10-20 cleanup round)
-- Coverage config is centralized in `pyproject.toml`: `source = ["src"]`, global gate `fail_under = 50`
-- High-frequency-change core modules have independent coverage gates (recorded in `pyproject.toml` comments, checked in CI via `--cov-fail-under` or a script):
-
-| Module | Gate | Current Coverage |
-| --- | --- | --- |
-| `spider.py` | ≥50% | 76.1% |
-| `stream.py` | ≥70% | 95.5% |
-| `utils.py` | ≥80% | 87.9% |
-| `ttwid.py` | ≥85% | 100.0% |
-| `proxy.py` | ≥50% | 84.8% |
+- Coverage config is centralized in `pyproject.toml`: `source = ["src"]`, global gate `fail_under = 60`
+- Per-module thresholds for high-frequency-change core modules live only in `MODULE_THRESHOLDS` inside `scripts/check_coverage.py` (that table is the single source of truth; unlisted modules fall back to `GLOBAL_FLOOR`). **This document deliberately does not duplicate the numbers** — the previous table had already drifted by double-writing. Registered coverage now spans platform parsing/source selection, recording and scheduling core, outbound HTTP/Web surface, and base libraries.
 
 - Concurrency-specific tests (`test_concurrency.py` / `test_concurrency_rate_limit.py`) use the dedicated config `.coveragerc-concurrency` (no global threshold), verifying the correctness of `threading.Lock` de-duplication and Douyin rate limiting under multi-threaded environments
 

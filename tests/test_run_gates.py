@@ -122,6 +122,73 @@ def test_missing_source_exits_nonzero(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 # ---------------------------------------------------------------------------
+# _diagnose_empty_source 用例：章节标题漂移的具体诊断提示
+#
+# 缺陷面：rc=2 时只给一句笼统「无法解析出门禁命令清单」，用户不知道是文件丢了、
+# 章节改名了、还是围栏被删了。诊断函数把四种失败模式（文件不存在、章节标题漂移、
+# 缺 bash 围栏、围栏内容为空）拆开，每种给出具体修法和近似标题发现。
+# ---------------------------------------------------------------------------
+
+
+def test_diagnose_file_not_found() -> None:
+    # 文件不存在时诊断必须点出路径
+    diag = run_gates._diagnose_empty_source(Path("no-such-file.md"))
+    assert "文件不存在" in diag, diag
+
+
+def test_diagnose_section_title_drift_with_similar_title(tmp_path: Path) -> None:
+    # 章节标题漂移但含「格式化」关键字时，诊断必须给出近似标题提示
+    # 注意：「## 格式化命令表」以 SECTION_PREFIX 开头，前缀匹配仍命中，不算漂移；
+    # 必须用不含「## 格式化命令」前缀但仍带「格式化」的标题才能触发近似发现分支。
+    fake = tmp_path / "AGENTS.md"
+    fake.write_text("## 门禁格式化规则\n\n```bash\npython -m black --check .\n```\n", encoding="utf-8")
+    diag = run_gates._diagnose_empty_source(fake)
+    assert "未找到" in diag, diag
+    assert "## 格式化命令" in diag, diag
+    assert "近似标题" in diag, diag
+    assert "门禁格式化规则" in diag, diag
+
+
+def test_diagnose_section_title_drift_without_similar(tmp_path: Path) -> None:
+    # 章节标题完全不相似时不给出近似提示，但仍指向具体动作
+    fake = tmp_path / "AGENTS.md"
+    fake.write_text("## 别的章节\n\n```bash\npython -m black --check .\n```\n", encoding="utf-8")
+    diag = run_gates._diagnose_empty_source(fake)
+    assert "未找到" in diag, diag
+    assert "请检查 AGENTS.md 是否存在以 ## 格式化命令 开头的章节" in diag, diag
+    assert "近似标题" not in diag, diag
+
+
+def test_diagnose_missing_bash_fence(tmp_path: Path) -> None:
+    # 章节存在但没有 bash 代码块时，诊断必须点出围栏缺失
+    fake = tmp_path / "AGENTS.md"
+    fake.write_text("## 格式化命令（门禁唯一基准）\n\n这里没有代码块\n", encoding="utf-8")
+    diag = run_gates._diagnose_empty_source(fake)
+    assert "未找到 ```bash 代码块" in diag, diag
+
+
+def test_diagnose_empty_bash_fence(tmp_path: Path) -> None:
+    # 章节和围栏都在，但围栏内容为空时，诊断必须点出「没有有效命令行」
+    fake = tmp_path / "AGENTS.md"
+    fake.write_text("## 格式化命令（门禁唯一基准）\n\n```bash\n# 只有注释\n```\n", encoding="utf-8")
+    diag = run_gates._diagnose_empty_source(fake)
+    assert "没有有效命令行" in diag, diag
+
+
+def test_main_error_output_includes_diagnostic_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # main() 在 rc=2 时必须把诊断提示打到 stderr，不能只给笼统一句
+    monkeypatch.setattr(run_gates, "ROOT", tmp_path)
+    fake = tmp_path / "AGENTS.md"
+    fake.write_text("## 别的标题\n", encoding="utf-8")
+    assert run_gates.main([]) == 2
+    captured = capsys.readouterr()
+    assert "诊断:" in captured.err, f"stderr 必须包含诊断行: {captured.err}"
+    assert "## 格式化命令" in captured.err, f"诊断必须指出期望的章节标题: {captured.err}"
+
+
+# ---------------------------------------------------------------------------
 # run_command / ensure_utf8_streams 用例（2026-09-22 补，AGENTS.md「完成定义」点名的缺口）
 #
 # 一律驱动 tmp_path 下的一次性子进程脚本，不跑任何真实门禁命令；被测面按 run_gates 的

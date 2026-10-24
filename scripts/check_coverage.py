@@ -54,18 +54,42 @@ NO_DATA_HINT = (
 
 # —— 逐模块覆盖率阈值：本表是唯一事实源，AGENTS.md 只链接到此处、不复制数值。
 # 新模块不必登记（未登记的按 GLOBAL_FLOOR 判），要放宽必须走 COVERAGE_DEBT / GATE_EXEMPT_MODULES。
+#
+# 登记口径（2026-10-24 复核）：登记值一律**高于 GLOBAL_FLOOR**。低于下限的登记项看似「更严」，
+# 实则是绕过 COVERAGE_DEBT 的无期限豁免——既没有 tracker 也没有 review_by，比债务基线更松、
+# 还不会到期。旧表里 spider/proxy 的 50 就是这一形态，同轮随下限上调一并抬到下限之上。
+# 取值按当前实测值向下留 5~10 个百分点作正常重构的波动余量（ttwid/proxy 为存量项，
+# 分别保留 85 与抬到 80），同时把「退回实测值以下」变成红。
 MODULE_THRESHOLDS: dict[str, float] = {
-    "src/spider.py": 50,
-    "src/stream.py": 70,
-    "src/utils.py": 80,
+    # 平台解析 / 选源：变更最频繁的一层，解析失败会让整场录制落空
+    "src/spider.py": 70,
+    "src/stream_select.py": 85,
+    "src/platforms/bilibili.py": 90,
+    "src/platforms/douyu.py": 90,
+    "src/platforms/twitch.py": 90,
+    # 录制 / 调度核心：房间状态、采集循环、调度器与弹幕监控
+    "src/stream.py": 85,
+    "src/room.py": 80,
+    "src/collector.py": 75,
+    "src/scheduler.py": 85,
+    "src/danmaku_monitor.py": 75,
+    # HTTP / Web 面：出站请求配置与 Web 面板 API
+    "src/web_api.py": 80,
+    "src/async_http.py": 80,
+    # 基础库：被全仓依赖，退化影响面最大
+    "src/base.py": 85,
+    "src/utils.py": 85,
     "src/ttwid.py": 85,
-    "src/proxy.py": 50,
+    "src/proxy.py": 80,
 }
 
-# 未显式登记阈值的模块所用下限（MID-2259）。取 50.0 与 pyproject
-# [tool.coverage.report] fail_under = 50 同口径——本门禁不得比全库总闸更宽，
+# 未显式登记阈值的模块所用下限（MID-2259）。取 60.0 与 pyproject
+# [tool.coverage.report] fail_under = 60 同口径——本门禁不得比全库总闸更宽，
 # 否则「新模块零测试」反而能通过逐模块闸。
-GLOBAL_FLOOR = 50.0
+# [历史注 2026-10-24] 原为 50.0：全库实测已到 83.9%，50% 对「新建模块几乎没测试」
+# 已失去区分力（随便几行被 import 就够）。提到 60% 时全表仅 ui_kit.py（57%）触线，
+# 该缺口以补测（test_ui_kit.py 的纯几何/动效用例）而非债务条目收口——避免白名单记账化。
+GLOBAL_FLOOR = 60.0
 
 # 显式豁免名单（MID-2259 要求的「第三条路」）：键 = 相对路径，值 = 豁免理由。
 # 每条理由都必须说明「为什么它不该被本门禁管」，且**不得**为了变绿往里塞普通模块——
