@@ -3,15 +3,29 @@ name: ffmpeg-command-construction
 description: >
   DouyinLiveRecorder 项目中 ffmpeg 命令构造与容器格式的硬约束。
   当修改或新增 ffmpeg 录制命令、保存类型分支、输入/输出参数构造、
-  分段格式映射时使用此 Skill。触发词：ffmpeg、-reconnect、-segment_format、
-  _build_ffmpeg_output_args、_build_ffmpeg_input_args、_run_ffmpeg_record、
-  record_save_type、容器格式、FLV/TS/MP4/M4A/MKV。
+  分段格式映射时使用此 Skill。
+trigger:
+  - ffmpeg
+  - -reconnect
+  - -segment_format
+  - _build_ffmpeg_output_args
+  - _build_ffmpeg_input_args
+  - _run_ffmpeg_record
+  - record_save_type
+  - 容器格式
+  - FLV
+  - TS
+  - MP4
+  - M4A
+  - MKV
 ---
 
 # ffmpeg 命令构造与容器格式
 
 > **约束事实源**: dlr-dev-playbook `references/known-pitfalls.md`「ffmpeg 命令构造与容器格式」章节。
 > 本 Skill 提取高频复用内容供按需加载；约束变更以 AGENTS.md 为准。
+>
+> **详细内容已拆分至 `references/` 子目录**，主文件仅保留路由表与核心约束。
 
 ## 何时加载
 
@@ -23,7 +37,7 @@ description: >
   `-tls_verify`、`-http_proxy` 等 ffmpeg 选项。
 - 调试 ffmpeg 退出码异常、静默损坏、重连失效。
 
-## 四个单一定义点（F-01 收官）
+## 核心约束：四个单一定义点（F-01 收官）
 
 禁止回退成内联复制粘贴。所有平台分支必须经过以下函数：
 
@@ -38,55 +52,14 @@ description: >
 
 回归锁：`tests/test_platform_dispatch.py` + `tests/test_start_record_command_golden.py`。
 
-## `-reconnect*` 硬约束
+## 路由表
 
-- **位置**: 必须在 `-i` **之前**，且每个选项紧跟取值。
-  - 写在 `-i` 之后 → 被划入输出组 → ffmpeg 静默接受但不应用 → 重连完全失效。
-- **HLS 输入必须移除 `-reconnect_at_eof`**:
-  - `if ".m3u8" in url: del`
-  - m3u8 播放列表 HTTP 响应结束即 EOF，该选项让 http 层无限重连，hls demuxer 永远等不到媒体段。
-  - main.py 与 standalone 共三处定义点同步。
-- **回归锁**: `tests/test_ffmpeg_reconnect_args.py`
-  - AST 锁「每 `-reconnect*` 紧跟字面量值」+「全在 `-i` 之前」。
-  - `TestReconnectAtEofDroppedForHls`。
-
-## `-thread_queue_size` 位置约束
-
-- **只能位于 `-i` 之后**（2026-09-23 事故）。
-- 放错侧 → `Option thread_queue_size ... cannot be applied to input url` → 退出码 -22 → 录制 100% 失败。
-- 回归锁：`tests/test_ffmpeg_reconnect_args.py::TestOutputOnlyOptionsFollowInputFlag`。
-
-## `-segment_format` 查表约束
-
-- **必须经 `SEGMENT_FORMAT_BY_SUFFIX` 查表**，禁止任何分支直接写字面量。
-- 映射：`.ts→mpegts` / `.flv→flv` / `.mkv→matroska` / `.mp4→mp4` / `.m4a→ipod`。
-- 音频兜底：`SEGMENT_FORMAT_BY_SUFFIX.get("." + extension, "ipod")`。
-- 历史事故：TS 分支误写 `ipod` → HEVC `-c copy` 进 `ipod` 直接 `AVERROR(EINVAL)` 退出；
-  H.264 不报错 exit 0 但把 MP4 内容写进 `.ts`（魔数 ftyp 非 0x47）静默损坏。
-- **回归锁**: `tests/test_record_container.py`
-  - 映射表内容 + AST 扫描「5 处取值全查表、无裸字面量」+ 查表键已注册 + 音频兜底 ipod。
-
-## 新增 per-file 选项的判据
-
-新增任何 per-file 选项前先用 `ffmpeg -h full` 分段标题确认归属（input 级 vs output 级）。
-
-## 黄金命令比对
-
-- `tests/test_start_record_command_golden.py`
-  - `GOLDEN_REGEN=1` 重生成 `tests/golden/start_record_commands.json`，字节级比对。
-  - 20 用例覆盖 5 路径 + m3u8 丢弃 `-reconnect_at_eof` + 头/代理注入 + 海外超时 + FLV-h265→TS + shopee 直下。
-
-## 录制结果反馈（与命令构造交互部分）
-
-- `check_subprocess` 须按 ffmpeg 退出码上报调度样本：
-  - `rc==0` → `record_success(host_of(record_url))`
-  - `rc!=0` → `record_error(...)`
-  - **禁止轮末无条件 `record_success`**——稀释按 host 熔断统计。
-- 快速失败须记入探针退避（`_FFMPEG_FAST_FAIL_SECONDS=20.0`）：
-  - 解析 `-i` 后实际拉流地址调 `stream_select.mark_ffmpeg_reject(url, platform)`。
-  - `platform` 不在 `_PROBE_BACKOFF_PLATFORMS = ("虎牙直播",)` 时静默无操作。
-- 录制成功须撤销该地址探针退避（`clear_ffmpeg_reject`）：
-  - 只清实际拉流成功的 FLV，HLS 退避不顺带清。
+| 子主题 | 文件 | 触发场景 |
+| --- | --- | --- |
+| `-reconnect*` 与 `-thread_queue_size` 位置约束 | [`references/reconnect-constraints.md`](references/reconnect-constraints.md) | 修改重连参数、thread_queue_size 位置、HLS 输入处理 |
+| `-segment_format` 查表与容器格式 | [`references/segment-format-lookup.md`](references/segment-format-lookup.md) | 修改分段格式映射、容器格式、扩展名查表 |
+| 录制结果反馈 | [`references/recording-feedback.md`](references/recording-feedback.md) | 修改录制成功/失败上报、探针退避交互 |
+| 黄金命令比对 | [`references/golden-command-comparison.md`](references/golden-command-comparison.md) | 修改 ffmpeg 命令构造逻辑、更新黄金基准 |
 
 ## 验证
 
