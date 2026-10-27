@@ -22,7 +22,7 @@ class TarsInputStream:
         self._pos = 0
 
     # ---- 基础 ----
-    # 统一边界校验入口（CR-03）：协议读出的每个长度都必须经此消费。负长度/越界在此拒成
+    # 统一边界校验入口：协议读出的每个长度都必须经此消费。负长度/越界在此拒成
     # ValueError——只判上界时，负长度会让 _goto / finish_struct / _skip_to_struct_end 的
     # while True 循环退回同一字段头反复读同一负值，形成 100% CPU 死循环（不是异常，拦不住）；
     # 而负下标在 Python 侧合法，_peek_field 也不会抛 IndexError 自曝。

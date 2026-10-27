@@ -19,9 +19,8 @@ from src.platforms.bilibili import BilibiliDanmaku
 URL = sys.argv[1] if len(sys.argv) > 1 else "https://live.bilibili.com/545068"
 # 参数守卫必须两步式（R7③）：先排除 `-q`/`-x` 这类 pytest 选项（否则 int('-q') 在收集期
 # 抛 ValueError，报错位置与本行相距较远、排查成本高）；再判 isdigit——`pytest a.py b.py`
-# 一次点多个文件时 sys.argv[2] 是**下一个测试文件的路径**，不带 `-` 前缀，只判非选项会放行，
-# 随后 int(路径) 当场 ValueError，本模块收集直接 ERROR（2026-09-30 实测 4 errors during
-# collection）。真机调用 `python 本文件.py <URL> 60` 语义不变（"60".isdigit() 为真）。
+# 一次点多个文件时 sys.argv[2] 是下一个测试文件的路径，不带 `-` 前缀，只判非选项会放行，
+# 随后 int(路径) 当场 ValueError，本模块收集直接 ERROR。真机调用语义不变（"60".isdigit() 为真）。
 _SECONDS_RAW = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else ""
 SECONDS = int(_SECONDS_RAW) if _SECONDS_RAW.isdigit() else 20
 
@@ -39,11 +38,9 @@ def main() -> None:
     assert isinstance(token, str), f"token 类型异常: {type(token)!r}"
     print(f"[OK] danmaku_info: room={info['room_id']} host={info['server_host']} token_len={len(token)}")
 
-    # 输出目录固定为 tests/_out_live：先清空本脚本自己的产物前缀再写，避免上一轮遗留的 SRT
-    # 混入本轮结果（「文件存在」通过而内容来自旧数据）。
-    # 范围收窄到前缀（R7④，2026-09-30）：无差别删每一项会误删并行运行的其它平台验证产物
-    # （真机验证常多平台同开），目录里混进子目录时 os.remove 还会抛
-    # IsADirectoryError/PermissionError 让本轮卡在清理阶段。语义不变，只是删得准。
+    # 输出目录固定为 tests/_out_live：先按前缀清掉本脚本自己的产物，避免上一轮遗留的 SRT
+    # 混入本轮结果（「文件存在」通过而内容来自旧数据）；无差别删每项会误伤并行运行的其它
+    # 平台验证产物，目录里混进子目录时 os.remove 还会抛 IsADirectoryError/PermissionError（R7④）。
     base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_out_live")
     os.makedirs(base_dir, exist_ok=True)
     for f in os.listdir(base_dir):

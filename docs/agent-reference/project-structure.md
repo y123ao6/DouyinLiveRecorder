@@ -103,7 +103,7 @@
 │   └── execjs/          # PyExecJS 类型存根（多个 .pyi）
 │
 ├── .agents/             # 项目级 Skill 资产（**已入库**：.gitignore 以 .agents/* + !.agents/skills/ 反选，其余内容物仍忽略）
-│   └── skills/          # 5 个 Skill 目录：dlr-dev-playbook / ffmpeg-command-construction / platform-source-selection / runtime-pin-verification / browser-skill（外部工具技能）
+│   └── skills/          # 4 个 Skill 目录：dlr-dev-playbook / dlr-domain-constraints（选源→录制→发布） / comment-refactor-at-scale（通用技能） / browser-skill（外部工具技能）
 │       └── .gitattributes # *.sh text eol=lf（仓库 core.autocrlf=true 会把 shebang 翻成 bash\r，限定在本子树生效）
 │
 ├── scripts/             # 维护脚本与独立工具（CI 门禁、i18n 工具、单文件整合版；运行时链路不引用）

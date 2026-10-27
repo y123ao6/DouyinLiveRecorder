@@ -61,9 +61,8 @@
 | Skill | 路径 | 触发词 / 场景 | 覆盖领域 |
 | --- | --- | --- | --- |
 | DLR 开发手册 | `.agents/skills/dlr-dev-playbook/` | 新功能设计、编写测试、运行时日志分诊、平台符号门控、静态检查裁定 | 开发工作流路由；命中路由后只加载对应的单个 `references/*.md` |
-| ffmpeg 命令构造 | `.agents/skills/ffmpeg-command-construction/` | `ffmpeg`、`-reconnect`、`-segment_format`、`record_save_type` | `-reconnect*` 位置、`-segment_format` 查表、F-01 四定义点、黄金命令比对 |
-| 平台选源流程 | `.agents/skills/platform-source-selection/` | `select_source_url`、探针、`FLV-first`、`QUALITY_MAPPING` | 探针可达性、FLV-first/HLS 排除、画质映射、装饰器契约 |
-| 运行时钉定验证 | `.agents/skills/runtime-pin-verification/` | `_PINNED_RUNTIME_SHA256`、`check_runtime_pins`、`--require-pinned` | 三层防线、官方签名档、三类钉定边界、来源增删三处同改 |
+| 领域硬约束（选源/录制/发布） | `.agents/skills/dlr-domain-constraints/` | `select_source_url`、`ffmpeg`、`-reconnect`、`-segment_format`、`_PINNED_RUNTIME_SHA256`、`--require-pinned` | 选源探针与画质映射、F-01 四定义点与容器格式查表、运行时钉定三层防线 |
+| 大规模注释重构（通用技能，非本仓领域约定） | `.agents/skills/comment-refactor-at-scale/` | 纯注释重构、等价性校验、配额感知派发写入代理 | 基线与六维等价证明、波次派发与 JSONL 台账、配额中断后的产物重建 |
 | BrowserSkill（外部工具技能，非本仓领域约定） | `.agents/skills/browser-skill/` | 操作已登录 Chromium（非本仓领域约定） | `bsk` CLI + 浏览器扩展；借用用户标签页须显式授权，禁止提取凭据 |
 
 ### 项目级 Hooks / Commands

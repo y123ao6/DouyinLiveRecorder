@@ -29,7 +29,7 @@ def reload_logger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     yield tmp_path
     logger.complete()
     logger.remove()
-    # LT-08：三个 sink id 都要复位。重载会往全局 loguru 注册文件 sink，只清 _console_sink_id
+    # 三个 sink id 都要复位。重载会往全局 loguru 注册文件 sink，只清 _console_sink_id
     # 时两个录制 sink 的 id 会带着已随用例清理的句柄留给下一个用例——remove_file_sinks() /
     # add_file_sinks() 对着死 id 走幂等分支，而「归档后重建 sink」这类用例判的就是这两个 id。
     # 与同构 fixture tests/test_log_archive.py::TestLoggerFileSinkOps.reload_logger 保持一致。
@@ -76,7 +76,7 @@ def test_gui_parent_respects_log_file_disabled(reload_logger: Path, monkeypatch:
 def test_gui_parent_marker_accepts_every_documented_true_token(
     reload_logger: Path, monkeypatch: pytest.MonkeyPatch, marker: str
 ) -> None:
-    # M-50 回归锁：GUI 父进程标记的布尔判定必须走全仓唯一入口 parse_config_bool（关键约定 #9）。
+    # GUI 父进程标记的布尔判定必须走全仓唯一入口 parse_config_bool（关键约定 #9）。
     # 旧形态 `os.environ.get(GUI_PARENT_ENV) == "1"` 只认字符 1，于是 DLR_GUI_PARENT=TRUE / on / 是
     # 全被判成「不是 GUI 进程」→ 本模块照旧注册 streamget.log 与 PlayURL.log 两个文件 sink，
     # 回到本文件头部记录的故障面：与录制子进程双开同一文件、任一方到轮转阈值即抛
@@ -106,7 +106,7 @@ def test_gui_parent_marker_keeps_recorder_role_for_unrecognized_and_false_values
 
 
 def test_import_time_console_sink_colorize_follows_isatty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # L-16 回归锁：导入期控制台 sink 的 colorize 必须按 isatty 判定，并与 rebind_console_sink()
+    # 导入期控制台 sink 的 colorize 必须按 isatty 判定，并与 rebind_console_sink()
     # 共用 src/logger.py::_console_colorize。旧形态导入期硬编码 colorize=True，stderr 被重定向到
     # 文件/管道时（web.py 后台模式、`python main.py > x.log`）ANSI 转义序列照样写进日志内容，
     # 而排障恰恰要看这个文件。两侧都钉：非 tty 不得有 ESC、真 tty 仍须有 ESC（防「恒 False」退化）。

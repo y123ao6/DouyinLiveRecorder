@@ -22,16 +22,16 @@ from src.danmaku_monitor import DanmakuMonitorHub
 from src.logger import logger
 from src.srt_writer import SrtWriter
 
-# SRT 待写队列上限（WD-02）：10000 条对高热度直播间（数十条/秒 + 慢盘）足以吸收数分钟抖动；
+# SRT 待写队列上限：10000 条对高热度直播间（数十条/秒 + 慢盘）足以吸收数分钟抖动；
 # 超出即计数丢弃并聚合告警，保证内存有界而不是静默增长到 OOM。
 # 内存界真正成立靠 _DANMAKU_TEXT_LIMIT 的单条截断：极端消息曾可放大到「条数上限 × 8MiB 帧」。
 _SRT_QUEUE_MAXSIZE = 10000
-# SRT 写盘连续失败时的告警间隔（秒，WD-03）：逐条告警会在磁盘满时刷屏并放大 IO，改按时间窗聚合。
+# SRT 写盘连续失败时的告警间隔（秒）：逐条告警会在磁盘满时刷屏并放大 IO，改按时间窗聚合。
 _SRT_WARN_INTERVAL = 60.0
 # 单条弹幕文本（user_name/message）的统一截断上限（字符）：上游只限单帧解压 8MiB，一条批量帧
 # 可解析出大量大文本消息，而 SRT 队列/边车队列/监控流都只按条数封顶——「按条数封顶」的内存界
 # 在超大消息面前名不副实。在公共入口 _on_message 截断，SRT 与监控流共用同一口径；2000 字符远超
-# 现实弹幕长度，不影响正常内容（M-09）。
+# 现实弹幕长度，不影响正常内容。
 _DANMAKU_TEXT_LIMIT = 2000
 
 # 弹幕客户端 stop() 的等待上限（秒）：SDK 因半开连接挂住时若无限等待，
@@ -41,7 +41,7 @@ _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 # stop() 等待「已发布但尚未 running」的 loop 进入 running 的上限（秒）。
 # 该窗口位于 _run 发布 self._loop 之后、进入 run_until_complete 之前（正在构造平台弹幕客户端：
 # 实例化 SDK / 拼装参数），实测毫秒级。轮询只为把停止信号投递进去，超上限仍未 running 时
-# 由 _run 的二次复查兜底，故取值偏小即可（MID-23）。
+# 由 _run 的二次复查兜底，故取值偏小即可。
 _LOOP_RUNNING_WAIT_SECONDS = 0.5
 # 轮询步长（秒）：0.02 × 25 = 上面的 0.5s 上限。正常路径 loop 早已 running，首次判断即通过、
 # 不产生任何 sleep，故不会拖慢 stop()。
@@ -49,7 +49,7 @@ _LOOP_RUNNING_POLL_INTERVAL = 0.02
 # stop() 等待 SRT 写线程退出的上限（秒）
 _SRT_WRITER_JOIN_SECONDS = 3.0
 # SRT 写线程 get() 的阻塞步长（秒）：把「阻塞在空队列上」变成有限等待，
-# 队列满导致 sentinel 投不进去时，写线程仍能靠 _srt_stop 自检退出（MID-24）。
+# 队列满导致 sentinel 投不进去时，写线程仍能靠 _srt_stop 自检退出。
 _SRT_QUEUE_POLL_SECONDS = 0.5
 # 收尾异常的两种观测值（作日志实参、非文案，故不进 i18n 目录）
 _SRT_SHUTDOWN_QUEUE_FULL = "queue-full"
@@ -59,15 +59,15 @@ _SRT_SHUTDOWN_JOIN_TIMEOUT = "join-timeout"
 # 单房间采集器：同步 start() / stop() 入口，另有只读的 message_count。
 class DanmakuCollector:
     # 仅记非显然语义：write_srt=False 表示只监控、不落 SRT 文件（弹幕监控开、录制关）；monitor 可
-    # 注入测试用枢纽，缺省惰性取进程级单例 get_hub()；only_fans=None 表示不覆盖平台类默认值（CR-04）。
+    # 注入测试用枢纽，缺省惰性取进程级单例 get_hub()；only_fans=None 表示不覆盖平台类默认值。
     def __init__(
         self,
         danmaku_cls: Type[DanmakuBase],
         danmaku_args: Any,
         base_filename: str,
         segment_seconds: Optional[float] = 1800.0,
-        # CR-04：默认 None 而非 True——True 会经下方「hasattr → 覆盖实例属性」压掉平台类自己的
-        # 刻意默认（斗鱼为 False），使该修复在真实调用链上完全失效（普通弹幕被静默丢弃且无日志）。
+        # 默认 None 而非 True——True 会经下方「hasattr → 覆盖实例属性」压掉平台类自己的刻意默认
+        # （斗鱼为 False），使该修复在真实调用链上完全失效（普通弹幕被静默丢弃且无日志）。
         only_fans: Optional[bool] = None,
         room_name: Optional[str] = None,
         platform_name: Optional[str] = None,
@@ -104,15 +104,15 @@ class DanmakuCollector:
         self._shutdown_task: "Optional[asyncio.Task[None]]" = None
         # SRT 写入与弹幕接收解耦：_on_message 跑在 asyncio 事件循环上，若同步调 srt.write 会阻塞
         # ws_recv → 心跳掉线 / 对端断连误判。故把 (user, msg, now) 推入队列，由独立守护线程取出写盘。
-        # 队列必须有界 + 满即计数丢弃（WD-02）：慢盘 / 网络盘 / 杀毒扫描 / 磁盘满时「写盘极快」的
-        # 假设不成立，无界堆积会直致 OOM（WD-02 前用 queue.SimpleQueue，无界无拒收，注释却自称有界）。
+        # 队列必须有界 + 满即计数丢弃：慢盘 / 网络盘 / 杀毒扫描 / 磁盘满时「写盘极快」的假设不成立，
+        # 无界堆积会直致 OOM。
         # sentinel = None 通知消费者退出；stop() 在 srt.close() 之前先发 sentinel 并 join 线程，
         # 确保「队列清空 → srt.close 兜底刷尾」的顺序。
         self._srt_queue: "queue.Queue[Optional[tuple[str, str, float]]]" = queue.Queue(maxsize=_SRT_QUEUE_MAXSIZE)
         self._srt_dropped = 0  # 因队列满被丢弃的弹幕条数（丢弃必须可观测，见下）
         self._srt_writer: Optional[threading.Thread] = None
         # sentinel 投不进去（队列被慢盘填满）时的替代退出通道——写线程的
-        # get(timeout=_SRT_QUEUE_POLL_SECONDS) 在队列排空后检查它，自检退出（MID-24）。
+        # get(timeout=_SRT_QUEUE_POLL_SECONDS) 在队列排空后检查它，自检退出。
         # 与 _stop_event 分开是刻意的：_stop_event 参与「stop() ↔ _run」的反向序握手，
         # 复用同一事件会让两条保证互相耦合、日后改一处即悄悄破坏另一处。
         self._srt_stop = threading.Event()
@@ -142,8 +142,8 @@ class DanmakuCollector:
             try:
                 self._srt.start()
             except Exception as e:
-                # 2026-10-21 M-41（同族补漏，报告未逐条列举）：SRT 初始化失败的异常文本同样
-                # 内嵌 base_filename 路径（可含主播名）与 OSError 的 strerror，进轮转日志前一律过码。
+                # SRT 初始化失败的异常文本同样内嵌 base_filename 路径（可含主播名）与 OSError 的
+                # strerror，进轮转日志前一律过码。
                 logger.warning(
                     i18n.tr(
                         "[弹幕采集]SRT 初始化失败(继续尝试写弹幕): {e}",
@@ -152,9 +152,10 @@ class DanmakuCollector:
                 )
             # 启动 SRT 写盘守护线程：把 (user, msg, now) 从队列取出再写盘，保证 _on_message
             # 在事件循环里只做 O(1) 入队、不阻塞 ws 接收。线程**先建后 start、start 成功才留引用**：
-            # 旧写法赋值紧跟 .start()，一旦 start 抛（实测可达形态 RuntimeError: can't start new
+            # 赋值紧跟 .start() 时，一旦 start 抛（实测可达形态 RuntimeError: can't start new
             # thread），_srt_writer 就持有一个永不可 join 的线程对象，stop() 的 join 直接抛错并
-            # 跳过末尾的 srt.close()（MID-2242）。
+            # 跳过末尾的 srt.close()。
+            # [历史注] 旧写法正是赋值紧跟 .start()。
             try:
                 writer = threading.Thread(
                     target=self._srt_writer_loop, name=f"srt_writer_{self._cls_name}", daemon=True
@@ -195,10 +196,10 @@ class DanmakuCollector:
             self._rollback_start(room_registered=True, close_reason="采集线程启动失败")
             return
 
-    # start() 的回滚出口（MID-2242）：「不抛异常」不等于「可以留在半启动状态」——_started 若仍为
-    # True，随后的 stop() 会去 join 一个从未成功 start() 的线程并抛 RuntimeError: cannot join
-    # thread before it is started；该异常逃出 stop() 就跳过末尾的 self._srt.close()，SrtWriter 句柄
-    # 泄漏（Windows 上该 .srt 在 GC 前无法改名，会连带打挂 rename_anchor_directory）。
+    # start() 的回滚出口：「不抛异常」不等于「可以留在半启动状态」——_started 若仍为 True，随后的
+    # stop() 会去 join 一个从未成功 start() 的线程并抛 RuntimeError: cannot join thread before it
+    # is started；该异常逃出 stop() 就跳过末尾的 self._srt.close()，SrtWriter 句柄泄漏（Windows 上
+    # 该 .srt 在 GC 前无法改名，会连带打挂 rename_anchor_directory）。
     # 故这里把 _started 归 False 并摘掉线程引用，让 stop() 走「未启动」早退分支、照常关干净 SRT。
     # room_registered 指明枢纽里是否已登记本房间：已登记才补一条 closed 事件。
     def _rollback_start(self, room_registered: bool, close_reason: str = "") -> None:
@@ -224,7 +225,7 @@ class DanmakuCollector:
     # join 一个「从未成功 start()」的 Thread 会先抛 RuntimeError: cannot join thread before it is
     # started，而本类两处 join 都排在 self._srt.close() 之前——异常一逃就跳过收尾。
     # Thread.ident 只在 start() 成功后被赋值，是「可 join」的跨版本稳定判据；仍包一层 try 是因为
-    # stop() 明确承诺不影响录像收尾，任何线程回收竞态都不该让它变成异常源（MID-2242）。
+    # stop() 明确承诺不影响录像收尾，任何线程回收竞态都不该让它变成异常源。
     @staticmethod
     def _join_thread(thread: threading.Thread, timeout: float) -> None:
         if thread.ident is None:
@@ -250,7 +251,7 @@ class DanmakuCollector:
         # 上报监控枢纽：房间采集结束（连接状态置离线）
         hub = self._monitor_hub()
         if hub is not None:
-            # L-24（2026-10-02）：reason 文案经 i18n——面板非中文语言下混入简中
+            # 2026-10-02：reason 文案经 i18n——面板非中文语言下混入简中
             hub.room_closed(self._room_name, i18n.tr("采集停止"))
         if not self._started:
             # 未启动也要尝试关 SRT（空文件）
@@ -263,12 +264,11 @@ class DanmakuCollector:
         # 缺任一半都会丢信号。
         loop = self._loop
         if loop is not None:
-            # MID-23：旧实现额外要求 loop.is_running()，于是在「_run 已发布 _loop、尚未进入
-            # run_until_complete」（正在构造平台弹幕客户端）这段毫秒级窗口里，整段
-            # call_soon_threadsafe 被跳过 → 停止信号永久丢失 → join(timeout) 超时，采集线程 +
-            # SrtWriter 句柄 + 监控房间条目（room_stopped 只在线程退出才发）全部滞留；
-            # 「刚开播就秒退 / 快速失败后立刻停止录制」最容易命中。
-            # 现做法：「未 running 且未 closed」时有界轮询等其 running 再投递；反向序握手完全未动。
+            # 「未 running 且未 closed」时有界轮询等其 running 再投递；反向序握手不参与此判定。
+            # [历史注] 旧实现额外要求 loop.is_running()，「_run 已发布 _loop、尚未进入
+            # run_until_complete」（正在构造平台弹幕客户端）这段毫秒级窗口里整段
+            # call_soon_threadsafe 被跳过 → 停止信号永久丢失 → join 超时，采集线程 + SrtWriter
+            # 句柄 + 监控房间条目（room_stopped 只在线程退出才发）全部滞留。
             deadline = time.monotonic() + _LOOP_RUNNING_WAIT_SECONDS
             while not loop.is_running() and not loop.is_closed():
                 if time.monotonic() >= deadline:
@@ -290,13 +290,12 @@ class DanmakuCollector:
                     )
         if self._thread is not None:
             self._join_thread(self._thread, timeout)
-            # 2026-10-21 M-38：join 带 timeout 时**超时是静默返回**，旧代码不复查存活就继续收尾，
-            # 卡死的采集线程（连同它的事件循环、平台 WS 连接与监控枢纽里的房间条目）从此无人知晓——
-            # 用户侧表现只有「弹幕不再更新」，日志里一条线索都没有。与下面 SRT 写线程侧的
-            # is_alive 判据同构（那条早就有，唯独这支漏了）。
-            # 判定必须放在 _join_thread 之后、srt.close() 之前：本方法**不**改写 _srt.close() 的
-            # 调用顺序（MID-24 契约：sentinel 失败也必须走到 close，否则录制并发槽永久泄漏，
-            # 由 tests/test_collector.py::test_monitor_hub_and_writer_thread_survive_full_queue 钉住）。
+            # join 带 timeout 时超时是静默返回，必须复查存活：否则卡死的采集线程（连同它的事件
+            # 循环、平台 WS 连接与监控枢纽里的房间条目）无人知晓，用户侧只有「弹幕不再更新」、
+            # 日志里一条线索都没有。与 SRT 写线程侧的 is_alive 判据同构。
+            # 判定必须放在 _join_thread 之后、srt.close() 之前：本方法不改写 _srt.close() 的调用
+            # 顺序（sentinel 失败也必须走到 close，否则录制并发槽永久泄漏，由
+            # tests/test_collector.py::test_monitor_hub_and_writer_thread_survive_full_queue 钉住）。
             if self._thread.is_alive():
                 detail = f"{self._cls_name} capture thread still alive after join(timeout={timeout}s)"
                 logger.warning(
@@ -309,14 +308,14 @@ class DanmakuCollector:
         # SRT 写线程收尾：sentinel 通知消费者排空队列后退出，join 超时降级为「未排空也关文件」，
         # 避免 srt.close() 之前还有未刷盘的弹幕丢失（保留 flush-on-close 的兜底）。
         if self._srt_writer is not None and self._srt is not None:
-            # MID-24：旧写法用**阻塞** put(None) 投 sentinel。队列有界，而写线程可能正卡在
-            # srt.write() 的阻塞 flush() 上（网络盘掉线 / USB 拔除 / 磁盘满）——队列满 + 消费者
-            # 永不再取 ⇒ put 永不返回，stop() 挂死在录制线程里。main.py 的两条 try 内调用路径
-            # 此时还在 finally: _rec_sem.release() 之前，于是**永久泄漏一个录制并发槽**，累积到
-            # 上限后所有后续录制饿死（SrtWriter.close() 早已为同一场景设 _CLOSE_LOCK_TIMEOUT，
-            # 旧实现唯独这一步漏了）。
-            # 现做法：非阻塞投递；投不进就置 _srt_stop 让写线程自检退出；只 join 有限时间；
-            # sentinel 失败绝不阻断后面的 srt.close()。
+            # 必须非阻塞投递 sentinel：队列有界，而写线程可能正卡在 srt.write() 的阻塞 flush() 上
+            # （网络盘掉线 / USB 拔除 / 磁盘满），队列满 + 消费者永不再取 ⇒ 阻塞 put 永不返回，stop()
+            # 挂死在录制线程里；main.py 的两条 try 内调用路径此时还在 finally: _rec_sem.release() 之前，
+            # 于是**永久泄漏一个录制并发槽**，累积到上限后所有后续录制饿死（SrtWriter.close() 早已为
+            # 同一场景设 _CLOSE_LOCK_TIMEOUT）。
+            # 故：投不进就置 _srt_stop 让写线程自检退出；只 join 有限时间；sentinel 失败绝不阻断
+            # 后面的 srt.close()。
+            # [历史注] 旧实现用阻塞 put(None)，正是上述形态。
             reason: Optional[str] = None
             try:
                 self._srt_queue.put_nowait(None)
@@ -358,16 +357,15 @@ class DanmakuCollector:
                             "[弹幕采集]{where} 异常(忽略): {type_name}: {e}",
                             where="danmaku.stop",
                             type_name=type(e).__name__,
-                            # M-41 残留（2026-10-21）：平台 WS 关闭异常的文本同样带连接 URL 与鉴权参数，
-                            # 与同函数另一处 danmaku.start 分支及 base.py 的 _log_task_exception 同口径。
+                            # 平台 WS 关闭异常的文本同样带连接 URL 与鉴权参数，与 base.py 的
+                            # _log_task_exception 同口径。
                             e=utils.mask_credentials(str(e)),
                         )
                     )
-            # MIN-23 修复：旧实现直接 loop.stop()，danmaku.start() 的任务此刻多半仍 pending——
-            # run_until_complete 被掐断后 loop.close() 触发 Task.__del__，向 stderr 刷
-            # 「Task was destroyed but it is pending」（多房间同时停止录制时集中刷屏），且平台
-            # start() 里 finally 的清理链（连接副作用、buvid/看门狗等）永不执行。
-            # 先取消任务、再让出一轮把取消送达，然后才停 loop。
+            # 不能直接 loop.stop()：danmaku.start() 的任务此刻多半仍 pending，run_until_complete
+            # 被掐断后 loop.close() 触发 Task.__del__，向 stderr 刷「Task was destroyed but it is
+            # pending」（多房间同时停止录制时集中刷屏），且平台 start() 里 finally 的清理链
+            # （连接副作用、buvid/看门狗等）永不执行。故先取消任务、让出一轮把取消送达，再停 loop。
             task = self._start_task
             if task is not None and not task.done():
                 task.cancel()
@@ -378,8 +376,8 @@ class DanmakuCollector:
                 self._loop.stop()
 
         if self._loop is not None:
-            # 与 MIN-13 同源：裸 ensure_future 的关闭协程异常只会在被 GC 时打一行 stderr。
-            # 持引用 + 完成回调落盘异常；本任务通常随 loop.stop() 结束，不会被丢弃。
+            # 与 base.spawn_danmaku_task 同源：裸 ensure_future 的关闭协程异常只会在被 GC 时打一行
+            # stderr。持引用 + 完成回调落盘异常；本任务通常随 loop.stop() 结束，不会被丢弃。
             self._shutdown_task = spawn_danmaku_task(_shutdown())
 
     # 采集线程主体：新建并绑定事件循环，实例化平台弹幕类（注入三个回调、透传 only_fans），
@@ -416,13 +414,13 @@ class DanmakuCollector:
                 on_ready=self._on_ready,
             )
             # 透传 only_fans（斗鱼等支持的平台）。仅在调用方显式指定时才覆盖，否则保留平台类
-            # 自己的默认值（斗鱼为 False = 不过滤普通弹幕，见 CR-04）。
+            # 自己的默认值（斗鱼为 False = 不过滤普通弹幕，见上文）。
             if self._only_fans is not None and hasattr(danmaku, "_only_fans"):
                 cast(Any, danmaku)._only_fans = self._only_fans
             self._danmaku = danmaku
-            # MID-23 二次复查（不破坏反向序握手）：stop() 的「有界等待 is_running」与本行是同一
-            # 窗口的两半。本行保证「置位后绝不进入 run_until_complete」，于是该窗口要么由轮询投递、
-            # 要么在这里直接跳过建连——两条路径都收敛，不存在丢信号的第三种交错。
+            # 二次复查（不破坏反向序握手）：stop() 的「有界等待 is_running」与本行是同一窗口的两半。
+            # 本行保证「置位后绝不进入 run_until_complete」，于是该窗口要么由轮询投递、要么在这里
+            # 直接跳过建连——两条路径都收敛，不存在丢信号的第三种交错。
             if self._stop_event.is_set():
                 logger.debug(
                     i18n.tr(
@@ -432,7 +430,7 @@ class DanmakuCollector:
                 )
                 return
             # 显式建任务而非把协程交给 run_until_complete —— _shutdown 需要拿到这个任务的引用
-            # 来 cancel()（见 _schedule_stop，MIN-23）。
+            # 来 cancel()（见 _schedule_stop）。
             self._start_task = loop.create_task(danmaku.start(self._danmaku_args))
             try:
                 # start() 内部会阻塞直到连接关闭或 stop() 被调用（stop 经 call_soon_threadsafe 关闭 ws）
@@ -442,14 +440,14 @@ class DanmakuCollector:
                 # 重抛会把停止动作误报成采集失败。
                 pass
             except RuntimeError as e:
-                # 原实现把 CancelledError 与 RuntimeError 一并吞掉，平台 danmaku.start() 内部冒出的
-                # 真 RuntimeError（参数错误、回调抛错等）也被静默归为「正常停止」。现按任务是否真被
-                # 取消区分：被取消（_shutdown 路径）吞掉；非取消态的补 warning 留线索（L-21）。
+                # 按任务是否真被取消区分，不能把 RuntimeError 一并吞掉：平台 danmaku.start() 内部
+                # 冒出的真 RuntimeError（参数错误、回调抛错等）会被静默归为「正常停止」。被取消
+                # （_shutdown 路径）吞掉；非取消态的补 warning 留线索。
                 if self._start_task is not None and self._start_task.cancelled():
                     pass
                 else:
-                    # 2026-10-21 M-41：{e} 位一律传脱敏后的字符串（异常对象由 loguru 就地 str()，
-                    # 平台 SDK 的异常文本常内嵌带 token 的 ws/流地址）。msgid 不变。
+                    # {e} 位一律传脱敏后的字符串（异常对象由 loguru 就地 str()，平台 SDK 的异常文本
+                    # 常内嵌带 token 的 ws/流地址）。msgid 不变。
                     logger.warning(
                         i18n.tr(
                             "[弹幕采集]{cls_name} 运行异常,不影响录制: {e}",
@@ -458,7 +456,7 @@ class DanmakuCollector:
                         )
                     )
             except Exception as e:
-                # 2026-10-21 M-41：同上一条，msgid 保持不变。
+                # 同上：msgid 保持不变。
                 logger.warning(
                     i18n.tr(
                         "[弹幕采集]{cls_name} 运行异常,不影响录制: {e}",
@@ -467,7 +465,7 @@ class DanmakuCollector:
                     )
                 )
         except Exception as e:
-            # 2026-10-21 M-40：平台类**构造期**与回调注入（下方 only_fans 透传）此前裸奔在
+            # 2026-10-21 ：平台类**构造期**与回调注入（下方 only_fans 透传）此前裸奔在
             # finally 之外——只有 danmaku.start() 那一段受保护，构造一抛就逃出守护线程：
             # 线程带 traceback 消失（无控制台进程里连 traceback 都没有），而监控枢纽条目仍停在
             # started、面板显示「采集中」直到录制结束。这里补外层 except：记脱敏异常 + 主动把
@@ -493,7 +491,7 @@ class DanmakuCollector:
                     msg_count=self._msg_count,
                 )
             )
-            # MIN-23 兜底：_shutdown 的 wait_for 超时分支会在取消 start() 任务前就走到 loop.stop()；
+            # 兜底：_shutdown 的 wait_for 超时分支会在取消 start() 任务前就走到 loop.stop()；
             # 此时任务仍 pending，直接 loop.close() 就会由 Task.__del__ 刷「Task was destroyed but it is
             # pending」且平台 finally 链不执行。故关循环前用**有界**的排水循环把取消送达（上限 0.5s，
             # 异常一律吞）。
@@ -527,7 +525,7 @@ class DanmakuCollector:
         _last_warn_at = 0.0
         _fail_since_warn = 0
         while True:
-            # MID-24：get() 改为带超时的有限等待，并在队列为空时检查 _srt_stop。
+            # get() 改为带超时的有限等待，并在队列为空时检查 _srt_stop。
             # sentinel 仍是主退出通道（保证「先清空队列再关文件」的顺序不变）；_srt_stop 只在
             # sentinel 因队列满投不进来时生效，且**只在队列已空时**检查——队列里还有弹幕就继续
             # 消费，不多丢一条。
@@ -560,7 +558,7 @@ class DanmakuCollector:
 
     # 收到弹幕回调：全部类型转发监控枢纽；SRT 仅记录 CHAT 且用户名或内容非空的消息。
     def _on_message(self, msg: DanmakuMessage) -> None:
-        # M-09：入队/上报前统一截断（口径见 _DANMAKU_TEXT_LIMIT 注释）；SRT 与监控流共用。
+        # 入队/上报前统一截断（口径见 _DANMAKU_TEXT_LIMIT 注释）；SRT 与监控流共用。
         user_name = msg.user_name[:_DANMAKU_TEXT_LIMIT]
         message = msg.message[:_DANMAKU_TEXT_LIMIT]
         # 监控侧不过滤消息类型（聊天/礼物/在线人数/SC 全部上报，由枢纽分别处理）
@@ -611,7 +609,7 @@ class DanmakuCollector:
 
     # 连接关闭回调：上报监控枢纽，并把关闭原因记入 debug 日志。
     def _on_close(self, reason: str) -> None:
-        # SEV-2217 的最后一道闸：上游 src/ws_client.py 已约定「交给回调的文案必须已脱敏」，
+        # 最后一道闸：上游 src/ws_client.py 已约定「交给回调的文案必须已脱敏」，
         # 但 on_close 是全平台弹幕客户端的公共出口（B栈的 start()/spider 侧、Twitch 的 SDK 异常分支
         # 都直接调它），只要一处把裸 str(e) 传进来，代理凭据就会同时落进 logs/（轮转保留多份 = 长期
         # 落盘）和监控枢纽 → Web/GUI 面板。这里再兜一道，mask_credentials 对已脱敏文案幂等。

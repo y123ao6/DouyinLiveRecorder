@@ -45,13 +45,13 @@ def _app_root() -> str:
 
 # 进程级唯一缓存
 _cached_ttwid: str = ""
-# 获取时刻，供 TTL 判定（MID-33）：语义由「非空即永久返回」改为「按 TTL 判陈旧」，否则抖音
+# 获取时刻，供 TTL 判定：语义由「非空即永久返回」改为「按 TTL 判陈旧」，否则抖音
 # 作废 ttwid（风控常见形态）后本进程永不重取，表现为长期「HTTP 200 + 空响应体」。
 # TTL 取 cookie_cache.DEFAULT_TTL，与承载它的 singleflight 层同口径，避免两层各自过期而抖动。
 _cached_ttwid_at: float = 0.0
 # 上面的模块全局只是「最近一次成功写入值」的镜像（供 warmup 观测与既有用例读取），不参与
 # 快路判定；真正的缓存按出口分列，键 `proxy_addr or ""`（与 singleflight key 的代理维度同写
-# 法，空串=直连）。为什么必须分列（MIN-2220）：抖音 ttwid 与出口 IP 强相关，跨出口复用表现为
+# 法，空串=直连）。为什么必须分列：抖音 ttwid 与出口 IP 强相关，跨出口复用表现为
 # 间歇「HTTP 200 + 空响应体」，且作废链会连带清掉别的出口的正常值、下一轮再抢占回来，来回抖动。
 _cached_ttwid_by_proxy: dict[str, tuple[str, float]] = {}
 # 本进程用过的 (singleflight key, 代理) 组合：invalidate_ttwid() 据此把下两层缓存一并
@@ -79,7 +79,7 @@ def _proxy_slot(proxy_addr: OptionalStr) -> str:
 
 def _cache_ttwid(value: str, proxy_addr: OptionalStr = None) -> str:
     # 写入按出口分列的真实缓存，并同步「最近写入值」镜像（仅供观测，理由见 _cached_ttwid_by_proxy）。
-    # 值与获取时刻必须在同一入口成对设置，漏一处即退化成「永久有效」（MID-33）。
+    # 值与获取时刻必须在同一入口成对设置，漏一处即退化成「永久有效」。
     global _cached_ttwid, _cached_ttwid_at
     now = time.monotonic()
     _cached_ttwid_by_proxy[_proxy_slot(proxy_addr)] = (value, now)
@@ -89,7 +89,7 @@ def _cache_ttwid(value: str, proxy_addr: OptionalStr = None) -> str:
 
 
 def _take_cached_ttwid(proxy_addr: OptionalStr) -> str:
-    # 读取本出口的缓存值；陈旧则删除条目并返回空串（TTL 按出口各算各的，MID-33）。
+    # 读取本出口的缓存值；陈旧则删除条目并返回空串（TTL 按出口各算各的）。
     #
     # 第一道 `_cached_ttwid` 判空是「整体失效开关」而非遗留的跨出口复用路径：分桶缓存没有公开的
     # clear-by-bucket 入口，外部（tests/conftest.py 逐用例重置、排障时手工置空）只会写 `_cached_ttwid = ""`；
@@ -147,10 +147,10 @@ async def _fetch_ttwid(proxy_addr: OptionalStr = None) -> str:
             logger.debug("自动获取抖音 ttwid 成功")
             return _cache_ttwid(f"ttwid={cookies_dict['ttwid']}", proxy_addr)
     except Exception as e:
-        # Windows 下 socket.timeout / httpx 超时族的 str() 可能为空串（MIN-2222），必须带上
+        # Windows 下 socket.timeout / httpx 超时族的 str() 可能为空串，必须带上
         # 类型名，否则只打 {e} 会得到一行空白告警，无法区分超时/DNS/证书/依赖缺失。
         logger.warning(i18n.tr("自动获取抖音 ttwid 失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
-    # 失败时不得回落到 `_cached_ttwid` 镜像：那等于把别的出口的值当本出口的值（MIN-2220）。
+    # 失败时不得回落到 `_cached_ttwid` 镜像：那等于把别的出口的值当本出口的值。
     # 返回空串，由调用方按未开播/风控处理。
     return ""
 
@@ -163,7 +163,7 @@ async def get_ttwid(proxy_addr: OptionalStr = None) -> str:
     # 10s + 重试）期间其它房间线程会在 acquire() 上同步阻塞整个事件循环，冷启动全串行卡顿；
     # 且等待者拿到锁后 owner 已失败时还会各自重发。现由 cookie_cache.singleflight 承担：临界区
     # 只做字典读写，网络在锁外，等待者经 future 复用结果（跨循环经 call_soon_threadsafe 交付）。
-    # 快路按「本次调用的出口」取缓存，陈旧即丢弃并继续往下走（MID-33 + MIN-2220）。
+    # 快路按「本次调用的出口」取缓存，陈旧即丢弃并继续往下走（ + ）。
     cached = _take_cached_ttwid(proxy_addr)
     if cached:
         return cached
@@ -174,7 +174,7 @@ async def get_ttwid(proxy_addr: OptionalStr = None) -> str:
         _cache_ttwid(cfg, proxy_addr)
         logger.debug("使用配置文件中的 ttwid")
         # 返回 cfg 而非全局镜像：并发下镜像可能已被其它出口改写，返回它即违反「不得把别的
-        # 出口的值当本出口的值」（MIN-2220 / L-22）。
+        # 出口的值当本出口的值」。
         return cfg
 
     async def _fetch() -> str:

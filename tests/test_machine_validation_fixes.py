@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
-# 真机验证 4 项保守实施回归。
-#
-# 4 项原始变更详情见 CODE_WIKI v4.1.0-dev：
-# ① spider.py：_safe_loads / _is_safe_http_url 保护 JSON 解析与 URL scheme 校验
-# ② ws_client.py：心跳回调 wait_for 兜底 + 超时主动关连接
-# ③ proxy.py：ProxyInfo 接受 IPv6 主机（[::1] / ::1）
-# ④ video_postprocess.py：_run_ffmpeg_checked 超时分类型（不再被 unknown error 吞）
+# 真机验证 4 项保守实施回归：
+# ① spider.py 的 _safe_loads / _is_safe_http_url（JSON 解析与 URL scheme 校验）
+# ② ws_client.py 心跳回调 wait_for 兜底 + 超时主动关连接
+# ③ proxy.py 的 ProxyInfo 接受 IPv6 主机（[::1] / ::1）
+# ④ video_postprocess.py 的 _run_ffmpeg_checked 超时分类型（不再被 unknown error 吞）
 
 import asyncio
 import json
@@ -25,27 +23,23 @@ import pytest
 def test_spider_safe_loads_returns_none_on_bad_json() -> None:
     from src.spider import _safe_loads
 
-    # 合法 JSON 但非 dict（如数组）：应返回 None（供调用方按业务判空）
+    # 非 dict 与损坏 JSON 都返 None（供调用方按业务判空），合法 dict 原样返回
     assert _safe_loads("[1,2,3]") is None
-    # 合法 dict
     assert _safe_loads('{"a": 1}') == {"a": 1}
-    # 损坏的 JSON（缺右括号）：应捕获 JSONDecodeError 返 None，不抛
     assert _safe_loads("{a: 1") is None
 
 
 def test_spider_is_safe_http_url_whitelist() -> None:
     from src.spider import _is_safe_http_url
 
-    # 允许的协议
     assert _is_safe_http_url("https://live.douyin.com/123")
     assert _is_safe_http_url("http://example.com")
     assert _is_safe_http_url("wss://danmuproxy.douyu.com:8506")
     assert _is_safe_http_url("ws://example.com/ws")
-    # 拒绝的协议（SSRF 风险面）
+    # 拒绝的协议是 SSRF 风险面
     assert not _is_safe_http_url("file:///etc/passwd")
     assert not _is_safe_http_url("gopher://internal/secret")
     assert not _is_safe_http_url("ftp://internal/data")
-    # 缺 scheme 的相对路径也应拒绝
     assert not _is_safe_http_url("//example.com/path")
 
 
@@ -54,20 +48,20 @@ def test_spider_is_safe_http_url_whitelist() -> None:
 # ======================================================================
 
 
-# MT-08：本用例原先整体押在**真实挂钟**上——超时 close 须落在 ≈1.1s 且早于 3.0s 的外部停止，
-# CI 上一次 >1.9s 的调度停顿就能把「超时先于外部停止」这条时刻归因翻案（假红）。故换成**可控虚拟
-# 时钟**：事件循环的取时与推进都在本类手里，1.05s 超时、3.0s 外部停止、60s 读帧挂起全部在微秒级
-# 墙钟内按确定次序发生。五条不放宽被测语义的关键设计（去掉任一条都会让判据失真或把挂死伪装成通过）：
-#   ① 只推进到「最早到期的定时任务」，不加固定步长——时刻读数因此仍是各定时器真正的到期点；
+# 本用例原先押在真实挂钟上：超时 close 须落在 ≈1.1s 且早于 3.0s 的外部停止，CI 一次调度停顿
+# 就能把「超时先于外部停止」这条时刻归因翻案（假红）。现改用可控虚拟时钟：取时与推进都在本类
+# 手里，1.05s 超时、3.0s 外部停止、60s 读帧挂起全部在微秒级墙钟内按确定次序发生。
+# 五条关键设计，去掉任一条都会让判据失真或把挂死伪装成通过：
+#   ① 只推进到「最早到期的定时任务」，不加固定步长——读数因此仍是各定时器真正的到期点；
 #   ② 仅在「无就绪回调且循环未收到停止信号」时推进（有就绪回调时推进会把到期点挪到就绪批之后）；
-#   ③ 到期时刻取不到即直接判失败：CPython 3.14 的 TimerHandle 字段是 `_when`（3.7~3.13 为
-#      `_run_at`），写错名字不会报错而是**静默不推进**（实测误用 `_run_at` 时本文件跑了 306s）；
+#   ③ 到期时刻取不到即判失败：CPython 3.14 的 TimerHandle 字段是 `_when`（3.7~3.13 为
+#      `_run_at`），写错名字不报错而是**静默不推进**（实测误用 `_run_at` 时本文件跑了 306s）；
 #   ④ 步数硬上限：虚拟时钟下「while + await asyncio.sleep(小值)」型死循环会在墙钟里无限自旋，
 #      超限即抛，把挂死换成可读失败；
 #   ⑤ 「无就绪、无定时任务且尚未停止」同样直接判失败：真事件循环此刻会永久阻塞在 select 上。
 # 基类经 Any 转一手：`_run_once` 是 asyncio 内部方法、typeshed 未收，直接继承具体类会被 mypy 判
-# [misc]；取 Any 而不是 `# type: ignore[misc]`，因为忽略注释要按各自 code 写（mypy/basedpyright
-# 不同码），且 typeshed 收录后还会变成 unused-ignore 反向报错。
+# [misc]；取 Any 而非 `# type: ignore[misc]`，因为忽略注释要按各自 code 写（mypy/basedpyright
+# 不同码），且 typeshed 收录后会变成 unused-ignore 反向报错。
 _LoopBase: Any = asyncio.SelectorEventLoop
 
 
@@ -135,29 +129,26 @@ def test_ws_heartbeat_timeout_closes_connection(monkeypatch: pytest.MonkeyPatch)
 
     from src import ws_client
 
-    # M-29（CODE_REVIEW_2026-09-29_2）假绿修复。旧用例只断 `len(close_called) >= 1`，而**用例自己**
-    # 末尾那句无条件 `await client.close()` 本身就会产生一次 ws.close()：把生产侧
-    # src/ws_client.py::_heartbeat_loop 的 wait_for 超时分支整块删掉，外部关闭也「恰好」满足断言，
-    # 于是超时特性有无 = 全绿。现按三条正交通道归因，全部只观察生产代码自身的行为、不复制心跳逻辑：
+    # 2026-09-29：假绿修复：旧用例只断 `len(close_called) >= 1`，而用例末尾那句无条件 `await client.close()`
+    # 本身就产生一次 ws.close()：把生产侧 _heartbeat_loop 的 wait_for 超时分支整块删掉，外部关闭
+    # 也「恰好」满足断言，超时特性有无＝全绿。现按三条正交通道归因，只观察生产代码自身行为：
     #   ① 来源：沿调用栈取「最近一个位于 ws_client.py 内的调用帧」的协程名——超时分支从
-    #      _heartbeat_loop 里 await close()，外部停止从 WsClient.close() 里 await，是两条不同代码；
+    #      _heartbeat_loop 里 await close()，外部停止从 WsClient.close() 里 await；
     #   ② 生产自带的判别位 client._stopped：WsClient.close() 先置 True 再关连接，超时分支不置位；
-    #   ③ 时刻：第一次 close 必须落在超时点上（≥ 超时阈值下界）且**早于**用例发起外部停止的那一刻。
+    #   ③ 时刻：第一次 close 必须落在超时点上（≥ 超时阈值下界）且早于用例发起外部停止的那一刻。
     # 另加 ④ 生产侧「心跳回调超时」warning 文本 + 其发出时刻，防止「留着 close、删掉告警」的半吊子改动。
     closes: list[dict[str, Any]] = []
     heartbeat_calls: list[float] = []
     stop_requested_at: list[float] = []
 
-    # 断言与语言解耦（手法与口径同 tests/conftest.py::_pin_identity_translation）：本用例要锁的
-    # warning 文案在 en_US/en_GB 目录里都有译文，而同一会话内任何 `import main`（main.py 模块级
-    # 调 i18n.set_language）都会在**用例运行中**把 i18n._tr 从恒等映射重绑成真目录，于是
-    # 「按简中模板断言日志文本」当场失效——2026-09-29 本机实测同文件
-    # test_video_postprocess_timeout_logged_as_timeout 正是这样红的。用例内再钉一次恒等。
+    # 断言与语言解耦（手法同 tests/conftest.py::_pin_identity_translation）：本用例要锁的 warning
+    # 文案在 en_US/en_GB 目录里有译文，而同会话内任何 `import main` 都会在用例运行中把 i18n._tr
+    # 从恒等映射重绑成真目录，「按简中模板断言日志文本」当场失效。用例内再钉一次恒等。
     import i18n
 
     monkeypatch.setattr(i18n, "_tr", lambda text: text)
 
-    # MT-08：时刻读数取事件循环时钟（本用例即 _VirtualClockLoop 的虚拟时钟；它从 0.0 起算，
+    # 时刻读数取事件循环时钟（本用例即 _VirtualClockLoop 的虚拟时钟；它从 0.0 起算，
     # 故 time() 直接就是 elapsed），三个阈值常量与四条归因判据一个都不放宽、一个值都不改。
     _loops: list[_VirtualClockLoop] = []
 
@@ -236,15 +227,15 @@ def test_ws_heartbeat_timeout_closes_connection(monkeypatch: pytest.MonkeyPatch)
         heartbeat_interval=0.05,  # 极短间隔
     )
     # 超时阈值是 _heartbeat_loop 内的局部变量、无法 monkeypatch，靠 hang 时长大于默认 1.05s 触发。
-    # MID-66（tests/test_test_hygiene.py R1）：websockets 是三方模块本体，setattr 到它上面等于全进程
-    # 换掉 connect——同会话其它用例的连接都会吃到假实现；正确写法是浅拷贝替身，只替换 ws_client
-    # 命名空间里的全局名。
+    # websockets 是三方模块本体，setattr 到它上面等于全进程换掉 connect（同会话其它用例的连接都会
+    # 吃到假实现，被 tests/test_test_hygiene.py 的 R1 判红）；正确写法是浅拷贝替身，只替换
+    # ws_client 命名空间里的全局名。
     _ws_shim = types.SimpleNamespace(**vars(ws_client.websockets))
     _ws_shim.connect = fake_connect
     monkeypatch.setattr(ws_client, "websockets", _ws_shim)
 
     logged: list[tuple[float, str]] = []
-    # MT-08：告警发出时刻同样取虚拟时钟（loguru 的 callable sink 在发出线程内同步执行，
+    # 告警发出时刻同样取虚拟时钟（loguru 的 callable sink 在发出线程内同步执行，
     # 此刻事件循环正在跑，读数与 closes/stop_requested_at 严格同轴）
     sink_id = logger.add(lambda msg: logged.append((_now(), str(msg))), level="WARNING")
 
@@ -343,8 +334,7 @@ def test_video_postprocess_timeout_logged_as_timeout(tmp_path: Path, monkeypatch
 
     from loguru import logger
 
-    # 断言与语言解耦用 i18n._tr 恒等映射（手法与口径同 tests/conftest.py::_pin_identity_translation），
-    # 钉死动作见下方 import 之后的 monkeypatch.setattr。
+    # 断言与语言解耦：手法与理由见本文件 ②（i18n._tr 恒等映射必须在 import main 之后钉）。
     import i18n
 
     # 必须先 import main，让 video_postprocess 的循环依赖（notify → video_postprocess）
@@ -354,9 +344,8 @@ def test_video_postprocess_timeout_logged_as_timeout(tmp_path: Path, monkeypatch
     from src import video_postprocess
 
     # 恒等映射必须打在 `import main` **之后**：main.py 模块级会调 i18n.set_language(language)，把
-    # i18n._tr 重绑成真目录（宿主中文 Windows 上探测出 en_US），「按简中模板断言日志文本」当场失效
-    # （2026-09-29 本机实测本用例即被这条重绑打红）。本用例锁的是「异常被分到超时分支而非
-    # unknown error 分支」这一分类语义，与目录语言无关，故在用例内钉死恒等（同文件 ② 同一手法）。
+    # i18n._tr 重绑成真目录（宿主中文 Windows 上探测出 en_US），「按简中模板断言日志文本」当场失效。
+    # 本用例锁的是「异常被分到超时分支而非 unknown error 分支」这一分类语义，与目录语言无关。
     monkeypatch.setattr(i18n, "_tr", lambda text: text)
 
     buf = io.StringIO()
@@ -369,7 +358,6 @@ def test_video_postprocess_timeout_logged_as_timeout(tmp_path: Path, monkeypatch
         monkeypatch.setattr(video_postprocess, "_run_ffmpeg_checked", fake_run)
         target = tmp_path / "input.ts"
         target.write_bytes(b"\x47" * 100)  # 合法 TS magic
-        # 三个 caller 各自走一遍，验证都把异常分到 TimeoutExpired 分支
         video_postprocess.segment_video(
             str(target), str(tmp_path / "out_%03d.ts"), "mpegts", "1800", is_original_delete=False
         )
@@ -378,11 +366,9 @@ def test_video_postprocess_timeout_logged_as_timeout(tmp_path: Path, monkeypatch
         text = buf.getvalue()
         # 三处都应在日志里出现「超时」字样（不再被「unknown error」吞）
         assert text.count("超时") >= 3, f"超时未被分类: {text}"
-        # M-29 同族收紧：上面只数「超时」出现几次——某个入口真退化成 unknown error 时，另两个入口
-        # 照样把计数顶起来，聚合计数对「哪一条丢了」全盲。现按三个入口各自的专属文案逐条归因
-        # （锚点与 src/video_postprocess.py 里三个 except subprocess.TimeoutExpired 分支一一对应：
-        # segment_video / converts_mp4 / converts_m4a），并反向钉死三次调用没有任何一次落到
-        # unknown error 兜底分支。改生产文案须同步改这三条锚点。
+        # 只数出现几次对「哪一个入口退化」全盲：另两个入口照样把计数顶起来。故按三个入口的专属
+        # 文案逐条归因（锚点与 src/video_postprocess.py 三个 except subprocess.TimeoutExpired 分支
+        # 一一对应），并反向钉死没有一次落到 unknown error 兜底。改生产文案须同步改这三条锚点。
         assert "ffmpeg 转封装/转码超时" in text, f"segment_video 的超时分支未被单独归因: {text}"
         assert "ffmpeg 转 MP4 超时" in text, f"converts_mp4 的超时分支未被单独归因: {text}"
         assert "ffmpeg 抽音频超时" in text, f"converts_m4a 的超时分支未被单独归因: {text}"

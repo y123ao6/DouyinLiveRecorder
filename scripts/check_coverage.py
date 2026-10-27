@@ -16,7 +16,7 @@
 #    2  无 coverage 数据可读（忘了跑 pytest --cov=src、数据文件缺失、JSON 生成失败、数据比源码
 #       陈旧、门禁登记表本身指向不存在的模块）——这一类**不是**「代码不合格」，但也**绝不是**
 #       通过：数据缺失没有理由继续宽容。
-#       [2026-10-21 M-91/M-93 增补] 同属本类的还有三条「门禁自己判不了」：新鲜度比较所需的
+#       [2026-10-21 /该增补] 同属本类的还有三条「门禁自己判不了」：新鲜度比较所需的
 #       stat 读不出来、src/ 或 tests/ 遍历半途失败、报告里的 percent_covered 连 float() 都
 #       吃不下。三者旧形态都是 rc=1 + Traceback（被读成「代码不合格」），现一律收口到本档。
 #
@@ -83,7 +83,7 @@ MODULE_THRESHOLDS: dict[str, float] = {
     "src/proxy.py": 80,
 }
 
-# 未显式登记阈值的模块所用下限（MID-2259）。取 60.0 与 pyproject
+# 未显式登记阈值的模块所用下限。取 60.0 与 pyproject
 # [tool.coverage.report] fail_under = 60 同口径——本门禁不得比全库总闸更宽，
 # 否则「新模块零测试」反而能通过逐模块闸。
 # [历史注 2026-10-24] 原为 50.0：全库实测已到 83.9%，50% 对「新建模块几乎没测试」
@@ -91,7 +91,7 @@ MODULE_THRESHOLDS: dict[str, float] = {
 # 该缺口以补测（test_ui_kit.py 的纯几何/动效用例）而非债务条目收口——避免白名单记账化。
 GLOBAL_FLOOR = 60.0
 
-# 显式豁免名单（MID-2259 要求的「第三条路」）：键 = 相对路径，值 = 豁免理由。
+# 显式豁免名单（该要求的「第三条路」）：键 = 相对路径，值 = 豁免理由。
 # 每条理由都必须说明「为什么它不该被本门禁管」，且**不得**为了变绿往里塞普通模块——
 # 被豁免的模块仍会打印读数（不参与判定），这样将来取消豁免时缺口立刻可见。
 GATE_EXEMPT_MODULES: dict[str, str] = {
@@ -148,7 +148,7 @@ def _resolve_data_file(data_file: str | None) -> Path:
 
 
 def _traversal_failed(where: str, exc: BaseException) -> NoReturn:
-    # M-93（2026-10-21）：遍历面本身读不出来（权限 / 目录在遍历中被换走 / 符号环）时，
+    # 2026-10-21：遍历面本身读不出来（权限 / 目录在遍历中被换走 / 符号环）时，
     # 拿到的模块清单是**残缺**的，而残缺清单照样会打印「PASSED: All N module(s)」——
     # 这与「一个模块都不达标」是两类问题，必须走 rc=2 而不是将错就错地判 0/1。
     print(f"ERROR: 门禁自身失效：{where} 遍历失败 - {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -175,16 +175,16 @@ def _source_files(root: Path) -> list[Path]:
 
 
 def _data_is_stale(data_file: Path, root: Path = ROOT) -> tuple[float, Path, float] | None:
-    # 数据文件比源码陈旧时返回 (数据 mtime, 最新源码文件, 其 mtime)，否则 None（MID-2261 补）。
+    # 数据文件比源码陈旧时返回 (数据 mtime, 最新源码文件, 其 mtime)，否则 None（该补）。
     # 判据用 mtime 而不是「内容哈希」：coverage 只在数据写入时更新 mtime，
     # 任何后续编辑源码/用例都会让其 mtime 落后，方向单一、无歧义；
     # 相等（同一秒内写完）按「不陈旧」处理，避免把「刚跑完就判定」的正常流程打死。
     try:
         data_mtime = data_file.stat().st_mtime
     except OSError as exc:
-        # [历史注 2026-10-21 M-91] 原注释「这里真读不到就交给上层同样按 rc=2 处理」是错误结论：
+        # [历史注 2026-10-21 ] 原注释「这里真读不到就交给上层同样按 rc=2 处理」是错误结论：
         # 返回 None 在本函数里的语义是「数据不陈旧」，上层据此**继续判定**，rc=2 从未发生。
-        # stat 失败即无法证明新鲜度，与「没有可判定的数据」同类 → 按文件头 MIN-19 一律 rc=2。
+        # stat 失败即无法证明新鲜度，与「没有可判定的数据」同类 → 按文件头该一律 rc=2。
         _stale_unreadable(f"无法读取 coverage 数据文件的修改时间: {data_file}", exc)
     newest: Path | None = None
     newest_mtime = 0.0
@@ -192,7 +192,7 @@ def _data_is_stale(data_file: Path, root: Path = ROOT) -> tuple[float, Path, flo
         try:
             mtime = path.stat().st_mtime
         except OSError as exc:
-            # M-91 同族：continue 只会让比较覆盖「读得到的那部分源码」。读不到的那个文件若正好
+            # 同族：continue 只会让比较覆盖「读得到的那部分源码」。读不到的那个文件若正好
             # 比数据新，陈旧形态就被漏掉，门禁照样打印 PASSED——是「评已不存在的代码」的另一半。
             _stale_unreadable(f"无法读取源码文件的修改时间: {_rel(root, path)}", exc)
         if mtime > data_mtime and (newest is None or mtime > newest_mtime):
@@ -203,7 +203,7 @@ def _data_is_stale(data_file: Path, root: Path = ROOT) -> tuple[float, Path, flo
 
 
 def _stale_unreadable(why: str, exc: BaseException) -> NoReturn:
-    # 新鲜度判据的输入读不出来 → 门禁自身失效（rc=2 + 重跑命令），与 MIN-19 其余分支同一出口。
+    # 新鲜度判据的输入读不出来 → 门禁自身失效（rc=2 + 重跑命令），与该其余分支同一出口。
     # 单独成函数而不是就地 print/exit：两条 stat 路径必须给出**逐字一致**的结论与下一步命令，
     # 复制两遍迟早只有一边带重跑提示。
     print(f"ERROR: {why} - {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -222,7 +222,7 @@ def _src_modules(root: Path = ROOT) -> list[str]:
     try:
         found = sorted(base.rglob("*.py"))
     except (OSError, RuntimeError) as exc:
-        # M-93：判定面遍历半途失败时返回「已读到的那一截」= 悄悄缩小判定面，必须按门禁失效退出
+        # 判定面遍历半途失败时返回「已读到的那一截」= 悄悄缩小判定面，必须按门禁失效退出
         _traversal_failed("src/", exc)
     modules: list[str] = []
     for path in found:
@@ -297,7 +297,7 @@ def _validate_debt_and_exempt(root: Path, today: str | None = None) -> tuple[lis
 def _get_coverage_json(data_file: str | None, root: Path = ROOT) -> CoverageData:
     # 生成并解析 coverage JSON 报告（判定所需的一切读数都来自这里）。
     #
-    # MIN-19：数据文件不存在时**立刻**以 rc=2 失败并给出下一步命令。只打一条 WARN 再继续，
+    # 数据文件不存在时**立刻**以 rc=2 失败并给出下一步命令。只打一条 WARN 再继续，
     # 随后读到的是空报告，最终表现成「6 个模块查不到」——把「忘了跑测试」误报成「覆盖率不达标」。
     resolved = _resolve_data_file(data_file)
     if not resolved.exists():
@@ -306,7 +306,7 @@ def _get_coverage_json(data_file: str | None, root: Path = ROOT) -> CoverageData
         print(f"   {NO_DATA_HINT}", file=sys.stderr)
         sys.exit(2)
 
-    # MID-2261：数据存在但比源码陈旧 → 同样是「门禁没有可判定的数据」。本树实测形态：.coverage
+    # 数据存在但比源码陈旧 → 同样是「门禁没有可判定的数据」。本树实测形态：.coverage
     # 停在上一轮全量运行，之后 src/、tests/ 继续被改，逐模块读数评的是**已经不存在的代码**，
     # PASSED 却是真的——假绿里最难发现的一种，因为「数据文件存在」这项检查确实通过了。
     stale = _data_is_stale(resolved, root)
@@ -398,7 +398,7 @@ def evaluate_report(coverage_data: CoverageData, root: Path = ROOT) -> int:
 
     modules = _src_modules(root)
     if not modules:
-        # 枚举不到任何 src/ 模块 = 判定面为空。MIN-19 的口径：门禁「没东西可查」一律非 0，
+        # 枚举不到任何 src/ 模块 = 判定面为空。该口径：门禁「没东西可查」一律非 0，
         # 绝不输出「PASSED: All 0 module(s)」——那正是本文件要消灭的假绿形态。
         print("ERROR: 在 src/ 下没枚举到任何待判定模块（root 解析错位？）", file=sys.stderr)
         print("       判定面为空不等于全部达标。", file=sys.stderr)
@@ -560,7 +560,7 @@ def _find_module_coverage(coverage_data: CoverageData, module_path: str) -> Cove
 
 def _percent(file_data: CoverageData) -> float:
     # 取单文件覆盖率；缺 summary / 类型异常一律按 0 处理（保守侧：拿不到读数不得当成满分）
-    # [2026-10-21 M-93] 「按 0 处理」只对**键缺失**成立：percent_covered 若是 float() 拒绝的形态
+    # [2026-10-21 ] 「按 0 处理」只对**键缺失**成立：percent_covered 若是 float() 拒绝的形态
     # （list/dict/None），旧写法在这里抛 ValueError/TypeError，进程以 rc=1 + Traceback 结束。
     # 而 rc=1 在本门禁契约里专指「有模块低于阈值」——真相是门禁拿到一份读不了的报告，
     # 排障方向整体错掉（文件头的分级：判不了 → rc=2）。

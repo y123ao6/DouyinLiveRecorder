@@ -1,14 +1,14 @@
 # tests/test_regression_2026_09_22_gui.py — 2026-09-22 批次（GUI / i18n / 推送）回归锁。
 #
 # 覆盖本轮「行为可见」修复的**失效形态**（编号见 CODE_REVIEW_2026-09-22.md 4.7 / 5.4）：
-#   MID-2248  i18n.has_catalog 的判据必须是「真的装载得出非空映射」而非「文件存在」；PyYAML 缺失
+#   i18n.has_catalog 的判据必须是「真的装载得出非空映射」而非「文件存在」；PyYAML 缺失
 #             的降级还要落一条 warning，否则用户视角是「切了繁体没生效且无提示」。
-#   MID-2249  旧会话线程不得把**新会话**的 running 打成 False（自然 EOF 是三条收尾里最常走的一条，
+#   旧会话线程不得把**新会话**的 running 打成 False（自然 EOF 是三条收尾里最常走的一条，
 #             此前唯独它裸写 self.running = False，竞态后永不回正且零日志）。
-#   MID-2252  URL 页整文件写回前必须先读盘并与基线裁决（与高级设置窗口的 MID-55 同源）。
-#   MIN-2247  messagebox 正文这类「提取器扫不到」的文案必须逐条登记，否则四语目录永远缺键。
-#   MIN-2249  _cleanup_zombie_ffmpeg 判 returncode，非 0 不得记「已清理」。
-#   MIN-2250  kernel32 一律 ctypes.WinDLL + 显式 argtypes/restype；恢复控制台失败须带 GetLastError。
+#   URL 页整文件写回前必须先读盘并与基线裁决（与高级设置窗口同源）。
+#   messagebox 正文这类「提取器扫不到」的文案必须逐条登记，否则四语目录永远缺键。
+#   _cleanup_zombie_ffmpeg 判 returncode，非 0 不得记「已清理」。
+#   kernel32 一律 ctypes.WinDLL + 显式 argtypes/restype；恢复控制台失败须带 GetLastError。
 #
 # 为什么多数用例走**行为注入**而不是起真界面：LiveRecorderGUI 依赖 Tk 主循环，无头环境跑不了；
 # 沿用 tests/test_danmaku_monitor.py 的 `object.__new__` 桩 + 真实方法驱动（桩只补状态字段、不重新
@@ -79,7 +79,7 @@ def _tr_templates_from(source: str) -> set[str]:
     return out
 
 
-# ─── MID-2249：会话过期的 EOF 不得改新会话状态 ────────────────
+# ─── ：会话过期的 EOF 不得改新会话状态 ────────────────
 class TestStaleSessionCannotStopNewOne:
     def test_mark_session_stopped_only_for_current_session(self) -> None:
         # 真实方法驱动：session_id 已过期 → running 必须仍为 True（旧实现无条件置 False）。
@@ -125,7 +125,7 @@ class TestStaleSessionCannotStopNewOne:
             assert [ast.unparse(a) for a in call.args] == ["session_id"], "收尾必须带上会话代号，否则等于无条件置位"
 
 
-# ─── MID-2248：has_catalog 判据 + PyYAML 缺失告警 ─────────────
+# ─── ：has_catalog 判据 + PyYAML 缺失告警 ─────────────
 @pytest.fixture
 def restore_language_state() -> Any:
     saved = (i18n._current_language, i18n._tr, set(i18n._YAML_MISSING_WARNED))
@@ -167,7 +167,7 @@ class TestCatalogMustBeLoadable:
         assert "PyYAML" in warnings[0]
 
 
-# ─── MIN-2249：清理 ffmpeg 必须判 returncode ──────────────────
+# ─── ：清理 ffmpeg 必须判 returncode ──────────────────
 class TestZombieCleanupJudgesReturnCode:
     def _drive(self, monkeypatch: pytest.MonkeyPatch, platform: str, results: list[_RunResult]) -> _LogSpy:
         spy = _LogSpy()
@@ -238,7 +238,7 @@ class TestZombieCleanupJudgesReturnCode:
             for n in ast.walk(fn)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "run"
         ]
-        # [历史注] 原断言 `len(runs) == 4`：L-40（CODE_REVIEW_2026-10-02）删掉两段结构性无法命中的
+        # [历史注] 原断言 `len(runs) == 4`：（CODE_REVIEW_2026-10-02）删掉两段结构性无法命中的
         # 兜底过滤器（Windows PARENTPID / POSIX pkill -P 都只匹配 GUI 直接派生的 ffmpeg，而 ffmpeg
         # 的父进程恒为 main.py），扫描面从 4 降到 2。写死条数不表达任何判据，改为「非空反向见证 +
         # 逐个断言」：0 处即红，新增的第 N+1 处 run 由 ast.walk 自动纳入。
@@ -249,7 +249,7 @@ class TestZombieCleanupJudgesReturnCode:
             assert not keywords & {"text", "encoding", "universal_newlines"}
 
 
-# ─── MIN-2250：kernel32 声明与控制台恢复告警 ──────────────────
+# ─── ：kernel32 声明与控制台恢复告警 ──────────────────
 class _Sig:
     # 替身函数对象：只记录 argtypes / restype 被赋成了什么。
     def __init__(self) -> None:
@@ -381,7 +381,7 @@ class TestKernel32DeclaredAndConsoleRestoreWarns:
         assert warnings == []
 
 
-# ─── MID-2252：URL 页整文件写回前的冲突裁决 ──────────────────
+# ─── ：URL 页整文件写回前的冲突裁决 ──────────────────
 class TestUrlSaveChecksDiskBeforeWriting:
     def test_url_save_config_goes_through_verdict(self) -> None:
         # 静态锁：录制子进程运行期确实在写 URL_config.ini（回写主播名 / 归一 URL / 注释风控房间），
@@ -415,7 +415,7 @@ class TestUrlSaveChecksDiskBeforeWriting:
         assert write_calls and calls[0].lineno < write_calls[0].lineno
 
 
-# ─── MIN-2247：对话框文案必须逐条登记 pending ─────────────────
+# ─── ：对话框文案必须逐条登记 pending ─────────────────
 def _messagebox_tr_templates() -> set[str]:
     # 抽 gui.py 里 messagebox.* 的全部 i18n.tr 模板实参（提取器扫不到这条路，AGENTS 已记载）。
     tree = ast.parse(GUI_SOURCE)
@@ -480,7 +480,7 @@ class TestDialogStringsRegistered:
                 assert cats[lang][msgid].strip(), f"{lang} 译文为空：{msgid[:40]!r}"
 
     def test_catalog_translations_keep_placeholders_and_line_counts(self) -> None:
-        # MIN-2253：占位符对账此前只有「模板 vs 关键字实参」一条（源码侧），**没有任何一条**比较四
+        # 占位符对账此前只有「模板 vs 关键字实参」一条（源码侧），**没有任何一条**比较四
         # 份译文内部——本仓出过 zh_TW 把 {msg} 写成 {msg_2} 而调用方传 msg= 的事故，繁体下钉钉/微信/
         # Bark/PushPlus 的失败告警整条 KeyError 崩掉。MI-23 改成回退原文后，同类漂移只表现为「繁体
         # 用户看到的仍是简体」，与「该键本来没译」完全同形。全量目录级锁 780 键 × 3 语言

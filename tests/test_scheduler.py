@@ -2,15 +2,12 @@
 # src.scheduler 单元测试：覆盖 ResizableSemaphore / PlatformBreaker / ConcurrencyScheduler。
 # 聚焦高并发录制调度的关键不变量：信号量可安全调容、熔断器状态机正确、
 # 全局并发容量随活跃任务数自适应缩放且带安全下限、按 key 错误预算隔离、录制并发软上限。
-# 2026-09-20 补 SEV-01（有持有者时重算不得放大可用许可）与 MIN-22（探针代数标记）回归锁：
-# 原有 16 用例全部在无持有者场景断言 .value（此时 value == capacity），结构上抓不到该缺陷。
-# 2026-10-21 CODE_REVIEW_2026-10-21 追加三组不变量（改回旧形态即应转红）：
-#   M-35  动态模式的目标容量必须在 max 之后才封顶，错配的 configured_limit 不得绕过 _max_capacity；
-#         固定模式那一支**不**封顶（AGENTS 把固定并发钉成配置值本身），不对称本身也要有锁；
-#   M-42  min_samples 必须钳到 1..window，且 open 判据要求真的失败过（fail_rate=0 时
-#         全成功窗口不得因 0 >= 0 熔断）；
-#   M-36a 熔断表按 host 无界增长（key 属外部可控输入）→ 必须有 LRU 上限，且逐出只碰 closed 键、
-#         命中即 touch（仍在每轮上报的 host 不得被逐掉、丢累计样本与探针状态）。
+# （有持有者时重算不得放大可用许可）与（探针代数标记）回归锁的存在理由：
+# 早期 16 用例全部在无持有者场景断言 .value（此时 value == capacity），结构上抓不到该缺陷。
+# 该三组不变量（改回旧形态即应转红）：动态目标容量必须先取 max 再封顶
+# （固定那一支刻意不封顶，AGENTS 把固定并发钉成配置值本身）、min_samples 钳到 1..window 且
+# open 须真的失败过、熔断表按 host 增长而 key 属外部可控输入故必须有 LRU 上限，
+# 且逐出只碰 closed 键、命中即 touch；逐条判据见各节回归锁用例。
 
 import threading
 import time
@@ -29,8 +26,8 @@ from src.scheduler import (
 
 
 def test_resizable_semaphore_value_is_available_not_capacity() -> None:
-    # SEV-01 语义单测：capacity = 并发上限、value = 剩余可用许可，二者在有持有者时必然分离。
-    # 原实现只有一个字段，release() 递增它 → 「可用数」被当作「容量」，调容逻辑因此失去约束。
+    # capacity 是并发上限、value 是剩余可用许可，二者在有持有者时必然分离；
+    # [历史注] 旧实现只有一个字段且 release() 递增它，可用数被当作容量、调容逻辑失去约束。
     sem = ResizableSemaphore(2)
     assert sem.capacity == 2
     assert sem.value == 2
@@ -42,7 +39,7 @@ def test_resizable_semaphore_value_is_available_not_capacity() -> None:
 
 
 def test_resizable_semaphore_unbalanced_release_cannot_create_permits() -> None:
-    # 多余/不配对的 release 不得凭空造出许可：这是 SEV-01 「每轮补满」的同类放大机制。
+    # 多余/不配对的 release 不得凭空造出许可：这是该「每轮补满」的同类放大机制。
     sem = ResizableSemaphore(1)
     assert sem.acquire(blocking=False) is True
     sem.release()
@@ -66,10 +63,8 @@ def test_resizable_semaphore_set_value_notifies_waiters_while_holders_exist() ->
     assert acquired == []  # 容量已被持有者占满，应阻塞
     sem.set_value(2)  # 扩到 2，空闲 = 2 - 1 = 1 → 唤醒一个
     t.join(timeout=2)
-    # 审查 7.11（2026-10-18，与本文件 test_scheduler_real_concurrency_bounded_while_recompute_runs
-    # 收尾的 alive 判据同口径）：join 超时是静默返回的，等待者仍挂在 sem.acquire() 里时 acquired
-    # 是空列表、下一条断言只是「没唤醒」的间接信号；显式判线程退出才能区分「唤醒链坏了」与
-    # 「唤醒后线程自己没跑完」。
+    # join(timeout) 超时是静默返回的：等待者仍挂在 acquire() 里时 acquired 为空，下一条断言只是
+    # 「没唤醒」的间接信号；显式判线程退出才能区分「唤醒链坏了」与「唤醒后线程自己没跑完」。
     assert not t.is_alive(), "等待者线程未在 2s 内退出：扩容后唤醒链或 acquire 收尾挂死，不得判绿"
     assert acquired == [True]
     assert sem.capacity == 2
@@ -107,9 +102,7 @@ def test_resizable_semaphore_set_zero_blocks_and_resume_wakes() -> None:
     assert acquired == []
     sem.set_value(1)
     t.join(timeout=2)
-    # 审查 7.11（2026-10-18，同上一条口径）：暂停态恢复容量这条链一旦失去唤醒，等待者线程永不退出；
-    # join 超时静默返回时 acquired 为空、失败原因会被读成「没唤醒」而不是「线程挂死」，
-    # 而线程挂死与非守护线程残留本身就是要防的形态。
+    # 同上一条 alive 判据口径：本链失去唤醒时等待者线程永不退出，而线程挂死与非守护线程残留本身就是要防的形态。
     assert not t.is_alive(), "等待者线程未在 2s 内退出：恢复容量后唤醒链挂死，不得判绿"
     assert acquired == [True]
     assert sem.value == 0
@@ -137,9 +130,8 @@ def test_resizable_semaphore_set_value_wakes_waiters() -> None:
     assert acquired == []  # 容量为 0，应阻塞
     sem.set_value(1)
     t.join(timeout=1)
-    # 审查 7.11（2026-10-18，同上一条口径）：本用例的 worker 走的是**无超时** acquire()，
-    # 唤醒失败时线程会永久阻塞；不判 is_alive 就只能靠 acquired==[True] 间接反映，
-    # 而线程残留（非守护）会拖住解释器退出，表现为整轮 pytest 挂死而非本条判红。
+    # 同上一条口径；本用例 worker 走的是**无超时** acquire()，唤醒失败时线程残留（非守护）会拖住解释器
+    # 退出，表现为整轮 pytest 挂死而非本条判红。
     assert not t.is_alive(), "等待者线程未在 1s 内退出：acquire() 没被唤醒，不得判绿"
     assert acquired == [True]
     assert sem.value == 0
@@ -297,13 +289,13 @@ def test_scheduler_record_success_resets_breaker() -> None:
     assert s.allow(key) is True  # 已恢复放行
 
 
-# —— SEV-01 回归锁：有持有者时容量重算不得放大可用许可 ——
+# —— 该回归锁：有持有者时容量重算不得放大可用许可 ——
 
 
 def test_scheduler_dynamic_recompute_does_not_inflate_with_holders() -> None:
-    # 动态调速模式：主循环每轮 set_active_count()（内部 recompute）+ adjust_loop 每 5s 一次
-    # recompute。原实现把「剩余许可」当「容量」比较后无条件 set_value → 每轮把可用数补满到
-    # 目标值，旧持有者仍在持有，实际并发每轮净增。
+    # 动态调速模式：主循环每轮 set_active_count()（内部 recompute）+ adjust_loop 每 5s 一次 recompute。
+    # [历史注] 旧实现把「剩余许可」当「容量」比较后无条件 set_value，每轮把可用数补满到目标值，
+    # 旧持有者仍在持有，实际并发每轮净增。
     s = ConcurrencyScheduler(configured_limit=3, min_capacity=1, max_capacity=128, scale_divisor=4)
     s.set_active_count(80)  # ceil(80/4)=20 → 目标容量 20
     cap = s.network_semaphore.capacity
@@ -324,7 +316,7 @@ def test_scheduler_dynamic_recompute_does_not_inflate_with_holders() -> None:
 
 def test_scheduler_fixed_mode_concurrency_stays_bounded_with_holders() -> None:
     # 固定并发模式（「最大同时录制数(0为不限制)」非 0）：容量恒为「同一时间访问网络的线程数」。
-    # 原实现下只要有人持槽，每轮重算都会把可用数抬回 3 → 「同一时间访问网络的线程数」形同不存在。
+    # [历史注] 旧实现下只要有人持槽，每轮重算都会把可用数抬回 3 → 该配置形同不存在。
     s = ConcurrencyScheduler(configured_limit=3, min_capacity=1, max_capacity=128, scale_divisor=4)
     s.set_dynamic_mode(False)
     assert s.network_semaphore.capacity == 3
@@ -350,8 +342,7 @@ def test_scheduler_recompute_skips_set_value_when_capacity_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # recompute 必须与 capacity 比较：与 value（剩余许可）比较时，只要有持有者就永远「看起来变了」，
-    # 于是每 5s 一次无条件 set_value —— 除无谓唤醒等待者外，还会反复播报「网络容量调整为 X」的
-    # 误导性调试日志（容量其实一点没变）。
+    # 于是每 5s 一次无条件 set_value —— 除无谓唤醒等待者外，还会反复播报容量未变的「网络容量调整为 X」日志。
     s = ConcurrencyScheduler(configured_limit=2, min_capacity=1, max_capacity=128, scale_divisor=4)
     s.set_dynamic_mode(False)
     sem = s.network_semaphore
@@ -376,9 +367,8 @@ def test_scheduler_recompute_skips_set_value_when_capacity_unchanged(
 
 
 def test_scheduler_real_concurrency_bounded_while_recompute_runs() -> None:
-    # 端到端不变量：8 个房间线程争抢容量 2 的槽位，主线程按 adjust_loop 节奏持续 recompute，
-    # 实测峰值并发必须 <= 2。本断言与调度时序无关（峰值只在真正持槽期间采样），修复后恒成立；
-    # 原实现在此场景下每轮补满许可 → 峰值一路涨到房间数。
+    # 端到端不变量：8 个房间线程争抢容量 2 的槽位、主线程按 adjust_loop 节奏持续 recompute，峰值并发
+    # 必须 <= 2；峰值只在真正持槽期间采样，与调度时序无关。[历史注] 原实现每轮补满许可，峰值会涨到房间数。
     limit = 2
     rooms = 8
     s = ConcurrencyScheduler(configured_limit=limit, min_capacity=1, max_capacity=128, scale_divisor=4)
@@ -437,7 +427,7 @@ def test_recording_semaphore_limit_respects_holders() -> None:
     assert sem.acquire(blocking=False) is True
 
 
-# —— MIN-22 回归锁：探针代数标记 ——
+# —— 该回归锁：探针代数标记 ——
 
 
 def _run_in_thread(fn: Callable[[], Any]) -> None:
@@ -451,9 +441,8 @@ def _run_in_thread(fn: Callable[[], Any]) -> None:
     t = threading.Thread(target=target)
     t.start()
     t.join(timeout=5)
-    # 审查 7.11（2026-10-18，同本文件三条 ResizableSemaphore 用例的口径）：helper 被多条熔断器
-    # 归属用例复用，join 超时返回时 done 可能已写入而线程仍卡在锁里，调用方拿到的「第二线程已回报」
-    # 其实是半截状态；helper 里收口一次，所有调用点同时受益。
+    # 同三条 ResizableSemaphore 用例的 alive 判据口径：join 超时返回时 done 可能已写入而线程仍卡在锁里，
+    # 调用方拿到的「第二线程已回报」其实是半截状态；在 helper 里收口一次，所有调用点同时受益。
     assert not t.is_alive(), "第二线程未在 5s 内退出：被测的 allow()/record() 挂死，不得判绿"
     assert done == [True]
 
@@ -516,13 +505,13 @@ def test_platform_breaker_same_thread_regrant_still_closes() -> None:
     assert b.allow() is True
 
 
-# —— M-35 回归锁：动态模式的目标容量必须先取大再封顶 ——
+# —— 该回归锁：动态模式的目标容量必须先取大再封顶 ——
 
 
 def test_scheduler_dynamic_capacity_clamps_configured_to_max_capacity() -> None:
-    # configured_limit 被填成大于 max_capacity 的值（错配 / 抄来的大数）时，旧写法
-    # max(configured, min(上限, scaled)) 整体取 configured —— 声明的安全上限被一个配置值绕过，
-    # 80 房间瞬间放开数百并发请求，正是这套调度器要防的形态。
+    # configured_limit 被填成大于 max_capacity 的值（错配 / 抄来的大数）时，封顶必须在取 max 之后生效；
+    # 否则旧写法 max(configured, min(上限, scaled)) 整体由 configured 决定，声明的安全上限被一个配置值
+    # 绕过、80 房间瞬间放开数百并发请求——正是这套调度器要防的形态。
     s = ConcurrencyScheduler(configured_limit=500, min_capacity=1, max_capacity=128, scale_divisor=4)
     s.set_active_count(8)
     assert s.network_semaphore.capacity == 128
@@ -539,15 +528,15 @@ def test_scheduler_dynamic_capacity_keeps_configured_below_max() -> None:
 
 
 def test_scheduler_fixed_mode_is_deliberately_not_clamped() -> None:
-    # 不对称本身也是契约：固定并发模式下容量恒为用户填写的「同一时间访问网络的线程数」，
-    # 不受 max_capacity 约束（AGENTS 钉死的语义）。顺手把这一支也夹取 = 用户填 200 只拿到 128
-    # 且零提示，属新的静默失准，故这里明确断言它**不被**封顶。
+    # 不对称本身也是契约：固定并发模式下容量恒为用户填写的「同一时间访问网络的线程数」，不受
+    # max_capacity 约束（AGENTS 钉死的语义）。顺手夹取这一支 = 用户填 200 只拿到 128 且零提示，
+    # 属新的静默失准，故这里明确断言它**不被**封顶。
     s = ConcurrencyScheduler(configured_limit=500, min_capacity=1, max_capacity=128, scale_divisor=4)
     s.set_dynamic_mode(False)
     assert s.network_semaphore.capacity == 500
 
 
-# —— M-42 回归锁：min_samples 钳到窗口内 + open 必须真的失败过 ——
+# —— 该回归锁：min_samples 钳到窗口内 + open 必须真的失败过 ——
 
 
 def test_platform_breaker_min_samples_clamped_to_window() -> None:
@@ -590,7 +579,7 @@ def test_platform_breaker_fail_count_stays_incremental() -> None:
     assert b.state == "closed"
 
 
-# —— M-36a 回归锁：熔断表有上限、逐出只碰 closed、命中即 touch ——
+# —— 该回归锁：熔断表有上限、逐出只碰 closed、命中即 touch ——
 
 
 def test_scheduler_breaker_table_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:

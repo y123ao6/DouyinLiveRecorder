@@ -53,7 +53,7 @@ def register(widget: object, mode: str, trans: Translatable) -> None:
     # 同一 (控件, 模式) 重复登记（工厂与调用方都可能登记）以最后一次为准。
     ref = weakref.ref(widget)
     with _LOCK:
-        # M-82（2026-10-21）：去重判定 `entry[0] is ref` 改为 `==`。先更正审查断言：
+        # 2026-10-21：去重判定 `entry[0] is ref` 改为 `==`。先更正审查断言：
         # 「新 weakref 对象使 is 恒假」在 CPython 上**不成立**——3.14 实测对同一 referent 的
         # 无回调 ref() 恒返回同一个规范化对象（即便中途存在带回调的其他弱引用，见
         # tests/test_ui_i18n.py 的哨兵用例），所以旧写法在本解释器上碰巧能去重。

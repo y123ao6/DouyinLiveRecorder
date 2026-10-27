@@ -1,8 +1,8 @@
 # 常驻门禁：出站响应体读取必须落在「已登记且带上限」的函数里（CODE_REVIEW_2026-10-18 §7.11 第①条）。
 #
-# 立规背景：该轮审查一次性报出三条同形态缺陷——M-03（sync_http 的 400 分支全量 `e.read()`）、
-# M-04（async_http 主请求路径非流式全量读 + httpx 自动解压无上限，压缩炸弹可直接打爆内存）、
-# L-11（探针非流式读响应体，不遵守 Range 的节点可回任意大 body）。单点修完并不阻止第四个读取点
+# 立规背景：该轮审查一次性报出三条同形态缺陷——（sync_http 的 400 分支全量 `e.read()`）、
+# （async_http 主请求路径非流式全量读 + httpx 自动解压无上限，压缩炸弹可直接打爆内存）、
+# （探针非流式读响应体，不遵守 Range 的节点可回任意大 body）。单点修完并不阻止第四个读取点
 # 被写出来：出站代码分散在 async_http / sync_http / stream_select / main 直下载 / 推送通道五处。
 #
 # 为什么只做 AST、不跑网络：判据是「谁在读响应体、读的时候有没有上限」，这是纯源码结构事实；
@@ -17,7 +17,7 @@
 #   ② 两个受管上限函数（async_http._bounded_response_read、stream_select._bounded_probe_get）
 #      体内必须**真的引用**上限常量或限量实参——防「函数名还在、上限被摘掉」这种只改体的回归。
 #   ③ 同步侧 sync_http 里所有 `.read(...)` 必须落在 `_read_capped` / `_gunzip_capped` 之内，且 HTTP
-#      400 分支必须经 `_read_capped`（M-03 本体）——同步侧读的是 http.client/HTTPError，方法名与
+#      400 分支必须经 `_read_capped`（该本体）——同步侧读的是 http.client/HTTPError，方法名与
 #      文件读同形，只能按「模块内封闭」判定。
 #
 # 已知取舍：①③ 不追数据流（不证明 response 真的来自网络），构造样本仍可绕过，但真实新增一个未限量
@@ -146,7 +146,7 @@ def test_ledger_is_not_a_vacuous_empty_table() -> None:
 
 
 def test_cap_functions_still_reference_their_limits() -> None:
-    # 判据②：函数名还在但上限被摘掉，是最典型的「只改体」回归（MID-2264 同族：外壳保留、内里失效）。
+    # 判据②：函数名还在但上限被摘掉，是最典型的「只改体」回归（该同族：外壳保留、内里失效）。
     for (rel, func), markers in _CAP_BOUND_FUNCS.items():
         tree = ast.parse((_REPO_ROOT / rel).read_text(encoding="utf-8"))
         body = next((b for n, b in _func_bodies(tree) if n == func), None)
@@ -178,7 +178,7 @@ def test_sync_http_reads_stay_inside_the_capped_helpers() -> None:
             if receiver in {"resp", "response", "rs", "e", "err", "r", "http_response"}:
                 offenders.append((name, node.lineno, receiver))
     assert not offenders, f"{rel} 出现未经 _read_capped 的响应体全量读取（M-03 同形态回归）: {offenders}"
-    # 400 分支必须经 _read_capped：这是 M-03 的修复本体，单独点名，避免被上一条「不出现 read」间接盖住。
+    # 400 分支必须经 _read_capped：这是该修复本体，单独点名，避免被上一条「不出现 read」间接盖住。
     src = (_REPO_ROOT / rel).read_text(encoding="utf-8")
     assert "_read_capped(e" in src.replace(" ", ""), f"{rel} 的 400 错误体不再走 _read_capped: M-03 回归"
 

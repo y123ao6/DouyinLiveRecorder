@@ -2,9 +2,9 @@
 #
 # 与真机探针（tests/test_douyu_danmaku.py、tests/test_bilibili_danmaku.py）互补：探针无网即失效，
 # 本文件用构造帧驱动 decode_message，锁住历史上真出过问题的分支：
-#   - 斗鱼 C-2：粘包推进必须按「整帧 = full_len + 4」，错位 4 字节会让第二帧起全部丢失；
-#   - 斗鱼 C-3：only_fans 默认 False，普通观众弹幕不得被静默丢弃；
-#   - B站 H-4：AUTH_REPLY(code!=0) 与「8 秒无回应」两种软拒绝都必须主动断开并失效 buvid 缓存；
+#   - 斗鱼：粘包推进必须按「整帧 = full_len + 4」，错位 4 字节会让第二帧起全部丢失；
+#   - 斗鱼：only_fans 默认 False，普通观众弹幕不得被静默丢弃；
+#   - B站：AUTH_REPLY(code!=0) 与「8 秒无回应」两种软拒绝都必须主动断开并失效 buvid 缓存；
 #   - B站 MI-01：protover 2/3 的解压必须走限长入口（解压炸弹面）；
 #   - Twitch MI-21：WebSocket 帧边界是消息不是行，跨帧半行必须缓冲后拼回；
 #   - Twitch：color 标签可选（未设色观众不得被丢弃）、纯黑回退白。
@@ -31,7 +31,7 @@ from src.base import DanmakuMessageType
 #
 # 阶段一「帧边界」：三种传输的假定完全不同。
 #   斗鱼：二进制帧，长度域值 = 帧总长 - 4（协议定义如此），粘包推进必须按 full_len + 4；漏掉这
-#     4 字节会让第二帧起点错位、长度域读出垃圾值后截断 break（C-2，高热度直播间必然粘包）。
+#     4 字节会让第二帧起点错位、长度域读出垃圾值后截断 break（高热度直播间必然粘包）。
 #   B站：16 字节大头序帧头 [包长][头长][protover][op][seq]，包长含头自身。
 #   Twitch：IRC 文本，但 WebSocket 边界是「消息」不是「行」，必须自做跨帧行缓冲（MI-21）；
 #     本文件用「一条完整行切两半投递」直接验证。
@@ -45,10 +45,10 @@ from src.base import DanmakuMessageType
 # 重连风暴。
 #
 # 三个容易被改错的行为契约：
-#   1) 斗鱼 only_fans 默认 False——写成 True 会让普通观众弹幕静默丢弃，且无开关可关（C-3）。
+#   1) 斗鱼 only_fans 默认 False——写成 True 会让普通观众弹幕静默丢弃，且无开关可关。
 #   2) B站进房包的 uid 必须是观众自身 uid（匿名 0）；传主播 uid 会被 AUTH 后硬断连（1006）。
 #   3) B站看门狗与 _auth_ok 成对：每次新连接都要清零 _auth_ok，否则重连后看门狗误判「已认证」而永
-#      不兜底（H-4）。
+#      不兜底。
 #
 # Mock 口径：各平台模块内的 WsClient 换为 FakeWs（只看连接参数与发出的帧），spawn_danmaku_task
 # 换为记录器或 _noop_spawn；后者必须 close() 传入的协程，否则未 await 的协程在 GC 时抛
@@ -78,7 +78,7 @@ class FakeWs:
         self.closed += 1
 
     async def fail(self, reason: str = "") -> None:
-        # MID-2245：认证被拒改走 WsClient.fail() 而不是 close()——close() 的两条
+        # 认证被拒改走 WsClient.fail() 而不是 close()——close() 的两条
         # `if self._stopped: break` 出口都不回调 on_close，会让弹幕监控页把该房间
         # 永久停在「已连接 / 0 条」。替身必须实现同一个出口，否则测的是不存在的方法。
         self.closed += 1
@@ -170,7 +170,7 @@ class TestDouyuFraming:
         assert got == []
 
     def test_decode_message_handles_sticky_packets(self) -> None:
-        # C-2 回归锁：两帧拼接投递时第二帧必须也被解出（推进步长含首长度域自身 4 字节）
+        # 两帧拼接投递时第二帧必须也被解出（推进步长含首长度域自身 4 字节）
         got: list[Any] = []
         client = douyu.DouyuDanmaku(on_message=_collect(got))
         data = _douyu_frame("type@=chatmsg/nn@=alice/txt@=first/") + _douyu_frame("type@=chatmsg/nn@=bob/txt@=second/")
@@ -227,7 +227,7 @@ class TestDouyuDispatch:
         assert got[0].color == "#FFFFFF"
 
     def test_only_fans_filter_is_opt_in(self) -> None:
-        # C-3 回归锁：默认不过滤——把默认值改回 True 会在这里变红。
+        # 默认不过滤——把默认值改回 True 会在这里变红。
         got: list[Any] = []
         default_client = douyu.DouyuDanmaku(on_message=_collect(got))
         default_client._dispatch({"type": "chatmsg", "nn": "guest", "txt": "hi", "if": "0"})
@@ -391,7 +391,7 @@ class TestBilibiliFraming:
 
     @pytest.mark.parametrize("body", [b'{"code": -100}', b"not-json"])
     def test_auth_reply_rejection_disconnects(self, body: bytes) -> None:
-        # H-4 回归锁：软拒绝（code!=0 / 非法回应）必须主动断开，否则表现为「已连接但 0 弹幕」
+        # 软拒绝（code!=0 / 非法回应）必须主动断开，否则表现为「已连接但 0 弹幕」
         client = bilibili.BilibiliDanmaku()
         client._ws = cast(Any, FakeWs())
         rejected: list[int] = []
@@ -492,7 +492,7 @@ class TestBilibiliLifecycle:
 
     async def test_every_host_is_attempted_until_list_exhausted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 单 host 固定会卡死：所有候选地址都连不上时要轮流试完才能退出循环。
-        # 用官方域形态的 host（SEV-2215 白名单只放行 B站官方域族；非白名单 host 会被跳过而非尝试）。
+        # 用官方域形态的 host（该白名单只放行 B站官方域族；非白名单 host 会被跳过而非尝试）。
         factory = WsFactory()
         monkeypatch.setattr(bilibili, "WsClient", factory)
         client = bilibili.BilibiliDanmaku()
@@ -549,7 +549,7 @@ class TestBilibiliLifecycle:
         ready: list[int] = []
         client._on_ready = lambda: ready.append(1)
         client._on_ws_ready()
-        # 重连必须重新过 AUTH，否则看门狗会被上一轮的 _auth_ok 永久屏蔽（H-4）
+        # 重连必须重新过 AUTH，否则看门狗会被上一轮的 _auth_ok 永久屏蔽
         assert client._auth_ok is False
         assert client._session_ok is True
         assert ready == [1]
@@ -632,7 +632,7 @@ class TestBilibiliLifecycle:
         assert invalidated == [1]
         assert ws.closed == 1
         # 只断言 closed 会把「退回 close()」这一实现放过去（它同样让 closed 计数 +1），
-        # 而监控页残留「已连接 / 0 条」正是 MID-2245 要消灭的形态——必须断言走的是带上报的 fail()。
+        # 而监控页残留「已连接 / 0 条」正是该要消灭的形态——必须断言走的是带上报的 fail()。
         assert ws.fail_reasons and ws.fail_reasons[0], "认证被拒未走 WsClient.fail()，on_close 不会上报"
 
     async def test_reject_auth_survives_buvid_invalidation_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:

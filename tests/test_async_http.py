@@ -22,10 +22,9 @@ from src.async_http import (
     get_response_status,
 )
 
-# MIN-2219 起，get_response_status 按「本机解析结果」判定直连目标是否落在内网，判定链最终走
-# web_config._resolve_host_ips（该函数即**为用例留的 DNS seam**，见 tests/test_web_config.py）。
-# 本文件全部探针用例都必须与该 seam 隔离：否则无外网/无 DNS 的 CI 与开发机上「example.com
-# 可达」类用例会随机转红，用例也会把真实解析结果当成被测行为来断言。默认桩值是公网 IP（= 放行）。
+# get_response_status 按「本机解析结果」判定直连目标是否落在内网，判定链最终走 web_config._resolve_host_ips
+# （该函数即**为用例留的 DNS seam**，见 tests/test_web_config.py）。本文件全部探针用例都必须与该 seam 隔离：
+# 否则无外网/无 DNS 的 CI 与开发机上「example.com 可达」类用例随机转红、且把真实解析结果当被测行为断言；默认桩值是公网 IP（= 放行）。
 _PUBLIC_IP = "93.184.216.34"
 
 
@@ -40,18 +39,16 @@ def _stub_dns_as_public(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestGetClient:
-    # _get_client: 按 (proxy, verify, http2) 维度复用 AsyncClient。
+    # _get_client: 按 (proxy, verify, http2, 事件循环) 维度复用 AsyncClient（循环维度见下方缓存键用例）。
 
     @pytest.mark.asyncio
     async def test_creates_new_client(self) -> None:
-        # 首次调用创建新 AsyncClient 并缓存：守住「首次填充」不变量，避免每次请求重建连接池
-        # （复用实测省约 15.9ms/次）。
+        # 首次调用创建新 AsyncClient 并缓存：守住「首次填充」不变量，避免每次请求重建连接池（复用实测省约 15.9ms/次）。
         _client_cache.clear()
         try:
             client = await _get_client(None, 10, True, False)
             assert isinstance(client, httpx.AsyncClient)
             assert not client.is_closed
-            # 缓存中应有记录
             assert len(_client_cache) == 1
         finally:
             await _close_all_clients()
@@ -69,8 +66,7 @@ class TestGetClient:
 
     @pytest.mark.asyncio
     async def test_different_proxy_creates_different_client(self) -> None:
-        # 不同 proxy 创建不同 client：proxy 是缓存 key 的一维，换代理须隔离独立连接
-        # （cookie/鉴权不串房间）。
+        # 不同 proxy 创建不同 client：proxy 是缓存 key 的一维，换代理须隔离独立连接（cookie/鉴权不串房间）。
         _client_cache.clear()
         try:
             c1 = await _get_client(None, 10, True, False)
@@ -96,23 +92,20 @@ class TestGetClient:
 
 
 class TestClientCacheLock:
-    # 批次5重构：_client_cache 由 threading 锁保护（临界区无 await），避免原「模块级单槽
-    # asyncio.Lock 随循环重建」的跨线程竞态——线程 A 可能拿到线程 B 循环绑定的锁并 await，
-    # 触发 'bound to a different event loop'。
+    # _client_cache 由 threading 锁保护（临界区无 await）。[历史注] 曾用「模块级单槽 asyncio.Lock 随循环
+    # 重建」：线程 A 会拿到线程 B 循环绑定的锁并 await，触发 'bound to a different event loop'。
 
     def test_cache_lock_is_reentrant_threading_lock(self) -> None:
-        # MIN-2221：锁必须是**可重入**的 threading.RLock，不能是 asyncio.Lock，也不再是普通
-        # threading.Lock。必须重入的原因：main.py 的 safe_exit（SIGINT/SIGTERM，跑在主线程）会调
-        # close_all_clients_sync() 取同一把锁，而主线程自身可能正持它跑 _get_client 的同步临界区
-        # （warmup / 启动期探测的 asyncio.run）；非重入锁下信号恰好落在临界区内即同线程自死锁，
-        # 表现为「Ctrl+C 后既不退出也不报错」。
+        # 锁必须是**可重入**的 threading.RLock（既非 asyncio.Lock 也非普通 threading.Lock）：main.py 的
+        # safe_exit（SIGINT/SIGTERM，跑在主线程）会调 close_all_clients_sync() 取同一把锁，而主线程自身
+        # 可能正持它跑 _get_client 的同步临界区（warmup / 启动期探测的 asyncio.run）；非重入锁下信号恰好
+        # 落在临界区内即同线程自死锁，表现为「Ctrl+C 后既不退出也不报错」。
         assert isinstance(_client_cache_lock, type(threading.RLock()))
         assert not isinstance(_client_cache_lock, type(threading.Lock()))
 
     def test_cache_lock_is_reentrant_in_practice(self) -> None:
-        # 行为级守卫（不看类型、只看能否重入）：外层持有时内层非阻塞 acquire 必须成功。换成
-        # threading.Lock 即返回 False → 用例红且**不会挂死**（刻意用 blocking=False，避免有人把锁
-        # 改回非重入时整个 pytest 卡在这里）。
+        # 行为级守卫（只看能否重入，不看类型）：外层持有时内层非阻塞 acquire 必须成功，换成 threading.Lock
+        # 即返回 False → 用例红且**不会挂死**（刻意 blocking=False，防锁被改回非重入时整个 pytest 卡在这里）。
         with _client_cache_lock:
             assert _client_cache_lock.acquire(blocking=False) is True
             _client_cache_lock.release()
@@ -127,18 +120,16 @@ class TestClientCacheLock:
             except Exception as e:  # pragma: no cover - 仅收集异常
                 errors.append(e)
 
-        # 8 个线程各跑独立事件循环（asyncio.run 创建并绑定各自 loop），刻意制造循环多样性以复现
-        # 「模块级单槽锁跨循环」竞态；8 与 15s 仅为压测规模/收尾余量，非精确不变量。
-        # 断言 errors == []：无跨循环/跨线程异常。
+        # 8 个线程各跑独立事件循环（asyncio.run 创建并绑定各自 loop），刻意制造循环多样性以复现「模块级单槽
+        # 锁跨循环」竞态；8 与 15s 仅为压测规模/收尾余量，非精确不变量；errors == [] 即无跨循环/跨线程异常。
         threads = [threading.Thread(target=run) for _ in range(8)]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=15)
         assert errors == []
-        # LT-02（2026-10-18 审查，与 tests/test_async_http_lock.py 的 LT-01 同口径）：join 带超时
-        # 返回不代表线程已退出——挂死形态下 errors 仍空、用例假绿。必须逐线程断言 is_alive 为
-        # False，才钉住「8 线程全部跑完」。
+        # join 带超时**返回**不代表线程已退出：挂死形态下 errors 仍空、用例假绿（与 tests/test_async_http_lock.py
+        # 同口径）。必须逐线程断言 is_alive 为 False，才钉住「8 线程全部跑完」。
         for t in threads:
             assert not t.is_alive(), "join 超时后线程仍存活：被测逻辑挂死，不得判绿"
         with _client_cache_lock:
@@ -146,7 +137,7 @@ class TestClientCacheLock:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-21：缓存键的事件循环维度（不得互相逐出存活客户端）
+# 缓存键的事件循环维度（不同循环不得互相逐出存活客户端）
 # ────────────────────────────────────────────────────────────
 
 
@@ -154,8 +145,8 @@ class TestClientCacheLoopDimension:
     # 每房间一线程、每轮一个 asyncio.run() 循环：不同循环必须各自持有条目。
 
     def test_foreign_loop_does_not_evict_live_client(self) -> None:
-        # 核心回归：旧 key 不含循环 → 循环 B 会把循环 A **正在使用**的条目 pop 掉自建；现两个
-        # 循环各得一支客户端，且 A 的条目在 B 取完之后仍在缓存里。
+        # 现状锁：两个循环各得一支客户端，且 A 的条目在 B 取完之后仍在缓存里。
+        # [历史注] 旧 key 不含循环 → 循环 B 会把循环 A **正在使用**的条目 pop 掉自建。
         _client_cache.clear()
         loop_a = asyncio.new_event_loop()
         loop_b = asyncio.new_event_loop()
@@ -218,10 +209,9 @@ class TestClientCacheLoopDimension:
             assert len(seen) == n_threads
             assert len({id(c) for c, _ in seen}) == n_threads, "不同房间被分配了同一支客户端"
             with _client_cache_lock:
-                # 值自 MIN-2217 起是三元 (client, loop, owner_thread)：owner 只在 _close_all_clients
-                # 里起作用（atexit/信号钩子只能安全关闭本线程建的那份连接池）。本条只核对「存活
-                # 客户端仍在缓存里」，owner 不参与判定，但解包形状必须与 src.async_http._CacheValue
-                # 同步——按二元解包会直接 ValueError（旧测试即过时）。
+                # 值是三元 (client, loop, owner_thread)：owner 只在 _close_all_clients 里起作用（atexit/信号
+                # 钩子只能安全关闭本线程建的那份连接池）。本条只核对「存活客户端仍在缓存里」，owner 不参与
+                # 判定，但解包形状必须与 src.async_http._CacheValue 同步（按二元解包会直接 ValueError）。
                 cached_clients = {id(client) for client, _loop, _owner in _client_cache.values()}
             for client, _loop in seen:
                 assert id(client) in cached_clients, "存活客户端被其它循环逐出（MID-21 回归）"
@@ -232,16 +222,14 @@ class TestClientCacheLoopDimension:
                 t.join(timeout=20)
             with _client_cache_lock:
                 _client_cache.clear()
-            # 审查 7.11（2026-10-18，与 LT-01/LT-02 同口径）：join(timeout=20) **返回**不等于线程已
-            # 退出。keep_alive 置位后四个房间线程理应各自 wait 返回、close 自己的循环并结束；若某线程
-            # 卡在 run_until_complete/循环收尾里，上面的缓存断言早已做完，这条 is_alive 是唯一能看出
-            # 「线程挂死」的地方（缺失即假绿 + 非守护线程拖住解释器退出）。
+            # 同 TestClientCacheLock 的 join/is_alive 口径：keep_alive 置位后房间线程理应各自 wait 返回、
+            # close 自己的循环并结束；这条 is_alive 是唯一能看出「线程挂死」的地方（缺失即假绿 + 非守护线程拖住退出）。
             alive = [t.name for t in threads if t.is_alive()]
             assert not alive, f"keep_alive 置位后房间线程仍未退出（疑似挂死）：{alive}"
 
     def test_sweep_drops_references_but_never_closes_cross_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 超阈值触发清扫时：已关闭循环的条目只丢引用，**绝不**为其创建 aclose 协程
-        # （2026-09-04 的跨循环决策是硬约束，本条是它的静态守卫）。
+        # （跨循环不关闭是硬约束，本条是它的静态守卫）。
         from src.async_http import _CACHE_SWEEP_THRESHOLD
 
         _client_cache.clear()
@@ -271,7 +259,7 @@ class TestClientCacheLoopDimension:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-22：登录 / 取 Cookie 类调用与共享客户端隔离（cookie jar 不跨房间串号）
+# 登录 / 取 Cookie 类调用与共享客户端隔离（cookie jar 不跨房间串号）
 # ────────────────────────────────────────────────────────────
 
 
@@ -319,7 +307,7 @@ class TestStatefulCallIsolation:
 
     @pytest.mark.asyncio
     async def test_plain_request_still_uses_shared_client(self) -> None:
-        # 反向断言：普通文本请求仍复用缓存客户端（否则 MID-21 的复用收益被误伤成每次自建）
+        # 反向断言：普通文本请求仍复用缓存客户端（否则缓存复用的收益被误伤成每次自建）
         _client_cache.clear()
         loop = asyncio.get_running_loop()
         shared = AsyncMock()
@@ -339,7 +327,7 @@ class TestStatefulCallIsolation:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-26：探针按平台取拉流侧 SSL 策略
+# 探针按平台取拉流侧 SSL 策略
 # ────────────────────────────────────────────────────────────
 
 
@@ -484,7 +472,7 @@ class TestCloseAllClientsSync:
         _client_cache.clear()
         mock_client = MagicMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
-        # MID-21：缓存键已含事件循环维度（4 元组），替身键须同步
+        # 缓存键已含事件循环维度（4 元组），替身键须同步
         _client_cache[("test", True, False, MagicMock(spec=asyncio.AbstractEventLoop))] = (
             mock_client,
             MagicMock(),
@@ -502,9 +490,8 @@ class TestCloseAllClientsSync:
 
 class TestAsyncReq:
     # async_req：GET/POST 请求 + 异常回退。
-    # Mock 策略：每个用例都 patch 掉 _get_client（避免构造真实 httpx.AsyncClient / 触网）与
-    # utils.handle_proxy_addr（隔离代理地址解析，避免读真实配置或做 DNS），从而只验证 async_req
-    # 自身的请求分派与异常回退分支。
+    # Mock 策略：每个用例都 patch 掉 _get_client（避免构造真实 httpx.AsyncClient / 触网）与 utils.handle_proxy_addr
+    # （隔离代理地址解析，避免读真实配置或做 DNS），从而只验证 async_req 自身的请求分派与异常回退分支。
 
     @pytest.mark.asyncio
     async def test_get_request_returns_text(self) -> None:
@@ -606,9 +593,7 @@ class TestAsyncReq:
     @pytest.mark.asyncio
     async def test_return_cookies_returns_cookies(self) -> None:
         # return_cookies 须把 cookie jar 转 dict，供登录态向下游透传。
-        # MID-22：登录/取 Cookie 类调用不走缓存客户端，故此处 patch _build_client（而非
-        # _get_client）——若改回共享缓存，本用例的替身不会被命中、断言随之失败，账号隔离这条
-        # 不变量就有了回归锁。
+        # 登录/取 Cookie 调用不走缓存客户端，故此处 patch _build_client 而非 _get_client（见 TestStatefulCallIsolation）。
         mock_response = MagicMock()
         mock_response.text = "ok"
         mock_cookies = MagicMock()
@@ -677,8 +662,7 @@ class TestAsyncReq:
 
     @pytest.mark.asyncio
     async def test_exception_cookies_returns_empty_dict(self) -> None:
-        # return_cookies 模式异常返回空字典。MID-22 后该分支的客户端由 _build_client 独占创建，
-        # 替身必须打在同一个口上，否则用例会拿到真 AsyncClient 并触网。
+        # return_cookies 模式异常返回空字典；该分支客户端由 _build_client 独占创建，替身须打在同一个口上（否则触网）。
         mock_client = AsyncMock()
         mock_client.get.side_effect = Exception("network error")
 
@@ -705,9 +689,8 @@ class TestAsyncReq:
             patch("src.async_http.config.ssl_verify", False),
         ):
             await async_req("https://example.com")
-            # 调用参数 (proxy=None, timeout=20, verify=False, http2=True)：20 是请求默认超时
-            # （async_req 未显式传入时的兜底值），False 来自 patch 的 config.ssl_verify，True 为
-            # http2 默认开关。本用例守护「verify 缺省回落配置」而非硬编码 True/False。
+            # 调用参数 (proxy=None, timeout=20, verify=False, http2=True)：20 是 async_req 未显式传入时的兜底超时，
+            # False 来自 patch 的 config.ssl_verify，True 为 http2 默认开关；本用例守「verify 缺省回落配置」。
             mock_get.assert_called_once_with(None, 20, False, True)
 
 
@@ -774,9 +757,8 @@ class TestGetResponseStatus:
             result = await get_response_status("https://cdn.example.com/live.m3u8")
 
         assert result is True
-        # S-14（CODE_REVIEW_2026-10-21）：裸 assert_called_once() 锁不住本用例真正要保的契约——
-        # 降级探针必须带 `Range: bytes=0-0`。删掉该头会让探针退化成整文件下载（对 CDN 是流量事故），
-        # 而旧断言照样绿。故显式断言请求参数，而不只数调用次数。
+        # 只 assert_called_once() 锁不住本用例要保的契约：降级探针必须带 `Range: bytes=0-0`，删掉该头会退化成
+        # 整文件下载（对 CDN 是流量事故）而旧断言照样绿，故显式断言请求参数而不只数调用次数。
         mock_client.get.assert_called_once()
         probe_kwargs = mock_client.get.call_args.kwargs
         assert (
@@ -838,16 +820,15 @@ class TestGetResponseStatus:
 
 
 # ────────────────────────────────────────────────────────────
-# M-04（2026-10-18 审查）：async 出站响应体读取上限（压缩炸弹 / 超大响应防线）
+# async 出站响应体读取上限（压缩炸弹 / 超大响应防线）
 # ────────────────────────────────────────────────────────────
 
 
 class _ChunkedStream(httpx.AsyncByteStream):
-    # 替身传输层：按块吐原始字节，模拟「响应体尚未物化」的真流形态（httpx 的 aiter_raw 迭代
-    # response.stream）。刻意不用预装载 Response——MockTransport 默认回的 Response 构造期就带
-    # _content，钩子会按「已装载」直接放行，上限逻辑根本不执行（假绿面）。
-    # 必须继承 AsyncByteStream：AsyncClient._send_single_request 对 stream 有 isinstance 断言，
-    # 异步生成器形态的 __aiter__ 与 httpx 基类签名同构。
+    # 替身传输层：按块吐原始字节，模拟「响应体尚未物化」的真流形态（httpx 的 aiter_raw 迭代 response.stream）。
+    # 刻意不用预装载 Response——MockTransport 默认回的 Response 构造期就带 _content，钩子会按「已装载」直接放行，
+    # 上限逻辑根本不执行（假绿面）。必须继承 AsyncByteStream：AsyncClient._send_single_request 对 stream 有
+    # isinstance 断言，异步生成器形态的 __aiter__ 与 httpx 基类签名同构。
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = chunks
         self.yielded = 0
@@ -871,7 +852,7 @@ def _stream_response(
 
 
 class TestBoundedResponseRead:
-    # _bounded_response_read：读上限、回填语义、超限失败形态（M-04 的核心不变量）。
+    # _bounded_response_read：读上限、回填语义、超限失败形态（出站上限的核心不变量）。
 
     @pytest.mark.asyncio
     async def test_plain_body_over_cap_raises_value_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -895,7 +876,7 @@ class TestBoundedResponseRead:
 
     @pytest.mark.asyncio
     async def test_gzip_bomb_over_decompressed_cap_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 解压炸弹（M-04 的攻击主体）：压缩体很小、解压产出超限——只限压缩体挡不住，必须按
+        # 解压炸弹（本防线的攻击主体）：压缩体很小、解压产出超限——只限压缩体挡不住，必须按
         # _MAX_DECOMPRESSED_BYTES 在解码产出侧当场拒绝。
         monkeypatch.setattr(async_http, "_MAX_DECOMPRESSED_BYTES", 64)
         compressed = gzip.compress(b"a" * 4096)
@@ -915,10 +896,9 @@ class TestBoundedResponseRead:
 
     @pytest.mark.asyncio
     async def test_redirect_hop_body_is_bounded_like_any_other_hop(self) -> None:
-        # M-16（2026-10-19）：旧契约「3xx 中间跳一律不读」（stream.yielded == 0）已证伪——钩子
-        # 返回后、跟随重定向前，httpx 仍会对该跳执行一次**无上限且自动解压**的 aread()，把带完整
-        # 正文的 Response 存进 history，「302 + 超大 gzip 正文」因此完全绕过上限（实测峰值 405MB）。
-        # 现锁「3xx 跳与其它跳同一条有界读取」：必须真的读，且读到上限后立刻判失败。
+        # 现状锁：3xx 跳与其它跳同一条有界读取——必须真的读，且读到上限后立刻判失败。
+        # [历史注] 旧契约「3xx 中间跳一律不读」（stream.yielded == 0）已证伪：钩子返回后、跟随重定向前，httpx
+        # 仍会对该跳执行一次**无上限且自动解压**的 aread()，「302 + 超大 gzip 正文」因此绕过上限（实测峰值 405MB）。
         response, stream = _stream_response(
             [b"redirect body"], status_code=302, headers={"location": "https://next.example.com/x"}
         )
@@ -928,7 +908,7 @@ class TestBoundedResponseRead:
 
     @pytest.mark.asyncio
     async def test_redirect_hop_body_over_cap_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # M-16 的攻击形态：超大 3xx 正文不得因为「这是中间跳」而被跳过上限检查
+        # 攻击形态：超大 3xx 正文不得因为「这是中间跳」而被跳过上限检查
         monkeypatch.setattr(async_http, "_MAX_RESPONSE_BYTES", 8)
         response, _stream = _stream_response(
             [b"x" * 64], status_code=302, headers={"location": "https://next.example.com/x"}
@@ -946,8 +926,8 @@ class TestBoundedResponseRead:
 
     @pytest.mark.asyncio
     async def test_caps_match_the_sync_side_baseline(self) -> None:
-        # 「与 sync_http 同一口径」的同值锁：任一侧抬数、另一侧不同批抬即红（两份事实源漂移
-        # 正是本仓反复点名的缺口形态，注释承诺必须有机检兜底）。
+        # 「与 sync_http 同一口径」的同值锁：两个上限各存一份（不 import），任一侧抬数、另一侧不同批抬即红
+        # （两份事实源漂移正是本仓反复点名的缺口形态，注释承诺必须有机检兜底）。
         from src import sync_http
 
         assert async_http._MAX_RESPONSE_BYTES == sync_http._MAX_RESPONSE_BYTES

@@ -37,7 +37,11 @@ import i18n
 #   - 全部解析函数为 async，统一经 async_req（src/async_http）发请求，便于代理/超时/重试
 #     集中管理；不要在此直接 import httpx 发同步请求（弹幕等少数路径除外）。
 #   - 平台接口极易风控：空响应体（200+空 body）、-352、-3001/-3002/-3004 等错误码多为
-#     风控或登录态缺失，函数内已尽量带「重试一次再定罪」与回退，调用方需透传 cookies/proxy。
+#     风控或登录态缺失，函数内已尽量带「重试一次再定罪」与回退。
+#   - cookie 取值链全文件统一：调用方透传 cookies > 环境变量/config 覆盖 > 平台游客态/自动领取凭据。
+#     游客态能力各平台不一且更易被风控（快手 did、B站 buvid、抖音 ttwid 等需现场领取），故调用方
+#     应透传 cookies/proxy；硬编码的过期 cookie 必然触发风控。各函数里 `if cookies: headers[...] = cookies`
+#     就是这条链的第一跳，差异只在请求头键名（cookie/Cookie），不再逐处重复说明。
 #   - 本文件使用 Python 3.14 的 PEP 758 异常语法 `except A, B:`（不带括号），这是语法特性
 #     而非笔误；需要 as 绑定时必须回退为加括号写法（无括号配 as 是语法错误）。
 #   - 严格类型检查（pyright）在此对动态 JSON 放宽，见下列 report* 指令。
@@ -82,9 +86,8 @@ _BANDWIDTH_PATTERN = re.compile(r"BANDWIDTH=(\d+)")
 _DOUYIN_HEVC_FLV_PATTERN = re.compile(r'(https?://[^\s"\']*stream-\d{10,}(?!_[a-z0-9]+)\.flv(?:[^"\']|\\u0026)+)')
 
 # PopkonTV 应用级固定 API 凭据（非用户私人凭据，嵌入于其客户端、无法从主页动态获取）。
-# 原先同一串 64 字符凭据以 `Basic` 与 `Client` 两种前缀**分别写死在两个函数里**，
-# 任一处更新都会漏掉另一处（本仓已多次出现此类「改一处漏 N 处」），
-# 表现为「登录 OK 但取流 401」或反之。收敛为单一常量供两处引用。
+# 同一串凭据曾以 `Basic` 与 `Client` 两种前缀分别写死在两个函数里，任一处轮换漏改另一处即表现为
+# 「登录 OK 但取流 401」或反之；故收敛为单一常量供两处引用。
 # 轮换方式：与 _read_haixiu_token_override 同理支持环境变量覆盖，无需改代码即可替换。
 _POPKONTV_APP_CREDENTIAL = "FpAhe6mh8Qtz116OENBmRddbYVirNKasktdXQiuHfm88zRaFydTsFy63tzkdZY0u"
 
@@ -193,9 +196,9 @@ _cached_twitch_client_id_proxy: str = ""
 _kuaishou_did_lock = threading.Lock()
 _twitch_client_id_lock = threading.Lock()
 
-# Twitch Web 端统一 UA（MID-50b）：主页 Client-Id 提取、GQL、usher 三处请求共用一份，
+# Twitch Web 端统一 UA：主页 Client-Id 提取、GQL、usher 三处请求共用一份，
 # 与 AGENTS「UA 双端一字不差 / 全库统一基准（Firefox/148）」一致。browser_version 由同一
-# 常量派生——usher 查询参数原先写死 124.0 与 UA 的 148 自相矛盾（风控按不一致指纹识别）。
+# 常量派生——UA 与查询参数版本号不一致会被风控按指纹识别。
 _TWITCH_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"
 _TWITCH_BROWSER_VERSION = _TWITCH_WEB_UA.split("rv:", 1)[-1].split(")", 1)[0]  # -> "148.0"
 
@@ -251,7 +254,7 @@ async def _ensure_kuaishou_did(proxy_addr: OptionalStr = None) -> str:
     # 循环（多房间冷启动串行卡顿）；singleflight 临界区只做字典读写，网络拉取在锁外，
     # 等待者经 future 复用同一份结果。
     global _cached_kuaishou_did, _cached_kuaishou_did_ts, _cached_kuaishou_did_proxy
-    # M-8（2026-09-29）：快路判据收进 _take_cached_kuaishou_did（含出口一致性），理由见该函数注释。
+    # 2026-09-29：快路判据收进 _take_cached_kuaishou_did（含出口一致性），理由见该函数注释。
     cached_did = _take_cached_kuaishou_did(proxy_addr)
     if cached_did:
         return cached_did
@@ -340,7 +343,7 @@ async def _ensure_twitch_client_id(proxy_addr: OptionalStr = None) -> str:
         with _twitch_client_id_lock:
             _cached_twitch_client_id = ""
             _cached_twitch_client_id_ts = 0.0
-    # M-14：慢路出口同样补出口一致性判定（快路已在上面判过）。慢路重取失败时原样返回全局缓存，
+    # 慢路出口同样判出口一致性（快路已在上面判过）。慢路重取失败时原样返回全局缓存，
     # 而缓存可能是**别的代理**取的 Client-Id：代理 B 取不到时把它递给代理 B 的请求，等于把代理 A
     # 出口上的标识带到另一出口（与 _ensure_kuaishou_did 的 proxy 比对口径不一致）。
     if _cached_twitch_client_id and _cached_twitch_client_id_proxy != (proxy_addr or ""):
@@ -375,7 +378,7 @@ def _loads_dict(text: object) -> dict[str, object]:
     return _safe_loads(s) or {}
 
 
-# M-17：平台响应体的解析闸门。8M 字符对真实接口响应留了足量余量（抖音 web/enter 实测约
+# 平台响应体的解析闸门。8M 字符对真实接口响应留了足量余量（抖音 web/enter 实测约
 # 数十 KB），而远超它的响应只可能来自风控壳页或恶意 CDN；64 层深度同理——真实嵌套最深约
 # 10 层，再深只会出现在构造出的畸形响应里。
 _SAFE_LOADS_MAX_CHARS = 8 * 1024 * 1024
@@ -385,7 +388,7 @@ _SAFE_LOADS_MAX_DEPTH = 64
 def _safe_loads(text: str) -> Optional[dict[str, object]]:
     # 异常安全的 json.loads：捕获 JSONDecodeError、记 warning 后回 None，平台返回 HTML
     # 错误页或截断 JSON 时不至于把整条解析链路拉崩。解析成功但非 dict 仍由调用方判空。
-    # M-17：响应体来自平台/恶意 CDN，`json.loads` 本身上限只受内存约束（超大响应体一次性
+    # 响应体来自平台/恶意 CDN，`json.loads` 本身上限只受内存约束（超大响应体一次性
     # 吃满内存并长时间占用事件循环）。解析前按长度短路，解析后按层数复核——两层都只在超限
     # 时走「回 None + warning」，与既有「解析失败」同形，不改变任何下游判据。
     if len(text) > _SAFE_LOADS_MAX_CHARS:
@@ -537,14 +540,14 @@ async def get_play_url_list(
     # 据此回退单地址；仅当带宽标记数量与 URL 数量一致才按带宽降序，否则保留原始顺序。
     # 返回值可能混合绝对与相对地址（绝对行原样收，//host 按清单协议补全，其余 .m3u8 相对收）；
     # 调用方不得假定全是相对路径而做前缀拼接，统一绝对化请用 urllib.parse.urljoin。
-    # S-16：兜底分支现已对该相对行统一 urljoin 绝对化，故本函数返回的地址恒为绝对地址。
+    # 兜底分支会对相对行统一 urljoin 绝对化，故本函数返回的地址恒为绝对地址。
     resp = await async_req(url=m3u8, proxy_addr=proxy, headers=header, abroad=abroad)
     if not isinstance(resp, str):
         return []
     play_url_list: list[str] = []
-    # 2026-09-12 审查（低危）：此前只认 "https://" 前缀，部分自建/内网 HLS 源与个别
-    # CDN 用 http:// 或协议相对写法会被整条跳过 → 多清晰度列表为空、上层回退单地址
-    # （用户侧表现为「画质下拉只有一项」）。三形态的具体收法见本函数头部注释。
+    # 三种行形态都要收（https://、http://、协议相对 //host）：只认 "https://" 会让自建/内网
+    # HLS 源与个别 CDN 被整条跳过 → 多清晰度列表为空、上层回退单地址
+    # （用户侧表现为「画质下拉只有一项」）。
     _m3u8_scheme = urllib.parse.urlparse(m3u8).scheme or "https"
     for i in resp.split("\n"):
         line = i.strip()
@@ -552,18 +555,19 @@ async def get_play_url_list(
             play_url_list.append(line)
         elif line.startswith("//"):
             play_url_list.append(f"{_m3u8_scheme}:{line}")
-        # S-16（2026-10-20 续修）：主循环此前只收绝对行，混合清单里一旦有 ≥1 条绝对行，相对 .m3u8
-        # 行就整条被丢 → 上层回退单地址（用户侧「画质下拉只有一项」，正是本函数头注释描述的兜底动机）。
-        # 补相对行一律 urljoin 绝对化，与绝对行同权；沿用下方兜底分支同款 .m3u8 路径判据（urlparse().path
+        # 主循环必须同收相对 .m3u8 行：混合清单里一旦有 ≥1 条绝对行，只收绝对行会让相对行
+        # 整条被丢 → 上层回退单地址（用户侧「画质下拉只有一项」，正是本函数头注释描述的兜底动机）。
+        # 相对行一律 urljoin 绝对化，与绝对行同权；沿用下方兜底分支同款 .m3u8 路径判据（urlparse().path
         # 命中，含 `x.m3u8?token=` 这类带查询串的行），并显式跳过 # 指令行，避免分段清单里的 .ts 行被误当画质。
         elif line and not line.startswith("#") and urllib.parse.urlparse(line).path.endswith(".m3u8"):
             play_url_list.append(urllib.parse.urljoin(m3u8, line))
     if not play_url_list:
-        # S-16：兜底分支两处修正。① 判据改为按 URL 的 path 判 .m3u8——原 endswith("m3u8")
-        # 会把带查询串的相对行（`x.m3u8?token=...`）整条丢弃，多清晰度候选变空、上层回退单地址
+        # 兜底分支两处判据。① 按 URL 的 path 判 .m3u8——裸 endswith("m3u8") 会把带查询串的
+        # 相对行（`x.m3u8?token=...`）整条丢弃，多清晰度候选变空、上层回退单地址
         # （用户表现为「在播却只有一档画质」）。② 相对行一律 urljoin 绝对化：原样返回无 host 的
-        # `1080p/index.m3u8` 交给 ffmpeg 必失败，5 个调用点（PandaTV/WinkTV/TTingLive/Twitch/
-        # YouTube）都不再做前缀拼接。绝对行与 //host 行不受影响（urljoin 对其为恒等）。
+        # `1080p/index.m3u8` 交给 ffmpeg 必失败；各调用点（PandaTV/WinkTV/TTingLive/Twitch/
+        # Showroom/Chzzk/YouTube）都不再做前缀拼接，新增平台也不要补。
+        # 绝对行与 //host 行不受影响（urljoin 对其为恒等）。
         for i in resp.split("\n"):
             line = i.strip()
             if not line:
@@ -687,8 +691,7 @@ def _extract_room_data_from_html(html_str: str) -> dict[str, object]:
 async def get_douyin_web_stream_data(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
-    # 通过抖音网页端API获取直播数据
-    # 注意：cookie 需由调用方通过 cookies 参数传入有效值，硬编码的过期 cookie 必然触发风控
+    # 通过抖音网页端API获取直播数据（cookie 取值链见模块头）
     chrome_ua = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
@@ -713,7 +716,7 @@ async def get_douyin_web_stream_data(
         # 仅 ttwid 也能拉到流，但风控率显著高于带登录 cookie，故调用方应优先传真实 cookie。
         headers["cookie"] = await _ensure_ttwid(proxy_addr)
 
-    # S-10：外层先用「很窄的 try」只包住取数与解析本身。
+    # 外层用「很窄的 try」只包住取数与解析本身；ORIGIN/HEVC 注入另由 _inject_origin_and_hevc 兜住。
     try:
         # web_rid 取 URL 末段即可，无需额外解析请求：web/enter 同时接受数字房间号
         # （745964462470）与抖音号（yall1102），且传入抖音号不会发生重定向
@@ -752,14 +755,14 @@ async def get_douyin_web_stream_data(
             json_data = cast(dict[str, object], parsed.get("data") or {})
             inner_list = json_data.get("data")
             if not inner_list:
-                # M-3（2026-09-29）：进 raise 的 URL 一律先过 utils.mask_credentials。
+                # 2026-09-29：进 raise 的 URL 一律先过 utils.mask_credentials。
                 # @trace_error_decorator 落日志时对异常原文不做任何脱敏，而调用方透传的房间地址
                 # 可能挂着 token/ttwid/cookie 类查询参数（pwd/session 均在 utils._SECRET_KEYS 表内），
                 # 明文抛出即等于把凭据写进 logs/streamget.log（300 KB 轮转保留多份 = 长期落盘）。
                 raise Exception(f"{utils.mask_credentials(url)} VR live is not supported or room not found")
             room_data = cast(dict[str, object], cast(list[object], inner_list)[0])
             user_info = cast(dict[str, object], json_data.get("user") or {})
-            # M-9（2026-09-29）：.get("nickname") 只挡「键缺失」，抖音显式返回 "nickname": null
+            # 2026-09-29：.get("nickname") 只挡「键缺失」，抖音显式返回 "nickname": null
             # （游客态被风控/主页态房间）时取到 None 并写进结果 dict；下游 clean_name(None) 当场
             # AttributeError（src/stream_select.py 的 clean_name 首行 input_text.strip()），整轮解析
             # 被兜成「获取失败」且该轮已按成功样本上报熔断统计。文件内新代码统一走 _dig_str。
@@ -797,15 +800,14 @@ async def get_douyin_web_stream_data(
                     raise Exception(f"Douyin web data fetch error (API: {api_error}) (HTML fallback: {e2}).")
         if room_data is None:
             raise Exception(f"Douyin web data fetch error: {api_error}")
-        # S-10：注入段在 try 内调用，但它自己吞掉一切异常（见 _inject_origin_and_hevc），
+        # 注入段在 try 内调用，但它自己吞掉一切异常（见 _inject_origin_and_hevc），
         # 故注入失败不会让本函数抛错、已解析好的 room_data 照常返回。
         await _inject_origin_and_hevc(room_data, html_str, url, proxy_addr, headers)
         return room_data
     # 任何取数/解析异常都吞掉并回 {"anchor_name": ""}：不让单房间解析崩溃主循环，
     # 代价是「解析失败」与「未开播」在上游同形，可能空转。
-    # S-10：本 handler 只覆盖取数与解析；ORIGIN/HEVC 注入已由 _inject_origin_and_hevc 单独兜住，
-    # 注入失败时本函数带着**已解析好的 room_data** 正常返回；同时补 logger.exception 留栈，
-    # 否则日志只有一行通用告警、归因方向完全反向。
+    # 本 handler 只覆盖取数与解析；ORIGIN/HEVC 注入已由 _inject_origin_and_hevc 单独兜住，
+    # 注入失败时本函数带着**已解析好的 room_data** 正常返回；logger.exception 留栈供归因。
     except Exception as e:
         tb_lineno = e.__traceback__.tb_lineno if e.__traceback__ else 0
         logger.exception(i18n.tr("Error message: {e} Error line: {tb_lineno}", e=e, tb_lineno=tb_lineno))
@@ -819,9 +821,9 @@ async def _inject_origin_and_hevc(
     proxy_addr: OptionalStr,
     headers: dict[str, str],
 ) -> None:
-    # S-10：ORIGIN/HEVC 注入单独成段，失败只丢注入结果、不丢已解析好的 room_data。
-    # 原写法把它和取数解析放在同一个最外层 try 里：注入一旦抛错，主播名与全部流地址被
-    # 整体作废（回 {"anchor_name": ""}），房间此后每轮固定「网址内容获取失败」、永久不录。
+    # ORIGIN/HEVC 注入单独成段：失败只丢注入结果、不丢已解析好的 room_data。
+    # [历史注] 注入与取数曾共用一个最外层 try，注入一抛错主播名与全部流地址被整体作废
+    # （回 {"anchor_name": ""}），房间此后每轮固定「网址内容获取失败」、永久不录。
     # html_str 由调用方传入（上面兜底抓到的同一份快照），本函数不另建第二份副本。
     # status==2 才是真正开播；其它值（如 4）视为未开播，跳过取流、不注入任何 ORIGIN。
     try:
@@ -885,14 +887,12 @@ async def _inject_origin_and_hevc(
             if json_str:
                 parsed_data = cast(dict[str, object], _loads_dict(json_str).get("data") or {})
                 if "origin" in parsed_data:
-                    # 不能双层裸下标：origin 已出现 full/sdk 等变体，「有 origin 但无 main」
-                    # 是真实形态，KeyError 会被最外层 except 吞成 {"anchor_name": ""}，
-                    # 把**已经解析好的 room_data（含主播名与全部流地址）**整体作废 → 该房间
-                    # 此后每轮固定「网址内容获取失败」、永久不录。
-                    # 与同文件姊妹实现 get_douyin_app_stream_data 同写法（.get("main") or {}），
-                    # 并在取不到时**整体跳过** ORIGIN 注入：不能只把 origin_url_list 置空，
-                    # 否则下面的 {**origin_m3u8, **hls_pull_url_map} 会注入
-                    # `ORIGIN: "&codec="` 这类坏条目，让选源逻辑多试一次必失败的候选。
+                    # 不能双层裸下标：origin 已出现 full/sdk 等变体，「有 origin 但无 main」是真实形态，
+                    # KeyError 会被最外层 except 吞成 {"anchor_name": ""}，把已解析好的 room_data
+                    # （含主播名与全部流地址）整体作废 → 该房间此后每轮固定「网址内容获取失败」、永久不录。
+                    # 与姊妹实现 get_douyin_app_stream_data 同写法（.get("main") or {}），取不到时整体
+                    # 跳过 ORIGIN 注入：只置空不够，{**origin_m3u8, **hls_pull_url_map} 仍会注入
+                    # `ORIGIN: "&codec="` 坏条目，让选源逻辑多试一次必失败的候选。
                     origin_url_list = cast(
                         dict[str, object], cast(dict[str, object], parsed_data["origin"]).get("main") or {}
                     )
@@ -900,7 +900,7 @@ async def _inject_origin_and_hevc(
                         _inject_origin_urls(stream_url, origin_url_list)
                 if hevc_flv_url:
                     stream_url["hevc_flv_url"] = hevc_flv_url
-    # S-10：注入段的异常在此收敛。这里抛错与「未开播」在上游同形，故必须 debug 留痕；
+    # 注入段的异常在此收敛。这里抛错与「未开播」在上游同形，故必须 debug 留痕；
     # 本函数含出站请求（html_str 为空时另抓一次），异常原文可能带签名 URL，故过 mask_credentials。
     except Exception as e:
         logger.debug(
@@ -916,8 +916,7 @@ async def _inject_origin_and_hevc(
 async def get_douyin_app_stream_data(
     url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None
 ) -> dict[str, object]:
-    # 通过抖音APP端接口获取直播数据（备用方案）
-    # 注意：cookie 需由调用方通过 cookies 参数传入有效值，硬编码的过期 cookie 必然触发风控
+    # 通过抖音APP端接口获取直播数据（备用方案；cookie 取值链见模块头）
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
         + "Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
@@ -959,12 +958,12 @@ async def get_douyin_app_stream_data(
             json_data2 = cast(dict[str, object], parsed2.get("data") or {})
             room_field = json_data2.get("room")
             if not room_field:
-                # M-3（2026-09-29）：同 get_douyin_web_stream_data 内同名判据（见该处注释全文）——
+                # 2026-09-29：同 get_douyin_web_stream_data 内同名判据（见该处注释全文）——
                 # APP 端这条路径同样把调用方 URL 拼进了异常消息，脱敏后才允许上抛。
                 raise Exception(f"{utils.mask_credentials(url)} VR live is not supported or room not found")
             room_data2 = cast(dict[str, object], room_field)
             owner = cast(dict[str, object], room_data2.get("owner") or {})
-            # M-9（2026-09-29）：同 web 端 _try_web_api 的判据（见该处注释）——null 昵称一律回 ""。
+            # 2026-09-29：同 web 端 _try_web_api 的判据（见该处注释）——null 昵称一律回 ""。
             room_data2["anchor_name"] = _dig_str(owner, "nickname")
             return room_data2
         except Exception as e:
@@ -997,11 +996,9 @@ async def get_douyin_app_stream_data(
 
         await _inject_origin_urls_app(room_data)
         return room_data
-    # 任何取数/解析异常都吞掉并回 {"anchor_name": ""}：不让单房间解析崩溃主循环，
-    # 代价是「解析失败」与「未开播」在上游同形，可能空转。
-    # S-10：本 handler 只覆盖取数与解析；ORIGIN 注入已由 _inject_origin_urls_app 单独兜住，
-    # 注入失败时本函数带着**已解析好的 room_data**（含主播名与流地址）正常返回；同时补
-    # logger.exception 留栈——原写法只记一行通用告警、无异常栈，排障归因完全反向。
+    # 兜底口径同 get_douyin_web_stream_data：任何取数/解析异常都吞成 {"anchor_name": ""}
+    # （解析失败与未开播在上游同形，可能空转）；ORIGIN 注入已由 _inject_origin_urls_app 单独兜住，
+    # 注入失败时带着已解析好的 room_data（含主播名与流地址）正常返回；logger.exception 留栈供归因。
     except Exception as e:
         tb_lineno = e.__traceback__.tb_lineno if e.__traceback__ else 0
         logger.exception(i18n.tr("Error message: {e} Error line: {tb_lineno}", e=e, tb_lineno=tb_lineno))
@@ -1009,7 +1006,7 @@ async def get_douyin_app_stream_data(
 
 
 async def _inject_origin_urls_app(room_data: dict[str, object]) -> None:
-    # S-10：APP 入口的 ORIGIN 注入段，独立于取数解析的最外层 try。注入抛错只丢注入结果，
+    # APP 入口的 ORIGIN 注入段，独立于取数解析的最外层 try。注入抛错只丢注入结果，
     # 不把已解析好的 room_data 整体作废（同 _inject_origin_and_hevc 的理由）。
     try:
         if room_data.get("status") != 2:
@@ -1107,7 +1104,7 @@ async def get_tiktok_stream_data(
         "referer": "https://www.tiktok.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
         + "Chrome/141.0.0.0 Safari/537.36",
-        # F-10：调用方 cookies > 环境变量/config 覆盖 > 内置缺省（见 _read_tiktok_guest_cookie）
+        # 调用方 cookies > 环境变量/config 覆盖 > 内置缺省（见 _read_tiktok_guest_cookie）
         "cookie": guest_cookie,
     }
 
@@ -1251,7 +1248,8 @@ async def get_kuaishou_stream_data(
                 _warn_api_abnormal(json.dumps(play_urls_dict, ensure_ascii=False), "快手 playUrls", codec_key, {})
                 return result
         else:
-            # TODO: Old version which not working at 20241128, could be removed if not working confirmed
+            # 旧版 playUrls 列表形态：上游已不再下发（实测取不到流），代码保留未删，
+            # 待确认无用后可移除；下面的 adaptationSet 取值只在真收到列表时才会执行。
             play_urls_list = cast(list[object], play_urls_obj) if isinstance(play_urls_obj, list) else []
             if not play_urls_list:
                 return result
@@ -1828,7 +1826,6 @@ async def get_bilibili_room_info_h5(url: str, proxy_addr: OptionalStr = None, co
         "origin": "https://live.bilibili.com",
         "referer": "https://live.bilibili.com/26066074",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["cookie"] = cookies
 
@@ -1836,9 +1833,9 @@ async def get_bilibili_room_info_h5(url: str, proxy_addr: OptionalStr = None, co
     api = f"https://api.live.bilibili.com/xlive/web-room/v1/index/getH5InfoByRoom?room_id={room_id}"
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
-    # MID-48：`room_info["data"]["room_info"]` 在接口返回 HTML/截断 JSON 时抛 JSONDecodeError、
+    # `room_info["data"]["room_info"]` 在接口返回 HTML/截断 JSON 时抛 JSONDecodeError、
     # 在 data 为 null 时抛 TypeError，两者都被本函数的 _or_none 装饰器变成 None，
-    # 与「房间无标题」不可区分。改为 _loads_dict + .get 链：取不到即空串（上层 `or ""` 兜底），
+    # 与「房间无标题」不可区分。故走 _loads_dict + .get 链：取不到即空串（上层 `or ""` 兜底），
     # data 整体缺失（风控信封 / 解析失败）时留一条区分性告警。
     room_info = _loads_dict(json_str)
     if _dig(room_info, "data") is None:
@@ -1856,7 +1853,6 @@ async def get_bilibili_room_info(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -1915,7 +1911,6 @@ async def get_bilibili_stream_data(
         "origin": "https://live.bilibili.com",
         "referer": "https://live.bilibili.com/26066074",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -2197,7 +2192,6 @@ async def get_bilibili_danmaku_info(
         "origin": "https://live.bilibili.com",
         "referer": "https://live.bilibili.com",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -2323,7 +2317,7 @@ async def get_bilibili_danmaku_info(
                 )
         return b
 
-    # M-8（2026-09-29）：快路按出口取值（不匹配即下沉到按 proxy 分桶的 singleflight）。
+    # 2026-09-29：快路按出口取值（不匹配即下沉到按 proxy 分桶的 singleflight）。
     # 锁类型、加锁位置与 global 声明一律不动——本函数临界区零 await，去重仍由 singleflight 承担。
     buvid = _take_cached_bili_buvid(proxy_addr)
     if not buvid:
@@ -2583,7 +2577,6 @@ async def get_xhs_stream_url(
         "xy-common-params": "platform=iOS&sid=" + sid_value,
         "referer": "https://app.xhs.cn/",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -2751,7 +2744,6 @@ async def get_bigo_stream_url(
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Referer": "https://www.bigo.tv/",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -2844,7 +2836,6 @@ async def get_blued_stream_url(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -2936,7 +2927,7 @@ async def login_sooplive(username: str, password: str, proxy_addr: OptionalStr =
         cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
         return cookie_str
     except Exception as e:
-        # M-12：同 login_popkontv 口径——连接/代理异常原文会内嵌含 user:pass@ 的代理 URL，而
+        # 同 login_popkontv 口径——连接/代理异常原文会内嵌含 user:pass@ 的代理 URL，而
         # logger.error 直接落轮转日志，故必须先过 mask_credentials（脱敏在日志侧，抛出语义不变）。
         logger.error(i18n.tr("An error occurred during login: {e}", e=utils.mask_credentials(str(e))))
         raise Exception(
@@ -2959,7 +2950,6 @@ async def get_sooplive_cdn_url(
         "Referer": "https://play.sooplive.co.kr/oul282/249469582",
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -2996,8 +2986,6 @@ async def get_sooplive_tk(
         "Referer": "https://play.sooplive.co.kr/secretx/250989857",
         "Content-Type": "application/x-www-form-urlencoded",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -3049,7 +3037,6 @@ def get_soop_headers(cookies: OptionalStr = None) -> dict[str, str]:
         "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, "
         "like Gecko) Version/18.5 Mobile/15E148 Safari/604.1 Edg/141.0.0.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["cookie"] = cookies
     return headers
@@ -3159,7 +3146,6 @@ async def get_sooplive_stream_data(
         "Referer": "https://m.sooplive.co.kr/",
         "Content-Type": "application/x-www-form-urlencoded",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -3329,12 +3315,11 @@ async def get_netease_stream_data(
         "referer": "https://cc.163.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     # 规整 URL 结尾斜杠，保证后续正则/接口参数拼接稳定
-    # M-18（2026-10-20）：原 `url[-1]` 在空 URL 上抛 IndexError，被 @trace_error_decorator 吞成
-    # 「未开播」且不留任何日志线索（用户只见「没源」，归因丢失）。改为空串短路——url 为空时保持原样，
+    # 空 URL 短路：裸 `url[-1]` 在空 URL 上抛 IndexError，被 @trace_error_decorator 吞成
+    # 「未开播」且不留任何日志线索（用户只见「没源」，归因丢失）。url 为空时保持原样，
     # 交由下游 async_req/正则路径按既有兜底处理；非空且缺尾斜杠才补，语义与原式对非空 url 完全等价。
     if url and not url.endswith("/"):
         url = url + "/"
@@ -3391,7 +3376,6 @@ async def get_qiandurebo_stream_data(
         "referer": "https://qiandurebo.com/web/index.php",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -3438,7 +3422,6 @@ async def get_pandatv_stream_data(
         "referer": "https://www.pandalive.co.kr/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -3495,8 +3478,8 @@ async def get_pandatv_stream_data(
                     f"correctly fill in the login cookie in the configuration file."
                 )
             else:
-                # M-16：原写法传两个位置参数，str(e) 得到 ('needXxx', 'msg') 的元组字面量——
-                # 告警文案不可读。显式格式化为「code: message」（_dig 可能回 None，一并收敛成 str）。
+                # 不能传两个位置参数：str(e) 会得到 ('needXxx', 'msg') 的元组字面量、告警文案不可读。
+                # 显式格式化为「code: message」（_dig 可能回 None，一并收敛成 str）。
                 _err_msg = _dig(json_data, "message")
                 raise RuntimeError(f"{error_code}: {_err_msg if _err_msg is not None else ''}")
         play_url = _dig_str(json_data, "PlayList", "hls", 0, "url")
@@ -3522,7 +3505,6 @@ async def get_maoerfm_stream_url(
         "referer": "https://fm.missevan.com/live/868895007",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -3575,7 +3557,6 @@ async def get_winktv_bj_info(
         "referer": "https://www.winktv.co.kr/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     user_id = url.split("?")[0].rsplit("/", maxsplit=1)[-1]
@@ -3615,7 +3596,6 @@ async def get_winktv_stream_data(
         "origin": "https://www.winktv.co.kr",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     user_id = url.split("?")[0].rsplit("/", maxsplit=1)[-1]
@@ -3657,7 +3637,7 @@ async def get_winktv_stream_data(
                     f"the cookie is correctly filled in the configuration file after logging in."
                 )
             else:
-                # M-16：同 PandaTV live/play（见该处注释）——两位置参数会让 str(e) 变成元组字面量。
+                # 同 PandaTV live/play（见该处注释）——两位置参数会让 str(e) 变成元组字面量。
                 _err_msg = _dig(json_data, "message")
                 raise RuntimeError(f"{error_code}: {_err_msg if _err_msg is not None else ''}")
         m3u8_url = _dig_str(json_data, "PlayList", "hls", 0, "url")
@@ -3716,7 +3696,7 @@ async def login_flextv(username: str, password: str, proxy_addr: OptionalStr = N
             return None
 
     except Exception as e:
-        # M-12：同 login_popkontv 口径——代理/请求异常原文可能含 user:pass@，落盘前必须脱敏。
+        # 同 login_popkontv 口径——代理/请求异常原文可能含 user:pass@，落盘前必须脱敏。
         logger.error(i18n.tr("FlexTV login request exception: {e}", e=utils.mask_credentials(str(e))))
         raise Exception(
             "FlexTV login failed, please check if the account and password in the configuration file are correct."
@@ -3782,7 +3762,6 @@ async def get_flextv_stream_data(
         "referer": "https://www.ttinglive.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     # user_id 取 URL 中 "/live" 之前最后一段（主播主页路径），是 flextv 频道路由标识。
@@ -3881,7 +3860,7 @@ async def get_flextv_stream_data(
                 result["anchor_name"] = anchor_name
     except Exception as e:
         # 多参数用字符串拼接而非 f-string：f-string 会被 i18n 扫描器判为「应改用 i18n.tr」。
-        # M-12（2026-10-20）：连接/代理异常的 str(e) 会内嵌含 user:pass@ 的代理 URL，而 logger.error
+        # 2026-10-20：连接/代理异常的 str(e) 会内嵌含 user:pass@ 的代理 URL，而 logger.error
         # 直落轮转日志（logs/ 按大小轮转保留多份＝凭据长期落盘），故拼接位改为 utils.mask_credentials(str(e))。
         # 保留原拼接形态与原文本（不新建 i18n.tr 模板，免四目录登记）；脱敏仅在日志侧，抛出/返回语义不变。
         logger.error("Failed to retrieve data from FlexTV live room " + utils.mask_credentials(str(e)))
@@ -3959,8 +3938,6 @@ async def get_looklive_stream_url(
         "Content-Type": "application/x-www-form-urlencoded",
         "Referer": "https://look.163.com/",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -4100,7 +4077,6 @@ async def get_popkontv_stream_data(
         "Origin": "https://www.popkontv.com",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     if "mcid" in url:
@@ -4305,7 +4281,7 @@ async def get_popkontv_stream_url(
             raise RuntimeError("Failed to retrieve live stream source, no statusCd in response")
         # L000A：未实名/未手机验证会员，服务端拒绝提供流；L0000：成功拿到 HLS；L0001：首请求需二次确认。
         if status_cd == "L000A":
-            # F-11：print → logger（多参数用字符串拼接，避免 f-string 触发 i18n 门禁）
+            # 多参数用字符串拼接，避免 f-string 触发 i18n 门禁
             logger.error("Failed to retrieve live stream source, " + str(status_msg))
             raise RuntimeError(
                 "You are an unverified member. After logging into the popkontv official website, "
@@ -4392,8 +4368,7 @@ async def login_twitcasting(
             cookie = utils.dict_to_cookie_str(cookie_dict)
             return cookie
     except Exception as e:
-        # F-11：print → logger（多参数用字符串拼接，避免 f-string 触发 i18n 门禁）
-        # M-12（2026-10-20）：登录/代理异常原文含 user:pass@ 的代理 URL，落轮转日志前必须脱敏；
+        # 2026-10-20：登录/代理异常原文含 user:pass@ 的代理 URL，落轮转日志前必须脱敏；
         # 保留拼接形态与原 msgid 文本，不新建 i18n.tr 模板免四目录登记。脱敏仅在日志侧，返回 None 语义不变。
         logger.error("TwitCasting login error, " + utils.mask_credentials(str(e)))
     return None
@@ -4426,7 +4401,6 @@ async def get_twitcasting_stream_url(
             i18n.tr("无法从链接中解析 TwitCasting 主播 ID: {masked_url}", masked_url=utils.mask_credentials(url))
         )
     anchor_id = parts[3]
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -4720,7 +4694,6 @@ async def get_kugou_stream_url(
         "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
         "Referer": "https://fanxing2.kugou.com/",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -4807,7 +4780,6 @@ async def get_twitchtv_room_info(
         "Client-Integrity": token,
         "Content-Type": "text/plain;charset=UTF-8",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     uid = url.split("?")[0].rsplit("/", maxsplit=1)[-1]
@@ -4870,8 +4842,6 @@ async def get_twitchtv_stream_data(
         "Client-ID": client_id,
         "device-id": generate_random_string(16).lower(),
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     uid = url.split("?")[0].rsplit("/", maxsplit=1)[-1]
@@ -4960,7 +4930,6 @@ async def get_liveme_stream_url(
         "referer": "https://www.liveme.com",
         "user-agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5024,8 +4993,6 @@ async def get_huajiao_sn(
         "referer": "https://www.huajiao.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5105,8 +5072,6 @@ async def get_huajiao_user_info(
         "referer": "https://www.huajiao.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5162,7 +5127,6 @@ async def get_huajiao_stream_url_app(
         "accept-language": "zh-Hans-US;q=1.0",
         "sdk_version": "1",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     room_id = _safe_extract_id(url)
@@ -5211,7 +5175,6 @@ async def get_huajiao_stream_url(
         "referer": "https://www.huajiao.com/",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5291,7 +5254,6 @@ async def get_liuxing_stream_url(
         "Referer": "https://wap.7u66.com/198189?promoters=0",
         "User-Agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5334,7 +5296,6 @@ async def get_showroom_stream_data(
         "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5418,7 +5379,6 @@ async def get_acfun_sign_params(
     # 透传）时 httpx 不去重，请求会出现两条 Cookie 头；RFC 6265 §5.4 禁止 UA 发送多个，
     # 用户配置的 acfun_cookie 可能被整体丢弃，部分 WAF 还会直接回 400。
     cookie_header = f"_did={did};"
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         cookie_header = f"_did={did}; {cookies}"
     headers = {
@@ -5454,7 +5414,6 @@ async def get_acfun_stream_data(
         "referer": "https://live.acfun.cn/live/17912421",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5545,7 +5504,6 @@ async def get_changliao_stream_url(
         "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
         "Referer": "https://wap.tlclw.com/phone/15777?promoters=0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5617,7 +5575,6 @@ async def get_yingke_stream_url(
         "Referer": "https://www.inke.cn/",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5673,7 +5630,6 @@ async def get_yinbo_stream_url(
         "Accept-Language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
         "Referer": "https://live.ybw1666.com/800005143?promoters=0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5727,7 +5683,7 @@ async def get_yinbo_stream_url(
     return result
 
 
-# S-11：知乎落地页（API 响应里的 theater_url）只允许落在知乎自家域族内。下方请求会带上用户
+# 知乎落地页（API 响应里的 theater_url）只允许落在知乎自家域族内。下方请求会带上用户
 # Cookie，故 host 判据必须与「凭据可发往哪里」同口径；后缀判定用「精确等于或 . 后缀」，防
 # evil-zhihu.com 这类后缀伪装。
 _ZHIHU_ALLOWED_HOST_SUFFIXES = ("zhihu.com", "zhimg.com")
@@ -5766,7 +5722,6 @@ async def get_zhihu_stream_url(
         "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5779,7 +5734,7 @@ async def get_zhihu_stream_url(
         if not user_id:
             # 取不到 id 时显式抛错，不能拿空串去拼 /people//profile。
             raise ValueError("Failed to find zhihu user id")
-        # S-11：id 直接拼进 URL 路径，`../` 可改写请求路径、`#`/`?` 可截断查询串。percent 编码后
+        # id 直接拼进 URL 路径，`../` 可改写请求路径、`#`/`?` 可截断查询串。percent 编码后
         # 路径语义与「id 字面量」一致，正常 id（纯字母数字）编码前后同形。
         user_id = urllib.parse.quote(user_id, safe="")
         api = f"https://api.zhihu.com/people/{user_id}/profile?profile_new_version="
@@ -5800,7 +5755,7 @@ async def get_zhihu_stream_url(
     else:
         live_page_url = url
 
-    # S-11：theater_url 直接取自知乎 API 响应体，而下方请求复用了已注入用户 Cookie 的 headers。
+    # theater_url 直接取自知乎 API 响应体，而下方请求复用了已注入用户 Cookie 的 headers。
     # 不校验就等于「响应可控时一条链接即可把登录 Cookie 递送到任意 http(s) host（含回环与云
     # 元数据地址）」。与同仓 XHS（_xhs_is_allowed_host）/ Shopee（_shopee_is_allowed_host）同构。
     if not _zhihu_is_allowed_host(live_page_url):
@@ -5858,7 +5813,6 @@ async def get_chzzk_stream_data(
         "referer": "https://chzzk.naver.com/live/458f6ec20b034f49e0fc6d03921646d2",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5910,7 +5864,7 @@ def _read_haixiu_token_override(is_haixiu: bool) -> str:
     if override:
         return override
     try:
-        # F-16：`read_ini_value`（按文件路径读取、不写回），勿与 config_io 的
+        # `read_ini_value`（按文件路径读取、不写回），勿与 config_io 的
         # `read_config_value(parser, section, option, default)` 混淆
         cfg_value = utils.read_ini_value(f"{script_path}/config/config.ini", "Cookie", cfg_key)
     except Exception:
@@ -5929,7 +5883,6 @@ async def get_haixiu_stream_url(
         "referer": "https://www.haixiutv.com/",
         "user-agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -5999,8 +5952,6 @@ async def get_vvxqiu_stream_url(
         "Origin": "https://h5webcdn-pro.vvxqiu.com",
         "Referer": "https://h5webcdn-pro.vvxqiu.com/",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6060,8 +6011,6 @@ async def get_17live_stream_url(
         "referer": "https://17.live/",
         "user-agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6110,8 +6059,6 @@ async def get_langlive_stream_url(
         "referer": "https://www.lang.live/",
         "user-agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6155,8 +6102,6 @@ async def get_pplive_stream_url(
         "Referer": "https://m.pp.weimipopo.com/",
         "User-Agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6207,8 +6152,6 @@ async def get_6room_stream_url(
         "referer": "https://ios.6.cn/?ver=8.0.3&build=4",
         "user-agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6262,8 +6205,6 @@ async def get_shopee_stream_url(
         "referer": "https://live.shopee.sg/share?from=live&session=802458&share_user_id=",
         "user-agent": "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6445,8 +6386,6 @@ async def get_youtube_stream_url(
         "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6512,8 +6451,6 @@ async def get_taobao_stream_url(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
         "Cookie": "",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6709,8 +6646,6 @@ async def get_jd_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: O
         "referer": "https://lives.jd.com/",
         "x-referer-page": "https://lives.jd.com/",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6816,8 +6751,6 @@ async def get_faceit_stream_data(
         "faceit-referer": "web-next",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
     # 不能用裸 findall(...)[0]：不带 /stream 的玩家资料页会抛 IndexError，日志读不出
@@ -6873,8 +6806,6 @@ async def get_migu_stream_url(
         "appId": "miguvideo",
         "channel": "H5",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["Cookie"] = cookies
 
@@ -6977,8 +6908,6 @@ async def get_lianjie_stream_url(
         "Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
         "accept-language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["cookie"] = cookies
 
@@ -7059,8 +6988,6 @@ async def get_laixiu_stream_url(
         "Referer": "https://www.imkktv.com/",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["cookie"] = cookies
 
@@ -7104,8 +7031,6 @@ async def get_picarto_stream_url(
         "Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
         "accept-language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
     }
-
-    # 调用方透传 cookie 时优先采用；否则走游客态/自动获取凭据（各平台未登录态取流能力不一，部分更易被风控）
     if cookies:
         headers["cookie"] = cookies
 

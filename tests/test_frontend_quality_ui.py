@@ -6,7 +6,7 @@
 # Node 为项目运行时基线（node/ 自动下载、Dockerfile 安装 Node 24 LTS），但开发机可能未装：
 # 缺失时 skip 而非 fail，与沙箱环境限制类用例的既有口径一致。
 #
-# 子进程形态的两条硬约束（MID-64，2026-09-20 实测挂死）：
+# 子进程形态的两条硬约束：
 #   ① 输出重定向到临时文件 + Popen/wait，不用管道：node --test 会派生 worker 子进程，超时只杀
 #      直接子进程，run() 内补跑的 communicate() 仍被孙进程持有的写端阻塞，timeout 根本不是上界。
 #      没有管道就没有可被孙进程挂住的读端，wait(timeout=) 才是真上界。
@@ -83,7 +83,7 @@ def _kill_process_tree(proc: "subprocess.Popen[Any]") -> None:
 
 def _run_node(node_bin: str, args: list[str], timeout: float = _TIMEOUT_SECONDS) -> tuple[int | None, str, str]:
     # 返回 (退出码, stdout, stderr)；退出码为 None 表示「超时且连杀都收不回」。
-    # 输出走临时文件而不是管道，理由见模块头 MID-64 第 ① 点。
+    # 输出走临时文件而不是管道，理由见模块头第 ① 点。
     # ignore_cleanup_errors：Windows 下孙进程会继承被重定向的文件句柄，worker 若比直接子进程
     # 活得久，整目录删除必抛 PermissionError（实测 WinError 32）——那是收尾噪声而非用例结论，
     # 临时目录位于 %TEMP%/tmp，由系统回收，不值得为此挂掉用例。
@@ -127,14 +127,13 @@ def _pid_alive(pid: int) -> bool:
     # 跨平台存活判定。Windows 上不能用 os.kill(pid, 0)——CPython 在 nt 下会把它翻译成
     # TerminateProcess(handle, 0)，即「杀掉它」而不是「探一下」。
     #
-    # 为什么按**字节**判定而不是 text=True 解码（MID-64 ② 的补集，2026-09-22 实测）：
-    # 中文 Windows 上 tasklist 对「无匹配任务」输出 GBK 消息（首字节 b'\xd0\xc5\xcf\xa2'），
-    # 而门禁口径要求 PYTHONUTF8=1 → UTF-8 模式下 text=True 按 utf-8 解码该字节流，subprocess 的
-    # reader 线程直接抛 UnicodeDecodeError，communicate() 返回 stdout=None，`str(pid) in None` 即
-    # TypeError，并额外产生一条 PytestUnhandledThreadExceptionWarning（违反本仓「0 警告」）。
-    # 该缺陷只在单独跑本文件时显现：全量跑时 main.py 的模块级 SetConsoleOutputCP(65001) 已把码页
-    # 切成 UTF-8，tasklist 改吐 UTF-8 而侥幸可解（即「全量绿、单跑红」）。字节包含判定与码页
-    # 彻底解耦：PID 出现在 tasklist 表格里 ⟺ 进程存活，与消息语言无关。
+    # 为什么按**字节**判定而不是 text=True 解码（2026-09-22 实测）：中文 Windows 上 tasklist
+    # 对「无匹配任务」输出 GBK 消息（首字节 b'\xd0\xc5\xcf\xa2'），而门禁口径要求 PYTHONUTF8=1
+    # → UTF-8 模式下 text=True 按 utf-8 解码该字节流，reader 线程直接抛 UnicodeDecodeError，
+    # communicate() 返回 stdout=None，`str(pid) in None` 即 TypeError，并额外产生一条
+    # PytestUnhandledThreadExceptionWarning（违反本仓「0 警告」）。该缺陷只在单跑本文件时显现：
+    # 全量跑时 main.py 的模块级 SetConsoleOutputCP(65001) 已切码页，tasklist 改吐 UTF-8 而侥幸可解。
+    # 字节包含判定与码页彻底解耦：PID 出现在 tasklist 表格里 ⟺ 进程存活，与消息语言无关。
     if sys.platform == "win32":  # 平台门控一律用 sys.platform 字面量（mypy 跨平台门禁要求）
         probe = subprocess.run(
             ["tasklist", "/FI", "PID eq %d" % pid, "/NH"],
@@ -170,7 +169,7 @@ def test_frontend_quality_ui() -> None:
 
 
 # 挂死的 node 子进程 + 两个 25s 的孙进程：一个 stdio 继承、一个 ignore。
-# **继承 stdio 的那只**才是 MID-64 的真实形态——node --test 的 worker 会继承父进程的
+# **继承 stdio 的那只**才是该真实形态——node --test 的 worker 会继承父进程的
 # stdout/stderr；旧写法把它们接到管道上，超时只杀直接子进程，随后的收尾读取仍会等
 # 孙进程持有的写端关闭。新写法把输出重定向到临时文件，根本没有管道可读，
 # 所以 wait(timeout=) 是真上界（test_node_test_timeout_bounds_wait_and_reaps_tree 逐条断言）。
@@ -185,7 +184,7 @@ _HANG_JS = (
 
 
 def test_node_test_timeout_bounds_wait_and_reaps_tree() -> None:
-    # 回归锁（MID-64）：① timeout 必须是真上界；② 超时必须杀整棵进程树
+    # 回归锁：① timeout 必须是真上界；② 超时必须杀整棵进程树
     # （含继承 stdio 的 worker 孙进程，否则它继续持有输出句柄）。
     assert _NODE_BIN is not None
     started = time.monotonic()
@@ -204,7 +203,7 @@ def test_node_test_timeout_bounds_wait_and_reaps_tree() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _pid_alive 回归锁（MID-64 ② 的补集，2026-09-22）：进程存活检测必须与码页/语言解耦。
+# _pid_alive 回归锁（ ② 的补集，2026-09-22）：进程存活检测必须与码页/语言解耦。
 # 三条一起用，缺一不可：
 #   · test_pid_alive_survives_gbk_tasklist_output —— 把 tasklist 载荷钉成事故里的 GBK 字节，
 #     与宿主当前码页无关（全量跑时码页已被 main 切成 UTF-8，只跑真进程反而测不到红点）；

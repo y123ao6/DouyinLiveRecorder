@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 # B站 wbi 签名修复的串联锁：get_bilibili_danmaku_info 返回 token，并能连 WS 收到弹幕。
 #
-# MT-02（2026-10-19，CODE_REVIEW_2026-10-18）：本文件原是「只有 main()、没有任何 test_ 函数」的
+# 2026-10-19：本文件原是「只有 main()、没有任何 test_ 函数」的
 # 真机脚本——pytest 收集到 0 用例，token / server_host / WS 存活三条断言永不自动执行、可静默腐烂，
-# 而文件名仍在向读者 advertise「B站弹幕已验证」。照 tests/test_bili_e2e.py（MIN-2266 ②）的形态改造：
+# 而文件名仍在向读者 advertise「B站弹幕已验证」。照 tests/test_bili_e2e.py（ ②）的形态改造：
 # 主体拆成**离线收集型**用例，只打桩网络层（spider.async_req 的四端点 + bilibili.WsClient），
 # 「info 解析链 → start 建连 → 进房包 → AUTH_REPLY → 弹幕分发」整条串联走真实代码；真机通道留在
 # `if __name__ == "__main__"` 之后（`python tests/test_bilibili_danmaku.py [房间URL] [存活秒数]`），
 # 按 AGENTS「live collector 双模模板」补齐守卫（执行体全在守卫之下、模块级零副作用、argv 两步式）。
 # 分工（不另建第二份字段级断言）：test_bilibili_danmaku_info.py 锁 spi 端点 URL、buvid 来源优先级、
 # 看门狗三态等字段/分支；test_platform_danmaku_offline.py 锁三平台帧编解码；本文件锁上面那条串联，
-# 并钉住 L-26：_reject_auth 的关停协程必须经 spawn_danmaku_task 投递，异常有人回收、不留孤儿 future。
+# 并钉住：_reject_auth 的关停协程必须经 spawn_danmaku_task 投递，异常有人回收、不留孤儿 future。
 # 判据（改完复跑，两条都必须成立）：
 #   PYTHONUTF8=1 python -m pytest tests/test_bilibili_danmaku.py --collect-only -q   # collected >= 1 且秒级
 #   PYTHONUTF8=1 python -m pytest tests/test_bilibili_danmaku.py -q                  # 全绿 0 警告且**不联网**
@@ -113,7 +113,7 @@ class _ChainFakeWs:
         self.closed += 1
 
     async def fail(self, reason: str = "") -> None:
-        # 与 src/ws_client.py::WsClient.fail 同形（MID-2245 要求被拒侧走这条带上报的出口）。
+        # 与 src/ws_client.py:WsClient.fail 同形（该要求被拒侧走这条带上报的出口）。
         self.closed += 1
         self.fail_reasons.append(reason)
 
@@ -148,7 +148,7 @@ def _danmu_frame(text: str, user: str) -> bytes:
 
 
 async def test_danmaku_info_to_ws_chain_delivers_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 本文件的立身之本（MT-02）：一条用例跑完「拿参数 → 建连 → 进房 → 认证 → 出弹幕」，
+    # 本文件的立身之本：一条用例跑完「拿参数 → 建连 → 进房 → 认证 → 出弹幕」，
     # 任何一环断掉（info 字段改名、进房包不再带 token、AUTH_REPLY 分支被删、分发链换了回调）都会红。
     hits: list[str] = []
     monkeypatch.setattr(spider, "async_req", _stub_danmaku_req(hits))
@@ -211,7 +211,7 @@ async def test_danmaku_info_to_ws_chain_delivers_message(monkeypatch: pytest.Mon
 
 
 async def test_reject_auth_dispatches_through_spawned_task(monkeypatch: pytest.MonkeyPatch) -> None:
-    # L-26 回归锁①：_reject_auth 的关停协程必须经 spawn_danmaku_task 投递（带异常落盘的托管调度），
+    # ①：_reject_auth 的关停协程必须经 spawn_danmaku_task 投递（带异常落盘的托管调度），
     # 不得退回裸 asyncio.ensure_future——那种写法下 fail() 的异常只在任务被 GC 时以
     # "Task exception was never retrieved" 打到 stderr，现场零日志（2026-09-12 审查已在 _on_ws_ready
     # 一侧把同一形态立为禁止）。投递替身换成记账器后，退回裸 ensure_future 一条都记不到。
@@ -241,7 +241,7 @@ async def test_reject_auth_dispatches_through_spawned_task(monkeypatch: pytest.M
 
 
 async def test_reject_auth_close_failure_is_reclaimed_and_logged(monkeypatch: pytest.MonkeyPatch) -> None:
-    # L-26 回归锁②：关闭协程自己抛错时必须「被回收并留痕」，而不是成为无人认领的孤儿 future。
+    # ②：关闭协程自己抛错时必须「被回收并留痕」，而不是成为无人认领的孤儿 future。
     # 这里刻意**不**打桩 spawn_danmaku_task，走 src/base.py 的真实托管：其完成回调按既有的
     # 「[弹幕]后台协程异常: {type_name}: {exc}」模板落一条 warning（既有键，四语目录已登记，不新造
     # msgid）。退回裸 ensure_future 时这条 warning 不会出现，本用例即红。
@@ -326,7 +326,7 @@ async def _live_probe(url: str, seconds: float) -> None:
 
 def _live_main() -> None:
     # 人工通道入口（不进 pytest：模块里没有任何 test_* 调用它）。
-    # [历史注 2026-10-19] 原名 main，与当时的 `import main`（项目入口模块）同名相冲，MT-02 改造时改名。
+    # [历史注 2026-10-19] 原名 main，与当时的 `import main`（项目入口模块）同名相冲，该改造时改名。
     asyncio.run(_live_probe(LIVE_URL, LIVE_SECONDS))
 
 

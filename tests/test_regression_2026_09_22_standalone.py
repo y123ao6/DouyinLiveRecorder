@@ -4,12 +4,12 @@
 # 被测对象是 scripts/douyin_live_recorder_standalone.py —— 它按设计**不 import src/**，是
 # src/scheduler.py 并发实现与 src/spider.py 部分平台解析的独立副本，因此必须有一份自己的用例。
 # 本文件不推断 src/ 侧「应该是什么」，只把副本自身应满足的不变量钉住：
-#   MID-2257  PlatformBreaker 的 half-open 回报须经 _probing/_probe_owner 门控——非探针线程 /
+#   PlatformBreaker 的 half-open 回报须经 _probing/_probe_owner 门控——非探针线程 /
 #             租约重授予后的陈旧探针只能入窗口、不得驱动状态迁移；样本窗口须为 deque(maxlen) +
 #             挤出时增量扣减（副本旧实现用 list.pop(0)，持锁 O(n)）；
-#   MIN-2259  validate_stream_url 的 .m3u8 判定大小写不敏感，且「判走 HLS 分支」的证据是探针
+#   validate_stream_url 的 .m3u8 判定大小写不敏感，且「判走 HLS 分支」的证据是探针
 #             序列（HEAD 后紧跟 Range GET），不是返回值；
-#   MIN-2201  副本的字母房间号反查须剥引号，非数字/尾斜杠形态不得把坏 roomid 发给接口。
+#   副本的字母房间号反查须剥引号，非数字/尾斜杠形态不得把坏 roomid 发给接口。
 # 另有 --selftest 子进程锁：自检是副本唯一的离线自检入口，新增判据必须真在它里面变绿。
 #
 # 原则：只打桩网络层（_fetch_html/_fetch_json/http_probe）与探针限速，熔断状态机、正则、
@@ -49,7 +49,7 @@ SA = _load_standalone()
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2257：PlatformBreaker 的 half-open 探针门控
+# PlatformBreaker 的 half-open 探针门控
 # ────────────────────────────────────────────────────────────
 
 
@@ -149,7 +149,7 @@ class TestStandaloneBreakerProbeGate:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2259：validate_stream_url 的容器判定大小写
+# validate_stream_url 的容器判定大小写
 # ────────────────────────────────────────────────────────────
 
 
@@ -219,7 +219,7 @@ class TestStandaloneM3u8CaseInsensitive:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2201（副本侧）：字母房间号反查
+# （副本侧）：字母房间号反查
 # ────────────────────────────────────────────────────────────
 
 _HUYA_OFF = {"data": {"profileInfo": {"nick": "虎牙主播"}, "realLiveStatus": "OFF"}}
@@ -298,12 +298,12 @@ class TestStandaloneSelftest:
 
 
 # ────────────────────────────────────────────────────────────
-# S-01/S-02（2026-09-30，CODE_REVIEW_2026-09-30）：探针/录制链防线与命令日志脱敏
+# 探针/录制链防线与命令日志脱敏
 # ────────────────────────────────────────────────────────────
 
 
 class TestUntrustedStreamTargetGuard:
-    # S-01 ②：平台 API 候选属不可信输入面（恶意/被劫持代理、接口投毒、MITM 都可能改写）——
+    # ②：平台 API 候选属不可信输入面（恶意/被劫持代理、接口投毒、MITM 都可能改写）——
     # 协议白名单 + 本机/内网/云元数据目标必须在探针与 ffmpeg 之前被拒。判据是「守卫给得出拒绝
     # 理由」与「候选真的进不了探针」，不是「调用了守卫」。
 
@@ -326,7 +326,7 @@ class TestUntrustedStreamTargetGuard:
         ],
     )
     def test_untrusted_targets_get_a_reason(self, url: str) -> None:
-        # 中间五种 IP 形态正是主线 SEV-03 前缀黑名单的绕过载荷（离线即可判定，无 DNS）
+        # 中间五种 IP 形态正是主线该前缀黑名单的绕过载荷（离线即可判定，无 DNS）
         assert SA._untrusted_stream_target_reason(url) is not None, url
 
     @pytest.mark.parametrize(
@@ -360,7 +360,7 @@ class TestUntrustedStreamTargetGuard:
 
 
 class TestWhitelistOpener:
-    # S-01 ①：build_opener 的默认 Handler 集合不受显式 ProxyHandler 影响——file/ftp/data 三类
+    # ①：build_opener 的默认 Handler 集合不受显式 ProxyHandler 影响——file/ftp/data 三类
     # 协议都会被本地读出 200。行为锁：白名单 opener 对 file:// 给出「白名单外协议」的统一失败形态
     # （转成 RuntimeError），响应体一步都不读。
 
@@ -406,7 +406,7 @@ class TestRedirectHopGuard:
 
 
 class TestHlsSegmentProbeLite:
-    # M-17（2026-10-02）：HLS「播放列表 200」≠ 可录制——分片级探测回灌。判定原则与主线
+    # 2026-10-02：HLS「播放列表 200」≠ 可录制——分片级探测回灌。判定原则与主线
     # _probe_hls_segment 一致（保守优先）：分片明确 4xx/5xx 判假绿；解析不出分片/异常维持列表
     # 可达；派生地址过不可信目标闸（SR-01 同判据）。
 
@@ -445,7 +445,7 @@ class TestHlsSegmentProbeLite:
 
 
 class TestFfmpegCommandHardening:
-    # S-01 ③：-protocol_whitelist 与主线 main.py::_build_ffmpeg_input_args 逐字同值，
+    # ③：-protocol_whitelist 与主线 main.py:_build_ffmpeg_input_args 逐字同值，
     # 两处命令定义点（build_ffmpeg_cmd 规范列表 + run_ffmpeg 内联列表）同位（-i 之前）。
 
     def test_build_ffmpeg_cmd_carries_whitelist_before_input(self) -> None:
@@ -463,7 +463,7 @@ class TestFfmpegCommandHardening:
 
 
 class TestFfmpegCommandLogMasking:
-    # S-02：logs/ffmpeg.log 的命令原文必须脱敏——完整命令含 -headers 里的平台 Cookie 与
+    # logs/ffmpeg.log 的命令原文必须脱敏——完整命令含 -headers 里的平台 Cookie 与
     # -i 的带 token 流地址，该日志 append 无轮转，明文落盘等于凭据长期泄漏。
 
     def test_mask_helper_replaces_headers_and_input_query(self) -> None:
@@ -520,7 +520,7 @@ class TestFfmpegCommandLogMasking:
 
 
 class TestStandaloneGracefulQuitChain:
-    # M-20（2026-10-19 审查修复）：run_ffmpeg 的 Popen 原带 text=True，stdin 是 TextIOWrapper，
+    # （2026-10-19 审查修复）：run_ffmpeg 的 Popen 原带 text=True，stdin 是 TextIOWrapper，
     # 而 terminate_all_ffmpeg 按主线 src/ffmpeg_proc.py 口径写 b"q"——必抛 TypeError 被写 q 处的
     # except 吞没，「写 q 优雅收尾补 moov」一级恒失效（Windows 下退化为硬杀，可产出缺 moov 的坏文件）。
     # 行为锁走真实链路：run_ffmpeg 建进程 → 登记表 → terminate_all_ffmpeg 写 q；替身只仿真「管道

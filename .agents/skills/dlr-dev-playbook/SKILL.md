@@ -77,43 +77,30 @@ agent_created: true
 
 ## 验证
 
-### 最小验证步骤
-
-1. **项目级门禁（统一入口）**：
-   ```bash
-   python scripts/run_gates.py
-   ```
-   预期：退出码 0（全部门禁通过）。
-
-   退出码语义：`0` 通过 / `1` 门禁红（代码问题）/ `2` 清单缺失或含写型命令 / `3` 可执行文件缺失。
-
-2. **单任务验证补充**（随配方执行）：
-   ```bash
-   # 改动模块的测试
-   pytest tests/test_<module>.py -v
-   # 预期：0 warnings
-
-   # 语法检查
-   python -m py_compile src/<module>.py
-   # 预期：无输出
-
-   # 覆盖率检查
-   python scripts/check_coverage.py
-   # 预期：退出码 0
-   ```
-
-3. **变更与测试关联性验证（relevant-check）**：
-   代码变更后必须额外运行与变更文件直接相关的测试子集，并在回复内保留 `## [reviewed-relevant-check]` 证据块。详细步骤见 [`references/testing-conventions.md`](references/testing-conventions.md) 第 11 节。
-
 ### 项目级门禁（统一入口，不复制命令清单）
 
-全量门禁的唯一入口是 `python scripts/run_gates.py`（在仓库根目录执行）：按原顺序跑完全部 `--check` 型门禁，任一失败非 0 退出。**完整命令清单、收窄排障（`--only`/`--keep-going`/`--list`）与平台增跑（`mypy --platform linux`）的口径以 `AGENTS.md`「格式化命令（门禁唯一基准）」为唯一事实源，本手册只引用不复制**——需要逐条命令时用 `run_gates.py --list` 现场解析，或直接查该章节。
+```bash
+python scripts/run_gates.py
+```
+（在仓库根目录执行）按原顺序跑完全部 `--check` 型门禁，任一失败非 0 退出。预期：退出码 0（全部门禁通过）。
+
+**完整命令清单、收窄排障（`--only`/`--keep-going`/`--list`）与平台增跑（`mypy --platform linux`）的口径以 `AGENTS.md`「格式化命令（门禁唯一基准）」为唯一事实源，本手册只引用不复制**——需要逐条命令时用 `run_gates.py --list` 现场解析，或直接查该章节。
 
 退出码语义：`0` 通过 / `1` 门禁红（代码问题）/ `2` 清单缺失或含写型命令（属「没跑」）/ `3` 可执行文件缺失（环境问题）。后两者不是代码不合格，别当成回归。
 
-**单任务验证补充**（随配方执行，非 CI 门禁清单）：改动模块跑 `pytest tests/test_<module>.py -v` → **0 warnings**，涉及子进程输出时再单独跑一次该文件（抓 GBK/UTF-8 代码页问题）；改动文件用 `python -m py_compile` 或 `compileall src` 做语法检查，跑完按铁律 1 清 `__pycache__`；覆盖率跑 `scripts/check_coverage.py`（口径见 `AGENTS.md`「测试」与「完成定义」）。
+### 单任务验证补充（随配方执行，非 CI 门禁清单）
 
-**变更与测试关联性验证（relevant-check）**：代码变更后必须额外运行与变更文件直接相关的测试子集，并在回复内保留 `## [reviewed-relevant-check]` 证据块（受影响文件清单 + 实际命令 + 退出码 + 结果摘要）。这是对全量门禁的补充，证明「本次改动点有对应测试真跑过」，而非替代。无对应测试时显式声明「需补」。详细步骤与格式示例见 [`references/testing-conventions.md`](references/testing-conventions.md) 第 11 节；约束本体在 `AGENTS.md`「测试」的「创建/更新测试」条及 `references/testing-conventions.md` 第 11 节。
+```bash
+pytest tests/test_<module>.py -v        # 预期：0 warnings；涉及子进程输出时再单独跑一次该文件（抓 GBK/UTF-8 代码页问题）
+python -m py_compile src/<module>.py    # 预期：无输出；跑完按铁律 1 清 __pycache__
+python scripts/check_coverage.py        # 预期：退出码 0（口径见 `AGENTS.md`「测试」与「完成定义」）
+```
+
+### 变更与测试关联性验证（relevant-check）
+
+代码变更后必须额外运行与变更文件直接相关的测试子集，并在回复内保留 `## [reviewed-relevant-check]` 证据块（受影响文件清单 + 实际命令 + 退出码 + 结果摘要）。这是对全量门禁的补充，证明「本次改动点有对应测试真跑过」，而非替代。无对应测试时显式声明「需补」。详细步骤与格式示例见 [`references/testing-conventions.md`](references/testing-conventions.md) 第 11 节；约束本体在 `AGENTS.md`「测试」的「创建/更新测试」条。
+
+### 变异验证
 
 安全不变量类测试必须做**变异验证**：临时改坏生产代码，确认测试转红；仅被既有测试覆盖的平凡断言可豁免。
 

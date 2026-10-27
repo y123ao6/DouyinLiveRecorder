@@ -111,19 +111,15 @@ def _fix_encoding() -> None:
 _fix_encoding()
 
 
-# web_console.log 的启动侧大小上限（L-01，2026-10-18 审查）。
-# 为什么只能做在「启动侧」而不是「每次写入侧」：该文件由本文件与 src/log_archive.py 共同消费为
-# **一只普通文件流**（追加 + 行缓冲），print() 与 loguru 控制台 sink（rebind_console_sink()
-# 绑定的就是 sys.stderr 这个对象）都写它。写入侧轮转要换掉流对象，而 log_archive._streams_bound_to()
-# 按「sys.stdout/sys.stderr 的 .name 指向该文件」找句柄——包装对象或另开一只 loguru 文件 sink 都会让
-# 「停止录制时 flush+close+改名」认不出句柄（AGENTS「停止录制流程日志归档」硬约束）。
-# loguru 的 rotation= 同样不适用：0.7.3 实测对流对象 sink 直接抛 `TypeError: add() got an
-# unexpected keyword argument 'rotation'`（rotation 只对路径型 sink 生效），而换成路径型 sink
-# 会让 print 与 loguru 各持一只句柄、改名时必抛 PermissionError。
-# 真正无界的形态只剩一条：崩溃 / 强杀 / 断电等没走到 atexit 归档的退出把上一轮内容整份留在原地，
-# 下一次后台化以 "a" 打开即在其后继续追加，归档链路对此无感。
-# 上限取 2 MB、保留末尾 512 KB：本仓 loguru 文件 sink 的 rotation 量级是 300 KB，
-# web_console 还要装 print 与 uvicorn 访问输出，故取大一个数量级。
+# web_console.log 的启动侧大小上限。
+# 只能做在启动侧：print 与 loguru 控制台 sink（rebind_console_sink() 绑定的 sys.stderr）都把它
+# 当**一只普通文件流**（追加 + 行缓冲）写，log_archive._streams_bound_to() 靠
+# 「sys.stdout/sys.stderr 的 .name 指向该文件」找句柄完成「停止录制时 flush+close+改名」；
+# 写入侧轮转要换流对象，包装对象或路径型 sink 都会让归档认不出句柄（Windows 改名必抛
+# PermissionError，loguru 对流对象 sink 也不收 rotation=）。AGENTS「停止录制流程日志归档」硬约束。
+# 对未走到 atexit 归档的退出（崩溃/强杀/断电）只能靠下次启动收口：上一轮内容整份留在原地，
+# 以 "a" 打开继续追加。上限 2 MB、保留末尾 512 KB：loguru 文件 sink 的 rotation 量级是 300 KB，
+# 此处还要装 print 与 uvicorn 访问输出，故取大一个数量级。
 _WEB_CONSOLE_MAX_BYTES = 2 * 1024 * 1024
 _WEB_CONSOLE_KEEP_BYTES = 512 * 1024
 
@@ -135,10 +131,9 @@ _SERVER_JOIN_TIMEOUT = 10.0
 
 # 超限则把 web_console.log 就地截断为末尾若干 KB，返回丢弃字节数（0 = 无需处理）。
 # 必须在 `open(log_path, "a")` **之前**调用：此刻 sys.stdout/stderr 还是真实控制台、loguru
-# 控制台 sink 也尚未 rebind，没有任何句柄握着这个文件——Windows 下对句柄未关的文件做
-# 截断/改名必抛 PermissionError（AGENTS「停止录制流程日志归档」条）。
-# 调用点不得挪到重定向之后，打开参数也不得改：与 log_archive._rebind_web_console() 是
-# 「同参数」契约（那边只管归档后的重开）。
+# 控制台 sink 尚未 rebind，没有句柄握着该文件——Windows 下对句柄未关的文件截断/改名必抛
+# PermissionError（AGENTS「停止录制流程日志归档」）。打开参数须与 log_archive._rebind_web_console()
+# 保持同参数契约（那边只管归档后的重开）。
 def _cap_web_console_log(log_path: str) -> int:
     try:
         size = os.path.getsize(log_path)
@@ -182,7 +177,7 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
     if callable(_flush):
         _ = _flush()
 
-    # L-01：先按上限收拢历史，再开追加流；调用点顺序即判据（见 _cap_web_console_log）
+    # 先按上限收拢历史，再开追加流；调用点顺序即判据（见 _cap_web_console_log）
     _dropped = _cap_web_console_log(log_path)
     if _dropped > 0:
         print(
@@ -197,11 +192,11 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
     log_stream = open(log_path, "a", encoding="utf-8", buffering=1)
     sys.stdout = log_stream
     sys.stderr = log_stream
-    # 关键：loguru 控制台 sink 在本模块顶层 `from src.logger import logger` 的导入期就已绑定当时的
-    # sys.stderr，不会随下面的重新赋值而变。不重建 sink，DEBUG/WARNING 便会全部写往随后被 SW_HIDE
-    # 隐藏的控制台，web_console.log 只剩 print——排障时会把「日志没进来」误判成「事件没发生」。
-    # 实测故障形态（2026-08 虎牙 403）：web_console.log 无校验日志，「探针假绿」被误判成「探针未执行」；
-    # 排查 Web 模式问题一律先看 logs/streamget.log / PlayURL.log（文件 sink 不受重定向影响）。
+    # 必须重建控制台 sink：loguru 的 console sink 在 `from src.logger import logger` 导入期就绑定了
+    # 当时的 sys.stderr，不随下面的赋值而变；不重建则 DEBUG/WARNING 全写往随后被 SW_HIDE 的控制台，
+    # web_console.log 只剩 print，排障时会把「日志没进来」误判成「事件没发生」。
+    # [历史注] 2026-08 虎牙 403 曾因此把「探针假绿」误判成「探针未执行」；Web 模式排障先看
+    # logs/streamget.log / PlayURL.log（文件 sink 不受重定向影响）。
     try:
         from src.logger import rebind_console_sink
 
@@ -233,9 +228,9 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
 
 # 判断 host 是否为回环地址（仅本机可访问）。
 def _is_loopback_host(host: str) -> bool:
-    # SEV-04：判定下沉到 src.web_config.is_loopback_bind_host，与 web_api 中间件「每请求重跑
-    # 非回环 + 无认证不变量」共用同一口径。旧版按字符串精确比较，只认 127.0.0.1/localhost/::1/[::1]，
-    # 127.0.0.53 这类整段 127/8 会被算成「非回环」——两处口径分叉，启动检查与运行期检查即互相矛盾。
+    # 判定唯一下沉在 src.web_config.is_loopback_bind_host，与 web_api 中间件「每请求重跑
+    # 非回环 + 无认证不变量」共用同一口径；按字符串精确比较会把 127.0.0.53 等整段 127/8 误判成非回环，
+    # 启动检查与运行期检查随之矛盾。
     from src.web_config import is_loopback_bind_host
 
     return is_loopback_bind_host(host)
@@ -287,20 +282,15 @@ def main() -> None:
     host: str = cast(str, web_cfg["web_host"])
     port: int = cast(int, web_cfg["web_port"])
 
-    # 不安全绑定防护（C1）：未启用认证时拒绝监听非回环地址，防止局域网内未授权访问
-    # （文件下载 / 配置读写）。显式设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 才放行。
-    # M-18（2026-09-29）不变量：**安全拒绝必须早于任何 stdio 重定向 / 控制台隐藏**。本块此前落在
-    # `_enter_background_mode()` 之后，`web_show_console=false` 时窗口已 SW_HIDE、stdout/stderr
-    # 已指向 logs/web_console.log，四条拒绝文案全进日志——用户只看到「控制台一闪、面板起不来」。
-    # 本块同时须早于录制引擎线程与 uvicorn 创建（F-22，2026-09-12）：否则 daemon 线程会先读配置、
-    # 初始化调度器，日志里留下「启动成功过」的假痕迹。
-    # [历史注] F-22 原称此处「拒绝即零副作用退出」已被证伪（当时隐藏窗口与重定向 stdio 已落地）；
-    # 现口径是可证的**无 stdio 副作用的拒绝**。
-    # 不能再提前到 `import main` 之前：read_web_config 的入参 main.config_file 由 main 模块级
-    # `_app_root()` 解析（冻结后指向 exe 同级目录），提前拿不到与录制端同源的配置路径。
-    # SEV-04：本检查只在启动瞬间评估一次，而写接口可热改 web_auth_enable / web_host；同款不变量
-    # 现由 src/web_api.py 鉴权中间件按**每个 /api/* 请求**重跑（口径同源：web_config.is_loopback_bind_host
-    # + 同一枚 DOUYIN_WEB_ALLOW_INSECURE 逃生阀）。本处保留为「拒绝启动」的第一道。
+    # 不安全绑定防护（C1）：未启用认证时拒绝监听非回环地址，防止局域网未授权访问
+    # （文件下载 / 配置读写）；显式设置 DOUYIN_WEB_ALLOW_INSECURE=1 才放行。
+    # 顺序约束（不可移动）：安全拒绝必须早于 stdio 重定向 / 控制台隐藏（否则 web_show_console=false
+    # 时四条拒绝文案全进日志，用户只看到「控制台一闪、面板起不来」），也必须早于录制引擎线程与
+    # uvicorn 创建（否则 daemon 线程先读配置、初始化调度器，日志里留下「启动成功过」的假痕迹）；
+    # 但不能早于 `import main`——main.config_file 由模块级 _app_root() 解析，提前拿不到与录制端
+    # 同源的配置路径。本检查只在启动瞬间评估一次；写接口可热改 web_auth_enable / web_host，
+    # 同款不变量由 src/web_api.py 鉴权中间件按每个 /api/* 请求重跑（同源判据
+    # web_config.is_loopback_bind_host + 同一枚 DOUYIN_WEB_ALLOW_INSECURE 逃生阀）。
     if not web_cfg["web_auth_enable"] and not _is_loopback_host(host):
         allow_insecure = os.environ.get("DOUYIN_WEB_ALLOW_INSECURE", "").strip().lower() in ("1", "true", "yes")
         if not allow_insecure:
@@ -311,19 +301,16 @@ def main() -> None:
             print("      1. config.ini [Web] 节设置 web_auth_enable = true 并配置 web_password；")
             print("      2. 或设置 web_host = 127.0.0.1 仅限本机访问。")
             print("      如确需在无认证状态暴露到局域网，请设置环境变量 DOUYIN_WEB_ALLOW_INSECURE=1 后重启（不推荐）。")
-            # M-18：文案已落到真实控制台，再补一条 warning 兜住看不见控制台的启动形态——pythonw.exe
-            # 与冻结 console=False 的入口 sys.stderr 为 None（AGENTS「无控制台环境 sys.stderr is None」
-            # 条），print 落空、日志文件是唯一留痕。loguru 的**文件** sink 在 src.logger 导入期即已注册，
-            # 与此处先后无关；控制台 sink 的重建仍归 `_enter_background_mode`，顺序约束未动。
+            # 再补一条 warning 兜住看不见控制台的启动形态：pythonw.exe 与冻结 console=False 的入口
+            # sys.stderr 为 None（AGENTS「无控制台环境」条），print 落空、日志文件是唯一留痕。
+            # loguru 的文件 sink 在 src.logger 导入期即已注册，与此处先后无关。
             try:
                 logger.warning(_reject_msg)
             except Exception:
                 pass
             sys.exit(1)
-        # WD-07：破例路径把可被利用的具体能力列清楚并写入日志——用户照抄环境变量时知道在开放什么，
-        # 事后也能审计「这台机器何时以无认证方式对局域网开放过」。
-        # [历史注] 2026-09-22 MIN-2247 前此处是未走 i18n 的裸多行字符串、直接作 logger.warning 首参
-        # （违反「首参须为 tr 模板或常量」不变量）；现为单行模板，取值全部走 i18n.tr。
+        # 破例路径把可被利用的具体能力写进日志：用户照抄环境变量时知道在开放什么，事后也能审计
+        # 「这台机器何时以无认证方式对局域网开放过」。文案须走 i18n.tr（首参为模板或常量）。
         _insecure_msg = i18n.tr(
             "[web] ⚠️ 严重安全警告: Web 面板正以「无认证 + 非回环地址」运行，能访问该地址的任何人可执行：\n"
             "① 读写全部配置（仅「自定义脚本执行命令」被禁止）；② 读取 logs 下的运行日志；"
@@ -341,7 +328,7 @@ def main() -> None:
         except Exception:
             pass
 
-    # M-18：背景化（隐藏控制台 + 重定向 stdio）必须在上面那道安全闸门**之后**——一旦执行到这里，
+    # 背景化（隐藏控制台 + 重定向 stdio）必须在上面那道安全闸门**之后**——一旦执行到这里，
     # 后续任何拒绝 / 异常文案用户都只能翻 logs/web_console.log 才看得到；不得挪回检查之前。
     if not web_cfg["web_show_console"]:
         _enter_background_mode(logs_dir, host, port)
@@ -365,10 +352,9 @@ def main() -> None:
         url_config_file=url_config_file,
         downloads_root=downloads_root,
         logs_dir=logs_dir,
-        # SEV-N03（2026-09-21，CODE_REVIEW_2026-09-21）：把**本进程实际要绑定的**地址与端口交给应用，
-        # 供「非回环 + 无认证」不变量与 Origin 同源判定使用。二者此前读 config.ini 的 web_host/web_port，
-        # 而这两个键可经 PUT /api/config 热改写（监听地址却要重启才变），判定基准因而可由请求方伪造。
-        # 这里是接线的唯一入口，删除它会让两道防线退回旧形态。
+        # 必须传本进程实际绑定的地址与端口：配置里的 web_host/web_port 可经 PUT /api/config 热改写
+        # （监听地址却要重启才变），拿配置值做「非回环 + 无认证」与 Origin 同源判定，基准可由请求方伪造。
+        # 这里是接线的唯一入口，删除它两道防线即失效。
         bind_host=host,
         bind_port=port,
     )
@@ -376,12 +362,11 @@ def main() -> None:
     # uvicorn Server 实例（而非 uvicorn.run）：托盘「退出程序」可置 server.should_exit 触发优雅关闭，
     # 而非强制结束进程（避免 ffmpeg 残留）。
     #
-    # MID-35：显式 proxy_headers=False。uvicorn 默认 True 且 forwarded_allow_ips 默认含 127.0.0.1，
-    # 其 ProxyHeaders 中间件会在**本仓鉴权中间件之前**用请求头 X-Forwarded-For 的**最左值**（请求方
-    # 自填）覆盖 scope["client"]——把面板包成 HTTPS 的常见本机反代部署下，「仅信任 web_trusted_proxy
-    # 的 XFF」直接失效：request.client.host 已是伪造值，攻击者每请求换一个键即可绕过 5 次/300s 的
-    # 登录限流。关掉后 scope["client"] 恒为原始 socket 对端，XFF 解释权收敛到
-    # src/web_api.py::_get_client_ip 一处（直连对端确属可信代理时才从右往左剥）。
+    # proxy_headers=False 是安全要求：uvicorn 默认 True 且 forwarded_allow_ips 含 127.0.0.1，其
+    # ProxyHeaders 中间件会在本仓鉴权中间件**之前**用 X-Forwarded-For 最左值（请求方自填）覆盖
+    # scope["client"]——本机反代部署下 request.client.host 已是伪造值，攻击者每请求换键即可绕过
+    # 5 次/300s 登录限流。关掉后 scope["client"] 恒为原始 socket 对端，XFF 解释权收敛到
+    # src/web_api.py::_get_client_ip 一处（仅直连对端是可信代理时从右往左剥）。
     # 真实反代部署请把反代地址写进 config.ini [Web] web_trusted_proxy。
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="info", proxy_headers=False))
 
@@ -405,9 +390,9 @@ def main() -> None:
         qt_owns_main_thread = tray.start()
 
     print(i18n.tr("[web] Web 管理面板启动中: http://{host}:{port}", host=host, port=port))
-    # MID-2253（2026-09-22）：tr() 的**值参**不得是中文常量——模板会被翻译、值不翻，en_US 下会
-    # 渲染成「Authentication: 开启」。故值先各自 tr 成本地化字面量（词条已进 i18n/ 四目录；
-    # 控制台播报不涉及前端内嵌目录，无需同步 web/app.js）；也不能传裸布尔，True/False 更不可读。
+    # 2026-09-22：tr() 的值参不得是中文常量（模板会翻译、值不翻，en_US 下会渲染成「Authentication: 开启」），
+    # 故先把值 tr 成本地化字面量（词条已进 i18n/ 四目录）；也不得传裸布尔。控制台播报不涉及
+    # 前端内嵌目录，无需同步 web/app.js。
     _auth_text = i18n.tr("已启用") if web_cfg["web_auth_enable"] else i18n.tr("未启用")
     print(i18n.tr("[web] 认证: {web_auth_enable}", web_auth_enable=_auth_text))
     # 不安全绑定检查不在本处：见上方安全闸门块（早于引擎线程 / uvicorn 创建与背景化）。
@@ -427,29 +412,25 @@ def main() -> None:
         else:
             asyncio.run(server.serve())
     finally:
-        # 事件循环已退出（托盘「退出程序」/ Ctrl+C / Qt 自行退出）：先给服务线程一个收尾窗口，
+        # 事件循环已退出（托盘「退出程序」/ Ctrl+C / Qt 自行退出）：先给服务线程收尾窗口，
         # 否则下面的 ffmpeg / 连接池清理会落在 HTTP 请求处理中间。
         if server_thread is not None:
             server_thread.join(_SERVER_JOIN_TIMEOUT)
-        # 优雅关闭：serve() 正常返回或抛异常（如端口被占用）都执行清理，
-        # 主动终止 ffmpeg 子进程并释放 HTTP 连接池，杜绝退出后残留孤儿进程。
-        # M-01（2026-10-18 审查）：录后转码线程池的显式收尾必须排在 ffmpeg / 连接池清理**之前**，
-        # 与 main.safe_exit、main 磁盘满退出两条既有退出链同口径同顺序。机理见
-        # main.py::_shutdown_postprocess_executor 上方注释（worker 非守护线程，
-        # threading._register_atexit(_python_exit) 晚于本仓三个 atexit 钩子登记，于是「池内 join」
-        # 恒早于 ffmpeg 清理与日志归档，单个转封装任务上限 3600s）——Web 面板退出不经 safe_exit，
-        # 此前无人把顺序拿回来，表现为「点了退出长时间无响应、录制中的 ffmpeg 在这一小时不被终止」。
+        # 顺序约束：转码线程池收尾必须排在 ffmpeg / 连接池清理之前，与 main.safe_exit、main 磁盘满
+        # 退出同口径。worker 非守护线程，_python_exit 晚于本仓 atexit 钩子登记，「池内 join」恒早于
+        # ffmpeg 清理与日志归档（单任务上限 3600s）；Web 面板退出不经 safe_exit，不显式收尾就会
+        # 「点退出长时间无响应、录制中的 ffmpeg 一小时不被终止」。
+        # serve() 正常返回或抛异常（如端口被占用）都执行清理，杜绝退出后残留孤儿进程。
         try:
             main._shutdown_postprocess_executor()
         except Exception as e:
-            # 复用 main.py::_shutdown_postprocess_executor 内部的 msgid（不带 [web] 前缀、四目录已有
-            # 译文）：退出链同一件事不各写文案，多一个键就多一处四目录漂移面
+            # 复用 main._shutdown_postprocess_executor 的 msgid：同一件事不各写文案，多一个键就多一处四目录漂移面
             print(i18n.tr("后处理线程池收尾失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
         try:
             main.cleanup_all_ffmpeg_processes()
         except Exception as e:
-            # MID-2251 同族：只带 {e} 时，Windows 下 socket.timeout / TimeoutError 的 str() 为空串，
-            # 日志只剩「[web] 清理 ffmpeg 进程失败: 」——分不清是进程已消失、权限不足还是管道挂死。
+            # 只带 {e} 时 Windows 下 TimeoutError 的 str() 为空串，须带 {type_name} 才能分清进程已消失、
+            # 权限不足或管道挂死。
             print(i18n.tr("[web] 清理 ffmpeg 进程失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
         try:
             from src.async_http import close_all_clients_sync

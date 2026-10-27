@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# src/notify.py 录后自定义脚本钩子（run_script）的安全不变量回归锁（WP-C / M-5）。
+# src/notify.py 录后自定义脚本钩子（run_script）的安全不变量回归锁（WP-C / ）。
 #
 # 四条必须锁住的行为（任意一条被改回旧形态即应变红）：
 #   ① 凭据不落盘：command 与异常文本一律过 utils.mask_credentials 才进 logger（logs/ 按 rotation
@@ -34,7 +34,7 @@ import pytest
 from loguru import logger
 
 # src.notify 通过 `import main` 读写运行时全局；必须先引入 main 才能加载 src.notify。
-# [LT-07] 注入只为下面两行的**导入期**服务，用完当场摘回（完整理由见 tests/test_notify.py 的同名
+#  注入只为下面两行的**导入期**服务，用完当场摘回（完整理由见 tests/test_notify.py 的同名
 # 注释：旧形态把仓库根永久留在 sys.path[0]、从不还原，而 fixture 又晚于模块级 import、搬不进去）。
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 _PATH_BASELINE = sys.path.count(_REPO_ROOT)  # 注入前的条目数（各调用形态下都实测为 0 或 1）
@@ -45,7 +45,7 @@ try:
 finally:
     if _REPO_ROOT in sys.path:
         sys.path.remove(_REPO_ROOT)
-# LT-07 泄漏判据：「注入 → 导入 → 摘回」三步必须把 sys.path 归还成注入前的条目数（按计数比，不按
+# 泄漏判据：「注入 → 导入 → 摘回」三步必须把 sys.path 归还成注入前的条目数（按计数比，不按
 # 整表相等）。与 tests/test_notify.py 末尾同一条守卫。
 assert sys.path.count(_REPO_ROOT) == _PATH_BASELINE, "仓库根被永久留在 sys.path：注入未归还，状态泄漏"
 

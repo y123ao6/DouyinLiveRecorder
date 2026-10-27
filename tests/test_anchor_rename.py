@@ -13,7 +13,7 @@ import pytest
 
 
 def _os_shim(**overrides: Any) -> types.SimpleNamespace:
-    # M-27（CODE_REVIEW_2026-09-29_2）：`monkeypatch.setattr(os, "rename", 替身)` 改的是全进程唯一
+    # 2026-09-29：`monkeypatch.setattr(os, "rename", 替身)` 改的是全进程唯一
     # 的 os 模块本体，窗口内 loguru 轮转、弹幕边车、其他录制/转码线程的改名会一并被换掉。
     # 按 AGENTS「测试编写强制约定」/ test_test_hygiene.py R1：浅拷贝命名空间 + 只覆盖所需属性，
     # 再把替身绑到**被测模块（main）自己的 os 引用**上。
@@ -258,7 +258,7 @@ class TestRenameAnchorDirectory:
             return real_rename(src, dst)
 
         monkeypatch.setattr(main_mod, "os", _os_shim(rename=selective_rename))
-        # M-27 回归锁：替身只落进 main 的命名空间；进程全局 os.rename 必须仍是真实现
+        # 替身只落进 main 的命名空间；进程全局 os.rename 必须仍是真实现
         # （恢复成 `setattr(os, "rename", ...)` 时这一行当场变红）。
         assert os.rename is real_rename
 
@@ -281,7 +281,7 @@ class TestRenameAnchorDirectory:
 
         real_rename = os.rename
         monkeypatch.setattr(main_mod, "os", _os_shim(rename=fail_dir_rename))
-        # M-27 回归锁：目录级失败只在 main 的命名空间里生效，进程全局 os.rename 不受波及
+        # 目录级失败只在 main 的命名空间里生效，进程全局 os.rename 不受波及
         assert os.rename is real_rename
 
         assert main_mod.rename_anchor_directory("旧名字", "新名字", "抖音直播") is False

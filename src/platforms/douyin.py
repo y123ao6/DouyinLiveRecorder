@@ -8,7 +8,7 @@
 # Cookie：握手必须携带有效 cookie（至少 ttwid），否则服务端回 HTTP 200 拒绝；优先用 main 传入的
 # 录制 cookie，为空时经 src.ttwid.get_ttwid() 动态获取（进程级共享缓存，config.ini [Cookie]
 # ttwid 优先，其次自动拉取抖音主页）。
-# 凭据自愈（MID-33）：握手被 HTTP 200 拒绝即判定本轮 ttwid 已作废 → invalidate_ttwid() 清进程级
+# 凭据自愈：握手被 HTTP 200 拒绝即判定本轮 ttwid 已作废 → invalidate_ttwid() 清进程级
 # 缓存，下一轮重新获取，而不是等 cookie_cache 的 TTL（默认 30 分钟）自然过期；与 B站
 # _reject_auth() → invalidate_bili_buvid_cache() 同形。解析侧（src/room.py / src/spider.py）的
 # 「HTTP 200 + 空响应体」判定无 invalidate_ttwid() 调用点，故本模块的接线只覆盖弹幕链路。
@@ -32,12 +32,11 @@ from src.ws_client import _MAX_DECOMPRESSED_BYTES, WsClient, decompress_limited
 
 SERVER_URL = "wss://webcast100-ws-web-lq.douyin.com/webcast/im/push/v2/"
 
-# 抖音对「失效 ttwid」的拒绝形态是 **HTTP 200 但不升级协议**（不返回 4xx）。websockets 对此抛
-# InvalidStatus，str() 形如 "server rejected WebSocket connection: HTTP 200"（代理侧为
-# "proxy rejected connection: HTTP …"）。WsClient 只把 str(e) 透传给 on_close/on_reconnect
-# （拿不到异常对象），故只能按状态码文本识别，且**只认 200**：4xx/5xx 与网络类异常（超时/DNS/
-# TLS/连接被拒）都不是「凭据被作废」的信号，误判会让每次断网都多打一次抖音主页接口，而重复拉
-# ttwid 本身就是风控触发源（并发去重见 src/room.py 的锁注释）。
+# 抖音对「失效 ttwid」的拒绝形态是 **HTTP 200 但不升级协议**（不返回 4xx）。websockets 对此抛 InvalidStatus，
+# str() 形如 "server rejected WebSocket connection: HTTP 200"（代理侧为 "proxy rejected connection: HTTP …"）。
+# WsClient 只把 str(e) 透传给 on_close/on_reconnect（拿不到异常对象），故只能按状态码文本识别，且**只认 200**：
+# 4xx/5xx 与网络类异常（超时/DNS/TLS/连接被拒）都不是「凭据被作废」的信号，误判会让每次断网都多打一次
+# 抖音主页接口，而重复拉 ttwid 本身就是风控触发源（并发去重见 src/room.py 的锁注释）。
 _HTTP_200_REFUSAL_PATTERN = re.compile(r"(?:http|status(?:\s+code)?)[^\d]{0,4}\b200\b", re.IGNORECASE)
 
 
@@ -99,7 +98,7 @@ class DouyinDanmaku(DanmakuBase):
             if not cookie:
                 logger.warning("[抖音弹幕]无可用 cookie/ttwid，WS 握手可能被服务端拒绝")
             else:
-                # 标记「本轮用的是动态 ttwid」：随后握手被 HTTP 200 拒时据此作废缓存（MID-33）
+                # 标记「本轮用的是动态 ttwid」：随后握手被 HTTP 200 拒时据此作废缓存
                 self._ttwid_in_use = True
         if not room_id:
             if self._on_close:
@@ -178,7 +177,7 @@ class DouyinDanmaku(DanmakuBase):
         self._note_ttwid_refusal(reason)
         super()._on_reconnect(reason)
 
-    # MID-33 接线点：HTTP 200 拒绝握手 = 本轮 ttwid 已被平台作废。三层进程级缓存由
+    # 接线点：HTTP 200 拒绝握手 = 本轮 ttwid 已被平台作废。三层进程级缓存由
     # invalidate_ttwid 一并作废，下一轮重新获取，不等 cookie_cache 的 30 分钟 TTL——那是
     # 「抖音解析长期 200 + 空 body」的自愈断点。刻意不打日志：可观测性由下一轮「自动获取抖音
     # ttwid 成功」的 debug 承担（新增文案需四处目录同步）。

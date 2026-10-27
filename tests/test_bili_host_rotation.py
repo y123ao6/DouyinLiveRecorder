@@ -1,4 +1,4 @@
-# M-13 回归锁（2026-09-29 审查）：B站弹幕 host 轮换期间不得投「假关闭」事件。
+# （2026-09-29 审查）：B站弹幕 host 轮换期间不得投「假关闭」事件。
 #
 # 被测生产实现：src/platforms/bilibili.py::BilibiliDanmaku 的 _report_close 闸门 + start() 的
 # host 轮换循环（挂在 WsClient.on_close 上的是闸门，不是裸回调）。
@@ -53,7 +53,7 @@ class _StubWs:
             self._fire("on_ready")
             return
         if self.script == "auth_reject":
-            # 生产里 _reject_auth 置 _stopped=True 后经 WsClient.fail() 上报（MID-2245）。
+            # 生产里 _reject_auth 置 _stopped=True 后经 WsClient.fail() 上报。
             if self.client is not None:
                 self.client._stopped = True
             self._fire("on_close", "进房认证被拒（AUTH_REPLY 非 0 或超时未回应）")
@@ -158,7 +158,7 @@ class TestHostRotationCloseGate:
         assert reported == [_EXHAUST_REASON]
 
     async def test_auth_reject_is_terminal_and_still_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MID-2245 红线：_reject_auth（进房认证被拒）会置 _stopped，属终态——即便后面还有候选 host
+        # 红线：_reject_auth（进房认证被拒）会置 _stopped，属终态——即便后面还有候选 host
         # 未尝试也必须上报，否则监控页永久停在「已连接 / 0 条」。闸门只压「轮换中间态」。
         factory, reported, _connected, client = _install(monkeypatch, ["auth_reject", "exhaust"], [_HOST_A, _HOST_B])
         await client.start(dict(factory.client_args))
@@ -169,7 +169,7 @@ class TestHostRotationCloseGate:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 会话建成后再断线（生产里由该 WsClient 自己耗尽重连触发 on_close）：轮换已结束，
-        # _hosts_left 必须已归零，否则这条真实关闭会被闸门吞掉（回到 MID-2245 观感）。
+        # _hosts_left 必须已归零，否则这条真实关闭会被闸门吞掉（回到该观感）。
         factory, reported, _connected, client = _install(monkeypatch, ["ok"], [_HOST_A, _HOST_B])
         await client.start(dict(factory.client_args))
         assert reported == []

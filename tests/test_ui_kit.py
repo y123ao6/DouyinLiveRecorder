@@ -176,7 +176,7 @@ class TestSyncIncremental:
         assert tree.calls and all(kind == "delete" for kind, _ in tree.calls)
 
     def test_missing_values_key_does_not_abort_sync(self) -> None:
-        # M-83 行为锁①：keys 是展示集合、values/tags 是两个独立字典，三者脱节在热更新
+        # 行为锁①：keys 是展示集合、values/tags 是两个独立字典，三者脱节在热更新
         # 竞态里是真实可发生的形态。旧实现 values[key] 直索引抛 KeyError——**整轮 sync
         # 半途而废**：异常点之后的行不插入、删除与顺序收敛都不执行，表格静默停在旧数据
         # 上且日志一条没有（比缺一格难看的数据严重得多）。定稿 values.get(key, ())：
@@ -191,7 +191,7 @@ class TestSyncIncremental:
         assert tree.rows["B"][0] == _ROWS["B"]
 
     def test_row_with_both_value_and_tag_change_counts_once(self) -> None:
-        # M-83 行为锁②：changed 的语义是「这一行变了」，不是「变了几个字段」。旧实现值
+        # 行为锁②：changed 的语义是「这一行变了」，不是「变了几个字段」。旧实现值
         # 分支与标记分支各自 append(key)，两者同变的行在返回值里出现两遍——调用方的
         # 「变化行高亮衰减」会对同一行叠两轮动画。行级增量语义不得回退（未变化行零触碰
         # 由 test_unchanged_rows_are_never_touched 守着）。
@@ -219,7 +219,7 @@ class TestRealWindowWidgets:
     # 真窗用例（无显示环境 skip，与本文件唯一 skip 面）：浮层编辑器与派生样式依赖真实
     # Tcl 事件循环，无头环境无法等价驱动；tk_root fixture 形态取
     # tests/test_ui_theme.py::TestApplyTtk.tk_root。
-    # [历史注 MT-12 2026-10-18] 此前「无显示即 skip」是空头承诺：三条用例裸 tk.Tk()，
+    # [历史注 2026-10-18] 此前「无显示即 skip」是空头承诺：三条用例裸 tk.Tk()，
     # 无显示器时抛 TclError 以 ERROR 形态进门禁、把「没显示设备」伪装成「代码回归」，故补 fixture。
     # 与 AGENTS「平台专属分支的测试不得靠 skipif 让 CI 跳过」不冲突：那条禁的是按
     # sys.platform 跳过**代码分支**（Windows/POSIX 两侧逻辑都得在 CI 真跑），本处缺的是

@@ -1,17 +1,17 @@
-# tests/test_regression_2026_10_18_gui_output_chain.py — CODE_REVIEW_2026-10-18 的 S-01/M-11/M-12 行为锁。
+# tests/test_regression_2026_10_18_gui_output_chain.py — CODE_REVIEW_2026-10-18 的 //该行为锁。
 #
 # 为什么单独成文件：test_gui_qt_units.py / test_gui_qt_window.py 钉的是「模块单元」与「窗口外观/
 # 接线」，而这三条都是**跨线程投递与模态重入**的通路锁，必须同时持有真窗（MainWindow）与真子进程。
-# S-01 的教训正在于此：旧用例只直调 controller.drain()，「信号从未 emit、drain 无生产调用方」这种
+# 教训正在于此：旧用例只直调 controller.drain()，「信号从未 emit、drain 无生产调用方」这种
 # 整条链断开的形态在满屏绿色里过去了——本文件一律从**入口**（start_recording / 后台线程调
 # _queue_log / 定时器链调 _watch_url_config）驱动，断在任何一环都会红。
 #
 # 变异验证（一次性改动当轮按字节还原并复跑本文件；2026-10-18 本机实测读数，六处变异全部转红、
 # 还原后本文件 6 条 + test_gui_qt_settings_dialog.py 2 条全绿）：
-#   · 拆掉 recorder._push 的 outputReady.emit → 2 failed, 4 passed（两条 S-01 用例同时红）；
+#   · 拆掉 recorder._push 的 outputReady.emit → 2 failed, 4 passed（两条该用例同时红）；
 #   · 跳过 _on_recorder_ended 的 reclaim_after_natural_end → 1 failed（EOF 用例：句柄未回收）；
-#   · 把 _queue_log 改回直接 _log_timer.start() → 1 failed（M-11 用例：尾线程入队永不刷出）；
-#   · 去掉 _watch_url_config 的重入守卫与 mtime 前置 → 3 failed（M-12 三条全红，弹窗堆叠）；
+#   · 把 _queue_log 改回直接 _log_timer.start() → 1 failed（该用例：尾线程入队永不刷出）；
+#   · 去掉 _watch_url_config 的重入守卫与 mtime 前置 → 3 failed（该三条全红，弹窗堆叠）；
 #   · 把重入守卫挪到 mtime 前置**之后** → 1 failed（询问期间的新改动被就地吃掉）；
 #   · 拆掉 settings_dialog 的 hideEvent 停表 → test_gui_qt_settings_dialog.py 2 failed。
 
@@ -95,7 +95,7 @@ def _pump_until(app: QApplication, predicate: Callable[[], bool], timeout: float
     return False
 
 
-# ─── S-01：读线程 → 队列 → 主线程的通路 ───
+# ─── ：读线程 → 队列 → 主线程的通路 ───
 
 
 def test_recorder_child_output_reaches_terminal_window(app: QApplication, window: MainWindow) -> None:
@@ -129,7 +129,7 @@ def test_natural_eof_is_observed_and_process_handle_reclaimed(app: QApplication,
     _pump_until(app, lambda: not window.recorder.is_running() and window.recorder.pid() is None)
 
 
-# ─── M-11：非 GUI 线程只能投递、不能启表 ───
+# ─── ：非 GUI 线程只能投递、不能启表 ───
 
 
 def test_queue_log_from_worker_thread_flushes_by_itself(app: QApplication, window: MainWindow) -> None:
@@ -159,7 +159,7 @@ def test_queue_log_from_worker_thread_flushes_by_itself(app: QApplication, windo
     assert flushed, "只有工作线程入队时日志批次滞留在缓冲里没刷出（M-11 回归）"
 
 
-# ─── M-12：模态冲突框在定时器链里不得堆叠 ───
+# ─── ：模态冲突框在定时器链里不得堆叠 ───
 
 
 def _external_url_change(window: MainWindow, content: str, step: int) -> None:

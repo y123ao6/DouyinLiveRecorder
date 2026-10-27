@@ -45,7 +45,7 @@ def _clean_credential_caches() -> Generator[None]:
     # 模块级 _cached_* 兜底变量是两套独立状态（singleflight 命中即返回，模块变量仅在调用
     # 方成功时回写），只清一边会让另一边继续提供旧值。跨用例残留会让「打桩后重新拉取」的
     # 断言命中旧值，表现为「单独跑通过、整包跑失败」；yield 前后各清一次，覆盖用例内写入的
-    # 下游污染。[历史注] 2026-09-12 审查 H-2 把快手 did / Twitch Client-Id / B站 buvid3 /
+    # 下游污染。[历史注] 2026-09-12 审查该把快手 did / Twitch Client-Id / B站 buvid3 /
     # 抖音 ttwid 四处去重统一到 singleflight 后，残留面从 1 个缓存扩大到 2 个。
     from src import spider as _spider
     from src import ttwid as _ttwid
@@ -54,7 +54,7 @@ def _clean_credential_caches() -> Generator[None]:
     def _reset() -> None:
         _clear()
         # import 在 fixture 顶部且不做容错：这里出错说明被测模块真的坏了，收集/执行期就该红
-        # （ImportError 不是需要吞掉的环境差异）。[历史注] MIN-2266 ④ 前，两个 import 各裹在
+        # （ImportError 不是需要吞掉的环境差异）。[历史注] ④ 前，两个 import 各裹在
         # `try/except Exception: return` 里，src.spider 导入期抛错（或被摘出 sys.modules）时
         # 四个 `_cached_*` 与其后的 `_cached_ttwid` **全部不重置且不报错**。
         _spider._cached_kuaishou_did = ""

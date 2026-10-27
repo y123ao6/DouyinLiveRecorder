@@ -4,7 +4,7 @@
 # 为什么仍整文件编辑而不是逐项控件：config.ini 的键会随版本增删（缺键补写也是录制进程的
 # 行为之一），做成结构化表单则每加一个键都要改 GUI，「用户想改但表里没有」也无法降级。
 #
-# MID-55 的两份基线（编辑器基线 + 磁盘快照）与保存前裁决必须保留：录制进程会在运行期
+# 两份基线（编辑器基线 + 磁盘快照）与保存前裁决必须保留：录制进程会在运行期
 # 写回凭据、禁用 SSL 校验的平台清单与缺键，跨进程没有锁可依赖，整文件写回只能靠
 # 显式检测 + 交用户裁决。
 from __future__ import annotations
@@ -80,7 +80,7 @@ class AdvancedSettingsDialog(QDialog):
 
         # 磁盘监听用 QTimer。注意「窗体销毁自动停」在这里走不到：对话框带 parent，close/hide
         # 不销毁 C++ 对象，启停必须按可见性自己管（见 hideEvent/showEvent），否则每开一次
-        # 窗口就留下一个每 5s 读盘的幽灵定时器（M-15）。
+        # 窗口就留下一个每 5s 读盘的幽灵定时器。
         self._watch_timer = QTimer(self)
         self._watch_timer.setInterval(_WATCH_INTERVAL_MS)
         self._watch_timer.timeout.connect(self._watch_config_file)
@@ -92,11 +92,11 @@ class AdvancedSettingsDialog(QDialog):
         # 不归一会把「没改过」判成「改过」，进而凭空弹出冲突框。
         return normalize_editor_text(self.editor.toPlainText())
 
-    # 随窗口可见性启停轮询（M-15）。
+    # 随窗口可见性启停轮询。
     # 为什么判 hide/show 而不是 accept/reject：accept()/reject() 只是 done() → hide()，而
     # 标题栏 X、parent.close()、最小化到托盘后再关都只走 hide 这条路。
     # 为什么停表而不是复用同一实例：新建实例正是 _load_config() 重读磁盘、重建两份基线
-    # （编辑器基线 + 磁盘快照，MID-55）的时机，复用就得新增重开时的重载路径并改动基线语义。
+    # （编辑器基线 + 磁盘快照）的时机，复用就得新增重开时的重载路径并改动基线语义。
     def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802 - Qt 的重写点必须这个名
         self._watch_timer.stop()
         super().hideEvent(event)
@@ -107,7 +107,7 @@ class AdvancedSettingsDialog(QDialog):
             self._watch_timer.start()
 
     def reload_from_disk(self) -> None:
-        # M-35：窗口被复用时（关闭后再次打开）必须重新读盘，否则显示的是上次的快照，
+        # 窗口被复用时（关闭后再次打开）必须重新读盘，否则显示的是上次的快照，
         # 保存时还会把中间的磁盘改动静默覆盖掉。
         self._load_config()
 

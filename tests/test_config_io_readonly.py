@@ -54,7 +54,7 @@ def test_read_config_value_missing_key_readonly_ok(tmp_path: Path, monkeypatch: 
     assert result == "默认"
     # 原始配置文件内容未被写入该缺省键（写回失败被忽略）
     assert "_缺失的键_xyz" not in cfg.read_text(encoding="utf-8")
-    # 记了 warning 而非崩溃（审查 H-6 后文案细化：「原子写失败」替代原「写回失败」，
+    # 记了 warning 而非崩溃（审查该后文案细化：「原子写失败」替代原「写回失败」，
     # 强调非原子性是根因）
     assert any("原子写失败" in c for c in captured)
 
@@ -78,7 +78,7 @@ def test_read_config_value_delimiter_key_no_crash(tmp_path: Path, monkeypatch: M
         logger.remove(handler_id)
 
     assert result == "0"
-    # 记了 warning（含异常类型）而非崩溃（审查 H-6 后文案细化）：
+    # 记了 warning（含异常类型）而非崩溃（审查该后文案细化）：
     # ConfigParser.InvalidWriteError 走「配置项缺省值写回失败（已忽略）」分支，
     # OSError 走「原子写失败」分支——两条都需要断言捕获
     assert any(("原子写失败" in c or "缺省值写回失败" in c) and "InvalidWriteError" in c for c in captured)

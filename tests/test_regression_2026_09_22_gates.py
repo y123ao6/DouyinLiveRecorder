@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 #
-# 组 F 回归锁（2026-09-22 审查报告：SEV-2213 / SEV-2216 / SEV-2222 / SEV-2223）。
+# 组 F 回归锁（2026-09-22 审查报告： / / / ）。
 #
 # 本文件只锁「本轮报告点名的那几种失效形态本身」，不复述被测实现的门禁语义——
 # 复述型断言（「调用了 X」）在实现被改坏后照样能过，抓不住真失效。
@@ -18,7 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-# ────────────────────────────── SEV-2216 ──────────────────────────────
+# ────────────────────────────── ──────────────────────────────
 # 形态：httpx 的 h2 / socksio 只在「运行期真正走到那条分支」时才被 import，
 # 静态导入图与 pip 解析都不会报缺；于是清单里漏一条，用户 `pip install -r` 后仍然缺包。
 # 这里的锁是**双侧包名集合一致**：单侧遗漏（本次形态）立即变红。
@@ -63,7 +63,7 @@ def _names_from_pyproject_dependencies(text: str) -> set[str]:
 
 
 def test_requirements_and_pyproject_dependency_name_sets_match() -> None:
-    # SEV-2216 主锁：requirements.txt 与 pyproject [project.dependencies] 的包名集合必须相等。
+    # 主锁：requirements.txt 与 pyproject [project.dependencies] 的包名集合必须相等。
     # 二者是「单源双写」（Docker/CI 消费前者，pip 安装消费后者），单侧增删即漂移。
     req_names = _names_from_requirements((ROOT / "requirements.txt").read_text(encoding="utf-8"))
     proj_names = _names_from_pyproject_dependencies((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -114,7 +114,7 @@ def test_uv_lock_root_package_matches_pyproject_metadata() -> None:
 
 
 def test_httpx_extra_runtime_requirements_are_declared() -> None:
-    # SEV-2216 的主锁：httpx 的 extra 只有运行期走到那条分支才 import，因此「清单里有没有声明」
+    # 主锁：httpx 的 extra 只有运行期走到那条分支才 import，因此「清单里有没有声明」
     # 必须单独钉住。判据分两层：① 静态：h2 / socksio 在两侧都在；② 动态：向 httpx 自身追问它
     # 在这条配置下要不要这俩包——把「我记错了依赖名」这类文档性错误也一并抓住。
     httpx_reqs = _httpx_extra_requirements()
@@ -133,7 +133,7 @@ def test_httpx_extra_runtime_requirements_are_declared() -> None:
 
 
 def test_httpx_runtime_import_sites_match_the_declared_extras() -> None:
-    # SEV-2216 的**机理锁**：不猜「哪些包要声明」，而是回源到 httpx 源码，断言「本仓 declare 的
+    # **机理锁**：不猜「哪些包要声明」，而是回源到 httpx 源码，断言「本仓 declare 的
     # extra 名」与「httpx 真正 import 的依赖名」对齐。httpx 换实现（改名/换包）时这里会红，
     # 而纯静态的清单比对不会。
     import httpx
@@ -190,7 +190,7 @@ def _httpx_extra_requirements() -> list[str]:
     return list(md.requires("httpx") or [])
 
 
-# ────────────────────────────── SEV-2222 ──────────────────────────────
+# ────────────────────────────── ──────────────────────────────
 # 形态：tests/test_concurrency.py 用自己重写的一份 rate_limit 闭包做断言，从不调用 src 侧真正的
 # _douyin_rate_limit —— 「限流被删掉」这类回归完全不会被发现。本锁直接驱动 src 实现。
 
@@ -251,7 +251,7 @@ def test_douyin_rate_limit_does_not_sleep_when_interval_already_elapsed(monkeypa
 
 
 def test_concurrency_rate_limit_case_drives_src_not_a_local_copy() -> None:
-    # 把 SEV-2222/SEV-2223 的**根因形态**固化成硬断言：tests/test_concurrency.py 里三个曾自建
+    # 把 /**根因形态**固化成硬断言：tests/test_concurrency.py 里三个曾自建
     # 实现的类不得只靠自己重写的锁/限流/缓存闭包来「验证限流」——类体内必须出现对 src 真实入口
     # （下表符号任一）的引用，只允许打桩网络层与时间常量。
     #   [历史注] 2026-09-23 前本条写成 `if not drives_src: pytest.xfail(...)`：违例只软登记，
@@ -277,7 +277,7 @@ def test_concurrency_rate_limit_case_drives_src_not_a_local_copy() -> None:
     assert set(found) == set(wanted), f"三个自建实现类被改名/删除，锁位需重定位（实际找到 {found}）"
 
 
-# ────────────────────────────── SEV-2223 ──────────────────────────────
+# ────────────────────────────── ──────────────────────────────
 # 形态：门禁步骤「只扫 stderr 不判 rc」/「退出码被丢弃」，于是子进程以非 0 退出但门禁仍判通过。
 
 
@@ -309,7 +309,7 @@ def test_run_gates_keep_going_does_not_affect_exit_code_semantics() -> None:
 
 
 def test_run_gates_comment_about_stdout_matches_implementation() -> None:
-    # SEV-2220 定点锁：run_command 的注释曾声称「stdout 原样继承 / 逐行转发」，而实现是不接管
+    # 定点锁：run_command 的注释曾声称「stdout 原样继承 / 逐行转发」，而实现是不接管
     # stdout（未传 stdout= ⇒ 子进程直接继承句柄），二者结论不同：只走 stdout 的失效信号是盲区。
     # 判据（可复核）：Popen 调用里不得出现 stdout= 关键字；刻意走 AST 而非子串——注释里也会出现
     # stdout=subprocess.PIPE 字样，纯子串匹配会把自己的说明当实现（首版即此坑）。
@@ -330,7 +330,7 @@ def _popen_keywords(source: str, function_name: str) -> set[str]:
     # 取 function_name 体内**所有子进程调用**（Popen 与 run 两种形态）的关键字参数名集合。只认
     # Popen 会让「必须接管 stdout」的反向见证凭空变红：pytest 兜底那步为避免管道死锁用的是
     # subprocess.run；run_command 仍只用 Popen，故「不接管 stdout」一侧的断言不受影响。
-    #   [历史注] 2026-09-23 SEV-2219 之前只扫 Popen(...) 一种形态。
+    #   [历史注] 2026-09-23 此前只扫 Popen(...) 一种形态。
     tree = ast.parse(source)
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != function_name:
@@ -351,7 +351,7 @@ def _popen_keywords(source: str, function_name: str) -> set[str]:
 
 
 def test_run_gates_fatal_patterns_reach_stderr_channel() -> None:
-    # MID-2267 定点锁：FATAL_STDERR_PATTERNS 的**有效性**依赖「告警确实落在 stderr」。用一条真实的
+    # 定点锁：FATAL_STDERR_PATTERNS 的**有效性**依赖「告警确实落在 stderr」。用一条真实的
     # isort 解析失败复现（非 UTF-8 字节混入源文件）：断言其 rc==0（只认退出码即假绿）**且**告警
     # 文本出现在 stderr（扫描回路有效）。若 isort 将来把告警改到 stdout，本用例会红。
     import tempfile
@@ -384,7 +384,7 @@ def test_run_gates_fatal_patterns_reach_stderr_channel() -> None:
 
 def test_run_gates_parses_all_gate_commands_and_env() -> None:
     # 门禁清单来源锁：AGENTS.md「格式化命令」章节必须仍能被解析出全部命令、
-    # 且行首 `PYTHONUTF8=1` 前缀被正确解析为子进程环境变量（MID-63 的语义载体）。
+    # 且行首 `PYTHONUTF8=1` 前缀被正确解析为子进程环境变量（该语义载体）。
     # 这条同时防「章节标题被改 → 解析静默返空 → 门禁 rc=2 或跑空清单」的漂移。
     run_gates = _load_script_module("run_gates")
     agents = ROOT / "AGENTS.md"
@@ -425,7 +425,7 @@ def _load_build_exe() -> Any:
     return module
 
 
-# ────────────────────────────── SEV-2213 ──────────────────────────────
+# ────────────────────────────── ──────────────────────────────
 # 形态：build_exe.py 的 copy_external_binaries 把 config/ **整目录复制**进发布目录，
 # 而 make_zip 把发布目录整棵树压缩——含 Cookie / 代理账密 / Web 口令的 config.ini 与
 # 含房间地址（可能内嵌 query token）的 URL_config.ini 随之对外分发。
@@ -453,7 +453,7 @@ def _secret_bearing_pairs(text: str) -> list[tuple[str, str, str]]:
 
 
 def test_config_sanitizer_removes_every_sensitive_value() -> None:
-    # SEV-2213 主锁（「不产生」一侧）：把**真实仓库 config.ini** 喂给脱敏器，断言所有「非空 +
+    # 主锁（「不产生」一侧）：把**真实仓库 config.ini** 喂给脱敏器，断言所有「非空 +
     # 敏感」的键在产物里都变成空值，且节结构完整保留。用真实配置而非构造样本：缺陷本身就是
     # 「真实凭据被整目录复制」，只有真实样本才能证明脱敏对实际键名/节名成立。
     build_exe = _load_build_exe()
@@ -507,7 +507,7 @@ def test_url_config_sanitizer_yields_comment_only_template() -> None:
 def test_make_zip_aborts_when_release_dir_contains_real_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # SEV-2213 主锁（「产生了就拦住」一侧）：人为把一份**含真实凭据**的 config.ini 放进
+    # 主锁（「产生了就拦住」一侧）：人为把一份**含真实凭据**的 config.ini 放进
     # 发布目录，断言 make_zip 之前的校验会非零退出（SystemExit），即 zip 不会被生成。
     # 这是对「校验存在但没接在 make_zip 上」这一形态的直接否定——只断言函数存在是不够的。
     build_exe = _load_build_exe()
@@ -598,7 +598,7 @@ def test_prepare_url_config_reentrant_with_sanitizer_output() -> None:
 
 
 def test_three_exe_names_share_one_source() -> None:
-    # MID-2200 定点锁：三个 exe（CLI / GUI / Web）的名字必须同源于 APP_NAME——分别写死会在改名时
+    # 定点锁：三个 exe（CLI / GUI / Web）的名字必须同源于 APP_NAME——分别写死会在改名时
     # 漏改一个（产物半新半旧且不易察觉）。
     build_exe = _load_build_exe()
     template = build_exe.SPEC_TEMPLATE
@@ -609,15 +609,15 @@ def test_three_exe_names_share_one_source() -> None:
 
 
 def test_smoke_fatal_markers_cover_import_failures() -> None:
-    # MID-2200 定点锁：--smoke 的 FATAL_MARKERS 必须覆盖「导入失败」这一类——
-    # 缺 h2/socksio（SEV-2216）在冻结产物里正是以 ModuleNotFoundError 形态出现。
+    # 定点锁：--smoke 的 FATAL_MARKERS 必须覆盖「导入失败」这一类——
+    # 缺 h2/socksio在冻结产物里正是以 ModuleNotFoundError 形态出现。
     build_exe = _load_build_exe()
     for marker in ("Traceback (most recent call last)", "ModuleNotFoundError", "ImportError"):
         assert marker in build_exe.FATAL_MARKERS, f"冒烟致命标记缺少 {marker!r}"
 
 
 def test_version_is_read_from_single_source() -> None:
-    # MID-2200 定点锁：版本号必须只经 read_version() 从 pyproject.toml 读一次，
+    # 定点锁：版本号必须只经 read_version() 从 pyproject.toml 读一次，
     # 且三个 exe 共享同一个 zip 前缀（避免某入口单独写死版本）。
     src = (ROOT / "build_exe.py").read_text(encoding="utf-8")
     assert src.count("read_version()") >= 1, "read_version() 不再被调用"

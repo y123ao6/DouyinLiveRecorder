@@ -179,7 +179,7 @@ class TestGetUniqueId:
                 await get_unique_id("https://v.douyin.com/iQLgKSj/")
 
 
-# [历史注] L-13（2026-10-02）：原 TestGetLiveRoomId 类（4 用例）随 get_live_room_id 一并删除
+# [历史注] （2026-10-02）：原 TestGetLiveRoomId 类（4 用例）随 get_live_room_id 一并删除
 # ——该函数全仓无生产调用点且键缺失分支返回值与注解矛盾，生产代码已移除。
 
 

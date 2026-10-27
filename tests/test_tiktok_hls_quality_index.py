@@ -1,4 +1,4 @@
-# M-11 回归锁（2026-09-29 审查）：TikTok 选档时 FLV 与 HLS 两个列表必须各自基于「用户请求档」的
+# （2026-09-29 审查）：TikTok 选档时 FLV 与 HLS 两个列表必须各自基于「用户请求档」的
 # 原始索引独立钳制，不得把被 FLV 长度钳过的索引再喂给 HLS。
 #
 # 被测生产实现：src/stream.py::get_tiktok_stream_url 的 flv_quality_index / m3u8_quality_index
@@ -101,15 +101,15 @@ class TestHlsOnlyQualityIndex:
         assert result["is_live"] is True
         assert result["quality"] == requested
         assert str(result["m3u8_url"]).startswith(f"{_HOST}/{expected_tag}.m3u8")
-        # MID-15：FLV 通道为空就诚实地空，不得用 m3u8 顶替。
+        # FLV 通道为空就诚实地空，不得用 m3u8 顶替。
         assert result["flv_url"] == ""
         assert result["record_url"] == result["m3u8_url"]
-        # actual_quality 由**选中项**的 vbitrate 回采（MID-16），与请求档一致时不该有任何降级暗示。
+        # actual_quality 由**选中项**的 vbitrate 回采，与请求档一致时不该有任何降级暗示。
         assert result["actual_quality"] == expected_code
         assert bitrate_to_quality(600) == "LD"
 
     async def test_hls_only_low_tier_does_not_burn_highest_bitrate(self) -> None:
-        # 单独固化 M-11 的带宽后果：请求「流畅」时实拉的 HLS 必须是最低码率那一路。
+        # 单独固化该带宽后果：请求「流畅」时实拉的 HLS 必须是最低码率那一路。
         payload = _payload(_streams([t for t, _b in _TIERS], flv=False, hls=True))
         with patch("src.stream.get_response_status", new_callable=AsyncMock, return_value=True) as probe:
             result = await get_tiktok_stream_url(cast(dict[str, object], payload), video_quality="LD")
@@ -143,7 +143,7 @@ class TestIndependentClampWhenLengthsDiffer:
 
         assert str(result["m3u8_url"]).startswith(f"{_HOST}/ld.m3u8")
         assert str(result["flv_url"]).startswith(f"{_HOST}/hd.flv")
-        # 选中项含 FLV 时 actual_quality 按 FLV 的码率回采（MID-15/16 既有口径，本用例只固化不回改）。
+        # 选中项含 FLV 时 actual_quality 按 FLV 的码率回采（该既有口径，本用例只固化不回改）。
         assert result["actual_quality"] == "HD"
 
     async def test_flv_only_room_clamps_to_requested_index(self) -> None:
@@ -159,7 +159,7 @@ class TestIndependentClampWhenLengthsDiffer:
 
 
 class TestEmptyListsBoundary:
-    # 两个列表皆空的边界不得抛异常（原实现靠 {"url": ""} 兜底，MID-16 的形态必须保持）。
+    # 两个列表皆空的边界不得抛异常（原实现靠 {"url": ""} 兜底，该形态必须保持）。
 
     async def test_no_url_at_all_returns_empty_candidates(self) -> None:
         # 条目有 vbitrate/resolution（因此原始列表非空、过不了上方 len==0 的早退），
@@ -208,7 +208,7 @@ class TestFallbackBaseIsRawIndex:
 
 
 class TestDowngradeWarningConvention:
-    # M-11 要求的「降级告警口径」核对：main.py 的告警闸门只在 actual 比 requested **低**时触发。
+    # 要求的「降级告警口径」核对：main.py 的告警闸门只在 actual 比 requested **低**时触发。
     # TikTok 的钳制（min 到更短列表的末位）只会取到**更高**档，因此按既有口径保持静默是设计如此，
     # 不是缺陷；缺陷在于修复前把「档位明明存在」也钳成了首档（上方用例已锁）。
 

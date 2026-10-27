@@ -1,4 +1,4 @@
-# tests/test_ffmpeg_install.py - 守护 ffmpeg 自动安装器的硬行为（MID-59 / MIN-24④ / P-1 / SEV-2218 / SEV-2220）：
+# tests/test_ffmpeg_install.py - 守护 ffmpeg 自动安装器的硬行为（ / / P-1 / / ）：
 #   1) SHA256 旁路基准按构建标识命名：gyan.dev 的 ffmpeg-release-essentials.zip 是滚动 URL，
 #      上游出新构建后固定文件名会让校验永久不等、官方源被永久拒绝；同一标识下内容变化仍必须硬拒绝。
 #   2) Linux 的 yum → apt 回退链路真正成立：RHEL 系未启用 EPEL 时「yum 在位但安装失败」是常态，
@@ -9,7 +9,7 @@
 #      等于把镜像站的人机验证页哈希写成可信基准）；⑤ Windows 只有 gyan.dev 一条默认自动路径，
 #      第二条源（BtbN master）必须由 FFMPEG_MASTER_ALLOWED 显式门控、默认关闭，开启与跳过都落 warning；
 #      ⑥ 全仓下载常量必须落进 DOWNLOAD_SOURCES 白名单（src/ 全量 http(s) 字面量反查）。
-#   4) 2026-10-21 评审包 M-44 / M-45 / M-47 / M-48 / M-49（文件末三段）：临时包名不可预测 +
+#   4) 2026-10-21 评审包 / / / / （文件末三段）：临时包名不可预测 +
 #      独占创建 + 目录锁；落位改「同级暂存 → 两次改名」，拷贝失败必须保住上一次可用安装；
 #      PATH 注入统一成「本次目标目录 + 去重后的实时 PATH」；解包目录与目标同级并先做空间预检；
 #      官方源补上重试/指数退避，三条链一起补累计字节上限。
@@ -53,7 +53,7 @@ ZIP_B = b"fake-ffmpeg-build-B-different-content"
 
 
 # --------------------------------------------------------------------------
-# hermetic 出站层（SEV-2220）：本文件任何用例都不得真的发出网络请求。
+# hermetic 出站层：本文件任何用例都不得真的发出网络请求。
 #
 # 为什么桩在「各下载模块自己的模块级 requests 名字」这一层，而不是 socket / urllib：
 #   ① 覆盖面正确——src/ffmpeg_install、src/ffmpeg_master_download、src/node_install 全部
@@ -80,7 +80,7 @@ def _download_module_files() -> set[str]:
 
 # win_env 里 ffmpeg_install.download_ffmpeg_master 替身的调用记录。
 # 由 _no_real_egress 逐用例清空（跨用例串味会让「有没有走第二条源」的断言失真）。
-# [2026-10-18 LT-11] 上面这两句此前**失实**：fixture 并不清空它，全仓也没有任何断言读它，
+# [2026-10-18 ] 上面这两句此前**失实**：fixture 并不清空它，全仓也没有任何断言读它，
 # 于是它是一个「注释声称有生命周期管理、实际只累加」的孤儿累加器。现已补齐两侧：
 # ① _no_real_egress 逐用例 MASTER_CALLS.clear()；② TestMasterCallLedger 两条用例真读
 # （负例＝默认开关下不触达、正例＝开启后恰好触达一次且 arch 实参正确）。清空因此是真需求：
@@ -111,7 +111,7 @@ class _EgressTripwire:
 
 @pytest.fixture(autouse=True)
 def _no_real_egress(monkeypatch: pytest.MonkeyPatch) -> None:
-    # LT-11（2026-10-18）：兑现 MASTER_CALLS 头部注释的「逐用例清空」。放在本 autouse fixture 里
+    # 2026-10-18：兑现 MASTER_CALLS 头部注释的「逐用例清空」。放在本 autouse fixture 里
     # 而不是各用例自己清，是因为它是**模块级**累加器：win_env 的替身会往里 append，而用例顺序
     # 一变（-k、--lf、新增文件）就会让「数次数」的断言随顺序失真。
     MASTER_CALLS.clear()
@@ -137,9 +137,9 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-# 本次下载的临时包（M-44 之后名字带随机后缀，只能按前缀找，不能再拼固定名）。
+# 本次下载的临时包（此后名字带随机后缀，只能按前缀找，不能再拼固定名）。
 # 判据必须是「按前缀枚举后为空」而不是「固定名不存在」：后者在任何一次实现都不写那个名字时
-# 都会恒真（正是 M-26 那一族「文本锁因字面不一致而永久通过」的形态）。
+# 都会恒真（正是该那一族「文本锁因字面不一致而永久通过」的形态）。
 def _temp_artifacts(directory: Path, prefix: str) -> list[Path]:
     return sorted(item for item in directory.glob(prefix + "*") if item.is_file())
 
@@ -156,7 +156,7 @@ def _requests_shim(get_fn: Any) -> Any:
 
 def _stub_backoff(monkeypatch: pytest.MonkeyPatch, module: Any) -> list[float]:
     # 重试退避的 sleep 走各模块自己的 time 名字。**必须**是模块命名空间的浅拷贝 shim
-    # （AGENTS M-27：setattr(module.time, "sleep", ...) 换的是全进程 time 本体，窗口内 loguru
+    # （AGENTS ：setattr(module.time, "sleep", ...) 换的是全进程 time 本体，窗口内 loguru
     # 轮转与后台线程的 sleep 一并被换）。返回记录到的秒数列表，供「重试次数 ↔ 退避次数」判据。
     sleeps: list[float] = []
     shim = types.SimpleNamespace(**vars(time))
@@ -214,7 +214,7 @@ class TestBuildIdentityKeying:
     def test_corrupt_baseline_file_refuses_instead_of_skipping(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # L-44（2026-10-02，对齐 SEV-2222 口径）：基准**存在**但读取失败（磁盘异常/杀软占用）
+        # （2026-10-02，对齐该口径）：基准**存在**但读取失败（磁盘异常/杀软占用）
         # 时必须拒装（fail-closed），不得 warning 后 return True 放行未校验的二进制——
         # 官方文档不可达时 TOFU 就是最后一道完整性检查。zip 一并被删除（不执行的路径）。
         zip_path = _write_zip(tmp_path, ZIP_A)
@@ -235,7 +235,7 @@ class TestBuildIdentityKeying:
         # 拒装路径必须删包：未校验的二进制不得留在待解压位置
         assert not zip_path.exists()
 
-    # MID-59 的核心回归：上游换构建（标识变化、内容随之变化）不得判成篡改。
+    # 核心回归：上游换构建（标识变化、内容随之变化）不得判成篡改。
     # 把 _check_or_record_zip_sha256 的 hash_file 改回固定 _FFMPEG_HASH_FILE 即在此变红。
     def test_new_build_records_new_baseline_instead_of_refusing(self, tmp_path: Path) -> None:
         first_id = ffmpeg_install._build_identity({"Last-Modified": "Mon, 01 Jun 2026 10:00:00 GMT"})
@@ -262,7 +262,7 @@ class TestBuildIdentityKeying:
 
     def test_corrupt_sidecar_read_failure_refuses_install(self, tmp_path: Path) -> None:
         # [历史注] 旧名 test_corrupt_sidecar_read_failure_degrades_to_pass 锁定旧 fail-open 行为
-        # （读取失败 → 跳过校验放行）。L-44（2026-10-02）对齐 SEV-2222 口径：TOFU 是官方文档不可达时
+        # （读取失败 → 跳过校验放行）。（2026-10-02）对齐该口径：TOFU 是官方文档不可达时
         # 最后一道完整性检查，基准存在却读不出来 = 可信基准不可信，必须拒装（fail-closed）并删包。
         zip_path = _write_zip(tmp_path, ZIP_A)
         sidecar = tmp_path / ffmpeg_install._hash_file_name("x" * 12)
@@ -274,7 +274,7 @@ class TestBuildIdentityKeying:
     def test_sidecar_path_occupied_by_directory_refuses_install(self, tmp_path: Path) -> None:
         # [历史注] 旧名 test_unwritable_sidecar_does_not_fail_install 称走 write_text 分支；实测
         # （含旧实现）读侧先触发：sidecar 是目录时 hash_file.exists() 为 True、read_text 抛
-        # PermissionError，与上一条同走「基准读取失败」路径；L-44 收紧后同样拒装。
+        # PermissionError，与上一条同走「基准读取失败」路径；该收紧后同样拒装。
         zip_path = _write_zip(tmp_path, ZIP_A)
         (tmp_path / ffmpeg_install._hash_file_name("y" * 12)).mkdir()
         assert ffmpeg_install._check_or_record_zip_sha256(zip_path, "y" * 12) is False
@@ -283,7 +283,7 @@ class TestBuildIdentityKeying:
 
 class TestOfficialFailureHint:
     # 官方源失败（默认配置下它是 Windows 唯一一条自动路径）时必须给出「删掉过期基准」这一可执行
-    # 指引（MID-59 的排查线索），否则用户只剩一句无指向性的「请手动安装」。
+    # 指引（该排查线索），否则用户只剩一句无指向性的「请手动安装」。
     def test_hint_points_at_sidecar_glob(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[str] = []
         monkeypatch.setattr(
@@ -298,16 +298,16 @@ class TestOfficialFailureHint:
         lowered = joined.lower()
         # 断言按「这条提示必须点名的四件事」写：两个基准前缀（官方源 _ffmpeg_official* /
         # master 源 _ffmpeg_master*）、SHA256 这个词、以及基准所在目录 execute_dir。
-        # [2026-09-23 SEV-2220] 旧断言里的 ".sha256" 是顺带命中的：当时 install_ffmpeg_windows 会真调
+        # [2026-09-23 ] 旧断言里的 ".sha256" 是顺带命中的：当时 install_ffmpeg_windows 会真调
         # download_ffmpeg_master 走外网，日志混进了带 .zip.sha256 的行；加哨兵 + master 源默认关闭后
-        # 那行不再出现，故改为直接点名提示应含的内容（含 master 源基准前缀——它与 SEV-2222 同源）。
+        # 那行不再出现，故改为直接点名提示应含的内容（含 master 源基准前缀——它与该同源）。
         assert "_ffmpeg_official" in lowered, "提示必须点名官方源的旁路基准前缀"
         assert "_ffmpeg_master" in lowered, "提示必须点名 master 源的 TOFU 基准前缀"
         assert "sha256" in lowered
         assert str(ffmpeg_install.execute_dir) in joined
 
 
-# Linux 分支：yum 与 apt 的先后与回退（MIN-24④）。
+# Linux 分支：yum 与 apt 的先后与回退。
 class TestLinuxPackageFallback:
     def _fake_subprocess(self, results: dict[tuple[str, ...], int]) -> tuple[types.SimpleNamespace, list[str]]:
         calls: list[str] = []
@@ -370,13 +370,13 @@ def test_sidecar_directory_caveat_documented() -> None:
 
 
 # 交叉一致性：download_ffmpeg_official 必须把「由响应头推导的构建标识」**和**「官方公布的
-# 期望哈希」一起传进校验函数，否则旁路文件仍按固定名生成（MID-59 的修复形同未做）、
+# 期望哈希」一起传进校验函数，否则旁路文件仍按固定名生成（该修复形同未做）、
 # 或权威校验形同未接入（P-1 的修复形同未做，退化成纯 TOFU）。
 # AST 锁比 mock 整条下载链更廉价，也与本仓 ffmpeg 参数类用例（tests/test_ffmpeg_reconnect_args.py）同一手法。
-# [2026-10-21 M-49] 「读响应头 + 推导构建标识」这一段落进了重试外壳 _stream_official_zip，故本锁
+# [2026-10-21 ] 「读响应头 + 推导构建标识」这一段落进了重试外壳 _stream_official_zip，故本锁
 # 拆成两截：标识**在哪产生**（_stream_official_zip 里对 response.headers 调 _build_identity）与
 # 标识**如何参与判定**（download_ffmpeg_official 把 build_id 与 official_hash 一起交给校验函数）。
-# 两截都不得省：只查后者会让「标识被硬编码成空串」的改法继续全绿（= MID-59 复活）。
+# 两截都不得省：只查后者会让「标识被硬编码成空串」的改法继续全绿（= 该复活）。
 def test_official_download_wires_build_identity() -> None:
     source = (Path(__file__).resolve().parents[1] / "src" / "ffmpeg_install.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -409,8 +409,8 @@ def test_official_download_wires_build_identity() -> None:
     assert any(
         called_name(c) == "_build_identity" and c.args and "headers" in ast.dump(c.args[0]) for c in streamer_calls
     )
-    # 标识必须是**返回值**而不是就地变量：否则调用点拿到的永远是空串（MID-59 的固定名旁路文件复活）。
-    # 返回形态是 (构建标识, 本轮是否创建了临时包)（M-44 的收尾前提），故判**元组首位**。
+    # 标识必须是**返回值**而不是就地变量：否则调用点拿到的永远是空串（该固定名旁路文件复活）。
+    # 返回形态是 (构建标识, 本轮是否创建了临时包)（该收尾前提），故判**元组首位**。
     returned = [
         node for node in ast.walk(function_body("_stream_official_zip")) if isinstance(node, ast.Return) and node.value
     ]
@@ -436,7 +436,7 @@ def test_official_download_wires_build_identity() -> None:
 # （官方源下载 / 平台分发）逐分支锁住。
 # ==========================================================================
 
-# 追加段的「分支 → 用例」地图（上方原有段已逐条说明 MID-59 / MIN-24④）。
+# 追加段的「分支 → 用例」地图（上方原有段已逐条说明 / ）。
 #
 # 为什么要给安装器写这么多用例：它们只在「系统没有 ffmpeg 的机器首次启动」时才跑，
 # 属于「平时不发版验证、一发版就没人验证」的路径，失败形态是用户只能手动安装。
@@ -457,7 +457,7 @@ def test_official_download_wires_build_identity() -> None:
 #   TestDownloadSourceWhitelist）：Windows 默认只有 gyan.dev 一条自动路径，后来接入的 BtbN master
 #   兜底因不满足「官方公布哈希」判据，2026-09-23 起由 FFMPEG_MASTER_ALLOWED 显式门控、默认关闭
 #   （删除与门控的缘由见文件头 ④⑤ 两段，不在此重述）。锁三件事：
-#   ① 官方源失败即最终失败（默认配置下），且告警点名「删哪个旁路文件」（MID-59）；
+#   ① 官方源失败即最终失败（默认配置下），且告警点名「删哪个旁路文件」；
 #   ② 第二条源必须默认关闭、开启/跳过都落 warning、取值走 config_bool 同一套布尔口径；
 #   ③ 全仓下载常量必须落进 DOWNLOAD_SOURCES 白名单并登记模块（防「加回某个国内镜像」）。
 #
@@ -530,7 +530,7 @@ def _proc_shim(codes: dict[tuple[str, ...], int], calls: list[str]) -> types.Sim
     # 按「完整命令元组」查退出码，查不到则取 __default__（缺省为 0，即成功）：
     # 大多数用例只关心某一步失败，不想为了跑到底而枚举所有命令。
     # calls 是故意外传的：同一轮里 yum / apt / ffmpeg 复核会追加到同一个列表，
-    # 而「顺序」本身就是 MIN-24④（yum 失败后仍须试 apt）的断言对象。
+    # 而「顺序」本身就是（yum 失败后仍须试 apt）的断言对象。
     # stdout/stderr 都给真字节：linux 分支会直接对 stderr 做 decode，给 None 会
     # 把「安装失败」测成「AttributeError」，错到另一个根因上去。
     class _R:
@@ -554,23 +554,23 @@ def win_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # （本机即 _internal/）写几百 MB 产物与旁路文件。
     # PATH 由 monkeypatch.setenv 接管，用例结束整体还原：安装分支会真改 os.environ["PATH"]，
     # 残留会污染同进程后续用例的 subprocess 查找路径。
-    # [历史注 2026-10-21 M-47] 这里原本还 setattr 第三个常量 current_env_path（导入时的 PATH 快照）。
+    # [历史注 2026-10-21 ] 这里原本还 setattr 第三个常量 current_env_path（导入时的 PATH 快照）。
     # 自动安装的注入点已改读「本次调用的 dest_dir 算出的目标目录 + 实时 PATH 去重」，那个快照常量
     # 被撤掉——继续 setattr 一个不存在的名字只会让整批用例在 setup 阶段 AttributeError。
     monkeypatch.setattr(ffmpeg_install, "execute_dir", str(tmp_path))
     monkeypatch.setattr(ffmpeg_install, "ffmpeg_path", str(tmp_path / "ffmpeg"))
     monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     monkeypatch.setattr(ffmpeg_install, "tqdm", _Bar)
-    # M-49：官方源下载现在会重试（此前是单次尝试）。退避的 sleep 必须收敛，否则
+    # 官方源下载现在会重试（此前是单次尝试）。退避的 sleep 必须收敛，否则
     # 「连接重置 → 重试耗尽」那几条用例会真等 2+4 秒。
     _stub_backoff(monkeypatch, ffmpeg_install)
 
-    # SEV-2220 的「哨兵被覆盖即红」用例需要走真 master 代码，但 master 会经 ffmpeg_install
+    # 「哨兵被覆盖即红」用例需要走真 master 代码，但 master 会经 ffmpeg_install
     # 模块级的这个名字调用（不是 master 模块自己的 requests），故覆盖点在这里。
     # 默认实现：记一次名字 + 返回 False（等价于「兜底失败」），绝不真下载。
     def _record_master_call(*args: Any, **kwargs: Any) -> bool:
         # 不写「lambda: LIST.append(x) or False」形态——list.append 无返回值，mypy [func-returns-value] 拒绝。
-        # [2026-10-18 LT-11] 原来记的是 `args or kwargs`：实参位有值时 kwargs 整个被丢弃，
+        # [2026-10-18 ] 原来记的是 `args or kwargs`：实参位有值时 kwargs 整个被丢弃，
         # 而 install_ffmpeg_windows 恰好以 (execute_dir, arch=...) 调用——arch 这个「走没走对架构」
         # 的判据永远记不到。改成两个都留，正例断言才既能数次数、也能看实参。
         MASTER_CALLS.append({"args": args, "kwargs": kwargs})
@@ -581,7 +581,7 @@ def win_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestThinWrappers:
-    # CR-11 把实现下沉到 src.utils，本模块只留薄封装：薄封装必须在（调用点/测试仍引用），
+    # 把实现下沉到 src.utils，本模块只留薄封装：薄封装必须在（调用点/测试仍引用），
     # 且必须真的委托到 utils，否则「两份实现重新分叉」的老问题会复发。
     def test_is_valid_zip_delegates_to_utils(self, tmp_path: Path) -> None:
         good = tmp_path / "good.zip"
@@ -606,7 +606,7 @@ class TestBuildIdentityGuard:
 
 class TestStaleSidecarWarning:
     def test_new_build_lists_superseded_baseline(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 目录里已有旧基准时，为新构建记录基准要顺带点名被取代的文件（MID-59 的排查线索）。
+        # 目录里已有旧基准时，为新构建记录基准要顺带点名被取代的文件（该排查线索）。
         zip_path = _write_zip(tmp_path, ZIP_A)
         (tmp_path / "_ffmpeg_official.aaaa1111bbbb.zip.sha256").write_text("0" * 64, encoding="ascii")
         captured: list[str] = []
@@ -679,11 +679,11 @@ class TestOfficialDownload:
 
         monkeypatch.setattr(ffmpeg_install, "requests", self._requests(boom))
         assert ffmpeg_install.download_ffmpeg_official("https://x/ffmpeg.zip", str(win_env)) is False
-        # L-13：异常出口同样必须清掉临时包（旧实现在这一支漏删，几百 MB 长期残留）。
+        # 异常出口同样必须清掉临时包（旧实现在这一支漏删，几百 MB 长期残留）。
         assert _temp_artifacts(win_env, ffmpeg_install._TEMP_ZIP_PREFIX) == []
 
     def test_interrupted_download_unlinks_temp_zip(self, win_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # L-13 出口①：下载**写到一半**才断（CDN 截断 / 连接重置落在 iter_content 里）。
+        # 出口①：下载**写到一半**才断（CDN 截断 / 连接重置落在 iter_content 里）。
         # 此前 requests 与 OSError 两类异常出口都直接 return False、不删包，于是程序目录里
         # 长期留下一个「名字看起来就是下载完成的那份」的半截 ffmpeg_official_temp.zip。
         class _MidStreamFail(_Resp):
@@ -701,7 +701,7 @@ class TestOfficialDownload:
         assert _temp_artifacts(win_env, ffmpeg_install._TEMP_ZIP_PREFIX) == []
 
     def test_unzip_failure_unlinks_temp_zip(self, win_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # L-13 出口②：形态校验与哈希都过了、解压才炸（解压炸弹防护 / Zip Slip / 中央目录损坏）。
+        # 出口②：形态校验与哈希都过了、解压才炸（解压炸弹防护 / Zip Slip / 中央目录损坏）。
         # 清理语句原本排在整个 with 块之后，异常一抛就永远走不到。
         payload = _zip_with_bin()
         monkeypatch.setattr(ffmpeg_install, "requests", self._requests(lambda *a, **k: _Resp(content=payload)))
@@ -714,7 +714,7 @@ class TestOfficialDownload:
         assert _temp_artifacts(win_env, ffmpeg_install._TEMP_ZIP_PREFIX) == []
 
     def test_missing_bin_dir_unlinks_temp_zip(self, win_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # L-13 出口③：包内找不到 ffmpeg.exe 时是**直接 return False**（在 with TemporaryDirectory
+        # 出口③：包内找不到 ffmpeg.exe 时是**直接 return False**（在 with TemporaryDirectory
         # 块内），报告只点名了「下载中断」与「解压异常」两条，实测这条与 copytree/复核抛错同样漏删，
         # 故 finally 统一覆盖；本条把第三支单独钉住，防止「只在 except 里补 unlink」的半截修法。
         payload = _zip_with_bin(members=("bin/ffprobe.exe",))
@@ -729,8 +729,8 @@ class TestOfficialDownload:
         # 形态用「临时包路径上先放一个同名目录」构造：open(...,"wb") 与 Path.unlink() 都真抛
         # IsADirectoryError（OSError 子类），走的是文件系统语义而不是替身。
         # **不得**改成 monkeypatch.setattr(Path, "unlink", ...)——那是全进程共享的 stdlib 类属性，
-        # 窗口内 loguru 的轮转删除与其它后台线程的 unlink 一并被换掉（AGENTS M-27 同一族禁令）。
-        # [2026-10-21 M-44] 临时包名字不再固定，所以这条用例必须先把命名钉回改动前的固定名，
+        # 窗口内 loguru 的轮转删除与其它后台线程的 unlink 一并被换掉（AGENTS 该同一族禁令）。
+        # [2026-10-21 ] 临时包名字不再固定，所以这条用例必须先把命名钉回改动前的固定名，
         # 「同名目录占位」这一形态才仍然成立。被钉住的只是**命名**，open_exclusive 与 unlink 都是真身。
         (win_env / "ffmpeg_official_temp.zip").mkdir()
         monkeypatch.setattr(
@@ -743,7 +743,7 @@ class TestOfficialDownload:
         calls: list[str] = []
         monkeypatch.setattr(ffmpeg_install, "subprocess", _proc_shim({}, calls))
         assert ffmpeg_install.download_ffmpeg_official("https://x/ffmpeg.zip", str(win_env)) is False
-        # 占位目录必须原地不动：它不是本次创建的，删除它等于 M-44 要关的另一半（互删对方的文件）。
+        # 占位目录必须原地不动：它不是本次创建的，删除它等于该要关的另一半（互删对方的文件）。
         assert (win_env / "ffmpeg_official_temp.zip").is_dir()
         assert calls == []
 
@@ -821,7 +821,7 @@ class TestDownloadedPayloadMustBeArchive:
 
     def test_valid_zip_still_records_baseline(self, win_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # 对照组：守卫必须是「只拦非压缩包」，不得退化成永远拒绝——合法载荷 + 取不到官方文档
-        # 时，仍应照 MID-59 的记录路径写下基准并装成功。
+        # 时，仍应照该记录路径写下基准并装成功。
         payload = _zip_with_bin()
         calls: list[str] = []
         monkeypatch.setattr(ffmpeg_install, "requests", self._requests(payload))
@@ -853,12 +853,12 @@ class TestDownloadedPayloadMustBeArchive:
 
 
 class TestWindowsInstallSingleSource:
-    # 现状：蓝奏云兜底已删除（2026-09-22）、BtbN master 改为**默认关闭**（2026-09-23，SEV-2218），
+    # 现状：蓝奏云兜底已删除（2026-09-22）、BtbN master 改为**默认关闭**（2026-09-23），
     # 于是「Windows 只有 gyan.dev 一条默认自动路径」重新成立；本类锁「不要再长出**默认**第二条源」。
     # [历史注] 本类旧注释自称「按 URL 常量集合而非 lanzou 字样判定，换成任意别的镜像名也拦得住」，
     # 与实现相反：那条锁只 ast.parse 了 src/ffmpeg_install.py 一个文件，而真正的第二条源在
     # src/ffmpeg_master_download.py 里，故它恒绿。判定范围现已扩成「遍历 src/ 全部模块的
-    # http(s) 字面量 + 反查 DOWNLOAD_SOURCES 白名单」，见 TestDownloadSourceWhitelist（SEV-2220）。
+    # http(s) 字面量 + 反查 DOWNLOAD_SOURCES 白名单」，见 TestDownloadSourceWhitelist。
     def test_official_failure_is_final(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 默认（未开启 FFMPEG_MASTER_ALLOWED）：官方源失败即最终失败，不得再有第二条下载尝试。
         # download_ffmpeg_master 这里刻意也换成替身并记录调用：一是让「没走到第二条源」可断言，
@@ -901,7 +901,7 @@ class TestWindowsInstallSingleSource:
 
 
 # ==========================================================================
-# 2026-09-23 SEV-2218：第二条 Windows 运行期 ffmpeg 源的显式开关（默认关闭）
+# 2026-09-23 ：第二条 Windows 运行期 ffmpeg 源的显式开关（默认关闭）
 # ==========================================================================
 
 
@@ -1025,7 +1025,7 @@ class TestMasterSourceGate:
 
 
 # ==========================================================================
-# 2026-09-23 SEV-2220 ②：下载源白名单（反查 src/ 全量 http(s) 常量，而非单文件）
+# 2026-09-23 ②：下载源白名单（反查 src/ 全量 http(s) 常量，而非单文件）
 # ==========================================================================
 
 # 完整性方式取值域：与 AGENTS.md「三类钉定/校验」+ build_exe 的第 4 类同一套词表。
@@ -1105,7 +1105,7 @@ def _modules_holding_whitelisted_hosts(literals: dict[str, set[str]]) -> set[str
 class TestDownloadSourceWhitelist:
     def test_scan_actually_sees_the_sources_it_claims(self) -> None:
         # 反向见证（防空扫描）：本锁的全部威力建立在「真的扫到了这些常量」上。
-        # 扫描根为空 / 只扫到一个文件，都会让它「绿着什么都没查」——AGENTS.md MID-68 同族形态。
+        # 扫描根为空 / 只扫到一个文件，都会让它「绿着什么都没查」——AGENTS.md 该同族形态。
         literals = _src_http_literals()
         assert (
             _modules_holding_whitelisted_hosts(literals) == _download_module_files()
@@ -1202,14 +1202,14 @@ class TestLinuxExtraBranches:
     # 上方原有类 TestLinuxPackageFallback 已锁住「yum 失败仍试 apt」；本类补它没走到
     # 的四条旁支：yum 探测抛非 FileNotFoundError、apt update 失败、apt 不存在、
     # apt 安装本身失败。这四条共同决成「请手动安装」的文案，走错一条就是直接放弃。
-    # [2026-10-18 L-14] 第一条的判据被反转：原先「yum 抛异常 → 不试 apt」正是「直接放弃」
+    # [2026-10-18 ] 第一条的判据被反转：原先「yum 抛异常 → 不试 apt」正是「直接放弃」
     # 那一支，与函数末尾「两条包管理器路径都试过之后才落直下兜底」的顺序判据冲突，已修为必须试 apt。
     def test_yum_probe_crash_still_tries_apt(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # L-14（2026-10-18 行为变更）：yum 在位但 run() 抛非 FileNotFoundError 异常时也必须继续试 apt。
+        # （2026-10-18 行为变更）：yum 在位但 run() 抛非 FileNotFoundError 异常时也必须继续试 apt。
         # 本用例原名 test_yum_probe_crash_keeps_rhs_semantics，钉的是「is_RHS 保持 True、apt 不被
         # 触达」这一**缺陷**（当时的注释称其为「既有语义」）：install_ffmpeg_linux 函数末尾的顺序
         # 判据自述「直下兜底只能在 yum、apt 两条包管理器路径都试过且都没装上之后进行」，而异常那一支
-        # 跳过 apt 直接落兜底，与判据正相反（MIN-24④ 只补了 returncode!=0 支，异常支是同族漏网）。
+        # 跳过 apt 直接落兜底，与判据正相反（只补了 returncode!=0 支，异常支是同族漏网）。
         # 现按修复后的契约改判：yum 抛错 → apt update 仍被调用；两支都没装上 → 整体 False。
         # apt 两支都返非零（而非 rc=0），否则 apt install 会成功并提前 return True，
         # 本条想测的「异常支是否把 apt 让了过去」就又被返回值掩盖了。
@@ -1282,7 +1282,7 @@ class TestLinuxExtraBranches:
 #   ⑤ test_master_switch_on_is_passed_to_native_fallback：开关取真 → master_allowed=True 传到兜底。
 #   ⑥ test_apt_update_failure_fallback_success_skips_manual_hint：update 失败 + 兜底返真 → 恰好一次、
 #      整体 True、且**不得**打印手动安装提示。
-# 按 M-26 一律写「谁被调用、传了什么」的行为锁：顺序判据取 calls 记录的真实调用次序，
+# 按该一律写「谁被调用、传了什么」的行为锁：顺序判据取 calls 记录的真实调用次序，
 # 不用正则扫源码字面量（契约一改名，文本锁就静默空洞成立）。
 # [历史注] 本类初版（Unit B 首轮）只有四条，其中 ③ 按 brief 的实参形态（apt update 非零）
 # 对「接线存在与否」零敏感——当时实现里该分支在 apt 块内就 `return False` 早退、根本到不了兜底。
@@ -1641,7 +1641,7 @@ class TestAuthoritativeVsTofu:
     # 权威分支与 TOFU 分支的优先级：这是 P-1 的核心，也是最容易被「顺手写成 or」弱化的地方。
     def test_authoritative_match_passes_even_against_stale_sidecar(self, tmp_path: Path) -> None:
         # 旧旁路基准记着上一个构建的哈希：官方文档已确认本次构建 → 必须放行。
-        # 若实现让旁路基准拥有否决权，MID-59 的「版本轮转即永久拒装」在此复现。
+        # 若实现让旁路基准拥有否决权，该「版本轮转即永久拒装」在此复现。
         zip_path = _write_zip(tmp_path, ZIP_A)
         sidecar = zip_path.parent / ffmpeg_install._hash_file_name("b" * 12)
         sidecar.write_text("0" * 64, encoding="ascii")
@@ -1666,7 +1666,7 @@ class TestAuthoritativeVsTofu:
         assert (zip_path.parent / ffmpeg_install._hash_file_name("e" * 12)).is_file()
 
     def test_tofu_refusal_still_works_when_official_doc_unavailable(self, tmp_path: Path) -> None:
-        # 降级不等于放松：同一构建标识下内容漂移仍须硬拒（原有 MID-59 防线不得回退）。
+        # 降级不等于放松：同一构建标识下内容漂移仍须硬拒（原有该防线不得回退）。
         zip_path = _write_zip(tmp_path, ZIP_A)
         build_id = "f" * 12
         assert ffmpeg_install._check_or_record_zip_sha256(zip_path, build_id, "") is True
@@ -1703,7 +1703,7 @@ class TestOfficialDownloadAuthorityWiring:
     def test_unreachable_doc_degrades_to_tofu_but_still_installs(
         self, win_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 上游文档 404（离线 / 站点故障）时安装仍须成功——否则 P-1 就把 MID-59
+        # 上游文档 404（离线 / 站点故障）时安装仍须成功——否则 P-1 就把
         # 从「永久死路」改成了「文档一挂就全挂」，比不改更糟。
         payload = _zip_with_bin()
         stub, _calls = _doc_and_zip_requests(doc_status=404, payload=payload)
@@ -1717,26 +1717,26 @@ class TestOfficialDownloadAuthorityWiring:
 
 
 # ==========================================================================
-# 2026-10-18 评审修复包（M-06 / L-12 / LT-11 / L-15）
+# 2026-10-18 评审修复包
 # ==========================================================================
 
 # master 源候选 URL 之一（只作日志脱敏的输入，不发起请求：_probe 与 _stream_download 全部桩掉）。
 MASTER_GITHUB_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 
-# 会被 read_text(encoding="ascii") 判成非法字节序列的基准正文（M-06 / L-12 的触发形态）：
+# 会被 read_text(encoding="ascii") 判成非法字节序列的基准正文（ / 该触发形态）：
 # 用户手工编辑基准、或同步盘/压缩工具把它转成 UTF-8 都会落在这里。
 BAD_BASELINE_BYTES = "这不是十六进制哈希".encode("utf-8")
 
 
 class TestMasterBaselineDecodeGuard:
-    # M-06（CODE_REVIEW_2026-10-18）：TOFU 基准是**磁盘上可被外部改写的输入**——用户手工编辑、
+    # 2026-10-18：TOFU 基准是**磁盘上可被外部改写的输入**——用户手工编辑、
     # 同步盘/压缩工具把它转成 UTF-8，都会让 read_text(encoding="ascii") 抛 UnicodeDecodeError
     # （ValueError 子类，**不是** OSError）。旧实现只捕 OSError，于是该异常既不被
     # _tofu_verify_or_record 接住、也不被 download_ffmpeg_master 的 `except (IntegrityError, OSError)`
     # 接住，穿出「失败一律返回 False 不抛」的顶层契约直达启动流程（install_ffmpeg_windows 全程无 try）。
     # 姊妹模块 src/ffmpeg_linux_download.py::_verify_archive 是同一形态**已修**的版本（其回归锁
-    # ::test_non_ascii_baseline_refuses_without_raising），本包注释口径与它一致；官方 gyan.dev 侧
-    # 的同形缺陷见 L-12（TestOfficialBaselineDecodeGuard）。
+    # :test_non_ascii_baseline_refuses_without_raising），本包注释口径与它一致；官方 gyan.dev 侧
+    # 同形缺陷见上文（TestOfficialBaselineDecodeGuard）。
     def test_non_ascii_baseline_becomes_integrity_error_and_discards_zip(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "ffmpeg_master_win64_temp.zip"
         zip_path.write_bytes(ZIP_A)
@@ -1755,7 +1755,7 @@ class TestMasterBaselineDecodeGuard:
         self, win_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 入口层锁：契约是「失败一律返回 False 不抛」。只测单元层会漏掉调用方 except 元组这一环
-        # ——M-06 的穿透恰好发生在「内部抛了 IntegrityError 之外的类型、而调用方按类型收窄」的缝隙上。
+        # ——该穿透恰好发生在「内部抛了 IntegrityError 之外的类型、而调用方按类型收窄」的缝隙上。
         md = ffmpeg_master_download
         payload = _zip_with_bin()
         monkeypatch.setattr(md, "_probe", lambda url: ("ok", None))
@@ -1763,7 +1763,7 @@ class TestMasterBaselineDecodeGuard:
         def fake_stream(url: str, zip_path: Path) -> tuple[str, int, dict[str, str]]:
             zip_path.write_bytes(payload)
             # build_id 返空串 → 基准落到旧名 _ffmpeg_master.win64.zip.sha256，用例好定位（走的是
-            # MID-59「无可用头时退回旧命名」那条既有分支，不是测试自造的形状）。
+            # 「无可用头时退回旧命名」那条既有分支，不是测试自造的形状）。
             return "", len(payload), {}
 
         monkeypatch.setattr(md, "_stream_download", fake_stream)
@@ -1778,7 +1778,7 @@ class TestMasterBaselineDecodeGuard:
 
 
 class TestOfficialBaselineDecodeGuard:
-    # L-12（与 M-06 同形态，官方 gyan.dev 侧）：这里的异常不会穿到启动流程——download_ffmpeg_official
+    # （与该同形态，官方 gyan.dev 侧）：这里的异常不会穿到启动流程——download_ffmpeg_official
     # 有 catch-all `except Exception`——但代价同样具体：fail-closed 分支（删包 + 点名「删除
     # {hash_file} 后重试」的自救指引）整个被跳过，用户只看到一句泛化的「安装失败」，
     # 且几百 MB 的临时包不删。两条锁分别钉「单元回 False」与「入口带指引失败」。
@@ -1817,10 +1817,10 @@ class TestOfficialBaselineDecodeGuard:
 
 
 class TestMasterCallLedger:
-    # LT-11：win_env 的 download_ffmpeg_master 替身往模块级 MASTER_CALLS 记调用，但自 4.3 起
+    # win_env 的 download_ffmpeg_master 替身往模块级 MASTER_CALLS 记调用，但自 4.3 起
     # 既无人清空也无人读取，而它的头部注释自称「由 fixture 逐用例清空」——注释失实 + 孤儿累加器。
     # 处置取「补齐两侧」而不是删掉：正例本身是「第二条源确实经 ffmpeg_install 的模块级名字触达」
-    # 的接线锁（SEV-2220 的哨兵只拦 requests，拦不住这条函数边界），而逐用例清空是正/负两条用例
+    # 接线锁（该哨兵只拦 requests，拦不住这条函数边界），而逐用例清空是正/负两条用例
     # 互不串味的前提。
     # [定义顺序即刻意] 正例在前、负例在后：pytest 按定义顺序跑，负例因此在**默认（未摘 clear）**
     # 形态下看到的是「上一条正例刚留下的那一条」，靠 fixture 的 clear() 才成立。摘掉 clear() 后
@@ -1879,7 +1879,7 @@ def _kwargs_shim(returncode: int = 0) -> tuple[types.SimpleNamespace, list[dict[
 
 
 class TestChildConsoleStartupInfo:
-    # L-15（CODE_REVIEW_2026-10-18）：三处 `subprocess.run(["ffmpeg", "-version"])` 不带 STARTUPINFO，
+    # 2026-10-18：三处 `subprocess.run(["ffmpeg", "-version"])` 不带 STARTUPINFO，
     # 于是 Windows 无控制台形态（pythonw.exe 跑 gui.py、冻结 console=False 的 exe）下每次探测都闪出
     # 一个黑色控制台窗口。锁四件事：① 该实参在**所有**平台都存在（删掉即红——captured[0]["startupinfo"]
     # 对缺键直接 KeyError）；② 门控为假时恒传 None，且这条早返回路径不得去 import video_postprocess
@@ -1921,7 +1921,8 @@ class TestChildConsoleStartupInfo:
         assert seen == [], "非 Windows 早返回路径不得触达 video_postprocess（那条链顶层 import main）"
 
     def test_twin_helpers_agree_on_both_gate_states(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 孪生实现的行为等价性（与 tests/test_ffmpeg_path_preference.py::TestTwinEquivalence 同一口径）：
+        # 孪生实现的行为等价性（与 tests/test_ffmpeg_path_preference.py
+        # :test_twin_agrees_on_every_criterion_combination 同一口径）：
         # 两处 _win_startup_info 因循环导入无法收敛到单点，故「两边同时改」必须由机检兜住。
         # seen 记的是委托次数：门控为真时两侧各调一次 get_startup_info，为假时一次都不该调。
         for gate in (True, False):
@@ -1955,7 +1956,7 @@ class TestChildConsoleStartupInfo:
         monkeypatch.setattr(ffmpeg_install, "subprocess", shim)
         assert ffmpeg_install.download_ffmpeg_official(ZIP_URL, str(win_env)) is True
         assert captured and captured[0]["startupinfo"] is sentinel
-        # L-13 顺带见证：成功出口同样不留临时包。
+        # 顺带见证：成功出口同样不留临时包。
         assert _temp_artifacts(win_env, ffmpeg_install._TEMP_ZIP_PREFIX) == []
 
     def test_master_verify_run_forwards_startup_info(self, win_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1980,7 +1981,7 @@ class TestChildConsoleStartupInfo:
 
 
 # ==========================================================================
-# 2026-10-21 评审包 M-44 / M-45 / M-47 / M-48 / M-49：下载落盘的独占性、落位的原子性、
+# 2026-10-21 评审包 / / / / ：下载落盘的独占性、落位的原子性、
 # PATH 注入口径、解包位置与空间预检、重试退避与字节上限。
 # 这一族的共同点：全部只在「系统里没有 ffmpeg 的机器首次启动」时执行，失败形态是
 # 「装上了一半 / 把上一次能用的删了 / 把产物写到别处」——不打网络也能全部离线复现。
@@ -1990,7 +1991,7 @@ LOCK_NAME = ffmpeg_install._LOCK_FILE_NAME
 
 
 def _shutil_shim(copytree_impl: Any) -> Any:
-    # shutil 是 stdlib 模块本体，必须走被测模块命名空间的浅拷贝 shim（AGENTS M-27 同族禁令：
+    # shutil 是 stdlib 模块本体，必须走被测模块命名空间的浅拷贝 shim（AGENTS 该同族禁令：
     # setattr(shutil, "copytree", ...) 会波及同进程 loguru 轮转与后台线程的全部拷贝/删除）。
     shim = types.SimpleNamespace(**vars(shutil))
     shim.copytree = copytree_impl
@@ -2005,7 +2006,7 @@ class _HttpErrorResponse(_Resp):
 
 
 class TestUnpredictableDownloadName:
-    # M-44：三条下载链此前都以 `open(path, "wb")` 往**共享应用目录**写一个固定可预测名，
+    # 三条下载链此前都以 `open(path, "wb")` 往**共享应用目录**写一个固定可预测名，
     # 既没有 O_EXCL/O_NOFOLLOW 也没有跨进程锁。两实例并发时互相覆盖、并在各自收尾段 unlink 掉
     # 对方的包；能写该目录的本地主体可以预置同名符号链接，把几百 MB 重定向写到任意路径。
     def test_temp_names_are_unpredictable_and_keep_the_prefix(self, tmp_path: Path) -> None:
@@ -2029,7 +2030,7 @@ class TestUnpredictableDownloadName:
     ) -> None:
         # 上面几条把命名函数钉成了固定名（为了复现「占位者」形态），因此**必须**另有一条证明
         # 「调用点真的用 unique_path 命名」的锁：否则把调用点改回 `Path(dest)/"ffmpeg_official_temp.zip"`
-        # 会让所有钉名用例照旧通过（钉进去的名字与实现用的名字恰好相同）—— 这正是 M-26 那一族
+        # 会让所有钉名用例照旧通过（钉进去的名字与实现用的名字恰好相同）—— 这正是该那一族
         # 「断言因字面一致而永久通过」的形态。判据取**行为**：spy 记录真正交给 open_exclusive 的路径。
         recorded: list[Path] = []
         real_open_exclusive = ffmpeg_install.open_exclusive
@@ -2069,7 +2070,7 @@ class TestUnpredictableDownloadName:
         assert md_recorded and md_recorded[0].name != "ffmpeg_master_win64_temp.zip"
         assert md_recorded[0].name.startswith("ffmpeg_master_win64_temp")
         # Linux 直下那一头的同名锁在 tests/test_ffmpeg_linux_download.py
-        # ::TestExclusiveArchiveSink::test_download_uses_an_unpredictable_sink_name（那边已有 tar.xz
+        # :TestExclusiveArchiveSink::test_download_uses_an_unpredictable_sink_name（那边已有 tar.xz
         # 与 API 响应的替身设施，不在本文件重抄一遍）。
 
     def test_planted_file_at_the_legacy_name_is_never_written(
@@ -2162,7 +2163,7 @@ class TestUnpredictableDownloadName:
         assert (win_env / LOCK_NAME).is_file(), "不得删除别人持有的锁"
 
     def test_stale_lock_is_taken_over_and_then_released(self, win_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 崩溃残留的锁必须按龄回收，否则「未装 ffmpeg」的机器会永久装不上（MID-59 同一族的死路形态）。
+        # 崩溃残留的锁必须按龄回收，否则「未装 ffmpeg」的机器会永久装不上（该同一族的死路形态）。
         lock = win_env / LOCK_NAME
         lock.write_text("pid=999999", encoding="ascii")
         ancient = time.time() - ffmpeg_install._LOCK_STALE_SECONDS - 60.0
@@ -2176,7 +2177,7 @@ class TestUnpredictableDownloadName:
 
 
 class TestAtomicInstallSwap:
-    # M-45：`rmtree(target)` 之后才 `copytree(...)` —— 拷贝被磁盘满/杀软占用打断时，上一次可用的
+    # `rmtree(target)` 之后才 `copytree(...)` —— 拷贝被磁盘满/杀软占用打断时，上一次可用的
     # ffmpeg 已被删干净，execute_dir/ffmpeg 只剩空壳，程序彻底失去录制能力且下次启动重复同一条路径。
     def _prepare_previous_install(self, win_env: Path) -> Path:
         previous = win_env / "ffmpeg"
@@ -2222,7 +2223,7 @@ class TestAtomicInstallSwap:
     def test_master_copy_failure_keeps_the_previous_install_intact(
         self, win_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # master 链（src/ffmpeg_master_download.py）与官方源链是两份独立实现，M-45 的改动各自落了一次。
+        # master 链（src/ffmpeg_master_download.py）与官方源链是两份独立实现，该改动各自落了一次。
         # 这里走**真实**的 _stream_download + is_valid_zip + TOFU 记账段，只把网络响应与拷贝动作换成替身。
         md = ffmpeg_master_download
         previous = self._prepare_previous_install(win_env)
@@ -2260,7 +2261,7 @@ class TestAtomicInstallSwap:
 
 
 class TestPathInjectionSingleRule:
-    # M-47：三处注入口径此前各不相同（install 用模块级常量 + 导入时快照；master/linux 用运行时目标
+    # 三处注入口径此前各不相同（install 用模块级常量 + 导入时快照；master/linux 用运行时目标
     # 但实时 PATH 无去重）。统一为「本次的目标目录 + 去重后的原 PATH」。
     def test_injects_this_run_target_when_dest_dir_differs(
         self, win_env: Path, monkeypatch: pytest.MonkeyPatch
@@ -2321,7 +2322,7 @@ class TestPathInjectionSingleRule:
 
 
 class TestUnpackLocationAndFreeSpace:
-    # M-48：Windows 两处把解包落在 %TEMP%，Linux 侧刻意落在应用目录内。gpl 包解包后可达数百 MB，
+    # Windows 两处把解包落在 %TEMP%，Linux 侧刻意落在应用目录内。gpl 包解包后可达数百 MB，
     # 在 /tmp 是小 tmpfs 的容器上直接 ENOSPC 死在解压这一步。
     def test_unpack_directory_is_beside_the_destination(self, win_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = _zip_with_bin()
@@ -2350,7 +2351,7 @@ class TestUnpackLocationAndFreeSpace:
     def test_master_unpack_directory_is_beside_the_destination(
         self, win_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-48 的第二处：%TEMP% 形态在 master 链同样存在（gpl 包解后可达数百 MB）。解包被桩掉后
+        # 第二处：%TEMP% 形态在 master 链同样存在（gpl 包解后可达数百 MB）。解包被桩掉后
         # 找不到 bin/ffmpeg.exe、本条返回 False 是预期，判据只看「解包目录落在哪」。
         md = ffmpeg_master_download
         monkeypatch.setattr(md, "_probe", lambda url: ("ok", None))
@@ -2385,7 +2386,7 @@ class TestUnpackLocationAndFreeSpace:
 
 
 class TestOfficialDownloadRetryAndByteCap:
-    # M-49：官方源是 Windows 默认且唯一的自动路径，此前一次连接重置就整条失败。
+    # 官方源是 Windows 默认且唯一的自动路径，此前一次连接重置就整条失败。
     # 重试与退避的形态取自 master/linux 两条已有实现；字节上限是三条链一起补的那一半。
     def test_transient_connection_failure_retries_and_succeeds(
         self, win_env: Path, monkeypatch: pytest.MonkeyPatch
@@ -2486,7 +2487,7 @@ class TestShippedDownloadCaps:
 
 
 # ==========================================================================
-# 内联落盘纪律块自身的「失效方向」锁（M-44 / M-45）。上面三条链的链级用例只覆盖到
+# 内联落盘纪律块自身的「失效方向」锁。上面三条链的链级用例只覆盖到
 # 「拷贝抛错 → 根本走不到落位」，而落位**之后**才暴露的那几支（改名让位成功、落位失败、回滚又失败、
 # 同进程嵌套、锁建不出来、锁位被做成链接、空间探测本身抛错）只能直接打这一个模块。
 # 判据一律看文件系统现场（旧安装还在不在、锁还在不在），不看日志文案。
@@ -2504,7 +2505,7 @@ class TestDownloadGuardFailureDirections:
         return target, staged
 
     def _rename_shim(self, monkeypatch: pytest.MonkeyPatch, failing_attempts: set[int]) -> None:
-        # os 是 stdlib 本体，必须走被测模块命名空间的浅拷贝 shim（AGENTS M-27 同族禁令）：
+        # os 是 stdlib 本体，必须走被测模块命名空间的浅拷贝 shim（AGENTS 该同族禁令）：
         # 直接 setattr(os, "rename", ...) 会把窗口内其它线程的重命名一并换掉。
         real_os = ffmpeg_install.os
         counter = {"n": 0}
@@ -2522,7 +2523,7 @@ class TestDownloadGuardFailureDirections:
     def test_landing_failure_puts_the_previous_install_back(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 让位已成功、落位失败：旧安装必须从 .previous- 回滚位搬回目标位，否则 M-45 只修了一半
+        # 让位已成功、落位失败：旧安装必须从 .previous- 回滚位搬回目标位，否则该只修了一半
         # （空壳形态只是从「拷贝被打断」换成了「改名被打断」）。
         target, staged = self._make_target_and_staged(tmp_path)
         self._rename_shim(monkeypatch, {2})

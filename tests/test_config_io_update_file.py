@@ -1,12 +1,12 @@
 # tests/test_config_io_update_file.py - src/config_io.py 的**写侧**行为锁。
 #
-# 已有用例集中在 delete_line 的行尾归一（SEV-05）、只读降级（test_config_io_readonly.py）
+# 已有用例集中在 delete_line 的行尾归一、只读降级（test_config_io_readonly.py）
 # 与备份轮换（test_config_io_backup.py）；update_file / update_anchor_name / 备份脱敏这三条
 # 「会把用户配置写坏」的路径此前长期没有回归防护。本文件补齐：
 #   1) update_file 的段级精确替换：URL 前缀重叠（/1 与 /12）时不得误改他行；
 #      读取失败必须用 ini_URL_content 快照回滚，而不是留下空文件；
 #   2) update_anchor_name 的幂等与注释前缀/画质段保留；
-#   3) CR-07 备份脱敏：[Cookie]/[Authorization]/[账号密码] 的值不得进备份目录，
+#   3) 该备份脱敏：[Cookie]/[Authorization]/[账号密码] 的值不得进备份目录，
 #      且 DLR_BACKUP_KEEP_SECRETS=1 时原样复制（用户显式放行的语义）。
 #
 # 沿用 tests/test_config_io.py 的 newline="" 读写口径：断言的是**文件字节形态**（含 CRLF），
@@ -34,13 +34,13 @@ from src import config_io  # noqa: E402
 #   真缺陷形态（旧实现用 str.replace，.../1 会顺带改坏 .../12），必须单独一条用例盯住，否则任何
 #   「改回 substring 匹配」的重构都能静默过闸。
 # update_file：noop 短路（不抢锁）/ 读取失败（快照回滚）/ 无命中与原子写失败（快照不得前进）。
-#   快照只能追上「已落盘」的内容，追快了就会把写失败伪装成写成功。M-07 另钉：old_str 未命中
+#   快照只能追上「已落盘」的内容，追快了就会把写失败伪装成写成功。该另钉：old_str 未命中
 #   任何行必须**不落盘**（旧实现落盘并返回 new_str，与替换成功同形），而「命中但内容逐字不变」
 #   的注释路径仍必须落盘——判据是「是否命中」而不是「是否变化」。
 # update_anchor_name：幂等（已是目标名返回 False，否则每轮重录都回写磁盘）、单层 # 前缀保留、
 #   全角冒号归一为半角（与 main.py 的行解析约定同源）。
-# 备份脱敏（CR-07）：脱敏自身报错时回退原样复制——降级方向是「宁可留明文也不能没备份」，
-#   不要误改成「脱敏失败则不备份」。M-10 / MT-01：backup_file 返回 False 时 MD5 基线
+# 备份脱敏：脱敏自身报错时回退原样复制——降级方向是「宁可留明文也不能没备份」，
+#   不要误改成「脱敏失败则不备份」。 / ：backup_file 返回 False 时 MD5 基线
 #   **不得推进**，且循环必须真跑到第二轮，「内容未变 → 不重复备份」这条去重分支才算被覆盖
 #   （首轮就抛停的桩形同没测）。
 
@@ -173,7 +173,7 @@ class TestUpdateFile:
         assert main.ini_URL_content == "", "写失败时快照不得前进"
 
     def test_no_match_writes_nothing_and_returns_old_string(self, url_config: Path, monkeypatch: MonkeyPatch) -> None:
-        # M-07（2026-10-19）：old_str 一行都没命中 → **不落盘** + 返回 old_str。
+        # 2026-10-19：old_str 一行都没命中 → **不落盘** + 返回 old_str。
         # 变异验证（短 id M07，改动行当时带盘上标记、跑完已按字节还原）实测：把 `if not matched: return old_str` 摘掉后
         # 本用例三条断言全红（返回 new_str、写了一次、快照前进），说明锁真的落在那条分支上。
         _write_text(url_config, f"{URL_A}\n{URL_B}\n")
@@ -196,7 +196,7 @@ class TestUpdateFile:
         self, url_config: Path, monkeypatch: MonkeyPatch
     ) -> None:
         # 判据是「是否命中」而不是「内容是否变了」：main.py 注释未知链接那条路径传的是
-        # old_str == new_str + start_str="#"，落盘内容与被替换行逐字相同（只是加了前缀），
+        # 2026-10-19：old_str == new_str + start_str="#"，落盘内容与被替换行逐字相同（只是加了前缀），
         # 用「文本是否变化」当判据会让这条路径永久 no-op。
         _write_text(url_config, f"{URL_A}\n")
         assert config_io.update_file(str(url_config), URL_A, URL_A, start_str="#") == URL_A
@@ -330,7 +330,7 @@ class TestBackupSecretHandling:
         assert copies[0].read_text(encoding="utf-8-sig") == "[Cookie]\ndouyin_cookie = top-secret\n"
 
     def test_unreadable_source_falls_back_to_redacted_copy(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-        # S-08②（CODE_REVIEW_2026-10-21）：这里的降级方向被收紧了。原契约是「按节脱敏抛错 → 直接
+        # ②（CODE_REVIEW_2026-10-21）：这里的降级方向被收紧了。原契约是「按节脱敏抛错 → 直接
         # copy2 明文落盘」，而 backup_config/ 恰是用户打包/云同步/求助外发的目录，明文副本等于凭据
         # 外泄。新契约：先退到「按字节逐行 mask_credentials」的脱敏副本；只有连这条也失败才落明文，
         # 且文件名带 .UNMASKED 自证。本用例钉的是第一级——脱敏失败不得把明文写出去。
@@ -345,7 +345,7 @@ class TestBackupSecretHandling:
         assert b"***" in written.read_bytes(), "降级路径未做任何脱敏"
 
     def test_last_resort_plaintext_copy_is_marked_unmasked(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-        # S-08②：所有脱敏通道都失败时保留「备份不能缺失」，但明文副本必须在**文件名**上自证，
+        # ②：所有脱敏通道都失败时保留「备份不能缺失」，但明文副本必须在**文件名**上自证，
         # 否则用户会把它当脱敏备份外发。
         src = tmp_path / "config.ini"
         src.write_bytes(b"[Cookie]\ndouyin_cookie = raw\n")
@@ -370,7 +370,7 @@ class TestBackupSecretHandling:
     def test_write_failure_returns_false_with_type_bearing_warning(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        # M-10（2026-10-19）：备份必须**把成败交回调用方**——旧签名 `-> None` 全吞异常，
+        # 2026-10-19：备份必须**把成败交回调用方**——旧签名 `-> None` 全吞异常，
         # backup_file_start 因此无条件推进 MD5 基线，一次磁盘满/文件占用就让这份内容的版本
         # 永久失去备份。这里让 copy2 抛错（DLR_BACKUP_KEEP_SECRETS=1 那条直复制的分支，
         # 失败点唯一、不会被脱敏回退路径掩盖），断言三件事实：返回 False、副本没落盘、
@@ -415,7 +415,7 @@ class TestBackupLoop:
         monkeypatch.delenv("DLR_BACKUP_KEEP_SECRETS", raising=False)
         monkeypatch.setattr(main, "text_encoding", "utf-8")
 
-        # MT-01（2026-10-19）：旧桩在**首轮** sleep 就抛，循环只跑一轮，
+        # 2026-10-19：旧桩在**首轮** sleep 就抛，循环只跑一轮，
         # 「MD5 未变 → 不重复备份」那条分支从未被执行——删掉 `if new_md5 != md5` 去重判断
         # 本用例照样绿（假绿）。现放行第一轮、第二轮才停，第二轮就是那条去重分支的真覆盖。
         rounds: list[float] = []
@@ -432,7 +432,7 @@ class TestBackupLoop:
         original_backup = config_io.backup_file
 
         def spy_backup(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> bool:
-            # M-10 后 backup_file 返回 bool，而 backup_file_start 的基线推进**只看这个返回值**：
+            # 后 backup_file 返回 bool，而 backup_file_start 的基线推进**只看这个返回值**：
             # 替身若返回 None（falsy）基线就永不前进、第二轮会重复备份、本用例当场转红。
             # 故这里必须原样透传真实返回值——它同时也是「替身没有替被测逻辑作假」的见证。
             backed_up.append(Path(file_path).name)
@@ -448,7 +448,7 @@ class TestBackupLoop:
     def test_failed_backup_keeps_baseline_and_retries_next_round(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        # M-10（2026-10-19）的回归锁：备份写入失败 → 基线**不推进** → 下一轮同一份内容仍会重试。
+        # 2026-10-19：的回归锁：备份写入失败 → 基线**不推进** → 下一轮同一份内容仍会重试。
         # 变异验证实测（短 id M10，改动行当时带盘上标记、跑完已按字节还原）：把 `if backup_file(...):` 还原成
         # 「无条件调用 + 无条件推进基线」的旧形态后，本用例的 attempts 断言立刻变成
         # ["config.ini"]（只试过一次）而转红。

@@ -14,8 +14,7 @@ from urllib.parse import quote
 # 直接从此处导入可避免基于 basedpyright 的 "未从 src.utils 导出" 告警。
 from loguru import logger
 
-# MI-20：本模块日志统一走 i18n（原先 5 处为裸英文 + 字符串拼接，
-# 在中文/繁体/英式目录下无法翻译，与仓库其它模块的日志口径不一致）
+# 本模块日志一律走 i18n，与仓库其它模块同口径（裸英文+字符串拼接在中文/繁体/英式目录下无法翻译）
 import i18n
 
 # 代理自身的协议白名单：注册表/环境变量里出现的 scheme 只有这几种有意义（curl / wget /
@@ -43,9 +42,8 @@ def _is_ip_literal_without_port(value: str) -> bool:
 class ProxyInfo:
     ip: str = field(default="", repr=True)
     port: str = field(default="", repr=True)
-    # 认证代理的凭据单独承载（原实现在解析处 split("@", 1)[1] 把凭据直接丢弃，ProxyInfo 只剩
-    # ip/port，上层无法还原可用地址）。repr=False：该 dataclass 会被 print / 记进日志，
-    # 凭据不得跟着进轮转日志文件。
+    # 认证代理的凭据单独承载（旧解析形态把凭据丢弃、ProxyInfo 只剩 ip/port，上层无法还原可用地址）。
+    # repr=False：该 dataclass 会被 print / 记进日志，凭据不得跟着进轮转日志文件。
     user: str = field(default="", repr=False)
     password: str = field(default="", repr=False)
     # 代理**自身**的协议（来自 all_proxy=socks5://… 的 scheme，或注册表里显式写出的
@@ -81,7 +79,7 @@ class ProxyInfo:
     #   ③ src/ 下其余模块不 import 本模块。
     # 故「认证代理无法还原完整地址」只在**解析层**已修，**生效层**未闭合：系统代理带凭据/带
     # socks 协议时，录制链路依然收不到它。接上它需要改 main.py，因此只在此显式登记，不留
-    # 「已修好」的错误陈述（L-10：注释声强于实现比没有注释更危险）。
+    # 「已修好」的错误陈述（注释声强于实现比没有注释更危险）。
     # [历史注 2026-10-21] 本条登记语为 `没有任何生产消费点` 的逐字形态被
     # tests/test_regression_2026_09_22_net.py::TestMid2233ResidualRegistered 锁定；修订措辞时
     # 必须同批改该锁，否则会出现「登记还在、锁变红」的假失败。
@@ -124,13 +122,11 @@ class ProxyInfo:
 class ProxyDetector:
     # 系统代理检测器：Windows 读注册表 Internet Settings，其余平台读环境变量
 
-    # 读取的环境变量集合（小写 + 大写两种形态都查）：curl / wget / requests 等主流工具都认两种
-    # 大小写，all_proxy 是「所有协议」的兜底项。
-    # **刻意不含 ftp_proxy**：本仓全部出站请求都是 http/https（含 HLS/FLV 拉流与所有平台解析），
-    # 只配 ftp 代理的机器并不意味着「本程序有代理可用」。旧集合把它算进候选，于是 global_proxy=True
-    # 成立而解析出的地址又被下游按 http 代理使用；最坏组合下 9 个海外平台走「有代理」分支、实际
-    # 传给 async_req 的 proxy_address 为空 → 直连境外域名，全平台「网络异常」而日志显示「已检测到
-    # 系统代理」，归因方向被彻底带偏。本程序不代理 FTP 流量，故不纳入。
+    # 读取的环境变量集合（小写 + 大写两种形态都查）：curl / wget / requests 等主流工具都认两种大小写，
+    # all_proxy 是「所有协议」的兜底项。**刻意不含 ftp_proxy**：本仓全部出站请求都是 http/https
+    # （含 HLS/FLV 拉流与所有平台解析），只配 ftp 代理不意味着「本程序有代理可用」。
+    # [历史注] 旧集合曾把它算进候选：最坏组合下 9 个海外平台走「有代理」分支、实际传给 async_req 的
+    # proxy_address 为空 → 直连境外域名、全平台「网络异常」，日志却显示「已检测到系统代理」。
     _LINUX_PROXY_ENV_NAMES = ("http_proxy", "https_proxy", "all_proxy")
 
     @staticmethod
@@ -148,11 +144,10 @@ class ProxyDetector:
 
     @staticmethod
     def _split_host_port(hostport: str) -> tuple[str, str, str, str]:
-        # 把 "user:pass@host:port" / "[::1]:8080" / "10.0.0.1:3128" 拆成 (ip, port, user, password)。
-        # 原实现是 split(":", 1)：注册表存 "[::1]:8080" 时切出 ip="["、port=":1]:8080"，port 非
-        # 数字 → __post_init__ 抛 ValueError，异常被 main.py 外层 except 吞成一行 print（global_proxy
-        # 仍为 True 却拿不到地址），「专门为 [xxxx] 形态写的放行分支」永远收不到合法输入。故改
-        # rsplit(":", 1) + 方括号特判；凭据原先被 split("@", 1)[1] 丢弃，现单独承载（见 ProxyInfo）。
+        # 把 "user:pass@host:port" / "[::1]:8080" / "10.0.0.1:3128" 拆成 (ip, port, user, password)：
+        # rsplit(":", 1) + 方括号特判，凭据单独承载（见 ProxyInfo）。[历史注] 旧 split(":", 1) 把
+        # "[::1]:8080" 切成非数字 port → __post_init__ 抛 ValueError 被 main.py 外层 except 吞成一行
+        # print：global_proxy 仍为 True 却拿不到地址，「专门为 [xxxx] 形态写的放行分支」收不到合法输入。
         user = password = ""
         hostport = hostport.strip().rstrip("/")
         if not hostport:
@@ -172,7 +167,7 @@ class ProxyDetector:
                 # 裸 IPv6（"::1" / "2001:db8::1"，注册表少见形态）：多冒号时不能用
                 # 「最后一个冒号之后就是端口」来判定（IPv6 自身就有多个冒号），
                 # 故整串作 ip、端口留空，交给 __post_init__ 开头的 IPv6 无端口放行分支
-                # （MIN-2233③）。带端口的 IPv6 必须写成 [..]:port，上面已特判——这也是
+                # 。带端口的 IPv6 必须写成 [..]:port，上面已特判——这也是
                 # RFC 3986 的形态。
                 return hostport, "", user, password
             ip, _, port = hostport.rpartition(":")

@@ -9,7 +9,7 @@ import hashlib
 import random
 
 XBOGUS_ALPHABET = "Dkdpgh4ZKsQB80/Mfvw36XI1R25+WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe"
-# 表内含 '+' 与 '/'：本端签名输出按上游行为**不做** percent-encode（F-13，理由与回归说明
+# 表内含 '+' 与 '/'：本端签名输出按上游行为**不做** percent-encode（理由与回归说明
 # 见 src/platforms/douyin.py 的 signature 拼接注释），勿「顺手加 quote()」。
 
 # emptyMd5Bytes = [0x45, 0x3f]（dart 原样）
@@ -40,11 +40,9 @@ def _rc4_encrypt(key: int, data: bytearray) -> None:
 # 把 data 按每 3 字节切成 4 个 6bit 值，用 X-Bogus 自定义字符表映射为字符串并返回。
 def _encode_base64(data: bytes) -> str:
     # 与 dart encodeBase64 一致：alphabetLookup[standardAlphabet.codeUnitAt(v)] == xbogusAlphabet[v]，
-    # 即每组 6 bit 值 v 直接输出 xbogusAlphabet[v]。曾误用按 ASCII 码建的查表导致全 0（NUL）。
-    #
-    # 2026-09-12 审查 6.4：原实现无条件取 data[i+1] / data[i+2]，输入长度非 3 的倍数时
-    # 末组越界抛 IndexError（签名链路上游长度随 query 变化，不是固定值）。
-    # 按标准 base64 尾部规则处理：余 1 字节补 '=='、余 2 字节补 '='。
+    # 即每组 6 bit 值 v 直接输出 xbogusAlphabet[v]。[历史注] 曾误用按 ASCII 码建的查表导致全 0（NUL）。
+    # 按标准 base64 尾部规则处理：余 1 字节补 '=='、余 2 字节补 '='——签名链路上游长度随 query
+    # 变化、不是固定值，旧实现无条件取 data[i+1]/data[i+2] 时末组会抛 IndexError。
     out = []
     n = len(data)
     for i in range(0, n, 3):

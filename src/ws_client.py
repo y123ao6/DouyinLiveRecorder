@@ -3,7 +3,7 @@
 # 提供心跳定时与断线重连（最多 max_reconnect 次，间隔 reconnect_interval 秒，指数退避 + 抖动）。
 # 所有平台弹幕共用此客户端。
 #
-# 约定（SEV-2217）：**交给 on_close / on_reconnect 回调的文案必须已脱敏**。这两条回调是把
+# 约定：**交给 on_close / on_reconnect 回调的文案必须已脱敏**。这两条回调是把
 # 异常文本送出去的唯一出口，消费端（src/collector.py 的 _on_close）会把 reason 原样写进
 # loguru 文件 sink（logs/ 按 300KB 轮转保留多份 = 长期落盘）与弹幕监控枢纽（进而显示到
 # Web/GUI 面板）。websockets 的 InvalidProxy 文本自带代理原串（含 user:pass@host），故所有
@@ -30,7 +30,7 @@ from .logger import logger
 # 超出后只记一次汇总，避免同型异常把日志刷满、掩盖其它真实问题。
 _POISON_LOG_LIMIT = 5
 
-# MIN-13：send_nowait 在途任务堆积上限。心跳/进房/ack 均为秒级小帧，正常在途 < 5；
+# send_nowait 在途任务堆积上限。心跳/进房/ack 均为秒级小帧，正常在途 < 5；
 # 上限只在 _send_lock 被 WD-04 的 5s 超时长期占住时触顶——触顶即丢弃并告警，而不是让
 # 任务数随断连时长无界增长（旧实现裸 ensure_future，既无引用也无上限）。
 _MAX_PENDING_SENDS = 64
@@ -50,7 +50,7 @@ _SEND_TIMEOUT = 5.0
 # 重连退避倍数的上限：base * 2^(n-1) 封顶于此倍数。
 _BACKOFF_MAX_MULTIPLIER = 16
 
-# MID-2232：判定「这条连接已真健康到可把重连计数归零」所需的最短存活秒数 = 2 × reconnect_interval。
+# 判定「这条连接已真健康到可把重连计数归零」所需的最短存活秒数 = 2 × reconnect_interval。
 # 一次「握手成功即被服务端关掉」的抖动存活时长远小于一个重连周期，若连这个长度都没活过就归零，
 # max_reconnect 永不耗尽；取 2 倍是给「连上后正常收了几秒弹幕再断」留余量。
 _HEALTHY_CONNECTION_FACTOR = 2
@@ -121,7 +121,7 @@ def _default_ssl_context(url: str) -> Optional[ssl.SSLContext]:
     return ctx
 
 
-# 判断连接是否仍可用于发送（MIN-12 的第二道防线）：websockets 的协议对象带 `state`，
+# 判断连接是否仍可用于发送（该第二道防线）：websockets 的协议对象带 `state`，
 # 连接关闭后即便引用未清空也不会是 OPEN。桩对象/旧版本没有 state 时返回 True（乐观放行），
 # 保持既有打桩用例的行为不变。形参用 object 注解：本函数只经 getattr 取 state，而
 # `websockets.WebSocketClientProtocol` 在不同版本下是否导出并不一致。
@@ -177,16 +177,16 @@ class WsClient:
         self._ws: Optional["websockets.WebSocketClientProtocol"] = None  # type: ignore[name-defined]
         self._stopped = False
         self._reconnect_count = 0
-        # MID-2232：连接存活多久才算「健康」、可重置重连计数（见 _HEALTHY_CONNECTION_FACTOR）
+        # 连接存活多久才算「健康」、可重置重连计数（见 _HEALTHY_CONNECTION_FACTOR）
         self._healthy_lifetime_seconds = max(
             _MIN_HEALTHY_CONNECTION_SECONDS, reconnect_interval * _HEALTHY_CONNECTION_FACTOR
         )
-        # MID-2245：on_close 是「房间已结束」的配对信号（collector 侧发 hub.room_closed），
+        # on_close 是「房间已结束」的配对信号（collector 侧发 hub.room_closed），
         # 一个客户端生命周期内只该发一次；fail() 与 connect() 的耗尽分支可能先后触达，
         # 用该标记保证不会把同一房间的关闭事件重复投给监控枢纽。
         self._close_reported = False
         self._send_lock = asyncio.Lock()
-        # MIN-13：send_nowait 派出的后台发送任务需持强引用（asyncio 只弱引用任务），
+        # send_nowait 派出的后台发送任务需持强引用（asyncio 只弱引用任务），
         # 否则「入队即被 GC」属文档化的丢失风险；done_callback 里回收，集合有界。
         self._pending: "set[asyncio.Task[None]]" = set()
 
@@ -201,7 +201,7 @@ class WsClient:
             # 本次连接内的「毒消息」计数（每次成功建连重置：换地址/重连后重新计数，
             # 避免一次历史风暴永久压制后续真实告警的日志可见性）
             _poison_count = 0
-            # MID-2232：本轮连接的「健康度」观测点——握手成功的时刻 / 是否收到过应用层帧，
+            # 本轮连接的「健康度」观测点——握手成功的时刻 / 是否收到过应用层帧，
             # 两者共同决定退出本轮时要不要把 _reconnect_count 归零（见 _reset_count_if_healthy）。
             _connected_at: Optional[float] = None
             _got_frame = False
@@ -223,7 +223,7 @@ class WsClient:
                     proxy=self._proxy,  # None=直连(B站/虎牙等);Twitch 等海外平台可传显式代理
                 ) as ws:
                     self._ws = ws
-                    # MID-2232：握手成功不等于会话健康——房间结束、被踢、鉴权软拒绝、uid 用错
+                    # 握手成功不等于会话健康——房间结束、被踢、鉴权软拒绝、uid 用错
                     # 的 1006 硬断连都属「连上即断」，若连上就归零，则每轮从 1 加起、下一轮又
                     # 归零：max_reconnect 永不耗尽，文件头声明的「耗尽则回调 on_close」契约失效
                     # （监控页以为还在连），且每轮握手 + 进房包构成对平台的持续连击。
@@ -236,7 +236,7 @@ class WsClient:
                         async for data in ws:
                             if self._stopped:
                                 break
-                            # MID-2232：收到首个应用层帧 = 这条连接确实推过数据，算健康
+                            # 收到首个应用层帧 = 这条连接确实推过数据，算健康
                             _got_frame = True
                             # 单条「毒消息」隔离：若让 _on_message 的异常冒泡到外层 except，将触发
                             # 整条连接重建；而恒定解析失败的帧（平台协议变体、畸形帧）在重连后会被
@@ -279,7 +279,7 @@ class WsClient:
                             # 连接异常（CancelledError 非继承 Exception，已在上面显式放行）
                             pass
             except asyncio.CancelledError:
-                # MIN-12：三条出口都要在这里摘引用，且必须**在退避 sleep 之前**。把清理挂在
+                # 三条出口都要在这里摘引用，且必须**在退避 sleep 之前**。把清理挂在
                 # 外层 finally 不行——finally 要等 except 子句整个执行完才跑，而退避 sleep 就在
                 # except 里，悬挂窗口原样存在。窗口内 `self._ws` 仍指向上一条**已关闭**连接，
                 # 而 send()/send_nowait() 只判 `is None`，进房包与心跳全打在死连接上、异常被
@@ -292,7 +292,7 @@ class WsClient:
                 self._ws = None
                 if self._stopped:
                     break
-                # SEV-2217：异常文本可能自带代理原串（websockets 的 InvalidProxy 形如
+                # 异常文本可能自带代理原串（websockets 的 InvalidProxy 形如
                 # "http://user:pass@127.0.0.1:10808 isn't a valid proxy: ..."），而 reason 会被
                 # collector 原样写进轮转日志与监控枢纽 → 交出前先脱敏（约定见文件头）。
                 _reason = utils.mask_credentials(str(e))
@@ -316,7 +316,7 @@ class WsClient:
                 self._reconnect_count += 1
                 if self._reconnect_count <= self.max_reconnect:
                     if self._on_reconnect:
-                        # L-24：reason 文案经 i18n——面板非中文语言下不得混入简中
+                        # reason 文案经 i18n——面板非中文语言下不得混入简中
                         self._on_reconnect(i18n.tr("连接已关闭，正在尝试重连"))
                     # WD-05：同上，指数退避 + 抖动
                     await asyncio.sleep(_backoff_delay(self.reconnect_interval, self._reconnect_count))
@@ -324,7 +324,7 @@ class WsClient:
                 self._report_close(i18n.tr("重连超过最大次数，与服务器断开连接"))
                 break
 
-    # MID-2232：本轮连接若「已证明健康」则把重连计数归零（在 ++ 之前调用，故归零后本轮计 1）。
+    # 本轮连接若「已证明健康」则把重连计数归零（在 ++ 之前调用，故归零后本轮计 1）。
     # 判据二选一：① 本轮收到过至少一个应用层帧；② 从握手成功算起存活时长 >
     # _healthy_lifetime_seconds。都不成立即视为「握手成功即被断开」，计数继续累计直到
     # max_reconnect 耗尽、由 _report_close 上报 on_close。connected_at 为 None 表示本轮
@@ -336,7 +336,7 @@ class WsClient:
         if connected_at is not None and (time.monotonic() - connected_at) > self._healthy_lifetime_seconds:
             self._reconnect_count = 0
 
-    # MID-2245：on_close 的唯一出口（一个客户端生命周期内只发一次）：connect() 的耗尽分支
+    # on_close 的唯一出口（一个客户端生命周期内只发一次）：connect() 的耗尽分支
     # 与 fail() 可能先后触达，而消费端（collector._on_close → hub.room_closed）把它当作「房间
     # 已结束」的配对信号，重复投递会让监控枢纽多出一条无主的 closed 事件。
     # reason 在此再过一道掩码，与文件头约定一致。
@@ -353,7 +353,7 @@ class WsClient:
         ws = self._ws
         if ws is None:
             return
-        # MIN-12 第二道防线：`_ws` 非 None 不代表可写（对端刚关、connect() 尚未回到循环顶）。
+        # 第二道防线：`_ws` 非 None 不代表可写（对端刚关、connect() 尚未回到循环顶）。
         # 判活后再发送，避免把帧写进已关闭的协议对象里换一条被吞掉的 debug 日志。
         if not _conn_is_open(ws):
             return
@@ -385,7 +385,7 @@ class WsClient:
         ws = self._ws
         if ws is None or not _conn_is_open(ws):
             return
-        # MIN-13：不用裸 `asyncio.ensure_future(self.send(data))`——任务只被 asyncio 弱引用，
+        # 不用裸 `asyncio.ensure_future(self.send(data))`——任务只被 asyncio 弱引用，
         # 可能在回调前被 GC，异常无人取走（详见 src/base.py 同名注释），而这里恰是全项目最核心
         # 的进房/心跳发送口。现由 spawn_danmaku_task（完成回调里落盘异常）+ self._pending 持强
         # 引用（done_callback 里 discard 回收）；在途上界由 _MAX_PENDING_SENDS 兜住。
@@ -416,7 +416,7 @@ class WsClient:
                         try:
                             await asyncio.wait_for(cast(Awaitable[None], result), timeout=_HEARTBEAT_TIMEOUT_SECONDS)
                         except TimeoutError:
-                            # MID-2247：统一用项目 logger + i18n.tr，格式说明符按约定在调用方先
+                            # 统一用项目 logger + i18n.tr，格式说明符按约定在调用方先
                             # 求值。不得换回「别名 logger + f-string」：f-string 在查目录前完成
                             # 插值，文案永远无法翻译；而 i18n 门禁（tests/test_i18n_migration.py）
                             # 的判据是 `node.func.value.id == "logger"`，别名形态对它完全隐形。
@@ -451,7 +451,7 @@ class WsClient:
                 # 无关的异常。
                 pass
 
-    # MID-2245：显式「失败出口」——与 close() 一样终止重连与心跳，但**仍然**回调 on_close(reason)。
+    # 显式「失败出口」——与 close() 一样终止重连与心跳，但**仍然**回调 on_close(reason)。
     # 为什么不能复用 close()：close() 语义是「调用方主动停止」，connect() 里两条
     # `if self._stopped: break` 出口都不触发 _on_close。B站的 _reject_auth（AUTH_REPLY 非 0
     # 的软拒绝、8 秒看门狗超时）走的正是 close()，于是 collector 侧与 room_connected 配对的

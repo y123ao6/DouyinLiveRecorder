@@ -2,12 +2,12 @@
 #
 # 覆盖 CODE_REVIEW_2026-09-20 条目（判据一律「删掉生产实现就该失败」：只打桩子进程 / 网络 / 时钟 /
 # 弹幕，不重新实现任何判定逻辑）：
-#   SEV-08 停滞基准按「最后一次观测到增长」计时，而非进程起跑时刻（45s 空档不得被杀 / 11min 必须被杀）；
-#   MID-07 单次录制时长上限：分段关闭时不生效，命中上限按「正常录完」收尾（记成功、不判挂起）；
-#   MID-01 等待录制槽的放弃分支必须回收录制状态（否则留下永久幽灵「录制中」）；
-#   MID-12 Popen 之后抛错必须统一收敛子进程与录制状态（否则孤儿 ffmpeg + 同目录双路写盘）；
-#   MID-06 直下路径「HTTP 200 + 空/极小响应体」不得判成功；
-#   SEV-09 only_flv 分支缺 flv_url：recording 必须为空、且不得留下存活的时间字幕线程。
+#   停滞基准按「最后一次观测到增长」计时，而非进程起跑时刻（45s 空档不得被杀 / 11min 必须被杀）；
+#   单次录制时长上限：分段关闭时不生效，命中上限按「正常录完」收尾（记成功、不判挂起）；
+#   等待录制槽的放弃分支必须回收录制状态（否则留下永久幽灵「录制中」）；
+#   Popen 之后抛错必须统一收敛子进程与录制状态（否则孤儿 ffmpeg + 同目录双路写盘）；
+#   直下路径「HTTP 200 + 空/极小响应体」不得判成功；
+#   only_flv 分支缺 flv_url：recording 必须为空、且不得留下存活的时间字幕线程。
 #
 # 写法约定（AGENTS.md）：main 引用的 stdlib / 第三方模块（time / subprocess / httpx）一律用浅拷贝
 # shim 替换 main 命名空间里的全局名，绝不 setattr 到模块本体（会波及同进程守护线程）。
@@ -89,7 +89,7 @@ class _FakeProc:
         return None if self._alive() else self._returncode
 
     def wait(self, timeout: float = 0) -> int:
-        # 立即给出退出码：把「终止是否成功」固定在桩侧，使 MID-12 的用例只测「异常出口有没有去
+        # 立即给出退出码：把「终止是否成功」固定在桩侧，使该用例只测「异常出口有没有去
         # 终止/注销/清状态」，不去测真实 waitpid 超时语义（那是 _terminate_ffmpeg_process 的用例面）
         return self._returncode
 
@@ -165,7 +165,7 @@ def _writer(out_file: Path, until: float, chunk: int = 64) -> Callable[[float], 
 
 
 class TestStallWatchdogBaseline:
-    # SEV-08：停滞窗口必须从「最后一次观测到增长」的时刻起算
+    # 停滞窗口必须从「最后一次观测到增长」的时刻起算
 
     def test_45s_write_gap_after_ten_minutes_is_not_killed(
         self, main_mod: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -230,7 +230,7 @@ class TestStallWatchdogBaseline:
 
 
 class TestRecordTimeLimit:
-    # MID-07：单次录制时长上限改为可配置 + 命中后按成功收尾
+    # 单次录制时长上限改为可配置 + 命中后按成功收尾
 
     def test_limit_rolls_over_as_successful_round(
         self, main_mod: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -247,7 +247,7 @@ class TestRecordTimeLimit:
         monkeypatch.setattr(main, "max_record_seconds", 60)
         # 时序：上限判定在「30s 最小采样间隔」闸门**之前**，故 60s 上限会在第 61 次 1s 轮询
         # 立即命中，不必等采样窗口；同时传给 check_subprocess 的是含 %03d 的模板路径，
-        # stat 恒失败 → 停滞分支必然不参与，本案与 SEV-08 的判据互不干扰（否则同一红有两种成因）
+        # stat 恒失败 → 停滞分支必然不参与，本案与该判据互不干扰（否则同一红有两种成因）
         _install_ffmpeg(main, monkeypatch, clock, alive_at=float("inf"), samples=samples)
 
         result = main.check_subprocess(
@@ -297,7 +297,7 @@ class TestRecordTimeLimit:
 
 
 class TestRecordingStateUnwind:
-    # MID-01 / MID-12：任何出口都必须把录制状态与子进程收敛干净
+    # 任何出口都必须把录制状态与子进程收敛干净
 
     def test_giving_up_slot_wait_clears_recording_state(self, main_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         main = main_mod
@@ -325,7 +325,7 @@ class TestRecordingStateUnwind:
     def test_exception_after_popen_terminates_process_and_clears_state(
         self, main_mod: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # MID-12：Popen 成功之后的抛错点（现实形态为 Thread.start 的 can't start new thread）
+        # Popen 成功之后的抛错点（现实形态为 Thread.start 的 can't start new thread）
         # 必须与早退路径同样收敛：终止 + 注销 + 清录制状态。
         main = main_mod
         clock = _Clock()
@@ -379,7 +379,7 @@ class _FakeHttpClient:
 
 
 class TestDirectDownloadResultContract:
-    # MID-06：直下路径（shopee / 花椒）的成功判定必须与 ffmpeg 路径的「产物达标」口径一致
+    # 直下路径（shopee / 花椒）的成功判定必须与 ffmpeg 路径的「产物达标」口径一致
 
     def _download(self, main: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, chunks: list[bytes]) -> bool:
         monkeypatch.setattr(main, "get_record_headers", lambda *a, **k: {})
@@ -450,7 +450,7 @@ def _prime_start_record(
         "begin_push_message_text": "",
         "disable_record": False,
         "push_check_seconds": 0,
-        "create_time_file": True,  # SEV-09 的触发前提：勾选「生成时间字幕文件」
+        "create_time_file": True,  # 触发前提：勾选「生成时间字幕文件」
         "converts_to_mp4": False,
         "delete_origin_file": False,
         "custom_script": "",
@@ -523,7 +523,7 @@ def _prime_start_record(
 
 
 class TestOnlyFlvWithoutFlvUrl:
-    # SEV-09：强制直下平台未拿到 flv_url 时，既不能留幽灵「录制中」，也不能起永不退出的字幕线程。
+    # 强制直下平台未拿到 flv_url 时，既不能留幽灵「录制中」，也不能起永不退出的字幕线程。
     # 这里查的是时序而非仅「有没有起线程」：generate_subtitles 是 while True，唯一退出条件是
     # record_name not in recording——原始缺陷正是「线程在 flv_url 校验之前启动」叠加「未命中的 else
     # 分支不清 recording」，于是名字永不回收、线程永不停止地写 .srt，而房间线程每轮（默认 120s）

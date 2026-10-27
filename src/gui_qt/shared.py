@@ -22,21 +22,21 @@ import i18n as i18n_module
 from src.logger import logger
 from src.utils import atomic_write_text, mask_credentials
 
-# 降级告警的「失效等待窗口」（秒，MID-54）：一次画质降级告警之后，若连续这么久
+# 降级告警的「失效等待窗口」（秒）：一次画质降级告警之后，若连续这么久
 # 仍在输出录制状态行且没有新的降级告警，就认为该房间已按设置档位正常录制，清除降级标记。
 # 取值依据：main.py 的房间主循环周期默认 delay_default=120s（含 ±5s 抖动），而画质降级告警
-# 在**每轮录制启动时**都会重打一次——所以「还在降级」的房间每个周期都会刷新 alert_at。
+# 在**每轮录制启动时**都会重打一次——「还在降级」的房间每个周期都会刷新 alert_at；
 # 取 2 个周期是为了避开「状态线程先于本轮告警行到达」的竞态。
 QUALITY_ALERT_TTL_SECONDS: Final[float] = 240.0
 
-# 「彻底退出」复用在途「停止录制」线程时的等待预算（M-16，秒）。
+# 「彻底退出」复用在途「停止录制」线程时的等待预算（秒）。
 # 取 25s = 停止链自身的上限：wait(15) + taskkill(5) + wait(5)。
 STOP_REUSE_JOIN_SECONDS: Final[float] = 25.0
 
 ANSI_ESCAPE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
 
 
-# 判定某房间的降级告警是否已被后续正常轮次取代（MID-54 的纯判据，独立成函数供用例直接驱动）。
+# 判定某房间的降级告警是否已被后续正常轮次取代（纯判据独立成函数，供用例直接驱动）。
 #
 # 为什么不能只看「录制行里的画质 == 设置档」：src/recorder_status.py 打印
 # "{name}[{qa}] 正在录制中" 时取的是 main.recording_time_list[name][1]——那是**设置档位**，
@@ -54,10 +54,10 @@ def quality_alert_expired(info: dict[str, str | bool | float], now: float) -> bo
     return (now - alert_at) > QUALITY_ALERT_TTL_SECONDS
 
 
-# 外部数据数值字段的**唯一**容错口径（M-15 的 ts 容错与 M-17 的逐事件容错同族，刻意只写一份）：
+# 外部数据数值字段的**唯一**容错口径（ts 容错与逐事件容错同族，刻意只写一份）：
 # None / 空串 / 非数值字符串一律回落 default，合法数值原样取值。
 # 触发源真实存在：弹幕边车 logs/danmaku_monitor.jsonl 是外部可控数据，且 tail 首读会回放
-# 旧文件末尾 64KB 的历史记录（2026-09-12 审查 6.2 已记过 float(None) 的事故）。
+# 旧文件末尾 64KB 的历史记录（[历史注] 审查记过 float(None) 的事故）。
 def as_float(value: object, default: float = 0.0) -> float:
     try:
         return float(cast(Any, value))
@@ -73,7 +73,7 @@ def as_int(value: object, default: int = 0) -> int:
         return default
 
 
-# ─── 子进程状态行匹配（M-14） ───
+# ─── 子进程状态行匹配 ───
 #
 # 三条状态行的 msgid 必须与**生产侧逐字相同**，否则 tr() 查不到键、退化为恒等映射，
 # 非简中界面下依旧匹配不上。生产侧出处（只读、不得改动）：
@@ -86,7 +86,7 @@ STATUS_TPL_DOWNGRADE: Final[str] = (
     "{record_name} 画质降级：设置 {record_quality_zh}({record_quality})"
     " 实际 {actual_quality_zh}({actual_quality_code})"
 )
-# [2026-09-29 M-14②] 刻意不对称的一条：该串生产侧**未过 tr()**
+# 下面这条刻意不对称：该串生产侧**未过 tr()**
 # （src/recorder_status.py::display_info 裸写 print("\r没有正在监测和录制的直播")），
 # 它是否被翻译完全取决于 main.py 的 builtins.print 补丁与 _should_translate 的路径前缀判定——
 # 后者在 PyInstaller 冻结下是否仍成立尚未实测，故 GUI 侧必须「tr() 结果 + 原文」两种形态都认。
@@ -102,8 +102,7 @@ STATUS_REQUIRED_DOWNGRADE: Final[tuple[str, ...]] = (
     "actual_quality_code",
 )
 
-# 各占位符在**译文**里应展开成的正则片段。
-# F-06（2026-09-12 审查修复）的两条语义在这里逐字保持，不得回退：
+# 各占位符在**译文**里应展开成的正则片段。两条判据（不得回退）：
 #   recording_live 贪婪 .+  —— 主播名里的 "[...]" 不能被当成画质段边界；
 #   qa            [^\]]+ —— 使**最后一个** [...] 成为画质段。
 STATUS_CAPTURE_GROUPS: Final[dict[str, str]] = {
@@ -124,7 +123,7 @@ STATUS_SENTINEL_SPLIT_RE: Final[re.Pattern[str]] = re.compile("\x00([A-Za-z_][A-
 
 # 把模板变成「字面段 + 哨兵包裹的占位符名」形态，供后续切段。
 # translated=True 走 tr()（先查表、后插值）：为什么不能裸 tr(template)——tr() 不喂实参时
-# str.format 因缺键抛 KeyError、被 MI-23 的兜底吃掉，返回的是**未翻译**的原文模板。
+# str.format 因缺键抛 KeyError、被「回退原文」的兜底吃掉，返回的是**未翻译**的原文模板。
 # translated=False 取原文模板形态：子进程在「目录缺件 / print 补丁未生效」时输出的就是原文。
 def _sentinel_text(template: str, *, translated: bool) -> str:
     if not translated:
@@ -221,8 +220,8 @@ def _build_status_patterns() -> StatusPatterns:
     )
 
 
-# 语言 → 已组装的匹配器。缓存键取 i18n.get_language()（MID-52 起它恒等于**实际装载**的语言码）。
-# **不得改成模块级一次编译**：那等价于把简中串钉死，正是 M-14 要消灭的故障形态。
+# 语言 → 已组装的匹配器。缓存键取 i18n.get_language()（它恒等于**实际装载**的语言码）。
+# **不得改成模块级一次编译**：那等价于把简中串钉死，正是本缓存要消灭的故障形态。
 _STATUS_PATTERNS_BY_LANG: dict[str, StatusPatterns] = {}
 # 组装期「语言是否被切走」复核的尝试上限，判据见 _status_patterns 的竞态说明。
 _STATUS_PATTERNS_STABLE_ATTEMPTS: Final[int] = 3
@@ -255,7 +254,7 @@ _ATTACH_PARENT_PROCESS: Final[int] = 0xFFFFFFFF
 _GUI_KERNEL32: Any = None
 
 
-# 统一 kernel32 入口：一律 ctypes.WinDLL + 显式 argtypes/restype（MIN-2250 口径）。
+# 统一 kernel32 入口：一律 ctypes.WinDLL + 显式 argtypes/restype。
 # HWND 必须按指针宽度取 c_void_p——默认 c_int 会截断 64 位句柄。
 def get_gui_kernel32() -> Any:
     global _GUI_KERNEL32
@@ -299,8 +298,8 @@ def send_ctrl_break_to_child(pid: int) -> bool:
     cb = handler_routine(_ignore)
 
     # 把本进程的控制台挂回去，并在挂不回去时**留下告警**：ATTACH_PARENT_PROCESS 只在
-    # 「父进程确实持有控制台」时才回得去；旧实现丢了返回值，此后本进程的 print 与 loguru
-    # 控制台 sink 全写向无效句柄，用户视角就是「停止一次录制之后 GUI 终端再也看不到日志」。
+    # 「父进程确实持有控制台」时才回得去；若不查返回值，此后本进程的 print 与 loguru
+    # 控制台 sink 全写向无效句柄（形态：停止一次录制之后 GUI 终端再也看不到日志）。
     def _restore_own_console() -> None:
         if not had_console:
             return
@@ -338,7 +337,7 @@ def send_ctrl_break_to_child(pid: int) -> bool:
         _restore_own_console()
 
 
-# 把 taskkill / pkill 的输出解成一行可入日志的提示（MIN-2249）。
+# 把 taskkill / pkill 的输出解成一行可入日志的提示。
 # 为什么按码页而不是按 UTF-8：Windows 系统工具输出的是**跟随控制台码页本地化**的消息
 # （中文 Windows 上 taskkill 的「信息: 没有运行的任务…」是 GBK 字节），统一按 utf-8 解码会
 # 解成一串替换符。关键约束：本函数只负责「把提示带进日志」，
@@ -395,7 +394,7 @@ def normalize_editor_text(text: str) -> str:
 def config_change_verdict(
     disk_baseline: str | None, disk_now: str | None, editor_text: str, editor_baseline: str
 ) -> str:
-    # 外部变更裁决（MID-55 / MID-2252 的纯判据）：
+    # 外部变更裁决（纯判据）：
     #   "unchanged" —— 磁盘仍是打开时那份，直接保存
     #   "reload"    —— 磁盘被改过但编辑器无改动：静默跟随磁盘
     #   "conflict"  —— 磁盘被改过且编辑器有改动：必须交用户裁决
@@ -409,7 +408,7 @@ def config_change_verdict(
 def save_text_to_file(content: str, file_path: str) -> None:
     # 原子写（tmp + os.replace）：直接 "w" 覆盖在写入窗口内是半写状态，录制引擎并发读到截断
     # 内容会被当成有效配置。委托 src.utils.atomic_write_text（全仓唯一加固实现：flush + fsync +
-    # 保留目标文件原 mode），避免另起一份实现重蹈 SEV-2211 的权限收紧缺口。
+    # 保留目标文件原 mode），避免另起一份实现重蹈权限收紧缺口。
     content = content.rstrip("\n")
     if content and not content.endswith("\n"):
         content += "\n"
@@ -418,12 +417,12 @@ def save_text_to_file(content: str, file_path: str) -> None:
 
 
 def cleanup_process_tree(pid: int | None, log: Any) -> None:
-    # 清理录制子进程树及其下的 ffmpeg 残留（跨平台，MIN-2249 口径：判据只看 returncode）。
+    # 清理录制子进程树及其下的 ffmpeg 残留（跨平台；判据只看 returncode）。
     # taskkill 找不到 PID 返回 128、pkill 无匹配返回 1 —— 两种「什么都没杀」都不能记成成功，
     # 否则日志里「已清理」与「其实还在录」完全同形。
     #
     # 为什么只按 main.py 的 PID 整树强杀：ffmpeg 的父进程恒是录制子进程，按 GUI 自身 PID
-    # 过滤结构性匹配不到（L-40 的旧形态已论证并删除过一次）。
+    # 过滤结构性匹配不到（同形态旧代码已论证并删除过一次）。
     if pid is None:
         log(i18n_module.tr("未发现需要清理的 ffmpeg 进程"))
         return

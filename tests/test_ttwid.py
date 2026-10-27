@@ -24,7 +24,7 @@ from src.ttwid import (
 
 @pytest.fixture(autouse=True)
 def _isolate_ttwid_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
-    # MIN-2220 起快路读的是「按出口分列」的模块级 dict（_cached_ttwid_by_proxy）。
+    # 起快路读的是「按出口分列」的模块级 dict（_cached_ttwid_by_proxy）。
     # conftest 的逐用例重置只清镜像 `_cached_ttwid`，而本文件有用例会显式把镜像置成
     # 非空来验「TTL 内命中」，于是上一个用例留下的桶值会串进来（实测表现为拿到
     # "ttwid=from_config" 这种别的用例写的陈旧值）。这里整体换一只新 dict：
@@ -131,9 +131,9 @@ class TestFetchTtwid:
 class TestGetTtwid:
     @pytest.mark.asyncio
     async def test_cached_returns_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MID-33 后「非空」不再等于「永久有效」：命中必须同时满足「未过 TTL」，
+        # 后「非空」不再等于「永久有效」：命中必须同时满足「未过 TTL」，
         # 故此处要连获取时刻一起写（只写值 = 陈旧 = 应当重新拉取，见下方 TTL 用例）。
-        # MIN-2220 后「值 + 时刻」存放在按出口分列的 dict 里，故用 _prime_bucket 成对写。
+        # 后「值 + 时刻」存放在按出口分列的 dict 里，故用 _prime_bucket 成对写。
         _prime_bucket(monkeypatch, "ttwid=cached_value")
         result = await get_ttwid()
         assert result == "ttwid=cached_value"
@@ -227,7 +227,7 @@ class TestFetchTtwidException:
 #   复用结果）保证并发 N 个 get_ttwid 只打一次 _fetch_ttwid、且所有调用方拿到同一份结果
 #   （原实现用 _ttwid_lock 跨 await 持锁达到同一效果，代价是跨房间阻塞事件循环）。
 #   若 singleflight 退化成各自拉取，fetch 次数会 >1，用例失败。
-# [历史注 2026-09-12 审查 H-2] 早先以「假锁 acquire 恒 False」模拟锁竞争来覆盖兜底分支，
+# [历史注 2026-09-12 审查 ] 早先以「假锁 acquire 恒 False」模拟锁竞争来覆盖兜底分支，
 #   改用 singleflight 后「锁竞争」场景不存在、该旧断言已随之移除。
 class TestGetTtwidSingleflight:
     @pytest.mark.asyncio
@@ -272,7 +272,7 @@ class TestGetTtwidSingleflight:
         ttwid_module._cached_ttwid = ""
 
 
-# ── MID-33：模块全局 ttwid 的 TTL 与显式失效入口 ────────────────────────────
+# ── ：模块全局 ttwid 的 TTL 与显式失效入口 ────────────────────────────
 # 旧语义是「非空即永久返回」：抖音一旦作废 ttwid（风控常见形态），本进程不重启就
 # 再也不重新获取，表现为抖音解析长期「HTTP 200 + 空响应体」，而 cookie_cache 的
 # 30 分钟自愈在这层根本不参与判定（对照 src/room.py 的 sec_uid 缓存）。
@@ -310,7 +310,7 @@ class TestTtwidTtl:
     @pytest.mark.asyncio
     async def test_invalidate_purges_global_and_both_cache_layers(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 三层都要清：模块全局 / generic singleflight / 同网址 cookie 缓存。
-        # 只清全局的话，下一轮 singleflight 命中同一份旧值——MID-40 描述的「失效只
+        # 只清全局的话，下一轮 singleflight 命中同一份旧值——该描述的「失效只
         # 生效一半」，故本用例断言的是「作废后确实拿到了新的凭据」。
         monkeypatch.setattr(ttwid_module, "_read_config_ttwid", lambda: "")
         clear_cookie_cache()

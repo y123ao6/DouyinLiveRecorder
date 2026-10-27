@@ -1,20 +1,20 @@
-# 组 G（2026-09-22）Web 侧回归锁：SEV-2221（引擎假绿的存活判据）+ MID-2236（敏感键读写判据分叉）。
+# 组 G（2026-09-22）Web 侧回归锁：（引擎假绿的存活判据）+ （敏感键读写判据分叉）。
 #
 # 与 tests/test_web_api.py 的分工：那边覆盖鉴权中间件、掩码/空值拒绝、房间写入等既有契约；本文件
 # 只放本轮两条修复对应的**失效形态**锁：
-#   ① SEV-2221：/api/status 需暴露「主循环是否还在推进」这条正交证据，且证据不足时不得下发——
+#   ① ：/api/status 需暴露「主循环是否还在推进」这条正交证据，且证据不足时不得下发——
 #      否则未接线的部署会被前端刷成红色假告警。[2026-09-23 更正] 该键连同探针已被整体撤下（见 ④），
 #      本条不变量收敛为「没有确凿证据就不得下发停摆判定」，锁点移到 TestMainLoopAliveProbeWithdrawn。
-#   ② MID-2236：写侧敏感判据必须与读侧（web_config.read_config_safe）同源。修复前写侧只判
+#   ② ：写侧敏感判据必须与读侧（web_config.read_config_safe）同源。修复前写侧只判
 #      is_sensitive_item，「键名不敏感但值本身是凭据」的项在面板上是掩码、后端却不当敏感项 →
 #      掩码/空值可直接写进去，真实凭据被静默覆盖且备份已脱敏、无从恢复。
 #
 # 全部用例驱动**真实函数/真实端点**，测试内不重新实现判定逻辑。
 # 2026-09-23 同步两处 src 侧变更：
-#   ③ MID-2241 后端强复验：`PUT /api/config` 写 `[Web] web_auth_enable` / `web_password` 时，认证
+#   ③ 该后端强复验：`PUT /api/config` 写 `[Web] web_auth_enable` / `web_password` 时，认证
 #      当前已开启必须携带能过 `verify_web_password` 的 `reauth_password`，否则 403。TestAuthKeyReauth
 #      因此由「锁后端不判定」翻转为「锁后端判定 + 三条反向边界」。
-#   ④ SEV-2221 / SEV-2228：`main_loop_alive` 连同 `_read_main_loop_alive()` 探针已从 /api/status
+#   ④ / ：`main_loop_alive` 连同 `_read_main_loop_alive()` 探针已从 /api/status
 #      契约撤下（它读的 `main.main_loop_ticks` 从未定义，该键永不下发 = 一条永不生效的存活信号）。
 #      原 8 条用例锁的正是这条死路径，故改写为 TestMainLoopAliveProbeWithdrawn：锁「撤下」这一事实，
 #      并禁止在 main 侧轮次接线之前把它加回来。
@@ -29,7 +29,7 @@ import pytest
 from src.web_config import SENSITIVE_MASK, append_config_line, is_sensitive_item
 
 _BASE_URL = "http://127.0.0.1:8000"
-# 各 fixture 落盘的是它的 PBKDF2 哈希；本明文同时是登录口令与 MID-2241 的合法复验值
+# 各 fixture 落盘的是它的 PBKDF2 哈希；本明文同时是登录口令与该合法复验值
 # （reauth_password 走 verify_web_password 比对**磁盘上的哈希**，故只有这一个值能过）。
 _PLAIN_PWD = "secret123"
 
@@ -51,7 +51,7 @@ def _reset_web_api_state(wa: types.ModuleType) -> None:
         setattr(wa, "_status_cache_at", 0.0)
         setattr(wa, "_status_inflight", False)
         setattr(wa, "_status_inflight_since", 0.0)
-    # SEV-2221 的主循环停摆探针状态（_main_loop_probe_lock / _main_loop_probe_count /
+    # 主循环停摆探针状态（_main_loop_probe_lock / _main_loop_probe_count /
     # _main_loop_probe_at）已随该探针从 src/web_api.py 撤下（见文件头 ④）。这里若继续 setattr，
     # 就是给一个不存在的模块全局赋值：用例照绿，却凭空塞进生产代码从不读的名字。
 
@@ -114,7 +114,7 @@ def app_env(tmp_path: Path, fake_main: types.ModuleType) -> Generator[types.Simp
 
 
 class TestMainLoopAliveProbeWithdrawn:
-    # SEV-2221 / SEV-2228 收敛（2026-09-23）后的契约锁：/api/status 不再携带 `main_loop_alive`，
+    # 该收敛（2026-09-23）后的契约锁：/api/status 不再携带 `main_loop_alive`，
     # 因为那版探针读的是 `main.main_loop_ticks`——main.py 里从未定义、也从未自增，后果是「有一个
     # 永不生效的存活信号」，比「没有该信号」更危险：后续排障会以为停摆已被覆盖。
     #
@@ -134,7 +134,7 @@ class TestMainLoopAliveProbeWithdrawn:
         assert snapshot["engine_alive"] is True
 
     def test_status_omits_key_when_counter_is_bool(self, app_env: types.SimpleNamespace) -> None:
-        # 误接线形态（保留原 SEV-2221 用例的洞见）：bool 是 int 子类，`main_loop_ticks = True`
+        # 误接线形态（保留原该用例的洞见）：bool 是 int 子类，`main_loop_ticks = True`
         # 若被当 1 参与「是否增长」比较，判定会恒为「永不增长 → 停摆」，面板永久报红。
         setattr(app_env.fake_main, "main_loop_ticks", True)
         try:
@@ -149,7 +149,7 @@ class TestMainLoopAliveProbeWithdrawn:
 
 
 class TestWriteSideSensitiveParity:
-    # MID-2236：写侧敏感判据必须与读侧同源。「键名不敏感、值本身是凭据」的项
+    # 写侧敏感判据必须与读侧同源。「键名不敏感、值本身是凭据」的项
     # （推送接口链接 ?key=xxx / 带账密的代理地址）在修复前只有读侧认它是敏感项。
 
     @pytest.mark.parametrize(
@@ -184,7 +184,7 @@ class TestWriteSideSensitiveParity:
     )
     def test_mask_write_to_value_shaped_secret_rejected(self, app_env: types.SimpleNamespace, value: str) -> None:
         # 掩码分支同理：面板把该项渲染成 '***'，用户原样提交（或脚本直接打接口）
-        # 不得把真实凭据覆写成字面掩码 —— 备份副本已按 CR-07 脱敏，无从恢复。
+        # 不得把真实凭据覆写成字面掩码 —— 备份副本已按该脱敏，无从恢复。
         section, key = "录制设置", "自定义推送标题"
         assert is_sensitive_item(section, key) is False, "用例前提：该键名不得命中敏感键名模式"
         assert append_config_line(str(app_env.cfg), section, key, value) is True
@@ -252,7 +252,7 @@ class TestWriteSideSensitiveParity:
 
 
 class TestTokenExpiryClamp:
-    # MID-2234：web_token_expiry 可经 PUT /api/config 写入，且因命中 expiry 例外不受敏感键守卫，
+    # web_token_expiry 可经 PUT /api/config 写入，且因命中 expiry 例外不受敏感键守卫，
     # 既无上下界也无「不得清空」保护。写成 0 → 所有 /api/* 一律 401 面板自锁；超大值 → 令牌永不
     # 过期且 _tokens 无界增长。
 
@@ -303,8 +303,8 @@ class TestTokenExpiryClamp:
 
 
 class TestAuthKeyReauth:
-    # MID-2241：`[Web] web_auth_enable` / `web_password` 是「面板信任边界本身」的开关——一次 PUT
-    # 就能关掉认证（回环绑定下 SEV-04 不拦）或改口令（连带 _tokens.clear() 踢掉全部在线会话）。
+    # `[Web] web_auth_enable` / `web_password` 是「面板信任边界本身」的开关——一次 PUT
+    # 就能关掉认证（回环绑定下该不拦）或改口令（连带 _tokens.clear() 踢掉全部在线会话）。
     # 前端 confirm 只挡「手滑点保存」，挡不住脚本、旧版前端、被改过的页面，以及**拿到 bearer 却没
     # 口令**的攻击者，故复验必须在服务端做：认证当前已开启时写这两个键必须携带能过
     # verify_web_password 的 reauth_password，否则 403。
@@ -354,7 +354,7 @@ class TestAuthKeyReauth:
     def test_password_write_without_reauth_is_403(self, app_env: types.SimpleNamespace, key: str, value: str) -> None:
         # 复验守卫本体（tests/test_web_api.py 里几条「带正确口令」的正向用例的配套反向锁）。
         # 键名变体一并参数化：判定用的是 key_norm = key.strip().lower()，大小写/首尾空白不得绕过
-        # 守卫——本仓出过 configparser optionxform 与常量大小写不一致导致跳过判定的坑（SEV-04）。
+        # 守卫——本仓出过 configparser optionxform 与常量大小写不一致导致跳过判定的坑。
         client = app_env.client
         headers = {"Authorization": f"Bearer {_login(client)}"}
         before = app_env.cfg.read_bytes()
@@ -385,7 +385,7 @@ class TestAuthKeyReauth:
 
     def test_correct_reauth_is_what_makes_the_same_payload_pass(self, app_env: types.SimpleNamespace) -> None:
         # 归因锁：载荷与上面几条逐字相同、只多一个正确 reauth_password ⇒ 200。
-        # 缺了这条，「403 来自复验守卫」就无法排除「其实是被 CR-08 / SEV-04 / 敏感项守卫挡的」
+        # 缺了这条，「403 来自复验守卫」就无法排除「其实是被 / / 敏感项守卫挡的」
         # （那三条都在复验之前判定，且都可能在特定取值下命中）。
         client = app_env.client
         token = _login(client)
@@ -410,7 +410,7 @@ class TestAuthKeyReauth:
             # 关闭态下先设口令：无旧口令可验，必须放行
             resp = env.client.put("/api/config", json={"section": "Web", "key": "web_password", "value": "first-pass"})
             assert resp.status_code == 200, f"认证关闭时设口令被误拒: {resp.text}"
-            # 再开启认证：这是**升级**而非能力降级，同样不复验（CR-08 的「必须同时有口令」已满足）
+            # 再开启认证：这是**升级**而非能力降级，同样不复验（该「必须同时有口令」已满足）
             resp2 = env.client.put("/api/config", json={"section": "Web", "key": "web_auth_enable", "value": "true"})
             assert resp2.status_code == 200, f"关闭态下开启认证被复验打死: {resp2.text}"
             text = env.cfg.read_text(encoding="utf-8-sig")

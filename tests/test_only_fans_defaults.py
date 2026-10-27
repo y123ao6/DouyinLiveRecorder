@@ -1,12 +1,12 @@
-# CR-04 跨层默认值回归锁：only_fans 的「None = 不覆盖」契约。
+# 跨层默认值回归锁：only_fans 的「None = 不覆盖」契约。
 #
 # 三层链条（任一层改回硬默认值都会让上一层的修复静默失效）：
 #   ① src/__init__.py::get_danmaku_collector(only_fans=None)
 #   ② src/collector.py::DanmakuCollector.__init__(only_fans=None)，且 _run 内只在
-#      `self._only_fans is not None` 时才覆盖实例属性；
+#      `self._only_fans is not None and hasattr(...)` 时才覆盖实例属性；
 #   ③ src/platforms/douyu.py::DouyuDanmaku.__init__(only_fans=False)——刻意关掉「只保留粉丝弹幕」
-#      的默认过滤（审查 C-3：dart 上游根本没有粉丝过滤）。
-# 历史事故：①② 原默认为 True，于是 ③ 的 False 在真实调用链上被反向覆盖，斗鱼只剩极少数粉丝弹幕、
+#      默认过滤（审查：dart 上游根本没有粉丝过滤）。
+# [历史注] ①② 原默认为 True，③ 的 False 在真实调用链上被反向覆盖，斗鱼只剩极少数粉丝弹幕、
 # 普通弹幕被静默丢弃且无任何日志。本文件用**真实**工厂 + **真实**采集器 + **真实**平台类跑一遍，
 # 只把网络层 danmaku.start 打桩（AGENTS：允许打桩网络层/时间常量，不得自实现被测逻辑）。
 
@@ -40,7 +40,7 @@ def _drive_and_observe(
         # 真实契约是「start() 阻塞直到连接关闭或 stop() 被调用」。替身若立即返回，_run 会抢先关掉
         # 事件循环，与随后 collector.stop() 投递的 _shutdown 协程竞态（表现为 RuntimeWarning
         # 「coroutine _shutdown was never awaited」+ pending task 刷屏）。由生产侧 _shutdown 的
-        # task.cancel() 收尾，本用例同时覆盖 MIN-23 的取消链。
+        # task.cancel() 收尾（本用例顺带覆盖该取消链）。
         captured.append(getattr(self, "_only_fans", "<absent>"))
         seen.set()
         await asyncio.Event().wait()

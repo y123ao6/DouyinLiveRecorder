@@ -1,14 +1,14 @@
-# tests/test_regression_2026_09_22_postprocess.py - src/video_postprocess.py 的 MIN-2236 回归锁。
+# tests/test_regression_2026_09_22_postprocess.py - src/video_postprocess.py 回归锁。
 #
 # 覆盖三条 2026-09-23 实测确认「仍未修复」的条目：
-#   ① MIN-2236① generate_subtitles 的写盘段无 try/except：线程跑在**录制子进程**里（main.py 的
+#   ① generate_subtitles 的写盘段无 try/except：线程跑在**录制子进程**里（main.py 的
 #      _subtitle_thread_target），而全仓 threading.excepthook 只在 gui.py 装过 → 磁盘满 / 目录被改名 /
 #      路径过长时线程静默死掉，traceback 落 stderr 后被 display_info 的 "\033[2J" 刷掉，房间仍显示
 #      「正在录制」。锁：异常不外抛 + 告警按时间窗聚合 + 失败后按间隔退避重开 + 恢复只报一次。
-#   ② MIN-2236⑤ converts_m4a / segment_video 未接 MIN-04 的半成品清理（只有 converts_mp4 有）
+#   ② converts_m4a / segment_video 未接该半成品清理（只有 converts_mp4 有）
 #      → 失败/超时/取消后留下「大小可观但打不开」的产物被上层当有效文件。
 #      锁：三个入口的失败路径都清理，且**只删本次新增**（快照不可得时一律不删）。
-#   ③ MIN-2236⑥ segment_video 缺 `-n`：撞名时 ffmpeg 会问 Overwrite、无 stdin → EOF →
+#   ③ segment_video 缺 `-n`：撞名时 ffmpeg 会问 Overwrite、无 stdin → EOF →
 #      走满 600s 超时才被 kill。锁：三条命令都带 `-n` 且紧跟输出参数。
 #
 # 全部离线：ffmpeg 由 vp._run_ffmpeg_checked 的替身模拟，不启动真实进程；time.sleep 经模块内 time
@@ -111,7 +111,7 @@ def _install_runner(
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2236⑤：converts_m4a 的半成品清理
+# ⑤：converts_m4a 的半成品清理
 # ────────────────────────────────────────────────────────────
 
 
@@ -133,7 +133,7 @@ class TestM4aPartialCleanup:
         assert src.exists()
 
     def test_pre_existing_m4a_is_kept(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 调用前同名 .m4a 已存在 → 不删：那可能是上一次的成功产物（MIN-04 既有判据）。桩里刻意让
+        # 调用前同名 .m4a 已存在 → 不删：那可能是上一次的成功产物（该既有判据）。桩里刻意让
         # 「本次 ffmpeg」又往同名路径写了一截，锁的是**文件不被删**而非内容不变（判据是「快照里出现过」）。
         src = _make_source(tmp_path, "live.ts")
         out = tmp_path / "live.m4a"
@@ -163,7 +163,7 @@ class TestM4aPartialCleanup:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2236⑤ + ⑥：segment_video 的半成品清理与 -n
+# ⑤ + ⑥：segment_video 的半成品清理与 -n
 # ────────────────────────────────────────────────────────────
 
 
@@ -225,7 +225,7 @@ class TestSegmentPartialCleanup:
         assert any("跳过半成品清理" in m for m in warnings_sink)
 
     def test_command_carries_no_overwrite_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MIN-2236⑥：`-n` 必须存在且**紧跟输出参数**（ffmpeg 的文件级选项只对下一个文件生效）
+        # ⑥：`-n` 必须存在且**紧跟输出参数**（ffmpeg 的文件级选项只对下一个文件生效）
         src = _make_source(tmp_path, "live.ts")
         template = str(tmp_path / "out_%03d.ts")
         recorded = _install_runner(monkeypatch, None, [])
@@ -252,7 +252,7 @@ class TestNoOverwriteFlagOnAllConverters:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2236①：generate_subtitles 的写盘守卫
+# ①：generate_subtitles 的写盘守卫
 # ────────────────────────────────────────────────────────────
 
 

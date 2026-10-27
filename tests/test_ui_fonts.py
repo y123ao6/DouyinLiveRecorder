@@ -89,7 +89,7 @@ class TestSfntFamilyName:
         assert ui_fonts.sfnt_family_name(path) == "First Face"
 
     def test_attacker_controlled_offsets_return_none_not_struct_error(self, tmp_path: Path) -> None:
-        # M-83 行为锁：ttcf 头里的「第一个字体目录偏移」是文件自带数据、完全可被伪造。
+        # 行为锁：ttcf 头里的「第一个字体目录偏移」是文件自带数据、完全可被伪造。
         # 旧实现只把 read_bytes 圈进 try，_iter_table_dirs 的 unpack_from(offset + 4)
         # 在越界偏移上直接抛 struct.error，一路穿透 register_private_font 与「导入字体…」
         # 回调（两处都不接异常）——用户选一个坏文件能把窗口层炸穿。定稿把整段解析包进

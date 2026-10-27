@@ -1,4 +1,4 @@
-# tests/test_gui_stop_exit_singleflight.py — 停止/退出对同一子进程的单飞锁（M-16）。
+# tests/test_gui_stop_exit_singleflight.py — 停止/退出对同一子进程的单飞锁。
 #
 # 故障形态：「停止录制」（stop_recording → 后台线程，最长 15s+）与「彻底退出」
 # （quit_application → _shutdown_and_quit）互不知情，两线程会对同一 pid 交叉执行
@@ -256,7 +256,7 @@ sys.stdout.write("\n@@WP_E_STOPFLIGHT@@ " + json.dumps(out, ensure_ascii=False))
 
 
 def _child_env() -> dict[str, str]:
-    # M-31① 同口径：显式钉死 UTF-8，不依赖宿主 shell 恰好带该环境变量。
+    # ① 同口径：显式钉死 UTF-8，不依赖宿主 shell 恰好带该环境变量。
     # 本文件的日志判据是中文子串（「已有停止流程在途」），中文 Windows（ACP=936）下
     # 子进程若不钉 UTF-8，这些串在 json.dumps(ensure_ascii=False) 里落进 GBK stdout、
     # 父侧按 utf-8 解码即 UnicodeDecodeError——且只在没带 UTF-8 环境变量的机器上复现。
@@ -296,7 +296,7 @@ def results() -> dict[str, Any]:
 
 
 def test_concurrent_stop_and_exit_attach_console_once(results: dict[str, Any]) -> None:
-    # M-16 的本体判据：两个线程并发操作同一 pid，控制台附着**只能发生一次**。
+    # 本体判据：两个线程并发操作同一 pid，控制台附着**只能发生一次**。
     # 删掉单飞闸门（退出路径直调 _send_stop_signal_and_wait）时这里会出现 2 条附着记录。
     case = results["concurrent_once"]
     assert len(case["attaches"]) == 1, f"二次附着子进程控制台：{case['attaches']}"

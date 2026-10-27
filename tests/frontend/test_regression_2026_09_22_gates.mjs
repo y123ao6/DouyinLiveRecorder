@@ -1,6 +1,6 @@
-// 组 G（2026-09-22）前端回归锁：SEV-2221 / SEV-2227 / SEV-2228 / MID-2237 / MID-2240 / MID-2253；
-// 后续 CODE_REVIEW_2026-09-29_2 的 M-21（轮询代次竞态）/ M-23（dropped 转义）/ M-26（认证复验
-// 假绿锁改写）也落在此处。M-22 的口令窗行为另在 tests/frontend/test_auth_reauth.mjs。
+// 组 G 前端回归锁：SEV-2221 / SEV-2227 / SEV-2228 / MID-2237 / MID-2240 / MID-2253；
+// 后续 M-21（轮询代次竞态）/ M-23（dropped 转义）/ M-26（认证复验假绿锁改写）也落在此处。
+// M-22 的口令窗行为另在 tests/frontend/test_auth_reauth.mjs。
 //
 // 与 test_quality_ui.mjs 的分工：那边是既有质量门禁（四语目录、parseConfigBool 跨语言不变量、
 // 掩码写入、登出等）；本文件只放本轮修复对应的**失效形态**锁，把对应修复改回原样即变红。
@@ -367,7 +367,7 @@ test('SEV-2228：stale=true 的陈旧快照也要显式告知用户数据可能�
 
 // —— SEV-2221 撤销 / SEV-2228 后半：main_loop_alive 是死路径，「取证失败」改由真信号承担 ——
 //
-// 原锁「main_loop_alive=false 的告警文案」。2026-09-23 实测证伪：该键读 main.main_loop_ticks，
+// 原锁「main_loop_alive=false 的告警文案」已被证伪：该键读 main.main_loop_ticks，
 // 而这个名字在 main.py 里**从未定义、从未自增**（下面第一条用例把它做成了断言，防「以后有人
 // 以为还有效」）。键永不下发、前端 `=== false` 分支永不成立——「永不生效的存活信号」比「没有
 // 该信号」更危险，后端已把键从契约撤下（见 src/web_api.py::_read_engine_status），前端改用两个
@@ -447,8 +447,8 @@ test('SEV-2221：字段缺失（未接线）一律视为健康，不得把健康
 
 test('SEV-2221：app.js 对存活字段用 === 严格判定，不得退化为真假值判定', () => {
     // 源码级锁：`if (!s.engine_alive)` 会把 undefined（未带该键的正常快照）判成故障。
-    // 旧版还要求 main_loop_alive 用 === false 判定；该键已撤下，继续断言只会逼实现保留
-    // 一条永不成立的分支，故改为断言它**不存在**。
+    // main_loop_alive 已从契约撤下，继续要求它用 === false 判定只会逼实现保留一条永不成立的
+    // 分支，故本条改断言它**不存在**。
     const body = APP_JS.slice(APP_JS.indexOf('function updateStatusWarning'), APP_JS.indexOf('function renderRecordingControl'));
     assert.match(body, /s\.engine_alive\s*===\s*false/, 'updateStatusWarning 未用 === false 判定 engine_alive');
     assert.doesNotMatch(body, /!\s*s\.engine_alive\b/, '存在真假值判定（undefined 会被判成故障）');
@@ -509,7 +509,7 @@ test('SEV-2228 后半：danmaku_unavailable 不得推进增量游标（否则跳
 });
 
 
-// —— M-23（2026-09-29）：弹幕折叠计数也必须过 esc()，拼接路径不得留裸插值 ——————
+// —— M-23：弹幕折叠计数也必须过 esc()，拼接路径不得留裸插值 ————————————
 
 test('M-23：/api/danmaku 的 dropped 计数进 innerHTML 前必须转义（拼接路径一律 esc 的不变量）', async () => {
     // 失效形态：dmLineHtml 里 user/room/text 全过 esc()，唯独 dropped 是裸插值。后端当前把
@@ -636,7 +636,7 @@ test('MID-2240：页面隐藏时日志轮询一并停止', async () => {
         '页面隐藏期间仍在拉日志');
 });
 
-// —— M-21（2026-09-29）：轮询链的「停止 → 立即重启」竞态 ——————————————————
+// —— M-21：轮询链的「停止 → 立即重启」竞态 ——————————————————————
 //
 // 失效形态（机制见 web/app.js 的 makePollChain 头注释）：stop* 只能 clearTimeout 掉**已排期**的
 // 定时器，取消不了**在途**请求；旧请求落地后的续期回调只看一个布尔标志，而「停止 → 立即重启」
@@ -889,10 +889,10 @@ test('MID-2241：saveConfig 对 Web 认证两键先 confirm 再要求复验口�
 });
 
 test('M-22/M-26：认证两键的复验口令经 password 弹窗采集、且只随认证键下发（正向锁）', () => {
-    // 契约事实源是生产代码：src/web_api.py::update_config 的 MID-2241 段已实现强制复验（认证开启时
+    // 契约事实源是生产代码：src/web_api.py::update_config 的认证键复验段已实现强制复验（认证开启时
     // 写认证两键不带可过 verify_web_password 的 reauth_password 即 403），本条因此锁定「前端确实
-    // 采集并下发」。M-26 教训：此前两条 doesNotMatch 文本锁因后端字面量改名而**空洞成立**（实测
-    // 32/32 全绿，而 Python 侧锁的恰是相反契约），故：① 不再以源码字面量锁安全边界；② 后端行为
+    // 采集并下发」。[历史注] 此前两条 doesNotMatch 文本锁因后端字面量改名而**空洞成立**（实测 32/32
+    // 全绿，而 Python 侧锁的恰是相反契约），故：① 不再以源码字面量锁安全边界；② 后端行为
     // 不在本文件复制，已由 test_regression_2026_09_22_web_g.py::TestAuthKeyReauth 与
     // test_web_api.py::TestAuthDowngradeRejected 用真实端点 E2E 锁住；③ 前端保留这条正向断言，
     // 端到端行为另见 tests/frontend/test_auth_reauth.mjs。

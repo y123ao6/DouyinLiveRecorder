@@ -19,7 +19,7 @@ from src import utils
 #   color_obj / text_encoding / recording / record_state_lock），经 `import main` 在运行时
 #   惰性读取，避开循环导入与 __main__ 二次执行问题。
 #
-# 线程归属（MIN-2236①）：本模块的函数不跑在调用它的主线程里——generate_subtitles 由 main.py 的
+# 线程归属：本模块的函数不跑在调用它的主线程里——generate_subtitles 由 main.py 的
 # _subtitle_thread_target / _subtitle_thread_target_direct 起 daemon 线程，converts_* 与
 # segment_video 由 _submit_postprocess 投进后处理线程池。而全仓 threading.excepthook 只在 gui.py
 # 装过（且只覆盖 GUI 父进程），录制子进程里线程内的未捕获异常默认没有 hook：traceback 只落
@@ -27,7 +27,7 @@ from src import utils
 # 故本模块的循环体/写盘路径必须就地捕获，不能指望全局兜底；也不在本模块另装 hook（跨进程归属
 # 决策留给主会话，再补一个只会形成第二份 hook）。
 
-# MIN-04：转码超时按源文件体积线性放大（秒/MB）。固定 600s 对「1800s 分段 + libx264 veryfast
+# 转码超时按源文件体积线性放大（秒/MB）。固定 600s 对「1800s 分段 + libx264 veryfast
 # 重编码」在中低端机上根本不够：一段 1800s/4Mbps 的 1080p 分段约 900 MB，40~80 fps 的机器要
 # 675~1350s。取 1.5 s/MB（≈0.67 MB/s，对应偏慢的那一档）作放大系数。超时被 kill 的重编码产物
 # 没有 -movflags +faststart、moov 尚未落盘 → 完全不可播，却会与仍在的源文件一起留下。
@@ -53,7 +53,7 @@ def _convert_timeout(source_path: str, re_encoding: bool, explicit: int | None) 
     return int(min(_MAX_CONVERT_TIMEOUT, max(600.0, size_mb * rate)))
 
 
-# 删除**本次调用**生成的不完整产物（MIN-04）。返回是否真的删掉了。
+# 删除**本次调用**生成的不完整产物。返回是否真的删掉了。
 # 判据刻意保守：调用前同名文件已存在时不删——那可能是上一次的成功产物，本次只是覆盖
 # 失败，删掉反而把可用产物一起毁掉。
 def _discard_partial_output(out_path: str, pre_existed: bool, source_path: str) -> bool:
@@ -81,7 +81,7 @@ def _discard_partial_output(out_path: str, pre_existed: bool, source_path: str) 
     return True
 
 
-# MIN-2236⑤：「失败即清理」由三个 ffmpeg 后处理入口共用（原先只有 converts_mp4 在三个
+# ⑤：「失败即清理」由三个 ffmpeg 后处理入口共用（原先只有 converts_mp4 在三个
 # except 分支各调一次 _discard_partial_output，converts_m4a / segment_video 完全没接，
 # 超时/失败后会留下「大小可观但打不开」的 .m4a 或残缺分段，与源文件并排躺在产物目录）。
 # 清理下沉到 _run_postprocess_command 的两个好处：① 三条入口共享一份「本次新建」快照判据；
@@ -163,7 +163,7 @@ def _discard_new_outputs(out_spec: str, pre_existed: set[str], source_path: str)
 
 # 执行一条后处理 ffmpeg 命令；任何非正常退出（失败/超时/取消）后清理本次新增的半成品产物。
 def _run_postprocess_command(command: list[str], out_spec: str, source_path: str, timeout: int = 600) -> None:
-    # 「本次创建」的判据必须在启动 ffmpeg **之前**取，不能事后用 mtime 猜（MIN-04 同一口径）。
+    # 「本次创建」的判据必须在启动 ffmpeg **之前**取，不能事后用 mtime 猜（该同一口径）。
     pre_existed = _snapshot_outputs(out_spec)
     try:
         _run_ffmpeg_checked(command, timeout=timeout)
@@ -200,7 +200,7 @@ def _run_ffmpeg_checked(command: list[str], timeout: int = 600) -> str:
             out, _ = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
-            # L-36（2026-10-02）：第二次 communicate 必须带超时（对齐 notify.py M-5 同款防线）——
+            # 2026-10-02：第二次 communicate 必须带超时（对齐 notify.py 该同款防线）——
             # kill() 只杀直接子进程，孙进程握着管道写端时无超时的读取会永久挂住后处理线程；
             # 超时后抛 TimeoutExpired 交上层兜底，输出取「已读到的部分」。
             try:
@@ -245,7 +245,7 @@ def segment_video(
                 "1",
                 "-movflags",
                 "+frag_keyframe+empty_moov",
-                # MIN-2236⑥：补 `-n`（输出已存在时立即退出、不询问），与 converts_m4a / converts_mp4
+                # ⑥：补 `-n`（输出已存在时立即退出、不询问），与 converts_m4a / converts_mp4
                 # 的既有写法对齐——原缺该项：目标名与磁盘已有文件撞车时 ffmpeg 会打印
                 # "Overwrite? [y/N]"，而本命令由 _run_ffmpeg_checked 以管道启动、子进程没有可用
                 # stdin → read 直接 EOF（等同选 N），于是走满 600s 超时才把进程 kill 掉。
@@ -272,11 +272,11 @@ def segment_video(
 
 # 把 converts_file_path 转封装为同名 .mp4（全局 converts_to_h264 开启时重编码为 h264）；
 # is_original_delete=True 时删除源文件；timeout 为总等待秒数，None 表示按源文件体积自动放大
-# （MIN-04）。失败/超时会清理本次生成的半成品 .mp4 并保留源文件，无返回值
+# 。失败/超时会清理本次生成的半成品 .mp4 并保留源文件，无返回值
 def converts_mp4(converts_file_path: str, is_original_delete: bool = True, timeout: int | None = None) -> None:
     # out_path 在 try 外预置：except 分支与基于它的清理出口要能判定「本次是否已生成过输出」，
     # 否则 basedpyright 判 possibly unbound、且早期异常（如体积读取）会误删无关文件。
-    # 「调用前已存在的产物集合」快照已收敛到 _run_postprocess_command（MIN-2236⑤），三入口共用。
+    # 「调用前已存在的产物集合」快照已收敛到 _run_postprocess_command，三入口共用。
     out_path = ""
     try:
         if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
@@ -332,7 +332,7 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True, timeo
                     os.remove(converts_file_path)
     except subprocess.TimeoutExpired as e:
         # 与下两类错误区分：ffmpeg 卡死须告警（与「格式不对」语义不同），否则被 except Exception
-        # 兜底为 unknown error 丢失语义。半成品清理已在 _run_postprocess_command 统一执行（MIN-04）。
+        # 兜底为 unknown error 丢失语义。半成品清理已在 _run_postprocess_command 统一执行。
         logger.error(i18n.tr("ffmpeg 转 MP4 超时（{type_name}）: {e}", type_name=type(e).__name__, e=e))
         # [历史注] 清理已上移到 _run_postprocess_command 的出口统做：超时分支原先 kill 完就 raise，
         # 会留下写到一半的 .mp4（无 -movflags +faststart，moov 未落盘 → 完全不可播），而源 ts 仍在。
@@ -364,7 +364,7 @@ def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> No
                 "320k",
                 out_path,
             ]
-            # MIN-2236⑤：本函数的调用已接入统一清理——超时/CalledProcessError 后不会再留下
+            # ⑤：本函数的调用已接入统一清理——超时/CalledProcessError 后不会再留下
             # 半截 .m4a（AAC 帧头已写、尾部截断，播放器只认得到开头几秒）。
             _run_postprocess_command(m4a_command, out_path, converts_file_path)
             if is_original_delete:
@@ -379,7 +379,7 @@ def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> No
         logger.error(i18n.tr("An unknown error occurred: {e}", e=e))
 
 
-# MIN-2236①：时间字幕写盘失败时的告警聚合窗口与重开退避（单位＝循环秒，见 generate_subtitles 内注释）。
+# ①：时间字幕写盘失败时的告警聚合窗口与重开退避（单位＝循环秒，见 generate_subtitles 内注释）。
 # 60s 与 src/collector.py 的 _SRT_WARN_INTERVAL、src/srt_writer.py 的 WD-03 口径一致：
 # 逐条告警会在磁盘满时把 logs/streamget.log 刷爆（本线程每秒一条 → 每分钟 60 条 warning），
 # 反而淹掉真正的排查线索；完全不告警则是「房间显示正常、字幕再也不长」的静默丢数据。
@@ -399,7 +399,7 @@ def generate_subtitles(record_name: str, ass_filename: str, sub_format: str = "s
     # 路径与真正写入的路径**必然是同一个值**（各处分别拼接时改一处即产生「日志说 A 坏、实际坏的是 B」）
     sub_out_path = f"{ass_filename}.{sub_format.lower()}"
 
-    # MIN-2236①：写盘守卫的状态。计时基准一律用 index_time（循环自身的秒计数，每轮 sleep(1) 恰好
+    # ①：写盘守卫的状态。计时基准一律用 index_time（循环自身的秒计数，每轮 sleep(1) 恰好
     # 推进 1 秒），**不**引入 time.monotonic()：
     #   ① 本线程的节奏定义就是「一轮一秒」，用循环计数与「实际丢了多久」严格一致，不受线程被调度
     #      推迟（GIL 争抢、池内排队）影响——被推迟时真实时钟会走完退避窗口，而这一轮其实一条都没写，
@@ -436,7 +436,7 @@ def generate_subtitles(record_name: str, ass_filename: str, sub_format: str = "s
             sub_total_failures += 1
         else:
             try:
-                # MIN-2236①：本写盘段原为裸 open()、函数内零 try/except。该线程跑在录制子进程里，
+                # ①：本写盘段原为裸 open()、函数内零 try/except。该线程跑在录制子进程里，
                 # 而 threading.excepthook 全仓只有 gui.py 装过（见文件头）——磁盘满(ENOSPC) / 目录被
                 # rename_anchor_directory 改名(ENOENT) / 路径过长(ENAMETOOLONG) / 权限(EACCES) 任一
                 # 发生，线程就静默死掉，字幕从此不再增长且无线索。

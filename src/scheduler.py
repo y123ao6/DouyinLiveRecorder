@@ -13,8 +13,8 @@ from .logger import logger
 #   - ResizableSemaphore：支持运行时调容的上下文信号量（消除重建竞态）
 #   - PlatformBreaker：按 key（直播间 host）的熔断器 closed→open→half-open
 #   - ConcurrencyScheduler：自适应全局并发容量（随活跃任务数缩放、带安全下限；亦支持固定
-#     并发模式），按 key 聚合错误预算驱动熔断，提供可选的录制并发软上限，并以 adjust_loop
-#     守护循环取代旧 adjust_max_request。
+#     并发模式），按 key 聚合错误预算驱动熔断，提供可选的录制并发软上限，并由 adjust_loop
+#     守护循环周期性重算容量。
 #
 # 设计目标：80+ 任务跨多平台时不因固定 3 槽而排队；单平台抖动被隔离降级、不拖垮全局；
 # 单任务异常被捕获，避免连锁报错导致系统不可用。
@@ -33,10 +33,10 @@ from .logger import logger
 _PROBE_LEASE_SECONDS = 60.0
 
 
-# 熔断表容量上限（M-36a）：key 是 host_of(record_url) 的结果，属**外部可控**输入（用户自填的
-# 自定义流地址可带任意端口/主机、短链落地页会改写 host），旧实现只在建表时写、永不回收，
-# 24×7 长跑 + 房间持续增删下每个历史 host 都留一支 PlatformBreaker（含 40 长度样本窗口），
-# 内存无界增长。达到上限时从「最久未被任何房间使用」的一端逐出，判据见 _evict_breakers_locked。
+# 熔断表容量上限：key 是 host_of(record_url) 的结果，属**外部可控**输入（用户自填的自定义流地址
+# 可带任意端口/主机、短链落地页会改写 host），不回收则每个历史 host 都留一支 PlatformBreaker
+# （含 40 长度样本窗口），24×7 长跑 + 房间持续增删下内存无界增长。达到上限时从「最久未被任何
+# 房间使用」的一端逐出，判据见 _evict_breakers_locked。
 _MAX_BREAKERS = 1024
 
 
@@ -138,10 +138,8 @@ class PlatformBreaker:
         self._window_size = max(1, int(window))
         self._fail_rate = min(1.0, max(0.0, float(fail_rate)))
         self._cooldown = max(0.0, float(cooldown))
-        # 2026-10-21 M-42：min_samples 必须同时受窗口上界约束。旧写法只有下界 max(1, ...)，
-        # 于是 min_samples > window（如 window=5 / min_samples=8）时 len(_samples) 恒达不到阈值、
-        # 熔断器整生不开——坏 host 拿满全部房间流量且永不自愈。现钳在 1..window 之间：
-        # 窗口本身就是「能收集到多少个样本」的硬上界，阈值不得超过它。
+        # min_samples 必须钳在 1..window：窗口是「能收集多少样本」的硬上界，阈值超过它熔断器永不开。
+        # [历史注] 旧实现只有下界，坏 host 会拿满流量且永不自愈。
         self._min_samples = max(1, min(int(min_samples), self._window_size))
         self._lock = Lock()
         self._samples: deque[int] = deque(maxlen=self._window_size)
@@ -188,11 +186,11 @@ class PlatformBreaker:
         with self._lock:
             self._push_sample(0 if success else 1)
             if self._state == "closed":
-                # 2026-10-21 M-42：_fail_count > 0 是必要条件。旧判据 len >= min_samples and
-                # fail_count/len >= fail_rate 在 fail_rate=0（配置 0 / 误填）时恒真——一个全成功
-                # 窗口也会因 0 >= 0 被判熔断，健康 host 白白退避 45s。
+                # _fail_count > 0 是必要条件：fail_rate=0 时 0 >= 0 恒真，全成功窗口也会被判熔断、
+                # 让健康 host 白白退避整个冷却期。
                 # 计数一律读增量维护的 _fail_count，不得改回 sum(self._samples)
                 # （AGENTS「熔断计数必须增量」：整窗求和在 _lock 内是 O(window)，80+ 任务并发上报放大锁持有时间）。
+                # [历史注] 旧判据无此条，fail_rate 填 0 时健康窗口同样熔断。
                 if (
                     self._fail_count > 0
                     and len(self._samples) >= self._min_samples
@@ -274,7 +272,7 @@ class ConcurrencyScheduler:
     #   - 全局网络并发信号量（network_semaphore）：容量随活跃任务数自适应，带安全下限/上限；
     #   - 按 key 熔断器（breakers）：隔离各平台/站点错误，与并发模式正交，两种模式下均生效；
     #   - 可选录制并发软上限（recording_semaphore）：默认不限制，开启后限制同时 ffmpeg 数；
-    #   - adjust_loop：守护循环，周期性重算容量（取代旧 adjust_max_request 的单向压制）。
+    #   - adjust_loop：守护循环，周期性重算全局容量。
     def __init__(
         self,
         *,
@@ -332,18 +330,17 @@ class ConcurrencyScheduler:
                 rate = self._global_error_count / len(self._global_errors)
             else:
                 rate = 0.0
-        # 固定模式：忽略动态调速器与错误背压，容量恒为 configured_limit
-        # （即「同一时间访问网络的线程数」，set_configured_limit 已保证最小 1 个槽位）。
-        # 2026-10-21 M-35 刻意不对称：这一支**不**按 _max_capacity 封顶。AGENTS 把固定并发钉成
-        # 「用户显式填写的并发值即上限」（配置项「同一时间访问网络的线程数」在固定模式下就是
-        # 网络并发本身），在此顺手夹取会让用户填 200 只拿到 128 且毫无提示，属新的静默失准。
+        # 固定模式：忽略动态调速器与错误背压，容量恒为 configured_limit（即「同一时间访问网络的
+        # 线程数」，set_configured_limit 已保证最小 1 个槽位）。
+        # 这一支刻意**不**按 _max_capacity 封顶：AGENTS 把固定并发钉成「用户显式填写的并发值即上限」，
+        # 在此顺手夹取会让用户填 200 只拿到 128 且毫无提示，属静默失准。
         if not dynamic:
             return configured
         # 动态模式：目标容量 = min(上限, max(配置值, ceil(活跃数/缩放因子)))；错误率极高时温和降容但永不低于下限。
-        # 2026-10-21 M-35：封顶必须发生在 max **之后**。旧写法 max(configured, min(上限, scaled))
-        # 里 min 只包住 scaled 一支，configured 一旦被填成大于 _max_capacity 的值（错配 / 复制粘贴
-        # 来的大数）就整体取 configured，声明的安全上限被一个配置值整个绕过——80 房间瞬间放开
-        # 数百并发请求，正好是这套调度器要防的形态。
+        # 封顶必须发生在 max **之后**：只括住 max 的一支时，配置值一旦被填成大于 _max_capacity
+        # （错配 / 复制粘贴来的大数）就整体取配置值，声明的安全上限被整个绕过——80 房间瞬间
+        # 放开数百并发请求，正是这套调度器要防的形态。
+        # [历史注] 旧写法 min 只括住 scaled 一支，即上述形态。
         target = min(
             self._max_capacity,
             max(configured, (active + self._scale_divisor - 1) // self._scale_divisor),
@@ -509,7 +506,7 @@ class ConcurrencyScheduler:
         # 当前是否处于动态调速模式（False 表示固定并发模式）。
         return self._dynamic_mode
 
-    # —— 守护循环（取代旧 adjust_max_request）——
+    # —— 守护循环 ——
     def adjust_loop(self) -> None:
         # 每 5 秒重算一次全局容量；per-key 熔断由 record_* 即时驱动，无需轮询。
         while True:

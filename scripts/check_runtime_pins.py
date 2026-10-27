@@ -1,11 +1,11 @@
-# 运行时二进制 SHA256 钉定表的一致性检查（SEV-10 的门禁侧，CI 可调用）。
+# 运行时二进制 SHA256 钉定表的一致性检查（门禁侧，CI 可调用）。
 #
 # 职责：校验 build_exe.py 里那张「按平台分列的运行时二进制钉定表」的**完整性与形状**，
 #       并在发布路径上要求每一项都已填入官方值。
 #
-# 为什么需要单独一个检查：旧实现把表留成了空的 `_PINNED_RUNTIME_SHA256 = {}`，未钉定只 warn
-#   后继续（SEV-10）——「空表」在旧实现里是**静默通过**的。本脚本把「空表 / 缺平台 / 缺槽位」
-#   从可跳过状态升级为硬失败，因此它是 fail-closed 机器的前半段（后半段是 --require-pinned）。
+# [历史注] 旧实现把表留成空的 `_PINNED_RUNTIME_SHA256 = {}`，未钉定只 warn 后继续——「空表」
+#   因此是静默通过的。本脚本把「空表 / 缺平台 / 缺槽位」从可跳过状态升级为硬失败，
+#   所以它是 fail-closed 机器的前半段（后半段是 --require-pinned）。
 #
 # 两种模式（退出码语义不同，务必区分）：
 #   默认（结构模式，进 AGENTS.md「格式化命令」门禁块）
@@ -32,7 +32,7 @@
 #   python scripts/check_runtime_pins.py --strict     # 发布检查（build-release.yml prepare）
 #   python scripts/check_runtime_pins.py --emit-env   # 打印 DLR_RUNTIME_SHA256 的 JSON 值（CI 注入用）
 #
-# --emit-env 与 --strict 可叠加（M-92，2026-10-21）：导出通道**先跑与默认模式同一套结构校验**，
+# --emit-env 与 --strict 可叠加：导出通道**先跑与默认模式同一套结构校验**，
 #   校验不过就拒绝导出并按 check() 的分级返回（2 结构缺陷 / 1 --strict 下的未钉定项）。
 #   stdout 只允许出现 JSON 一行（build-release.yml 用 pins=$(... --emit-env) 取用），报告走 stderr。
 #
@@ -82,9 +82,8 @@ def _load_build_exe() -> Any:
     try:
         spec.loader.exec_module(module)
     except (OSError, ValueError, TypeError, ImportError, SyntaxError, AttributeError) as exc:
-        # M-93（2026-10-21）：build_exe.py 是**门禁自己的输入**，它读不出来 / 语法坏 / 顶层
-        # import 失败时，旧形态是一条 Traceback + rc=1。而本文件头把 rc=1 明确留给
-        # 「--strict 查到未钉定项」（= 发布链真的有问题），rc=2 才是「门禁本身失效」。
+        # build_exe.py 是**门禁自己的输入**：读不出来 / 语法坏 / 顶层 import 失败时，rc=1 会与
+        # 「--strict 查到未钉定项」（= 发布链真的有问题）混同，而 rc=2 才是「门禁本身失效」。
         # 取不到表就没有任何判定发生，必须走 rc=2，否则排障方向整体错掉。
         print(
             f"ERROR: 门禁自身失效：加载 {path} 失败 - {type(exc).__name__}: {exc}\n"
@@ -136,8 +135,8 @@ def _runtime_matrix_keys() -> list[str]:
     try:
         text = _WORKFLOW.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        # M-93 同族：workflow 读不出来时旧形态是 rc=1 + Traceback，而「读不到矩阵」等于
-        # 覆盖面无从核对 —— 与文件头「取不到表 → rc=2」同档。
+        # workflow 读不出来时 rc=1 + Traceback 会掩盖真相：「读不到矩阵」等于覆盖面无从核对，
+        # 与文件头「取不到表 → rc=2」同档。
         print(
             f"ERROR: 门禁自身失效：读取 {_WORKFLOW} 失败 - {type(exc).__name__}: {exc}\n"
             "       矩阵读不到就没有做过覆盖关系核对，按 rc=2 处理。",
@@ -162,9 +161,9 @@ def _runtime_matrix_keys() -> list[str]:
 def check(strict: bool) -> int:
     # 返回 0 通过 / 1 发布级失败（--strict 下存在未钉定项）/ 2 结构缺陷。
     module = _load_build_exe()
-    # L-29：属性缺失（含被改名/删除）一律走 rc=2，不留 AttributeError 崩溃栈的 rc=1。探测必须在
-    # 这里一次做完、而不是逐处 getattr 兜底：下面的判定口径全部取自 build_exe，缺一项就等于「没查」，
-    # 而「没查」与「查过且通过」在 CI 里必须分得开（同 MID-63 口径）。
+    # 属性缺失（含被改名/删除）一律走 rc=2，不留 AttributeError 崩溃栈的 rc=1。探测必须在这里
+    # 一次做完、而不是逐处 getattr 兜底：下面的判定口径全取自 build_exe，缺一项就等于「没查」，
+    # 而「没查」与「查过且通过」在 CI 里必须分得开。
     _require_build_exe_attrs(module)
     table = cast("dict[str, dict[str, str]]", module._PINNED_RUNTIME_SHA256)
     slots = cast("tuple[str, ...]", module.RUNTIME_SLOTS)
@@ -190,7 +189,7 @@ def check(strict: bool) -> int:
     declared_class: list[str] = []  # 第 4 类已满足的槽位（显式列出，不与「已钉定」混为一谈）
     declared_sig: list[str] = []  # 官方签名档已满足的槽位（同上，另一种满足方式）
 
-    # 1) 空表必须硬失败：SEV-10 的原始缺陷形态就是「表为空且无人察觉」
+    # 1) 空表必须硬失败：本门禁要防的原始缺陷形态正是「表为空且无人察觉」
     if not table:
         problems.append("_PINNED_RUNTIME_SHA256 为空——未钉定的运行时二进制会被无校验打进发布包")
 
@@ -307,10 +306,10 @@ def emit_env(strict: bool = False) -> int:
     # 占位值原样导出：build_exe 侧仍按形状判定为未钉定，因此这条通道不会把
     # 「没填」伪装成「已填」。
     #
-    # M-92（2026-10-21）：导出通道**必须先跑与 check() 完全相同的结构校验**再打印。
-    # 旧形态只探测属性存在就打印并 return 0 —— 于是一张「空表 / 缺键 / 缺槽位 / 键形状不符」的
-    # 钉定表照样能被导出进 CI（build_exe 侧的 fail-closed 只是纵深第二层，不是这条通道的自证）。
-    # 校验复用 check() 本体而不是另写一份判据：两处各判一次迟早演化出两种「结构合法」。
+    # 2026-10-21：导出通道**必须先跑与 check() 完全相同的结构校验**再打印：只探测属性存在就打印并 return 0，
+    # 会让「空表 / 缺键 / 缺槽位 / 键形状不符」的钉定表照样导出进 CI（build_exe 侧的 fail-closed
+    # 只是纵深第二层，不是这条通道的自证）。校验复用 check() 本体而不是另写一份判据：
+    # 两处各判一次迟早演化出两种「结构合法」。
     # 返回值沿用 check() 的分级：2 = 结构缺陷（门禁没判成），1 = --strict 下的未钉定项，
     # 0 才允许导出。stdout 必须**只有 JSON**（build-release.yml 以 pins=$(... --emit-env) 取它），
     # 故校验期间把 stdout 重定向到缓冲区：失败时把人类可读报告转写 stderr，成功时整段丢弃。

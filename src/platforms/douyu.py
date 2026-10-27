@@ -32,8 +32,8 @@ class DouyuDanmaku(DanmakuBase):
     heartbeat_interval = 45.0
 
     # 初始化：记录是否只显示粉丝弹幕，重置房间号与 WS 连接。
-    # only_fans 默认 False（2026-09-12 审查 C-3）：dart 上游无任何粉丝过滤，移植时引入
-    # True 默认值导致普通观众弹幕（通常占绝大多数）被静默丢弃，且 main 调用链无开关可关。
+    # only_fans 默认 False：dart 上游无任何粉丝过滤，移植时引入 True 默认值会让普通观众
+    # 弹幕（通常占绝大多数）被静默丢弃，且 main 调用链无开关可关。
     def __init__(self, *args: Any, only_fans: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._only_fans = only_fans  # 是否只显示粉丝弹幕（True 时过滤 if!='1' 的消息，默认不过滤）
@@ -107,9 +107,9 @@ class DouyuDanmaku(DanmakuBase):
         while offset + 12 <= n:
             full_len = struct.unpack_from("<I", data, offset)[0]
             # 斗鱼长度域值 = 帧总字节数 - 4（不含首个长度域自身，见 _serialize 的 total 定义）。
-            # 截断判断与帧推进均须按「整帧 = full_len + 4 字节」计算——2026-09-12 审查 C-2：
-            # 原来只按 full_len 推进，粘包时第二帧起点错位 4 字节，长度域读出垃圾值后
-            # 触发截断 break，第二帧起全部静默丢失（高热度直播间消息密集时必然粘包）。
+            # 截断判断与帧推进均须按「整帧 = full_len + 4 字节」计算：旧写法只按 full_len 推进，
+            # 粘包时第二帧起点错位 4 字节、长度域读出垃圾值后触发截断 break，第二帧起全部静默丢失
+            # （高热度直播间消息密集时必然粘包）。
             if full_len <= 0 or offset + full_len + 4 > n:
                 break
             try:

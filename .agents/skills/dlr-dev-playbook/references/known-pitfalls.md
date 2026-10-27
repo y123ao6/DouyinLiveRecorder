@@ -16,7 +16,7 @@
 
 ## 流地址探针与可达性校验
 
-> 完整流程与操作步骤见 `.agents/skills/platform-source-selection/SKILL.md`。以下为本节硬约束摘要。
+> 完整流程与操作步骤见 `.agents/skills/dlr-domain-constraints/SKILL.md`。以下为本节硬约束摘要。
 
 - **GET 复核容错不得简化**: 401/403 先原样重试一次再定罪；末位候选仅告警放行交 ffmpeg 定夺。
 - **虎牙探针退避仅限 `_PROBE_BACKOFF_PLATFORMS`**: 绝不可把斗鱼等加入名单。
@@ -53,7 +53,7 @@
 
 ## 画质档位与选源映射
 
-> 完整流程与操作步骤见 `.agents/skills/platform-source-selection/SKILL.md`「画质档位映射」章。以下为本节硬约束摘要。
+> 完整流程与操作步骤见 `.agents/skills/dlr-domain-constraints/SKILL.md`「画质档位映射」章。以下为本节硬约束摘要。
 
 - **蓝光子档位折叠到 BD 索引，不得塞进 `QUALITY_MAPPING`**: 中文映射新增须同步四处（`get_quality_code`/`web_config.QUALITY_KEYWORDS`/`main.py` 白名单/`web/index.html`）。
 - **虎牙选档不可抛异常或返回空流地址**: 不可用时就近降级或回原画，保持 `is_live=True` 契约。
@@ -84,7 +84,7 @@
 
 ## ffmpeg 命令构造与容器格式
 
-> 完整流程、事故背景与验证命令见 `.agents/skills/ffmpeg-command-construction/SKILL.md`。
+> 完整流程、事故背景与验证命令见 `.agents/skills/dlr-domain-constraints/SKILL.md`。
 
 - **`-reconnect*` 必须在 `-i` 之前且紧跟取值**: 写在 `-i` 之后被静默忽略。HLS 输入必须移除 `-reconnect_at_eof`。回归锁：`tests/test_ffmpeg_reconnect_args.py`。
 - **`-thread_queue_size` 只能位于 `-i` 之后**: 放错侧致录制 100% 失败。
@@ -149,7 +149,7 @@
 - **`make_zip` 的产物名一律整体 f-string 拼接**。
 - **打包图标的 `EXE(icon=)` 与 `datas` 是两条独立通道**。
 
-> 各条详细钉定流程与回归锁清单见原 `AGENTS.md` 2026-10 版本及 `.agents/skills/runtime-pin-verification/SKILL.md`。
+> 各条详细钉定流程与回归锁清单见原 `AGENTS.md` 2026-10 版本及 `.agents/skills/dlr-domain-constraints/SKILL.md`。
 
 ## 装饰器与平台兜底契约
 

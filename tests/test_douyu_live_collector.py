@@ -19,9 +19,9 @@ from src.platforms.douyu import DouyuDanmaku
 # 斗鱼弹幕走自有 WebSocket 协议;本脚本用 get_douyu_info_data(免 JS 令牌的简化路径)取
 # room_id,适合自动化,但同样需主播真实在播才能验证。
 URL = sys.argv[1] if len(sys.argv) > 1 else "https://www.douyu.com/88080"
-# 双模式参数守卫（与其余真机脚本同构）：pytest 传进来的 sys.argv[2] 可能是 `-q` 之类的选项，
-# 也可能是下一个测试文件的路径——只判非选项会让 int(路径) 抛 ValueError 使本模块收集 ERROR
-# （R7③，2026-09-30 实测），故再补 isdigit 数值性回落；真机用法不变。
+# 双模式参数守卫（R7③）：pytest 传进来的 sys.argv[2] 可能是 `-q` 之类的选项，也可能是下一个
+# 测试文件的路径——只判非选项会让 int(路径) 抛 ValueError 使本模块收集 ERROR，故补 isdigit 回落；
+# 真机用法不变。
 _SECONDS_RAW = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else ""
 SECONDS = int(_SECONDS_RAW) if _SECONDS_RAW.isdigit() else 20
 
@@ -55,8 +55,8 @@ def main() -> None:
         # 仅删 Douyu 前缀文件而非整目录,避免清掉并行验证的其他平台产物。
         if f.startswith("Douyu弹幕验证"):
             stale = os.path.join(base_dir, f)
-            # 先判 isfile:listdir 混进子目录时 os.remove 会抛 IsADirectoryError/PermissionError,
-            # 真机验证会卡在清理阶段(R7④,2026-09-30)。
+            # 先判 isfile：listdir 混进子目录时 os.remove 会抛 IsADirectoryError/PermissionError，
+            # 真机验证会卡在清理阶段（R7④）。
             if os.path.isfile(stale):
                 os.remove(stale)
 

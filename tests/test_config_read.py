@@ -6,8 +6,8 @@
 #     故障形态而非造不出来的场景；
 #   · tolerant_config_parser 读出全部其余键、重复键取最后一次；
 #   · find_duplicate_options 点名到 节/键/行号，且「注释行」「跨节同名键」「多行值续行」
-#     三类形态不误报（L-17），同时「真重复混在续行之间」仍必须报出；
-#     M-54（2026-10-21）把「带 = / : 的缩进续行」也归入不误报的一类——这类形态在 cookie/长值
+#     三类形态不误报，同时「真重复混在续行之间」仍必须报出；
+# 2026-10-21：把「带 = / : 的缩进续行」也归入不误报的一类——这类形态在 cookie/长值
 #     折行里最常见，误报会吃掉「同一形态只报一次」的额度、把真重复淹没；
 #   · warn_duplicate_options 同一文件形态只落一条 warning（状态链每 10s 读一次配置，不去重
 #     会刷满日志），文件一改写就重新点名，缓存封顶后仍能点名；
@@ -104,7 +104,7 @@ def test_find_duplicate_options_accepts_colon_delimiter_and_ignores_case() -> No
 
 
 def test_find_duplicate_options_ignores_multiline_value_continuation_lines() -> None:
-    # L-17（2026-10-19）：缩进的续行会被 configparser 并入上一条键的值，它根本不是键。
+    # 2026-10-19：缩进的续行会被 configparser 并入上一条键的值，它根本不是键。
     # 旧实现先 strip 缩进再把整行当独立键统计，于是每份带多行值的配置都被点名成「重复配置项」
     # （两条续行文本相同即命中），虚假告警把真重复淹没。
     text = "[s]\nkey = 第一段\n    第二段 相同文本\nother = 1\n    第二段 相同文本\n"
@@ -118,7 +118,7 @@ def test_find_duplicate_options_ignores_multiline_value_continuation_lines() -> 
 
 
 def test_find_duplicate_options_ignores_indented_continuations_that_contain_delimiters() -> None:
-    # M-54 回归锁（2026-10-21）：上一条判据只放过了「整行不含 = / :」的续行，所以**带分隔符的
+    # 上一条判据只放过了「整行不含 = / :」的续行，所以**带分隔符的
     # 缩进续行**仍被当成独立键。config.ini 里最常见的正是这一形态——cookie / 多行脚本值折行后
     # 逐行形如 `   token=abc`，两行折行文本同名即被误报成「存在重复配置项」。
     # 误报的代价不是噪声而已：warn_duplicate_options 的「同一形态只点名一次」额度只有

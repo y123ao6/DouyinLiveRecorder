@@ -1,9 +1,9 @@
 # 校验 .agents/skills/ 下项目级 Skill 内容与 AGENTS.md 对应章节的一致性。
 #
 # 为什么需要单独一个检查：AGENTS.md「项目级 Skill」表是 Skill 与约束事实源之间的桥梁——
-#   Skill 展开操作步骤，AGENTS.md 保留硬约束摘要。两侧手动维护，漂移是常态（新增/删除 Skill
-#   忘改表、SKILL.md 引用的章节被重命名或删除、frontmatter name 与目录名不一致）。本脚本把
-#   「表与目录不一致 / 引用断链」从静默漂移升级为硬失败。
+#   Skill 展开操作步骤，AGENTS.md 保留硬约束摘要。两侧手动维护必然漂移（新增/删除 Skill 忘改表、
+#   引用的章节被改名或删除、frontmatter name 与目录名不一致），本脚本把「表与目录不一致 /
+#   引用断链」从静默漂移升级为硬失败。
 #
 # 检查项：
 #   1. AGENTS.md「项目级 Skill」表条目 → 目录与 SKILL.md 必须存在
@@ -110,7 +110,6 @@ def _extract_skill_referenced_sections(skill_md_text: str) -> list[str]:
     # 匹配模式：`AGENTS.md`「...」 或 `AGENTS.md` 的 "..." 章节引用
     refs: list[str] = []
     seen: set[str] = set()
-    # 中文书名号引用：AGENTS.md「已知坑 → xxx」或 AGENTS.md「xxx」
     for m in re.finditer(r"AGENTS\.md[`'」\s]*[「\"']([^」\"']+)[」\"']", skill_md_text):
         ref = m.group(1).strip()
         if ref not in seen:

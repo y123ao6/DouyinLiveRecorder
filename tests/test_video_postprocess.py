@@ -1,4 +1,4 @@
-# converts_mp4 半成品产物与超时放大回归（CODE_REVIEW_2026-09-20 的 MIN-04）。
+# converts_mp4 半成品产物与超时放大回归（CODE_REVIEW_2026-09-20 的）。
 #
 # 全部离线：ffmpeg 由 _run_ffmpeg_checked 的替身模拟，不启动真实进程。
 #

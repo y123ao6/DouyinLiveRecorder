@@ -3,8 +3,8 @@
 # 安装分支（Windows 下载→校验→解压→改名→PATH 注入→node -v 复核、Linux yum/apt、macOS brew）
 # 只在「真缺 node 的机器首次启动」时才跑，属典型的「平时代码不发版、一发版就没人验证」路径。
 # 补测的意义不是覆盖率本身，而是固化两条已被踩过的坑：
-#   1) CR-11：残缺 zip 缓存必须删除重下，否则错误哈希会被固化成基线 → 永久失败且不自愈；
-#   2) H-1：SHA256 基准不一致必须硬拒绝，且拒绝时要清掉坏包（否则下次仍读到它）。
+#   1) ：残缺 zip 缓存必须删除重下，否则错误哈希会被固化成基线 → 永久失败且不自愈；
+#   2) ：SHA256 基准不一致必须硬拒绝，且拒绝时要清掉坏包（否则下次仍读到它）。
 #
 # Mock 口径（与 tests/test_ffmpeg_install.py 一致）：
 #   - 只替换模块全局引用（requests / subprocess / distro / tqdm / execute_dir），绝不改 stdlib
@@ -33,7 +33,7 @@ PAGE_HTML_OK = "<html>download https://npmmirror.com/mirrors/node/v22.11.0/" "no
 NODE_ZIP_BASE = "node-v22.11.0-win-x64"
 
 
-# M-29 partial（CODE_REVIEW_2026-10-21）：生产侧三处 node 调用改为「先经 shutil.which 解析、
+# partial（CODE_REVIEW_2026-10-21）：生产侧三处 node 调用改为「先经 shutil.which 解析、
 # 按解析结果调用」。测试进程不得受「本机恰好装了 node」影响——which 会解析到本机绝对路径，
 # 使 cmd 断言（"node -v"）非自洽。默认桩原样返回裸名（与改动前实参形态一致）；
 # 「解析结果确实被采用」由 TestNodeBinaryResolution 单独覆盖。替身按 AGENTS 约定挂
@@ -85,7 +85,7 @@ class _FakeResponse:
         self.text = text
         self._content = content
         self.headers = headers or {}
-        # S-12②：生产代码改为按 iter_content 限长读取文档（不再用 response.text 整份物化），
+        # ②：生产代码改为按 iter_content 限长读取文档（不再用 response.text 整份物化），
         # 替身必须同形——真实 requests.Response 恒有 encoding，且 text 与 iter_content 同源。
         self.encoding = "utf-8"
 
@@ -101,7 +101,7 @@ class _FakeResponse:
             raise RuntimeError(f"HTTP {self.status_code}")
 
     def iter_content(self, chunk_size: int = 1024) -> Any:
-        # S-12②：只给了 text= 的替身（版本页/摘要文档用例）按 UTF-8 编码后分块产出，
+        # ②：只给了 text= 的替身（版本页/摘要文档用例）按 UTF-8 编码后分块产出，
         # 使「按 iter_content 限长读取」与「text 形态」在替身侧等价（真实 Response 亦然）。
         body = self._content if self._content else self.text.encode("utf-8")
         for i in range(0, len(body), chunk_size):
@@ -174,7 +174,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(node_install, "current_env_path", "C:\\fakebin")
     # monkeypatch 注册后会在用例结束整体还原，避免污染同进程后续用例。
     monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
-    # S-12：安装链路用例不涉及信任策略（官方清单在这些用例里本来就取不到），统一显式开 TOFU 开关，
+    # 安装链路用例不涉及信任策略（官方清单在这些用例里本来就取不到），统一显式开 TOFU 开关，
     # 使被测对象保持在「安装流程」而非「策略判定」；策略本身由 TestSkipOfficialDocPolicy 钉。
     monkeypatch.setenv(node_install._NODE_ALLOW_TOFU_ENV, "1")
     state: dict[str, Any] = {"calls": [], "tmp": tmp_path}
@@ -184,7 +184,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 class TestCheckOrRecordZipSha256:
     # trust-on-first-use 基准文件的四种形态：首次记录 / 重复比对 / 内容漂移 / 基准不可读。
     # 边界不可混：只有「基准存在且不一致」才硬拒，其余（缺基准/读不动/写不进）一律不阻断安装。
-    # S-12（CODE_REVIEW_2026-10-21）：TOFU 降级不再是默认行为——官方清单不可达且无历史基准时默认
+    # 2026-10-21：TOFU 降级不再是默认行为——官方清单不可达且无历史基准时默认
     # **拒绝安装**，必须显式设 DLR_NODE_ALLOW_TOFU=1。本类测的是 TOFU 机制本身，故统一开该开关；
     # 「默认拒绝」由 TestSkipOfficialDocPolicy 单独钉。
     @pytest.fixture(autouse=True)
@@ -361,7 +361,7 @@ class TestInstallNodejsWindows:
     def test_corrupt_cached_zip_is_deleted_and_redownloaded(
         self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # CR-11 回归锁：残缺缓存必须删掉重下，并把「新内容的哈希」而不是残缺内容的哈希记进基准。
+        # 残缺缓存必须删掉重下，并把「新内容的哈希」而不是残缺内容的哈希记进基准。
         tmp_path: Path = env["tmp"]
         cached = tmp_path / f"{NODE_ZIP_BASE}.zip"
         cached.write_bytes(b"\x50\x4b truncated")  # 有 zip 魔数但无 EOCD → is_valid_zip False
@@ -797,7 +797,7 @@ class TestNodeAuthorityVsTofu:
         assert not Path(str(zip_path) + node_install._NODE_HASH_SUFFIX).exists()
 
     def test_no_official_hash_keeps_tofu_and_warns(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # S-12③：TOFU 现在必须显式开启（默认拒绝安装）。开启后仍须留痕，且降级事件升为 error 级。
+        # ③：TOFU 现在必须显式开启（默认拒绝安装）。开启后仍须留痕，且降级事件升为 error 级。
         monkeypatch.setenv(node_install._NODE_ALLOW_TOFU_ENV, "1")
         captured: list[str] = []
         monkeypatch.setattr(node_install.logger, "error", lambda msg, *a, **k: captured.append(str(msg)))
@@ -811,7 +811,7 @@ class TestNodeAuthorityVsTofu:
     def test_no_official_hash_without_baseline_is_refused_by_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # S-12③ 正面判据：官方文档不可达 + 无历史基准（首次安装）→ 默认**拒绝安装**。
+        # ③ 正面判据：官方文档不可达 + 无历史基准（首次安装）→ 默认**拒绝安装**。
         # 原行为是「记录本次哈希为基线并返回 True」，等于把校验归零；攻击者只需让那 15s 探测失败。
         monkeypatch.delenv(node_install._NODE_ALLOW_TOFU_ENV, raising=False)
         zip_path = tmp_path / ZIP_NAME
@@ -904,7 +904,7 @@ class TestNodeOfficialAuthorityWiring:
     def test_unreachable_doc_with_opt_in_installs_via_tofu(
         self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # S-12③：显式设 DLR_NODE_ALLOW_TOFU=1 才允许「官方文档不可达 → TOFU 安装」。
+        # ③：显式设 DLR_NODE_ALLOW_TOFU=1 才允许「官方文档不可达 → TOFU 安装」。
         # 这条路径必须仍可用：境外网络受限时 nodejs.org 常不可达，用户显式放行后应能装成功。
         tmp_path: Path = env["tmp"]
         payload = _make_node_zip()
@@ -919,7 +919,7 @@ class TestNodeOfficialAuthorityWiring:
     def test_unreachable_doc_without_opt_in_refuses_install(
         self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # S-12③ 的正面判据：默认拒绝。攻击模型是「让那 15s 探测失败」即可把校验降级归零，
+        # ③ 的正面判据：默认拒绝。攻击模型是「让那 15s 探测失败」即可把校验降级归零，
         # 故「不可达」必须是拒绝安装而不是静默降级；想装的人显式设开关（上一条用例覆盖）。
         tmp_path: Path = env["tmp"]
         payload = _make_node_zip()
@@ -930,7 +930,7 @@ class TestNodeOfficialAuthorityWiring:
 
 
 # ==========================================================================
-# S-12 残余（CODE_REVIEW_2026-10-21）：文档限长读覆盖版本页 + 半份 zip 清理归位
+# 残余（CODE_REVIEW_2026-10-21）：文档限长读覆盖版本页 + 半份 zip 清理归位
 # ==========================================================================
 class TestSmallDocumentReadCap:
     # 原 2MB 上限判据只接在 SHA256 文档一侧，npmmirror 版本页仍走 response.text 整份物化。
@@ -974,10 +974,10 @@ class TestSmallDocumentReadCap:
 
 
 class TestWindowsPartialZipCleanup:
-    # S-12 残余：承诺的「不完整 zip 必须删掉」原先落在 install_nodejs_centos 的
+    # 残余：承诺的「不完整 zip 必须删掉」原先落在 install_nodejs_centos 的
     # locals().get("zip_file_path")（yum 路径无此变量、恒 None 的死代码），而真正写 zip 的
     # install_nodejs_windows 的 except 只记日志。清理归位后：超限中断与半途断流两种形态都
-    # 不得把半份文件留在 execute_dir 等下次被 is_valid_zip 当缓存复用（CR-11 同型）。
+    # 不得把半份文件留在 execute_dir 等下次被 is_valid_zip 当缓存复用（该同型）。
 
     def test_centos_handler_no_longer_carries_the_dead_zip_cleanup(self) -> None:
         # 反向见证：centos 分支里不得再出现 locals() 死代码——「清理只有一处、且在写 zip 的那侧」。
@@ -1115,7 +1115,7 @@ class TestWindowsPartialZipCleanup:
 
 
 # ==========================================================================
-# M-29 partial（CODE_REVIEW_2026-10-21）：node 复核调用必须先解析绝对路径
+# partial（CODE_REVIEW_2026-10-21）：node 复核调用必须先解析绝对路径
 # ==========================================================================
 # execute_dir\node 是用户可写目录，裸名 "node" 依赖 PATH 的延迟解析。本轮只做有界的一半：
 # 三处调用（改名分支复核 / 已有目录复核 / check_nodejs_installed）一律先 shutil.which 解析一次、

@@ -2,9 +2,9 @@
 # src.recorder_status 单元测试（离线，不依赖网络/真实控制台）。
 #
 # 覆盖两条与并发/守护线程节拍相关的回归锁：
-#   - SEV-01 显示侧：控制台「同一时间访问网络的线程数」取自适应**容量**（上限本身），
+#   - 该显示侧：控制台「同一时间访问网络的线程数」取自适应**容量**（上限本身），
 #     而不是空闲槽数——有房间持槽时二者必然不同，显示空闲数同样误导。
-#   - MID-31：display_info 守护线程的异常路径必须有休眠且按连续失败退避；
+#   - ：display_info 守护线程的异常路径必须有休眠且按连续失败退避；
 #     无控制台环境（sys.stdout is None，见 AGENTS「无控制台环境」条目）下不得进 try 刷异常。
 #
 # 注：recorder_status 在模块导入期即 `import main`，故本文件的用例都必须先实例化 main_mod。
@@ -146,7 +146,7 @@ def test_live_network_capacity_reads_capacity_not_free_slots(
 def test_display_info_body_always_raising_still_sleeps_every_iteration(
     status_mod: Any, main_mod: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # MID-31 核心：整个循环唯一的 sleep 曾位于 try 体内、紧跟 flush 之后，flush 自身抛错即跳过它
+    # 核心：整个循环唯一的 sleep 曾位于 try 体内、紧跟 flush 之后，flush 自身抛错即跳过它
     # → 零间隔重入 → 单核跑满 + 日志洪水。修复后休眠在 try 之外，且异常按连续次数退避。
     recorder = _RecordingLogger()
     stdout = _BrokenStdout(max_attempts=8)

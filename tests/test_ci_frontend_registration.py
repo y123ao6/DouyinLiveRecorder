@@ -1,6 +1,6 @@
 # ci.yml「Gate frontend tests not skipped」的 node-id 清单 ↔ `tests/frontend/*.mjs` 的完备性回归锁。
 #
-# 治理症状（M-28）：`node --test <文件>` 只跑被点名的那一个文件、不会顺带发现同级其他 `.mjs`，
+# 治理症状：`node --test <文件>` 只跑被点名的那一个文件、不会顺带发现同级其他 `.mjs`，
 # 于是不进清单就等于该文件的全部回归锁在正常 CI 中从不执行，CI 依旧全绿。这条约束原先只有
 # AGENTS.md 的文字与 `scripts/agent_hook_guard.py` 的 PostToolUse 规则两处载体；后者在 `.qoder/`
 # 本地工具目录（不随仓库分发、不得进镜像），对其它贡献者与 CI 本身都不成立，漏登记仍会漂回仓库。
@@ -107,7 +107,7 @@ def _frontend_cases() -> list[str]:
 
 
 def _wrapper_tree(wrapper_rel: str) -> ast.Module:
-    # 走 AST 而不是全文正则：这些包装的**头注释**会提到别的用例本体的名字（M-28 的成因叙述就在注释里），
+    # 走 AST 而不是全文正则：这些包装的**头注释**会提到别的用例本体的名字（该成因叙述就在注释里），
     # 全文匹配会把注释里的名字也算成引用，于是「漏登记」能被一段历史说明掩盖掉——判据就此空转。
     wrapper = ROOT / wrapper_rel
     assert wrapper.is_file(), f"清单点名的包装不存在：{wrapper_rel}（入口悬空，CI 该步会以收集错误收场）"
@@ -126,7 +126,7 @@ def _case_refs_of(tree: ast.Module) -> set[str]:
 
 
 def _registered_case_names() -> set[str]:
-    # 并集只来自**已登记**的包装：写了 .py 包装却不进 ci.yml，等于该用例本体仍未闭合（M-28 原症状）。
+    # 并集只来自**已登记**的包装：写了 .py 包装却不进 ci.yml，等于该用例本体仍未闭合（该原症状）。
     registered: set[str] = set()
     for node_id in _registered_node_ids():
         registered |= _case_refs_of(_wrapper_tree(node_id.partition("::")[0]))

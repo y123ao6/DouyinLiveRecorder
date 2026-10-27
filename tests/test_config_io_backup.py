@@ -18,7 +18,7 @@ from src.config_io import backup_file  # noqa: E402
 
 
 def _os_shim(**overrides: Any) -> types.SimpleNamespace:
-    # M-27：不得 `monkeypatch.setattr(os, "remove", 替身)`——monkeypatch 解析到的是**全进程唯一**
+    # 不得 `monkeypatch.setattr(os, "remove", 替身)`——monkeypatch 解析到的是**全进程唯一**
     # 的 os 模块本体，替身窗口内 loguru 的轮转删除、其他后台线程的重命名会一并被换成 no-op
     # （本文件的删除替身正是「只记账不删除」）。仓内约定：浅拷贝一份命名空间，只替换需要的
     # 1~2 个属性，再把替身绑到**被测模块自己的 os 引用**上（其余属性仍是真实现）。
@@ -53,7 +53,7 @@ def test_rotation_deletes_excess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     real_remove = os.remove
     # 只替换 config_io 命名空间里的 os.remove，进程其余部分（loguru / 其他后台线程）不受影响
     monkeypatch.setattr(config_io, "os", _os_shim(remove=lambda p: calls.append(p)))
-    # M-27 回归锁：替身必须只落在被测模块的命名空间里。恢复成 `setattr(os, "remove", ...)`
+    # 替身必须只落在被测模块的命名空间里。恢复成 `setattr(os, "remove", ...)`
     # （全进程唯一 os 本体）时，紧跟着这一行就会变红。
     assert os.remove is real_remove
 
@@ -82,7 +82,7 @@ def test_rotation_delete_failure_is_best_effort(tmp_path: Path, monkeypatch: pyt
         calls.append(p)
         _raise()
 
-    # M-27：同样只替换 config_io 命名空间的 os.remove——本用例要的正是「删除抛 OSError」这一条
+    # 同样只替换 config_io 命名空间的 os.remove——本用例要的正是「删除抛 OSError」这一条
     # 分支，替身挂在被测模块上即可精确命中，不会把全进程的删除都变成抛异常。
     real_remove = os.remove
     monkeypatch.setattr(config_io, "os", _os_shim(remove=_remove_and_raise))
@@ -114,7 +114,7 @@ def _raise() -> None:
     raise OSError("windows-sandbox-recycle-bin-unavailable")
 
 
-# ---- MID-N57 回归锁：备份脱敏必须与面板侧 read_config_safe（web_config CR-10）同口径双判据
+# ---- MID-N57 回归锁：备份脱敏必须与面板侧 read_config_safe（web_config ）同口径双判据
 # 「键名/节命中 **或** 值本身形如凭据」。本组用例走 backup_file 端到端（真实 _redact_ini_secrets
 # 路径，不打桩），仅用 tmp_path 隔离落盘位置。
 
@@ -148,7 +148,7 @@ def test_backup_masks_value_shaped_secret_with_benign_key(tmp_path: Path, monkey
 
 def test_backup_keeps_ordinary_values_verbatim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # 反向对照：拒绝面不得扩成「什么都不写」——普通文本、无凭据形态的 URL、空值
-    # 都必须原样保留（备份仍可用于对照排查，这是 CR-07 的设计前提）。
+    # 都必须原样保留（备份仍可用于对照排查，这是该设计前提）。
     text = _make_backup(
         tmp_path,
         monkeypatch,

@@ -59,7 +59,7 @@ class DanmakuPage(QWidget):
         stats_row.setContentsMargins(8, 8, 8, 8)
         # 三块统计标题是构建期定型的静态标签，必须走 set_text + T() 登记（构造标签与登记键
         # 同一 msgid），retranslate_all() 才按当前语言回填；数值面（set_value）是运行态、不进登记。
-        # [历史注] 原只在建时 tr() 一次，切语言后停在旧语言（M-14，2026-10-18）。
+        # [历史注] 原只在建时 tr() 一次，切语言后停在旧语言。
         self.stat_rooms = StatTile(i18n.tr("监控房间"))
         set_text(self.stat_rooms.title, T("监控房间"))
         self.stat_connected = StatTile(i18n.tr("已连接"))
@@ -94,7 +94,7 @@ class DanmakuPage(QWidget):
             i18n.tr("暂无弹幕监控数据"),
             i18n.tr("启动录制并在 config.ini 开启「是否弹幕监控(是/否)」后，支持弹幕的平台将显示实时弹幕"),
         )
-        # 空态标题/描述是构建期定型的静态标签（M-14）：登记进重译表，切语言后回填。
+        # 空态标题/描述是构建期定型的静态标签：登记进重译表，切语言后回填。
         set_text(self.empty.title, T("暂无弹幕监控数据"))
         set_text(
             self.empty.description,
@@ -122,7 +122,7 @@ class DanmakuPage(QWidget):
         self.filter_combo.currentTextChanged.connect(self._on_filter_changed)
         head_row.addWidget(self.filter_combo)
         self.clear_btn = action_button(i18n.tr("清空"))
-        # 按钮文案是静态标签：登记重译（M-14），构造标签与登记键同一 msgid。
+        # 按钮文案是静态标签：登记重译，构造标签与登记键同一 msgid。
         set_text(self.clear_btn, T("清空"))
         head_row.addWidget(self.clear_btn)
         stream_body.addLayout(head_row)
@@ -145,7 +145,7 @@ class DanmakuPage(QWidget):
         connect_click(self.clear_btn, on_clear)
 
     def retranslate_runtime(self) -> None:
-        # 语言切换后的运行态重刷（M-14）：表头、「已连接/已断开」单元格与「全部房间」哨兵
+        # 语言切换后的运行态重刷：表头、「已连接/已断开」单元格与「全部房间」哨兵
         # 都在产生点 tr()，但 _refresh_stats 对行内容等值时短路返回，数据不变时旧语言原地常驻。
         # 清掉缓存强制整表重画：_sync_filter_options 会把旧语言哨兵换成新形态，选中的具体
         # 房间名（不译数据）原样保留；弹幕流行内标签（[礼物] 等）同在产生点 tr()，一并重绘。
@@ -236,7 +236,7 @@ class DanmakuPage(QWidget):
 
     # 筛选下拉：房间列表变化时刷新选项；当前选择失效（房间已移除）回落到「全部房间」，
     # 且必须同步 _filter —— 否则界面显示「全部房间」而弹幕流被一个已不存在的房间名滤空，
-    # 且用户无法自愈（重新选一次才恢复），这是 2026-09-12 审查 6.2 记过的故障形态。
+    # 且用户无法自愈（重新选一次才恢复），这是此前审查记过的故障形态。
     def _sync_filter_options(self, room_names: list[str]) -> None:
         all_label = i18n.tr("全部房间")
         wanted = [all_label, *room_names]

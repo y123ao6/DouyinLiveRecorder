@@ -1,12 +1,12 @@
 # src/utils.py 两个兜底装饰器「返回契约 → 装饰器配对」与「装饰器贴 def」的全仓 AST 回归锁。
 #
-# 背景（SEV-07 / CR-12 建议④ / MID-68、MID-69）：
+# 背景（ / 该建议④ /）：
 #   - trace_error_decorator 的失败兜底值是 {"is_live": False}，只适用于**返回 dict** 的平台函数；
 #     返回 str/tuple/OptionalStr 的函数误挂它时，故障值是个恒真的 dict——元组解包抛 ValueError
 #     被调用方装饰器二次吞没（login_popkontv 形态），或 dict 被当成 Cookie 写进请求头
 #     （login_twitcasting 形态），用户可动作的错误提示彻底丢失、表现为静默「未开播」。
 #   - Python 允许 @decorator 与 def 之间夹注释行，装饰器仍绑到**紧随其后的那个 def**——一旦把
-#     说明性注释插在两者之间，装饰器就绑到下一个函数上（haixiu 事故形态，CR-12）。
+#     说明性注释插在两者之间，装饰器就绑到下一个函数上（haixiu 事故形态）。
 # 两条不变量只有静态扫全仓才能在「新增平台函数」的当下拦住，故收敛为本文件：
 #   ① 返回注解含 dict → 必须 trace_error_decorator；注解为 str/tuple/其他 → 必须
 #      trace_error_decorator_or_none（无注解不判）；
@@ -98,9 +98,9 @@ def _is_dict_annotation(node: Union[ast.expr, None], aliases: dict[str, ast.expr
 
 def test_trace_error_decorator_contract_across_repo() -> None:
     violations: list[str] = []
-    # MID-2262（2026-09-23）：本用例原本是「扫到了多少」零见证的纯遍历——两个 `except …: continue`
+    # 2026-09-23：本用例原本是「扫到了多少」零见证的纯遍历——两个 `except …: continue`
     # 让出问题的文件静默出局，且只断言 violations 为空，于是给两个装饰器改名（含全部调用点）会让
-    # 扫描命中数归零、violations 恒空、门禁全绿而 CR-12 的两条防线同时消失。现固定三件见证：
+    # 扫描命中数归零、violations 恒空、门禁全绿而该两条防线同时消失。现固定三件见证：
     # 扫描文件数、命中装饰器的函数数、未能读取/解析的文件数。阈值取现实测值的保守下界
     # （2026-09-23 实测：文件 >150、装饰函数 86），放宽不误红，收紧到「扫不到东西」时才红。
     unscanned: list[str] = []

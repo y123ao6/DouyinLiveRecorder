@@ -5,7 +5,7 @@
 # 运行期产物目录），裸名按子串匹配会把 .../pages/logs.py 从无参 mypy 的扫描面里静默剔除。
 #
 # 行上限由 widgets.TerminalText 的 maximumBlockCount(1000) 承担：Qt 在 append 时自动
-# 从文档头裁旧块；改由 Qt 托管是因为旧 tkinter 版「每次插入后算行号再 delete」每批都要
+# 从文档头裁旧块。改由 Qt 托管的理由：旧写法「每次插入后算行号再 delete」每批都要
 # 一次全文行号换算，ffmpeg 刷屏时肉眼可见地拖慢。
 from __future__ import annotations
 
@@ -62,6 +62,6 @@ class LogsPage(QWidget):
 
     def apply_palette(self, palette: Palette) -> None:
         # 终端色是固定的一套 token，主题切换后让既有高亮器按新色重刷当前与后续的行。
-        # 高亮器由 TerminalText 单实例复用、只更新色表 + rehighlight：每次新建会挂同一
-        # document 而旧实例不销毁（CODE_REVIEW_2026-10-18 M-16 的泄漏本体）。
+        # 高亮器由 TerminalText 单实例复用、只更新色表 + rehighlight（叠实例的后果见
+        # widgets._LogHighlighter.set_palette 注释）。
         self.terminal.apply_highlighter(palette)

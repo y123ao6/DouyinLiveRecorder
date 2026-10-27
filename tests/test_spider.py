@@ -37,9 +37,8 @@ from src.spider import (
 
 class TestGetStrResponse:
     # _get_str_response：归一化 async_req 返回值（str / (body, headers) 元组 / None → 一律取字符串）。
-
-    # _get_str_response 是 async_req 返回值的归一化入口：真实请求可能返回纯文本，也可能返回
-    # (响应体, 响应头) 元组（主流程靠元组透传 cookie）。下游一律按字符串处理，故须统一抽取。
+    # 真实请求可能返回纯文本，也可能返回 (响应体, 响应头) 元组（主流程靠元组透传 cookie）；
+    # 下游一律按字符串处理，故须统一抽取首元素。
 
     def test_str_input(self) -> None:
         # 已是字符串：原样返回，不二次包装
@@ -60,9 +59,7 @@ class TestGetStrResponse:
 
 class TestLoadsDict:
     # _loads_dict：容错 JSON 解析，失败或非 dict 一律回 {}。
-
-    # _loads_dict 是「解析优先、失败即空 dict」的容错解析器。下游普遍依赖
-    # "解析失败 => {}" 不变量来跳过脏数据，而非区分"无数据"与"解析异常"。
+    # 下游普遍依赖「解析失败 => {}」不变量来跳过脏数据，而非区分"无数据"与"解析异常"。
 
     def test_valid_json(self) -> None:
         # 标准 JSON 对象原样解析
@@ -78,11 +75,10 @@ class TestLoadsDict:
         assert _loads_dict("[1,2,3]") == {}
 
     def test_invalid_json(self) -> None:
-        # CR-12 修复后语义：非法 JSON（WAF 拦截页 / 302 落地 HTML / 截断 JSON）返回 {}
-        # 而非上抛。旧测试断言「必须抛 JSONDecodeError」，锁定的正是导致「明明在播却
-        # 持续漏录」的错误前提——该函数注释承诺的就是「非 JSON 一律回 {}」，
-        # 且外围 @trace_error_decorator 会把抛出的异常吞成 {"is_live": False}，
-        # 与返回 {} 的最终表现一致、却丢掉了一切日志线索。此处对齐正确设计语义。
+        # 非法 JSON（WAF 拦截页 / 302 落地 HTML / 截断 JSON）返回 {} 而非上抛：外围
+        # @trace_error_decorator 会把抛出的异常吞成 {"is_live": False}，与 {} 的最终表现一致、
+        # 却丢掉一切日志线索。[历史注] 旧用例断言「必须抛 JSONDecodeError」，锁的正是导致
+        # 「明明在播却持续漏录」的错误前提。
         assert _loads_dict("not json") == {}
         assert _loads_dict("<html><body>403</body></html>") == {}
         assert _loads_dict('{"a": 1') == {}
@@ -121,7 +117,6 @@ class TestExtractDouyinHevcFlvUrl:
         assert extract_douyin_hevc_flv_url(html) is None
 
     def test_empty_html(self) -> None:
-        # 异常路径：空HTML返回None。
         assert extract_douyin_hevc_flv_url("") is None
 
 
@@ -150,8 +145,7 @@ class TestGetDouyinWebStreamData:
             }
         )
         # 抖音 web API 的 room.status 字段：2=直播中、4=未开播（见 test_custom_cookies_used）。
-        # async_req 的 side_effect 顺序即 fetch 顺序：[API 响应, HEVC HTML]，本例两调都命中。
-        # 第二次请求（获取 HEVC FLV URL 的 HTML）
+        # async_req 的 side_effect 顺序即 fetch 顺序：[API 响应, HEVC HTML（第二次请求）]，本例两调都命中。
         html_response = "<html>no hevc stream</html>"
 
         with (
@@ -166,13 +160,12 @@ class TestGetDouyinWebStreamData:
 
     @pytest.mark.asyncio
     async def test_api_empty_response_fallback_html(self) -> None:
-        # 异常路径：API两次返回空响应，回退到HTML抓取成功。
+        # API 两次返回空响应 → 走 HTML 回退分支（回退是否命中正则不锁，见函数末尾断言）。
         html_with_data = (
             '{"state":1}\\"roomStore\\":{\\"roomInfo\\":{\\"room\\":{\\"status\\":2,'
             '\\"title\\":\\"测试\\",\\"stream_url\\":{\\"hls_pull_url_map\\":{},\\"flv_pull_url\\":{}}}},'
             '\\"has_commerce_goods\\"'
         )
-        # 构造一个能被正则匹配的HTML
         valid_html = (
             '<script nonce="abc">self.__pace_f.push([1,"{\\"state\\":1,'
             '\\"roomStore\\":{\\"roomInfo\\":{\\"room\\":{\\"status\\":2,'
@@ -357,14 +350,14 @@ class TestGetParams:
 class TestMd5:
     # md5：计算签名用的 MD5 摘要。
 
-    # md5 用于签名参数（如快手/抖音请求体）。断言钉死标准 MD5 摘要值，防止算法被误改。
+    # 断言钉死标准 MD5 摘要值（快手/抖音请求体签名参数用它），防止算法被误改。
 
     def test_known_hash(self) -> None:
         # 经典向量 MD5("hello")：跨实现一致，作为回归锚点
         assert md5("hello") == "5d41402abc4b2a76b9719d911017c592"
 
     def test_empty_string(self) -> None:
-        # 空串摘要固定为全零初值，验证边界不影响下游拼接
+        # 空串摘要是与输入无关的定值，验证边界不影响下游拼接
         assert md5("") == "d41d8cd98f00b204e9800998ecf8427e"
 
     def test_deterministic(self) -> None:
@@ -394,14 +387,12 @@ class TestGetPlayUrlList:
 
     @pytest.mark.asyncio
     async def test_empty_response(self) -> None:
-        # 空响应返回空列表.
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=""):
             result = await get_play_url_list("https://example.com/master.m3u8")
             assert result == []
 
     @pytest.mark.asyncio
     async def test_non_string_response(self) -> None:
-        # 非字符串响应返回空列表.
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value={"error": "bad"}):
             result = await get_play_url_list("https://example.com/master.m3u8")
             assert result == []
@@ -420,9 +411,10 @@ class TestGetPlayUrlList:
 
     @pytest.mark.asyncio
     async def test_mixed_absolute_and_relative_keeps_all_qualities(self) -> None:
-        # S-16 续修回归锁：混合清单里只要出现 ≥1 条绝对行，此前会把相对 .m3u8 行整条丢弃，
-        # 上层回退单地址（用户侧「画质下拉只有一项」）。修复后绝对行与相对行同权、全部收齐，
-        # 且相对行一律 urljoin 绝对化（不得留无 host 的裸相对路径给 ffmpeg）。
+        # 混合清单里绝对行与相对行同权、全部收齐，且相对行一律 urljoin 绝对化
+        # （不得留无 host 的裸相对路径给 ffmpeg）。
+        # [历史注] 该续修回归锁：旧判据只要出现 ≥1 条绝对行就丢掉全部相对 .m3u8 行，
+        # 上层回退单地址（用户侧「画质下拉只有一项」）。
         m3u8_content = (
             "#EXTM3U\n"
             "#EXT-X-STREAM-INF:BANDWIDTH=1000000\n"
@@ -442,9 +434,9 @@ class TestGetPlayUrlList:
 
     @pytest.mark.asyncio
     async def test_relative_m3u8_with_query_token_survives_mixed(self) -> None:
-        # S-16 续修回归锁：混合清单中的带查询串相对行（x.m3u8?token=）必须既不被丢弃、又保留 query。
-        # 判据用 urlparse().path.endswith(".m3u8")（token 落 query，不影响 path 命中），
-        # urljoin 后 token 仍在——若退回旧的 endswith("m3u8") 字面判据该整行会被丢。
+        # 混合清单中的带查询串相对行（x.m3u8?token=）既不被丢弃、又保留 query：判据用
+        # urlparse().path.endswith(".m3u8")（token 落 query，不影响 path 命中），urljoin 后 token 仍在。
+        # [历史注] 该续修回归锁：退回旧的 endswith("m3u8") 字面判据会把该整行丢掉。
         m3u8_content = "#EXTM3U\nhttps://cdn.example.com/abs.m3u8\nseg/x.m3u8?token=abc123\n"
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=m3u8_content):
             result = await get_play_url_list("https://origin.example.com/live/master.m3u8")
@@ -462,7 +454,7 @@ class TestGetPlayUrlList:
 
 
 class TestKuaishouStreamData:
-    # get_kuaishou_stream_data：快手直播数据解析。
+    # 2026-10-19：get_kuaishou_stream_data：快手直播数据解析。
 
     @pytest.mark.asyncio
     async def test_network_error_returns_not_live(self) -> None:
@@ -522,7 +514,6 @@ class TestDouyuInfoData:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # 未开播状态.
         betard_response = json.dumps(
             {
                 "room": {
@@ -684,10 +675,9 @@ class TestBilibiliStreamData:
             assert result is None
 
 
-# ─── WP-A（2026-09-29）：src/spider.py 安全收口回归锁 ──────────────────────
-# 覆盖 docs/worklog/CODE_REVIEW_2026-09-29_2.md 的 M-3 / M-4 / M-8 / M-9 / M-10。
-# S-1（Shopee 落地页域族白名单 + 凭据收口 + api_host 闸）单独落在
-# tests/test_shopee_landing_guard.py。
+# ─── src/spider.py 安全收口回归锁 ────────────────────────────────────────────
+# 覆盖 docs/worklog/CODE_REVIEW_2026-09-29_2.md 的 / / / / ；
+# （Shopee 落地页域族白名单 + 凭据收口 + api_host 闸）单独落在 tests/test_shopee_landing_guard.py。
 # 共同约定：一律 monkeypatch.setattr（自动还原、进程内不留桩），替身只打**网络层**与
 # 被委托的凭据拉取；脱敏判据、出口一致性、异常类型匹配、anchor_name 类型契约全部走真实代码，
 # 否则就是「测试里重新实现被测逻辑」的假绿（AGENTS「测试不得自实现被测逻辑」条）。
@@ -726,8 +716,8 @@ class _LogSpy:
         self._record("error", message)
 
     def exception(self, message: object, *args: object, **kwargs: object) -> None:
-        # S-10（CODE_REVIEW_2026-10-21）：抖音最外层兜底改走 logger.exception 留栈，
-        # 替身必须同形实现——只加方法、不重做级别分档（语义仍是被测方决定的）。
+        # 2026-10-21：抖音最外层兜底走 logger.exception 留栈，替身必须同形实现——
+        # 只加方法、不重做级别分档（语义仍是被测方决定的）。
         self._record("exception", message)
 
     def critical(self, message: object, *args: object, **kwargs: object) -> None:
@@ -740,7 +730,7 @@ class _LogSpy:
 
 
 class TestM3RoomPasswordNotInErrorPaths:
-    # M-3：私有房密码挂在 ?pwd= 上（pwd 在 utils._SECRET_KEYS 表内），而
+    # 私有房密码挂在 ?pwd= 上（pwd 在 utils._SECRET_KEYS 表内），而
     # @trace_error_decorator 落日志时对异常原文零脱敏（见 utils._make_trace_error_guard），
     # 受限房每轮都会把明文密码写进轮转日志。判据是「值确实消失」，不是「调用了脱敏函数」。
 
@@ -843,7 +833,7 @@ class TestM3RoomPasswordNotInErrorPaths:
 
 
 class TestM4PopkontvLoginErrorMasking:
-    # M-4：login_popkontv 是全文件唯一**绕过 async_req** 的生产 httpx 请求，
+    # login_popkontv 是全文件唯一**绕过 async_req** 的生产 httpx 请求，
     # 因此拿不到 async_http 那条「异常文本一律过 mask_credentials」的现成防线。
     # httpx/urllib3 的代理异常原文里内嵌含 user:pass@ 的代理 URL。
 
@@ -887,10 +877,9 @@ class TestM4PopkontvLoginErrorMasking:
 
 
 class TestM12ProxyCredentialMaskedInPlatformErrorLogs:
-    # M-12（2026-10-20 续修）：get_flextv_stream_data / login_twitcasting 的 except 分支把 str(e)
-    # 直接拼进 logger.error，而 httpx/urllib 的连接·代理异常原文内嵌含 user:pass@ 的代理 URL，
-    # logger.error 直落轮转日志（logs/ 多份＝凭据长期落盘）。判据是「口令值确实消失」，
-    # **不是**「调用了 mask_credentials」（同 TestM4PopkontvLoginErrorMasking 口径）。
+    # 续修：get_flextv_stream_data / login_twitcasting 的 except 分支把 str(e) 直接拼进
+    # logger.error，而 httpx/urllib 的连接·代理异常原文内嵌含 user:pass@ 的代理 URL，logger.error
+    # 直落轮转日志（logs/ 多份＝凭据长期落盘）。判据同 TestM3RoomPasswordNotInErrorPaths：值确实消失。
     # 两处刻意保留原字符串拼接形态与原 msgid 文本，故脱敏后仍能在日志里看到整句话。
 
     _PROXY_BOOM_MSG = "Cannot connect to proxy http://proxyuser:SECRETPW@proxy.internal:3128"
@@ -939,8 +928,8 @@ class TestM12ProxyCredentialMaskedInPlatformErrorLogs:
 
 
 class TestM8ProxyScopedCredentialCaches:
-    # M-8：进程级凭据快路此前只判「非空 + TTL」，不判 proxy → 代理 A 取到的设备标识
-    # 在有效期内被代理 B 的房间复用（同 src/ttwid.py 的 MIN-2220 已修形态）。
+    # 进程级凭据快路须同判 proxy——只判「非空 + TTL」时，代理 A 取到的设备标识会在有效期内
+    # 被代理 B 的房间复用（同 src/ttwid.py 已修形态）。
 
     def test_kuaishou_did_fast_path_requires_same_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sp, "_cached_kuaishou_did", "did=A")
@@ -952,7 +941,7 @@ class TestM8ProxyScopedCredentialCaches:
         assert sp._take_cached_kuaishou_did(None) == ""
 
     def test_kuaishou_did_fast_path_keeps_ttl_semantics(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MID-33 的两条既有语义不得被本轮改动带走：陈旧即弃、外部注入（ts==0）按有效。
+        # 两条既有语义不得被本轮改动带走：陈旧即弃、外部注入（ts==0）按有效。
         monkeypatch.setattr(sp, "_cached_kuaishou_did", "did=A")
         monkeypatch.setattr(sp, "_cached_kuaishou_did_proxy", "")
         monkeypatch.setattr(sp, "_cached_kuaishou_did_ts", time.monotonic() - 4000.0)
@@ -980,7 +969,7 @@ class TestM8ProxyScopedCredentialCaches:
 
     @pytest.mark.asyncio
     async def test_kuaishou_did_failure_does_not_leak_other_proxy_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 失败分支是第二条泄漏路径：本轮没拿到新值时，旧实现会把全局（属于别出口）直接递出去。
+        # 失败分支是第二条泄漏路径：本轮没取到新值时只能回空串，不得把全局（属别出口）的值直接递出去。
         async def dead_fetch(**kwargs: object) -> dict[str, str]:
             return {}
 
@@ -1041,7 +1030,7 @@ class TestM8ProxyScopedCredentialCaches:
 
 
 class TestM9AnchorNameNeverNone:
-    # M-9：dict.get("nickname")/.get("nick")/.get("name","") 只挡「键缺失」，平台显式返回 null
+    # dict.get("nickname")/.get("nick")/.get("name","") 只挡「键缺失」，平台显式返回 null
     # 时得到 None 入结果 dict，下游 clean_name(None) 当场 AttributeError（stream_select.py），
     # 整轮解析被兜成「获取失败」。文件内新代码统一 _dig_str，这几处是漏网点。
 
@@ -1073,7 +1062,7 @@ class TestM9AnchorNameNeverNone:
 
     @pytest.mark.asyncio
     async def test_huya_app_null_nick_yields_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 房间号必须是纯数字尾段（字母号会先进反查分支、非数字直接早抛，见 MIN-2201）。
+        # 房间号必须是纯数字尾段（字母号会先进反查分支、非数字直接早抛，见上文）。
         body = '{"data": {"profileInfo": {"nick": null}, "realLiveStatus": "OFF"}}'
         monkeypatch.setattr(sp, "async_req", AsyncMock(return_value=body))
         monkeypatch.setattr(sp, "logger", _LogSpy())
@@ -1118,12 +1107,11 @@ class TestM9AnchorNameNeverNone:
 
 
 class TestTwitCastingParseFailureLoginFallback:
-    # M-10（回归锁，src/spider.py 的 except AttributeError, ValueError 分支）：
+    # （src/spider.py 的 except AttributeError, ValueError 分支；类名被该处注释引用）：
     # get_data 在四个正则任一未命中时**显式** raise ValueError("Failed to parse page data")，
-    # 而受限房的登录回退此前只接 AttributeError → 注释承诺的「解析失败→登录重试」是死分支，
-    # 页面改版/成人房一律判未开播、登录态永远用不上。
-    # 用「首次 ValueError → 登录 → 二次成功」证明该捕获真被走到；把 ValueError 从 except 里
-    # 删掉即变红（装饰器会把 ValueError 吞成 {"is_live": False}，login 一次也不会调用）。
+    # 受限房的登录回退须一并接住 ValueError——只接 AttributeError 时「解析失败→登录重试」是死分支，
+    # 页面改版/成人房一律判未开播、登录态永远用不上。用例走「首次 ValueError → 登录 → 二次成功」
+    # 证明捕获真被走到：把 ValueError 从 except 删掉即变红（装饰器会吞成 {"is_live": False}，login 一次也不调）。
 
     _GOOD_HTML = (
         # 四个正则的共同现场（模式串见 src/spider.py::get_twitcasting_stream_url 的 get_data）：
@@ -1179,10 +1167,9 @@ class TestTwitCastingParseFailureLoginFallback:
 
 
 class TestL09KuaishouEidExtraction:
-    # L-09（2026-10-19，CODE_REVIEW_2026-10-18）：get_kuaishou_stream_data2 备用接口的 eid 此前用
-    # `url.split("/u/")[1].strip()` 取「/u/ 之后的**整串**」，分享链接常见的 ?from=…/&shareToken=…/#…
-    # 会被一并拼进 eid → byUser 接口只回「房间不存在」这类误导性结果，且 anchor_name 为空还会
-    # 再走一遍网页路径（重复解析）。现与 extract_douyu_room_id 的既有教训同口径：urlsplit 取路径段。
+    # eid 必须取 urlsplit 后的「/u/ 路径段」（与 extract_douyu_room_id 同口径）——query/fragment
+    # 不得进 eid，否则 byUser 只回「房间不存在」这类误导性结果、且 anchor_name 为空会再走一遍网页路径。
+    # [历史注] 旧实现 `url.split("/u/")[1].strip()` 取的是 /u/ 之后的整串。
 
     @pytest.mark.parametrize(
         ("url", "expected"),
@@ -1232,11 +1219,10 @@ class TestL09KuaishouEidExtraction:
 
 
 class TestL08BiliBuvidNeverLoggedInClear:
-    # L-08（2026-10-19，CODE_REVIEW_2026-10-18）：B 站 buvid3 是设备级标识、弹幕 AUTH 的凭据成分，
-    # 而 logs/ 按大小轮转保留多份（AGENTS「凭据不入轮转日志」红线）。_fetch_buvid 的两条 debug
-    # （cookie 提取、首页 Set-Cookie 兜底）此前整值打印。判据按关键约定 #11 的口径写成
-    # 「值确实消失」，而不是「调用了 mask_credentials」；同时反向钉住「凭据照旧按原值取用」
-    # （只改日志形态，进房/AUTH 的语义一律不许动）。
+    # 2026-10-19：B 站 buvid3 是设备级标识、弹幕 AUTH 的凭据成分，而 logs/ 按大小轮转保留多份
+    # （AGENTS「凭据不入轮转日志」红线），故 _fetch_buvid 的两条 debug（cookie 提取、首页 Set-Cookie
+    # 兜底）只留归因形态。判据按 AGENTS 关键约定 #11：「值确实消失」，不是「调用了 mask_credentials」；
+    # 同时反向钉住「凭据照旧按原值取用」——只改日志形态，进房/AUTH 的语义一律不许动。
 
     _COOKIE_BUVID = "XYAA11223344556677889900AABBCCDD35187infoc"
     _HOME_BUVID = "BBBB00001111222233334444555566667777infoc"

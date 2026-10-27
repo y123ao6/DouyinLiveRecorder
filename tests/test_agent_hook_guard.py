@@ -1,10 +1,10 @@
 # scripts/agent_hook_guard.py 的回归用例（Hook/Command 项目级资产的行为锁）。
 #
-# 被测面按「行为优先」组织，不用正则钉生产代码字面量（AGENTS.md M-26：文本锁会在契约反转后
+# 被测面按「行为优先」组织，不用正则钉生产代码字面量（AGENTS.md ：文本锁会在契约反转后
 # 静默空洞成立，给出与事实相反的绿）：
 #   1) PreToolUse 三条拦截规则（批量重装 venv / 清理越界 / 工作区级通配删除）与放行面
 #      （AGENTS.md 给出的两条收尾清理命令、二级 pip 处置、常规开发命令）；
-#      [M-95 2026-10-21 增] 同一条 1) 现还要覆盖「不带删除动词的销毁形态」——find|xargs rm、mv、
+#      [ 2026-10-21 增] 同一条 1) 现还要覆盖「不带删除动词的销毁形态」——find|xargs rm、mv、
 #      truncate、`> 已存在文件` 的截断重定向、git checkout/restore/reset 的宽目标丢弃，
 #      以及「长排除段落里的受保护目录名仍是白名单」这半边（排除式段落定位改成整条 statement）。
 #   2) PostToolUse 三条「对门禁三面隐形」的即时反馈（MUTATION 残留 / 行尾形态混存 / .mjs 未登记）；
@@ -123,7 +123,7 @@ def test_cleanup_reaching_protected_dirs_is_blocked(target: str) -> None:
 @pytest.mark.parametrize(
     ("command", "expected_rule"),
     [
-        # 2026-10-19 审查 S-01 实测放行的变形语料：守卫按文本形态匹配，引号、尾随空格、参数
+        # 2026-10-19 审查该实测放行的变形语料：守卫按文本形态匹配，引号、尾随空格、参数
         # 分写、find -delete 与 PowerShell 别名/清空动词都曾让旧判据整条跳过。这些是日常书写
         # 形态而非刻意构造的攻击串，必须逐条钉住。
         ("rm -rf logs ", "R-CLEAN-SCOPE"),
@@ -157,7 +157,7 @@ def test_agents_md_cleanup_commands_are_allowed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# M-95（2026-10-21 审查）：动词/形态覆盖面 + 排除式段落定位
+# （2026-10-21 审查）：动词/形态覆盖面 + 排除式段落定位
 #
 # 第一处缺陷：守卫只认 `_DELETE_VERB_RE` 里的动词，`find … | xargs rm`、`mv`、`truncate`、
 # `> file`（截断已有文件）、`git checkout -- .` / `git restore .` / `git reset --hard` 这些
@@ -300,7 +300,7 @@ def test_line_ending_check_skips_tool_directories(tmp_path: Path) -> None:
 
 
 def test_unregistered_frontend_mjs_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # M-28 实证：`node --test <文件>` 只跑被点名的文件，不登记进 ci.yml 的 .mjs 其回归锁从不执行
+    # 实证：`node --test <文件>` 只跑被点名的文件，不登记进 ci.yml 的 .mjs 其回归锁从不执行
     ci = tmp_path / "ci.yml"
     ci.write_text("          node --version\n", encoding="utf-8")
     monkeypatch.setattr(guard, "_CI_WORKFLOW", ci)
@@ -337,8 +337,8 @@ def _run_hook(event: Mapping[str, Any]) -> subprocess.CompletedProcess[bytes]:
 
 def test_cli_contract_blocks_with_exit_code_2() -> None:
     # PreToolUse 是唯一可阻断站：exit 2 + stderr 回给 agent，阻断声明与实际能力一致。
-    # MT-03（2026-10-18 审查）：原断言查的 `--no-cache-dir` 在这条命令里根本不存在，于是
-    # 「拒绝消息不得回显命令原文」这条锁恒真、从未判过任何东西（M-26 同族的空洞文本锁）。
+    # （2026-10-18 审查）：原断言查的 `--no-cache-dir` 在这条命令里根本不存在，于是
+    # 「拒绝消息不得回显命令原文」这条锁恒真、从未判过任何东西（该同族的空洞文本锁）。
     # 现取命令中**确实存在**的实参位作判据，另加一条只出现在命令里的哨兵：把命令原文拼进拒绝
     # 理由的任意实现都会同时打红这两条，而理由文案自身的正常改动不会（两者都不属于文案）。
     sentinel = "--sentinel-never-echo-4f9a"
@@ -445,7 +445,7 @@ def test_command_asset_does_not_duplicate_gate_list() -> None:
 
 
 def test_runtime_pin_file_change_triggers_check_reminder(tmp_path: Path) -> None:
-    # SEV-10：_PINNED_RUNTIME_SHA256 或 check_runtime_pins.py 变更后对 black / mypy / 注释检查
+    # _PINNED_RUNTIME_SHA256 或 check_runtime_pins.py 变更后对 black / mypy / 注释检查
     # 三面全隐形，只有 check_runtime_pins.py 自己能兜住——PostToolUse 必须在写入当下提醒 agent
     probe = tmp_path / "build_exe.py"
     probe.write_text("_PINNED_RUNTIME_SHA256 = {}\n", encoding="utf-8")
@@ -578,23 +578,23 @@ def test_mutation_proof_rules_are_load_bearing(tmp_path: Path, monkeypatch: pyte
     assert guard.check_written_file(nested) is not None
     monkeypatch.undo()
 
-    # ⑥ M-95：find 的「查询 vs 删除」开关判定被摘掉 → `find logs -type f -delete` 不再被认成删除
+    # ⑥ ：find 的「查询 vs 删除」开关判定被摘掉 → `find logs -type f -delete` 不再被认成删除
     #    （证明 find 确实只与删除开关同时出现才算删除，而不是靠动词表里的裸 find）
     monkeypatch.setattr(guard, "_FIND_DELETE_RE", re.compile(r"(?!)"))
     assert guard.check_bash_command("find logs -type f -delete") is None
     monkeypatch.undo()
 
-    # ⑥b M-95：截断式重定向判定被摘掉 → `echo x > scripts/已存在文件` 回到零命中形态
+    # ⑥b ：截断式重定向判定被摘掉 → `echo x > scripts/已存在文件` 回到零命中形态
     monkeypatch.setattr(guard, "_has_truncating_redirect", lambda statement: False)
     assert guard.check_bash_command("echo done > scripts/run_gates.py") is None
     monkeypatch.undo()
 
-    # ⑦ M-95 的 git 宽目标丢弃判定被摘掉 → `git restore .` 不再被认成工作区级不可逆操作
+    # ⑦ git 宽目标丢弃判定被摘掉 → `git restore .` 不再被认成工作区级不可逆操作
     monkeypatch.setattr(guard, "_GIT_DISCARD_RE", re.compile(r"(?!)"))
     assert guard.check_bash_command("git restore .") is None
     monkeypatch.undo()
 
-    # ⑧ M-95 的排除式段落定位被拆成「整条语句前出现过排除标记就当白名单」→
+    # ⑧ 该排除式段落定位被拆成「整条语句前出现过排除标记就当白名单」→
     #    「排除段落结束后才真正删除」的那格必须判红（证明 between 间隔检查不是装饰）
     monkeypatch.setattr(guard, "_is_inside_exclusion_clause", lambda statement, position: True)
     assert (

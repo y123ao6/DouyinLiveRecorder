@@ -80,10 +80,10 @@ class SrtWriter:
         self._index = 0  # 当前片内序号
         self._fp: Optional[TextIO] = None
         self._last_end: Optional[float] = None  # 上一条结束时间，用于密集弹幕错开
-        self._last_open_attempt = 0.0  # WD-03：句柄打开失败的退避基准（monotonic）
-        self._last_open_error = ""  # L-18：最近一次句柄打开失败的异常类型名（供重试失败告警）
-        # MIN-2236③：close() 之后不再接受任何写入（终态位），_discarded_after_count
-        # 只在首条丢弃时留一条 debug，避免高频房间刷屏
+        self._last_open_attempt = 0.0  # 句柄打开失败的退避基准（monotonic）
+        self._last_open_error = ""  # 最近一次句柄打开失败的异常类型名（供重试失败告警）
+        # close() 之后不再接受任何写入（终态位）；_discarded_after_count 只在首条丢弃时留
+        # 一条 debug，避免高频房间刷屏
         self._closed = False
         self._discarded_after_count = 0
 
@@ -155,13 +155,9 @@ class SrtWriter:
                     logger.debug(i18n.tr("[弹幕采集]SRT 文件已关闭，后续到达的弹幕一律丢弃"))
                 return
             self._ensure_started(now)
-            # M-58②（2026-10-21）：生产路径不得用 assert 守判据。原形态 `assert self._t0 is not None`
-            # 在 `python -O`（以及任何 -OO / PYTHONOPTIMIZE 启动方式）下整条被剥掉，判据直接消失，
-            # 紧随其后的 `rel = now - self._t0` 对 None 做减法抛 TypeError——而调用方是采集线程
-            # 的 SRT 写循环，抛出会把该线程带崩（句柄与待写队列双泄漏），把一个「本条字幕没写成」
-            # 升级成「弹幕链路断」。现改为显式判空 + 留痕 + 丢弃本条并正常返回。
-            # 文案刻意复用四目录既有条目（本轮约束：不新增 i18n msgid）；{e} 收的是内部状态原因、
-            # 不含外部可控文本，故不过 mask_credentials。
+            # 不用 assert 守判据：`python -O` 会整条剥掉它，紧随的 `rel = now - self._t0` 对 None
+            # 做减法抛 TypeError，会把采集线程带崩、把「本条字幕没写成」升级成「弹幕链路断」。
+            # 现为显式判空 + 留痕 + 丢弃本条。文案复用四目录既有条目；{e} 是内部状态原因，不过 mask。
             if self._t0 is None:
                 logger.warning(
                     i18n.tr(
@@ -215,13 +211,8 @@ class SrtWriter:
                 end = max(start, min(end, float(self._seg_seconds)))
             self._last_end = end
 
-            # 弹幕原文与用户名均为外部可控：换行会破坏 SRT 块结构、"-->" 会被解析成
-            # 伪时间轴行，必须先清洗再拼行。
-            # M-58①（2026-10-21）：块号自增必须落在「这一条真的写出去了」的分支里。旧形态在拼行
-            # 之前无条件 self._index += 1，句柄缺失被丢弃的条目照样吃掉一个块号，与本函数上方
-            # 「重试仍失败则本条按原逻辑丢弃……序号也不会被凭空跳大」的承诺相反（审查 L-10 同条：
-            # 注释声明强于实现）。今天多数场景被 _open_segment() 归零 _index 掩盖，但「丢弃」与
-            # 「重新开片」之间不经过开片时（节流窗口内的连续丢弃后再成功写入）块号就会跳号。
+            # 块号自增必须落在「这一条真的写出去了」的分支里：句柄缺失被丢弃的条目若照样吃掉
+            # 一个块号，节流窗口内连续丢弃后再成功写入就会跳号。
             if self._fp is not None:
                 self._index += 1
                 line = (

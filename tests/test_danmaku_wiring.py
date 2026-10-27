@@ -246,7 +246,7 @@ def test_early_interrupt_stops_danmaku_and_terminates(main_mod: Any, monkeypatch
 
     assert result is True
     collector = factory.return_value
-    # SEV-2208 把 stop() 无条件移进 finally 后，早退路径必然出现两次调用：分支内一次（保证
+    # 把 stop() 无条件移进 finally 后，早退路径必然出现两次调用：分支内一次（保证
     # 「立即」停止）+ finally 一次（保证异常穿出时也不漏）。stop() 自带 _stop_called 幂等，重复
     # 调用安全，故断言恰为 2：=1 说明 finally 那半又被拿掉（SEV-N01 原始缺陷），>2 说明收尾被重复触发。
     assert collector.stop.call_count == 2, "提前中断应为『分支立即停止 + finally 兜底停止』共两次"

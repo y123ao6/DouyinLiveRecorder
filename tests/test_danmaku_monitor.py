@@ -5,8 +5,8 @@
 # 3. get_danmaku_collector 工厂透传 room_name / write_srt；
 # 4. Web API /api/danmaku 端点返回枢纽快照；
 # 5. GUI 弹幕监控（无头）：JSONL 事件分发到线程安全状态、边车文件 tail（含轮转回绕）。
-#    M-24：tail 用例的停止信号必须发给**传入线程的那只 Event** 并断言线程已退出；
-#    M-31②：gui 在**用例内**导入，配套 autouse fixture 成对还原 DLR_GUI_PARENT。
+#    tail 用例的停止信号必须发给**传入线程的那只 Event** 并断言线程已退出；
+#    ②：gui 在**用例内**导入，配套 autouse fixture 成对还原 DLR_GUI_PARENT。
 
 import asyncio
 import json
@@ -145,7 +145,7 @@ def test_room_stopped_removes_room_and_logs_event(tmp_path: Path) -> None:
 
     snap = hub.snapshot(0)
     assert all(r["name"] != "房间A" for r in snap["rooms"])
-    hub.flush()  # MID-25：落盘已挪到独立写线程，读文件前须先等队列排空
+    hub.flush()  # 落盘已挪到独立写线程，读文件前须先等队列排空
     lines = (tmp_path / "dm.jsonl").read_text(encoding="utf-8").splitlines()
     assert any(json.loads(line).get("state") == "stopped" for line in lines)
 
@@ -165,7 +165,7 @@ def test_jsonl_lines_valid_and_rotation(tmp_path: Path, monkeypatch: pytest.Monk
         hub.room_message("房间A", "chat", f"用户{i}", f"消息内容{i}" * 5)
 
     log_file = tmp_path / "dm.jsonl"
-    hub.flush()  # MID-25：轮转发生在写线程里，断言前先等队列排空
+    hub.flush()  # 轮转发生在写线程里，断言前先等队列排空
     assert log_file.exists()
     content = log_file.read_text(encoding="utf-8")
     for line in content.splitlines():
@@ -175,7 +175,7 @@ def test_jsonl_lines_valid_and_rotation(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 def test_sidecar_write_does_not_hold_hub_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # MID-25 主用例：磁盘 IO 不得发生在 hub._lock 内。旧实现 open/write/flush 全在锁里，
+    # 主用例：磁盘 IO 不得发生在 hub._lock 内。旧实现 open/write/flush 全在锁里，
     # 一次被慢盘拖住的 flush 会让所有房间的 ws 收包/心跳协程一起停摆（协议层 ping 超时 →
     # 断连风暴），snapshot() 也抢同一把锁。做法：把真实写函数换成一直不返回的慢版本，再从另一线程抢锁。
     started = threading.Event()
@@ -213,7 +213,7 @@ def test_sidecar_write_does_not_hold_hub_lock(tmp_path: Path, monkeypatch: pytes
 
 def test_close_file_waits_for_pending_writes_before_closing(tmp_path: Path) -> None:
     # close_file() 处于「停止录制 → 日志归档改名」链路上：Windows 下句柄未关的文件 rename 必抛
-    # PermissionError，故必须等已入队事件真正落盘后再关；MID-25 把写盘挪进独立线程后，
+    # PermissionError，故必须等已入队事件真正落盘后再关；该把写盘挪进独立线程后，
     # 「已 accept 的事件一条都不能丢」只能靠这次排空保证。
     hub = DanmakuMonitorHub(log_path=str(tmp_path / "dm.jsonl"))
     log_file = tmp_path / "dm.jsonl"
@@ -414,7 +414,7 @@ def test_api_danmaku_endpoint_returns_hub_snapshot(tmp_path: Path, monkeypatch: 
 # ─── GUI 弹幕监控（无头，不创建 Tk 窗口） ───────────────────
 
 
-# M-31②（2026-09-29 审查）：本文件此前在模块级 `gui = pytest.importorskip("gui")`，于是收集期就
+# ②（2026-09-29 审查）：本文件此前在模块级 `gui = pytest.importorskip("gui")`，于是收集期就
 # 把 DLR_GUI_PARENT=1 注进整个会话（gui.py 在 import 期写入该变量），与「不在 pytest 进程 import
 # gui」的既定约定冲突。现改为用例内经 _load_gui() 取模块，并由下面的 autouse fixture 成对还原。
 # 残余风险（如实记录，不得当作已彻底解决）：① sys.modules 里的 gui 不会随用例结束消失，后续用例
@@ -445,7 +445,7 @@ def _make_gui_stub(app_root: Path, gui: Any) -> Any:
     stub._danmaku_stats_dirty = False
     stub._danmaku_stream_dirty = False
     stub._danmaku_tail_stop = threading.Event()
-    # M-17 的留痕走 self._log（tail 线程只写队列、不触碰 Tk），桩把它收成列表即可断言。
+    # 留痕走 self._log（tail 线程只写队列、不触碰 Tk），桩把它收成列表即可断言。
     stub._log_lines = []
     stub._log = lambda message, level="info": stub._log_lines.append((message, level))
     stub._CHAIN_WARN_INTERVAL_SECONDS = 0.0
@@ -514,7 +514,7 @@ def test_gui_dispatch_stopped_removes_room() -> None:
 
 def test_gui_tail_reads_jsonl_and_handles_rotation(tmp_path: Any) -> None:
     # tail 集成：写事件文件 → tail 线程读取入状态；文件变小（轮转回绕）时从头重读不崩溃；
-    # 以及 M-24：对**传入的那只 Event** set 之后，线程必须真的退出。
+    # 以及：对**传入的那只 Event** set 之后，线程必须真的退出。
     import os
 
     gui = _load_gui()
@@ -536,9 +536,9 @@ def test_gui_tail_reads_jsonl_and_handles_rotation(tmp_path: Any) -> None:
     )
 
     stub = _make_gui_stub(tmp_path, gui)
-    # MID-2250 连带修正：_danmaku_tail_loop 的退出标志是**逐次创建的局部 Event 形参**（原读
+    # 连带修正：_danmaku_tail_loop 的退出标志是**逐次创建的局部 Event 形参**（原读
     # 共享的 self._danmaku_tail_stop，会被新一轮 clear() 抹掉退出信号 → 线程永不退出），故必须
-    # 作为第二个实参传入。M-24（严重假绿）：这只 Event 必须落到**局部变量**并在末尾 set 它——
+    # 作为第二个实参传入。（严重假绿）：这只 Event 必须落到**局部变量**并在末尾 set 它——
     # 旧写法 set 的是 stub._danmaku_tail_stop（生产签名根本不读），join 必然等满又缺 is_alive 断言，
     # 「轮转后能停」从未被验证过。
     stop = threading.Event()
@@ -573,18 +573,18 @@ def test_gui_tail_reads_jsonl_and_handles_rotation(tmp_path: Any) -> None:
         assert "房间B" in stub._danmaku_rooms, "轮转回绕后 tail 未读到房间B"
     assert os.path.exists(log_file)
 
-    # M-24 的本体：set **传入线程的那只** Event，线程必须在预算内自行退出。
+    # 本体：set **传入线程的那只** Event，线程必须在预算内自行退出。
     stop.set()
     t.join(timeout=3.0)
     assert not t.is_alive(), "tail 线程未响应传入的 stop_event 退出（守护线程会残留到进程结束）"
 
 
-# ─── M-37 / M-43（CODE_REVIEW_2026-10-21）：stats 线程复活窗口 与 裸文件名边车路径 ───
+# ─── / （CODE_REVIEW_2026-10-21）：stats 线程复活窗口与裸文件名边车路径 ───
 
 
 class _GapGate:
     # 一次性闸门：把「即将退出的 stats 线程」停在 finally 取锁的那一步，从而**确定性地**复现
-    # break → finally 之间的窗口（M-37 是竞态，没有外部可观测时序，只能在此注入停顿）。
+    # break → finally 之间的窗口（该是竞态，没有外部可观测时序，只能在此注入停顿）。
     # 必须只停在**第二次**取锁：第一次是 while 体内的 `with self._lock`（它判完空表才 break），
     # 停在第一次的话房间登记会落进循环体、线程根本不退出（等于测了另一条路径）。
     # 只做「停 + 放行」，不重写任何被测逻辑（AGENTS「测试不得自实现被测逻辑」）。
@@ -607,7 +607,7 @@ class _GapGate:
 def test_stats_thread_restarts_for_room_registered_in_teardown_gap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # M-37：房间在 break（当时房间表为空）与 finally 注销引用之间登记时，_ensure_stats_thread
+    # 房间在 break（当时房间表为空）与 finally 注销引用之间登记时，_ensure_stats_thread
     # 看到的是**仍 is_alive()** 的那支将死线程 → 不新建；随后它将 self._stats_thread 置 None 并退出，
     # 该房间从此**永久**拿不到周期 stats（GUI 的 msg_rate/online 冻结，直到下一条弹幕或下次开房才有机会）。
     monkeypatch.setattr(dm, "_STATS_INTERVAL", 0.02)
@@ -654,7 +654,7 @@ def test_stats_thread_restarts_for_room_registered_in_teardown_gap(
 
 
 def test_prepare_log_path_keeps_file_output_for_bare_filename(tmp_path: Path) -> None:
-    # M-43：os.makedirs(os.path.dirname(log_path)) 在裸文件名（无目录段）下 dirname 返回空串，
+    # os.makedirs(os.path.dirname(log_path)) 在裸文件名（无目录段）下 dirname 返回空串，
     # makedirs("") 抛 FileNotFoundError 被下面的 except 吞掉 → 边车输出**静默禁用**，
     # GUI/Web 的 tail 链路整体失效（用户只看到「监控页永远空白」）。
     assert DanmakuMonitorHub._prepare_log_path("danmaku_monitor.jsonl") == "danmaku_monitor.jsonl"

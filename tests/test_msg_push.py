@@ -1,7 +1,7 @@
 # 凭证脱敏与钉钉载荷回归。
 # 守护三类行为：(1) _mask_secret/_mask_url 不再因「长度门槛」漏遮蔽（短密钥、8 位 Bark key、
 # Telegram bot token 此前会落入日志）；(2) 钉钉载荷按 number 是否存在决定带不带 atMobiles；
-# (3) MID-58：「密钥即路径末段」的渠道（Bark / Server酱 / 息知）无条件遮蔽末段，不按 day.app
+# (3) ：「密钥即路径末段」的渠道（Bark / Server酱 / 息知）无条件遮蔽末段，不按 day.app
 # 主机名白名单——自建 / 反代 Bark 的 device key 同样不得进轮转日志。
 # Mock 设计：钉钉用例 patch msg_push.opener.open（urllib 层）拦截真实 HTTP，捕获请求体后断言
 # JSON 载荷；Bark 用例另挂 loguru sink，断言**实际写进日志的那一行**不含明文 key（只测
@@ -42,7 +42,7 @@ class TestMaskUrl:
         masked = _mask_url("https://api.day.app/AbCd1234", mask_last_segment=True)
         assert "AbCd1234" not in masked
 
-    # MID-58 回归锁：Bark 的密钥位置是「路径最后一段」，与主机名无关。旧实现靠
+    # Bark 的密钥位置是「路径最后一段」，与主机名无关。旧实现靠
     # hostname.endswith("day.app") 白名单命中，自建 / 反代 Bark 的密钥因此整串明文进轮转日志
     # （拿到即可向用户手机无限推送）；现由调用方按渠道声明 mask_last_segment。
     def test_self_hosted_bark_key_masked(self) -> None:
@@ -80,7 +80,7 @@ class TestMaskUrl:
         assert masked == "https://example.com/api/status"
 
 
-# MID-58 端到端锁：真正写日志的是 bark() 的失败分支，只测 _mask_url 的话，
+# 端到端锁：真正写日志的是 bark() 的失败分支，只测 _mask_url 的话，
 # 调用点漏传 mask_last_segment 依然会把明文 key 写进 logs/streamget.log。
 class TestBarkFailureLogMasking:
     def test_bark_failure_log_masks_self_hosted_key(self) -> None:
@@ -177,7 +177,7 @@ class TestDingtalk:
 
 
 # ------------------------------------------------------------------------------------
-# S-02（CODE_REVIEW_2026-10-21）：重置向必须逐跳复核，不能只校验首跳。
+# 2026-10-21：重置向必须逐跳复核，不能只校验首跳。
 # 攻击模型：推送地址设为攻击者服务器 → 它 302 到 http://169.254.169.254/latest/meta-data/ →
 # 首跳校验通过、落地地址是内网，响应体再经 errmsg/msg 字段写进日志（带回显 SSRF）。
 # 两条互补判据：① 处理器本身拒绝内网落地；② opener 上挂的确实是该守卫子类（裸 handler 不得回归）。
@@ -191,7 +191,7 @@ class TestPushRedirectHopGuard:
 
     def test_internal_landing_is_rejected(self) -> None:
         # 判据口径与首跳**完全相同**（_checked_push_url，allow_local_targets=True）：
-        # 云元数据/内部 DNS 名必须拒绝；回环与私网按 M-07 的既有裁决放行（自建 ntfy/Bark 反代
+        # 云元数据/内部 DNS 名必须拒绝；回环与私网按该既有裁决放行（自建 ntfy/Bark 反代
         # 跑在本机或局域网是合规配置，拦掉会把真实用户的推送打哑）。
         import urllib.error
         import urllib.request

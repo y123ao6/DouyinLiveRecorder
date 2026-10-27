@@ -467,7 +467,7 @@ async def test_short_link_redirect_failure_is_reported(monkeypatch: pytest.Monke
 
 @pytest.mark.asyncio
 async def test_external_landing_still_keeps_credentials_contained(monkeypatch: pytest.MonkeyPatch) -> None:
-    # SEV-2214 的安全不变量在新解析器下必须仍成立：跳到外站时不得请求该外站
+    # 安全不变量在新解析器下必须仍成立：跳到外站时不得请求该外站
     fake = _fake_async_req({_SHORT_URL: "https://evil.example.com/steal"})
     with patch.object(sp, "async_req", new=fake):
         await sp.get_xhs_stream_url(_SHORT_URL, cookies="SESSDATA=SECRET")

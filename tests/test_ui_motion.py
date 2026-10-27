@@ -41,7 +41,7 @@ from src.ui_motion import (
 
 class FakeRoot:
     # 复刻 run_frames 用到的 after/after_cancel 协议，并记录调用与待触回调。
-    # [历史注] 旧版刻意「不模拟取消语义」——M-82 定稿后 cancel 必须真的打 after_cancel，
+    # [历史注] 旧版刻意「不模拟取消语义」——该定稿后 cancel 必须真的打 after_cancel，
     # 替身没有 after_cancel 一面的话新判据就无从取证；pending 表用来手动引爆炸掉的旧链
     # （模拟 Tcl 队列里已排好的迟到回调）。
 
@@ -225,7 +225,7 @@ class TestMotionController:
         mc.cancel("never-registered")
 
     def test_cancel_issues_after_cancel(self) -> None:
-        # M-82 行为锁①：cancel 必须对登记句柄真的调 after_cancel——只摘 Python 侧册子，
+        # 行为锁①：cancel 必须对登记句柄真的调 after_cancel——只摘 Python 侧册子，
         # Tcl 事件队列里已排好的下一帧仍会被唤醒并继续写 place/几何（「关了动效控件还在抖」
         # 的确切成因；全文件此前零个 after_cancel 调用点）。
         root = FakeRoot()
@@ -236,7 +236,7 @@ class TestMotionController:
         assert root.cancel_calls == ["after#1"], "撤销链必须撤掉 Tcl 侧排程，不只是清字典"
 
     def test_stale_chain_write_stops_after_cancel(self) -> None:
-        # M-82 行为锁②：_step 入口必须核对「这条链还是不是我」。模拟 Tcl 队列不受控
+        # 行为锁②：_step 入口必须核对「这条链还是不是我」。模拟 Tcl 队列不受控
         # （窗口销毁后被强调、或 cancel 与回调同轮竞态）把已撤销链的回调再唤起一次：
         # 既不写几何，也不代落终态——终态归撤销方，旧链补 finish() 反而把新状态打回半途。
         root = FakeRoot()
@@ -258,7 +258,7 @@ class TestMotionController:
         assert done == [], "迟到回调不得代落终态（终态由撤销方/新链负责）"
 
     def test_same_key_new_chain_invalidates_old_callback(self) -> None:
-        # M-82 行为锁③：链令牌同族判据——同 key 重跑 run_frames 后，旧链已排回调被
+        # 行为锁③：链令牌同族判据——同 key 重跑 run_frames 后，旧链已排回调被
         # 「新链接管」，旧回调醒来必须静默终止（否则两轮动效互写同一控件、互相拽回）。
         root = FakeRoot()
         mc = MotionController("full")
@@ -271,7 +271,7 @@ class TestMotionController:
         assert writes == baseline, "旧链迟到回调越界写入（令牌守卫失效）"
 
     def test_set_motion_off_after_cancels_pending(self) -> None:
-        # 「切到 off 立即撤销全部在途链」这句既有契约，从 M-82 起才算真的可兑现：
+        # 「切到 off 立即撤销全部在途链」这句既有契约，从此起才算真的可兑现：
         # 旧 set_motion('off') 只清册不 after_cancel，关动画后圆点照呼吸就是这条。
         root = FakeRoot()
         mc = MotionController("full")
@@ -296,7 +296,7 @@ class TestBlend:
         assert blend("#000000", "#FFFFFF", 0.5) == "#808080"
 
     def test_out_of_range_ratio_is_clamped_to_endpoints(self) -> None:
-        # M-83：ratio 越界（>1 / <0 / NaN）旧实现不校验——round(负权重通道) 拼出带负号或
+        # ratio 越界（>1 / <0 / NaN）旧实现不校验——round(负权重通道) 拼出带负号或
         # 8+ 位的畸形「颜色串」，喂给 tag_configure 是**静默失败**（高亮衰减整段不可见、
         # 不留日志）。定稿一律钳回 [0,1]，越界退化为取端点，出口恒为合法 7 位串。
         from src.ui_kit import blend
@@ -306,7 +306,7 @@ class TestBlend:
         assert blend("#112233", "#445566", float("nan")) in ("#112233", "#445566")
 
     def test_invalid_color_input_returns_valid_hex(self) -> None:
-        # M-83 另一半：颜色形状不合法（命名色 / 位数不对 / 非十六进制）时旧实现在
+        # 另一半：颜色形状不合法（命名色 / 位数不对 / 非十六进制）时旧实现在
         # int(x, 16) 处当场 ValueError，打断调用方的每帧回调。定稿复用 src.ui_theme.is_valid_hex
         # 判形状（全仓唯一的 #RRGGBB 口径），非法输入回合法一侧、两侧都非法回中性黑。
         from src.ui_kit import blend

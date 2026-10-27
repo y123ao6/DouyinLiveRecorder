@@ -1,8 +1,8 @@
-# 2026-09-22/23 网络与代理层回归锁（MID-2233 / MIN-2216~2222）。
+# 2026-09-22/23 网络与代理层回归锁（ / ~2222）。
 #
-# 覆盖面（每条都对应一个「实测确认未修」的条目）：src/proxy.py 的 MID-2233 ①②③④；
-# src/ttwid.py 的 MIN-2220（ttwid 跨出口串用）/ MIN-2222（空异常文本）；src/async_http.py 的
-# MIN-2216(async 侧) / MIN-2217 / MIN-2218 / MIN-2219 / MIN-2221。
+# 覆盖面（每条都对应一个「实测确认未修」的条目）：src/proxy.py 的 ①②③④；
+# src/ttwid.py 的（ttwid 跨出口串用）/ （空异常文本）；src/async_http.py 的
+# (async 侧) / / / / 。
 #
 # 打桩边界：只替换网络层与依赖构造（httpx 客户端 / _build_client / DNS seam / winreg），判定逻辑
 # （分桶缓存、内网定罪、warn-once、锁重入）一律走真实代码。每条锁都做过「删掉生产实现就该失败」
@@ -45,7 +45,7 @@ def _capture_logs(level: str = "DEBUG") -> tuple[list[str], int]:
 
 @pytest.fixture()
 def _stub_dns_public(monkeypatch: pytest.MonkeyPatch) -> None:
-    # MIN-2219 的 DNS seam（web_config._resolve_host_ips 的注释明确它是为用例留的口子）：
+    # DNS seam（web_config._resolve_host_ips 的注释明确它是为用例留的口子）：
     # 把「域名解析结果」钉成一个公网 IP，使直连判定不依赖真实 DNS/网络。
     monkeypatch.setattr(web_config, "_resolve_host_ips", lambda host: [_PUBLIC_IP])
 
@@ -143,7 +143,7 @@ def _client_provider(client: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# MID-2233 ①：ftp_proxy 不得被当成本程序的可用代理
+# ①：ftp_proxy 不得被当成本程序的可用代理
 # ---------------------------------------------------------------------------
 
 _PROXY_ENV_KEYS = (
@@ -190,7 +190,7 @@ class TestMid2233FtpProxy:
 
 
 # ---------------------------------------------------------------------------
-# MID-2233 ②：代理自身的 scheme 必须保留
+# ②：代理自身的 scheme 必须保留
 # ---------------------------------------------------------------------------
 
 
@@ -240,7 +240,7 @@ class TestMid2233Scheme:
 
 
 # ---------------------------------------------------------------------------
-# MID-2233 ③：裸 IPv6 无端口要真的能通过校验（旧注释承诺过、实现从未兑现）
+# ③：裸 IPv6 无端口要真的能通过校验（旧注释承诺过、实现从未兑现）
 # ---------------------------------------------------------------------------
 
 
@@ -255,7 +255,7 @@ class TestMid2233BareIpv6:
         assert ProxyInfo("[::1]", "").proxy_url == "http://[::1]"
 
     def test_registry_shape_bare_ipv6_end_to_end(self) -> None:
-        # MIN-20① 的整块「IPv6 放行分支」此前是死代码：注册表存 "::1" 时
+        # ① 的整块「IPv6 放行分支」此前是死代码：注册表存 ":1" 时
         # _split_host_port 交出 port=""，ProxyInfo 直接 raise。现在该形态可用。
         ip, port, user, password = ProxyDetector._split_host_port("::1")
         info = ProxyInfo(ip, port, user, password)
@@ -288,14 +288,14 @@ class TestMid2233BareIpv6:
 
 
 # ---------------------------------------------------------------------------
-# MID-2233 ④：ProxyInfo.proxy_url 无生产消费点 —— 登记为残留，不得留「已修」陈述
+# ④：ProxyInfo.proxy_url 无生产消费点 —— 登记为残留，不得留「已修」陈述
 # ---------------------------------------------------------------------------
 
 
 class TestMid2233ResidualRegistered:
     def test_module_registers_the_no_consumer_residual(self) -> None:
         # 源码级锁：src/proxy.py 必须显式写明「user/password/scheme/proxy_url 无生产消费点」，
-        # 且不得再出现「MIN-20③ 已修好认证代理」这类被证伪的陈述。判据用「必须出现登记语」而非
+        # 且不得再出现「已修好认证代理」这类被证伪的陈述。判据用「必须出现登记语」而非
         # 「必须不出现某个词」，避免误伤历史注。
         text = (pathlib.Path(__file__).resolve().parents[1] / "src" / "proxy.py").read_text(encoding="utf-8")
         assert "没有任何生产消费点" in text, "MID-2233④ 的残留登记被删除：会重新出现「已修」的错误陈述"
@@ -305,7 +305,7 @@ class TestMid2233ResidualRegistered:
 
 
 # ---------------------------------------------------------------------------
-# MIN-2222：异常日志必须带类型名（Windows 下 socket.timeout 的 str() 为空）
+# 异常日志必须带类型名（Windows 下 socket.timeout 的 str() 为空）
 # ---------------------------------------------------------------------------
 
 
@@ -370,7 +370,7 @@ class TestMin2222TypeNameInLogs:
 
 
 # ---------------------------------------------------------------------------
-# MIN-2220：ttwid 快路必须按出口分列
+# ttwid 快路必须按出口分列
 # ---------------------------------------------------------------------------
 
 
@@ -426,7 +426,7 @@ class TestMin2220PerProxyCache:
     async def test_stale_bucket_is_dropped_and_refetched(
         self, _clean_ttwid: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # MID-33 的 TTL 判定按出口各算各的：陈旧桶必须被**删除**并向下走，而不是「非空即返回」。
+        # TTL 判定按出口各算各的：陈旧桶必须被**删除**并向下走，而不是「非空即返回」。
         # 这里只验本层可观察行为（桶被删 + 又填回新时刻），下层 singleflight 的过期联动由
         # tests/test_ttwid.py 既有用例覆盖。
         import time as _time
@@ -482,7 +482,7 @@ class TestMin2220PerProxyCache:
         self, _clean_ttwid: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 旧 _fetch_ttwid 失败时 `return _cached_ttwid`，等于把直连那份递给代理出口——
-        # MIN-2220 的另一个入口，快路分桶挡不住它，必须单独锁。
+        # 另一个入口，快路分桶挡不住它，必须单独锁。
         async def _ok(proxy_addr: str | None = None) -> str:
             return "ttwid=direct-only"
 
@@ -511,7 +511,7 @@ class TestMin2220PerProxyCache:
 
 
 # ---------------------------------------------------------------------------
-# MIN-2218：异步 POST 必须跟随重定向；data 与 json 同传必须显式报错
+# 异步 POST 必须跟随重定向；data 与 json 同传必须显式报错
 # ---------------------------------------------------------------------------
 
 
@@ -571,7 +571,7 @@ class TestMin2218PostRedirects:
 
 
 # ---------------------------------------------------------------------------
-# MIN-2216（async 侧）：缺依赖不得伪装成「200 + 空响应体 = 疑似风控」
+# （async 侧）：缺依赖不得伪装成「200 + 空响应体 = 疑似风控」
 # ---------------------------------------------------------------------------
 
 
@@ -698,7 +698,7 @@ class _client_cache_guard:
 
 
 # ---------------------------------------------------------------------------
-# MIN-2217：进程退出清理绝不跨线程/跨循环 await aclose
+# 进程退出清理绝不跨线程/跨循环 await aclose
 # ---------------------------------------------------------------------------
 
 
@@ -800,7 +800,7 @@ class TestMin2217CloseAllClientsOwnership:
 
 
 # ---------------------------------------------------------------------------
-# MIN-2221：信号处理器可在临界区内重入本锁
+# 信号处理器可在临界区内重入本锁
 # ---------------------------------------------------------------------------
 
 
@@ -828,7 +828,7 @@ class TestMin2221LockReentrancy:
 
 
 # ---------------------------------------------------------------------------
-# MIN-2219：探针不得成为内网端口探测的观测口
+# 探针不得成为内网端口探测的观测口
 # ---------------------------------------------------------------------------
 
 
