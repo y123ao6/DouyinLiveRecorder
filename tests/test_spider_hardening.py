@@ -1699,3 +1699,55 @@ class TestSevN04TaobaoCookieMerge:
         parsed = sp._cookie_str_to_dict("a=1; b=x==;  ; junk; c=")
         assert parsed == {"a": "1", "b": "x==", "c": ""}
         assert sp.utils.dict_to_cookie_str(parsed) == "a=1; b=x==; c="
+
+
+# ── CODE_REVIEW_2026-10-27 4.1（M-13）：花椒写回判据 ──────────────
+class TestHuajiaoSnWriteBackCriterion:
+    # get_huajiao_sn 是零生产调用的死代码（活链路是 main.py 的 get_huajiao_stream_url →
+    # get_huajiao_user_info / get_huajiao_stream_url_app），但它携带全仓唯一的
+    # utils.replace_url(..., new="#" + url)——把用户房间加 `#` 注释掉且重启不恢复。
+    # 判据必须是「响应可解析且字段确实为空」：WAF/风控壳页同样是「HTTP 200 + 有响应体但不含
+    # var feed」，按旧判据一次风控命中即永久注释掉用户房间。
+    #
+    # 三条用例必须成对存在：只有「该写回时确实写回」的正向见证在，「不该写回时没写回」才不是
+    # 「replace_url 桩压根没接上」的假绿（AGENTS「反对假绿」）。
+    URL = "https://www.huajiao.com/l/123456"
+    # 已解析出 feed 但缺 nickname：唯一仍应写回的形态（sn/uid 在位，证明页面是真实房间页）
+    _PARSED_BUT_EMPTY = '<html>var feed = {"feed":{"sn":"sn-1"},"author":{"uid":"777"}};</html>'
+    # var feed 命中但内容畸形：`.*?});` 会截到 `...{"uid":}` 这一段，_loads_dict 恒回 {} 而不抛
+    _UNPARSABLE_FEED = '<html>var feed = {"feed":{"sn":"sn-1"},"author":{"uid":};</html>'
+
+    async def _call(self, body: str) -> tuple[list[tuple[str, str]], types.SimpleNamespace]:
+        written: list[tuple[str, str]] = []
+        logger = _fake_logger()
+        with (
+            patch.object(sp, "async_req", new=_fake_req({"www.huajiao.com/l/": body}, default=body)),
+            patch.object(sp, "logger", logger),
+            patch.object(
+                sp.utils,
+                "replace_url",
+                new=lambda *a, **k: written.append((str(k.get("old")), str(k.get("new")))),
+            ),
+        ):
+            # 三个分支都抛 RuntimeError：本用例判的是**副作用**，不是返回值
+            with pytest.raises(RuntimeError):
+                await sp.get_huajiao_sn(self.URL)
+        return written, logger
+
+    async def test_waf_shell_page_does_not_comment_out_user_url(self) -> None:
+        written, logger = await self._call(WAF_HTML)
+        assert written == [], f"风控壳页被当成地址失效并改写了用户配置: {written}"
+        assert any("未改动配置文件" in m for m in logger.msgs), f"缺少不写回的告警: {logger.msgs}"
+
+    async def test_unparsable_feed_does_not_comment_out_user_url(self) -> None:
+        # _loads_dict 恒不抛、只回 {}，漏掉「空 dict 即不可解析」这道闸时，畸形响应会顺着下面的
+        # 字段判空走进 KeyError 写回分支——与风控壳页是同一类「无法确认却当成确认失效」。
+        written, logger = await self._call(self._UNPARSABLE_FEED)
+        assert written == [], f"畸形 feed 被当成地址失效并改写了用户配置: {written}"
+        assert any("未改动配置文件" in m for m in logger.msgs), f"缺少不写回的告警: {logger.msgs}"
+
+    async def test_parsed_feed_with_missing_field_still_comments_out(self) -> None:
+        # 正向见证：确认失效的语义没被「一律不写回」连根拔掉。
+        written, logger = await self._call(self._PARSED_BUT_EMPTY)
+        assert written == [(self.URL, "#" + self.URL)], f"确认失效时未写回: {written}"
+        assert any("已注释该房间" in m for m in logger.msgs), f"缺少显式告警: {logger.msgs}"

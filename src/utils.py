@@ -81,7 +81,9 @@ _JS_SHA256_EXPECTED: dict[str, str] = {
     # [历史注] 历次重算（尾部补换行、脱敏、去死代码）均为非行为改动，签名链路未动。
     "crypto-js.min.js": "9d13c4dba10bbf2b04d6c4e21c2246abf43be0fd356596c402d08eb4f9f0aecd",
     "haixiu.js": "e6ad6ce966868c56e08f3ae78056467ecdba38060692e47d536ad2210ac354c5",
-    "liveme.js": "7fad3e96f646f118877c6f3e4ae5bd3c2571c02fb5580952c2edd67aba6dde38",
+    # 2026-10-28 重算：按 CODE_REVIEW_2026-10-27 4.2 删除 liveme.js 内 6 处调试打印
+    # （纯日志面改动，签名算法与入参形态逐字未动）。
+    "liveme.js": "0ee11b8f775d519c5a16f255b901d080bfc647f3e748ffaf012d1346d003c8a9",
     "migu.js": "65d9ebedad8a7ddd830175c989440c2d5b3770bc3913f965af6930d2a9e2c39a",
     "x-bogus.js": "41b3f4def2486df1008730e74590352fbe29a0f411509cbecc108b8eebf4a529",
 }

@@ -14,7 +14,7 @@
 ### 必须停下来交回用户的情形
 
 - **批量重装 venv 依赖**：必须由用户在普通终端执行，沙箱拦截发生在 pip 已开始卸载之后、会清空包目录。命令与分级流程见 dlr-dev-playbook `references/ci-workflow.md` 的「venv 依赖修复分级处置」。
-- **清理范围越界**：收尾清理只限本次任务自己产生的一次性脚本与 `tests/` 下用例生成的临时输出；运行期产物目录与 `scripts/` 下正式维护脚本一律不动（范围与命令见「测试收尾清理临时脚本」）。
+- **清理范围越界**：收尾清理只限本次任务自己产生的一次性脚本与 `tests/` 下用例生成的临时输出；运行期产物目录（downloads/recordings/logs/backup_config/）与 `scripts/` 下正式维护脚本一律不动（范围与命令见「测试收尾清理临时脚本」）。**括号枚举是唯一事实源**：`scripts/agent_hook_guard.py::PROTECTED_RUNTIME_DIRS` 与 `.gitignore`/`.dockerignore` 同源维护，`tests/test_agent_hook_guard.py` 按此括号形态正则取基准并逐项比对；写成顿号/斜杠列表会让该一致性锁失去比对基准而判红，精简本文件时**不得**改动这处括号形态。
 - **删除被 harness safe-delete 拦截**：记下路径、按同节口径逐文件重试；仍删不净时在回复里明确列出残留路径交回用户，**不得静默跳过**。
 - **治理式流程技能（vibe 等）需要 run 范围与 artifact root**：先由用户确认，不得把工具安装目录当产物根目录（见「流程编排技能的使用边界」）。
 
@@ -108,7 +108,7 @@
 
 - **收尾必须删除任务中生成的一次性脚本与产物**：前缀分三类——`_tmp_`/`tmp_`（通用临时）、`mock_`（桩服务/模拟器）。残留会污染 `git status`、被 mypy 收编、误导协作者。**任务收尾一律删除**，不留「下次可能还用」。
 - **优先写在仓库之外**: 落 `%TEMP%`/`/tmp` 或 `tempfile.mkdtemp()`；确需写在仓库内者用完即删，统一前缀命名；需长期复用才进 `scripts/`。
-- **清理范围与禁区**: 只删本次任务产生的临时脚本与输出；**不要**删 `downloads/`/`logs/`/`backup_config/` 运行期产物目录、**不要**动 `scripts/` 下正式维护脚本。清理前 `git status --short` 列出未跟踪文件，对 `.workbuddy/` 等 gitignore 目录显式枚举后确认再删；被 safe-delete 拦截时逐文件重试或列出残留交回用户，**不得静默跳过**。
+- **清理范围与禁区**: 只删本次任务产生的临时脚本与输出；**不要**删 `downloads/`/`recordings/`/`logs/`/`backup_config/` 运行期产物目录、**不要**动 `scripts/` 下正式维护脚本。清理前 `git status --short` 列出未跟踪文件，对 `.workbuddy/` 等 gitignore 目录显式枚举后确认再删；被 safe-delete 拦截时逐文件重试或列出残留交回用户，**不得静默跳过**。
 
 ```powershell
 Get-ChildItem -Recurse -File -Include *_tmp_*.py,tmp_*.py,mock_*.py,*_tmp_*.txt,tmp_*.txt |

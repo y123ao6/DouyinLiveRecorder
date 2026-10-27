@@ -779,17 +779,24 @@ class TestMenuCallbacks:
         tray = web_tray.WebConsoleTray("127.0.0.1", 8000)
         tray._on_open_browser()  # 不得抛出：异常穿过 Qt 事件循环等于托盘失灵
 
-    def test_on_exit_signals_uvicorn_shutdown(self) -> None:
+    def test_on_exit_signals_uvicorn_shutdown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         server = types.SimpleNamespace(should_exit=False)
         tray = web_tray.WebConsoleTray("127.0.0.1", 8000, server=cast(Any, server))
         icon = _FakeQSystemTrayIcon()
         tray.icon = cast(Any, icon)
+        # CODE_REVIEW_2026-10-27 4.3：有 server 分支必须**只**置 should_exit。os._exit 一旦也被
+        # 触发，uvicorn 的优雅关闭（web.py finally 段的 ffmpeg / 连接池清理）会被整体跳过。
+        # 「codes 恒空」不是假绿——同一替身机制在下面的 test_on_exit_without_server_hard_exits
+        # 里断言了 codes == [0]，即函数内 `import os` 确实读到了这个 sys.modules 条目。
+        codes: list[int] = []
+        monkeypatch.setitem(sys.modules, "os", _imported_module_shim("os", _exit=lambda code: codes.append(code)))
         tray._on_exit()
         assert server.should_exit is True
         # 与 stop() 不同，_on_exit 只收图标而不把 self.icon 置 None：
         # 循环还在跑，提前置 None 会让随后到达的收尾错过停图标。
         assert icon.hidden == 1
         assert tray.icon is not None
+        assert codes == [], f"有 server 时不得走 os._exit 强制退出: {codes}"
 
     def test_on_exit_without_server_hard_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         codes: list[int] = []

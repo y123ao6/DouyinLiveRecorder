@@ -5003,6 +5003,10 @@ async def get_huajiao_sn(
     # 一律不写回；只有确实取到页面且内容表明地址失效（无 feed / 字段缺失 / JSON 坏）
     # 才写回注释。原「瞬时网络故障」判据依赖异常类型，而 async_req 已吞尽传输层异常返回
     # ""，该判据恒假，等于「断网一次即永久注释掉用户房间」。
+    # [更正考古 2026-10-28] 上一行「无 feed 也算地址失效」已被 CODE_REVIEW_2026-10-27 4.1 证伪：
+    # WAF/风控壳页同样是「HTTP 200 + 有响应体但不含 var feed」，一次风控命中即永久注释掉用户房间。
+    # 现判据收紧为「响应可解析且字段确实为空」，只有 KeyError（feed 解析成功但字段缺失）才写回；
+    # 「无 var feed」与「JSON 坏」同属无法确认，一律落到下面不写回的兜底分支。
     html_str = _get_str_response(await async_req(url=api, proxy_addr=proxy_addr, headers=headers))
     if not html_str:
         logger.warning(
@@ -5022,7 +5026,15 @@ async def get_huajiao_sn(
         json_str = json_str_match.group(1)
         # 命中片段可能被风控换成 JS 壳页/截断，裸解析抛错会走进「注释掉用户 URL」分支、
         # 与「确认地址失效」不可区分。先归因再抛错，保留既有写回语义。
+        # [更正考古 2026-10-28] 上面的「保留既有写回语义」已被本次改判推翻：找不到 var feed 正是
+        # 风控壳页的形态，属「无法确认」而非「确认失效」，写回只留给下面的 KeyError 分支。
         json_data = _loads_dict(json_str)
+        if not json_data:
+            # var feed 命中但内容解析不出 dict（截断/畸形/被风控替换）：同样属「无法确认」而非
+            # 「确认失效」，抛 ValueError 落到下面不写回的兜底分支。（_loads_dict 恒不抛，只回 {}，
+            # 若漏了这道闸，畸形响应会顺着下面的字段判空走进 KeyError 并把用户房间注释掉。）
+            _warn_api_abnormal(json_str, "花椒 房间页 var feed", "var feed 不可解析", json_data)
+            raise ValueError("Unparsable feed payload in huajiao page")
         sn = _dig(json_data, "feed", "sn")
         uid = _dig(json_data, "author", "uid")
         nickname = _dig(json_data, "author", "nickname")
@@ -5031,10 +5043,13 @@ async def get_huajiao_sn(
             raise KeyError("Missing feed/author data in huajiao page")
         live_id = _safe_extract_id(url)
         return cast(str, nickname), cast(str, sn), cast(str, uid), live_id
-    except (ValueError, KeyError) as e:
+    except KeyError as e:
         # 花椒地址不固定（短链会失效），确认失效时把 URL 注释掉（加 # 前缀），避免主循环
-        # 反复重试。请求已移出本 try，能进这里的只有主动抛出的 ValueError（无 feed）与
-        # KeyError（字段缺失），即真正的「内容确认失效」；其余异常走下面不写回的分支。
+        # 反复重试。请求已移出本 try，能进这里的只有主动抛出的 KeyError（feed 已解析出、
+        # 但 sn/uid/nickname 缺失），即真正的「内容确认失效」；其余异常走下面不写回的分支。
+        # [更正考古 2026-10-28] 原 except 并列了 ValueError（无 var feed）并同样写回，而那正是
+        # WAF/风控壳页的形态——有响应但不含 var feed，一次风控即永久注释掉用户房间（M-13）。
+        # 现把 ValueError 移出本分支，由下面的 except Exception 承接（告警 + 抛错 + 不写回）。
         logger.warning(
             i18n.tr(
                 "[花椒直播]房间页确认无有效直播数据，已注释该房间: {type_name}: {e}",

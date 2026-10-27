@@ -1698,6 +1698,33 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
+### v4.6.0-dev (2026-10-28) — 补记：CODE_REVIEW_2026-10-21 批次「修复日志标未实施、实际已落地」的条目回填（纯文档，零代码改动）
+
+- **成因**：`docs/worklog/CODE_REVIEW_2026-10-27.md` §7 指出——2026-10-21 审查批次（130 项）的整改执行记录 `docs/worklog/CODE_REVIEW_2026-10-21_FIX.md` 把一批条目标为「未实施 / 建议排期」（其 §6 排期表列出 M-85、M-91~M-93、M-35~M-43、M-44~M-49、M-59~M-69、M-71~M-83、M-100~M-104、L-01~L-10），但 2026-10-27 的只读复核（报告 §3.1 基线核对总表）证明这些修复**实际已落在工作区**，只是从未回写更新日志——事实源与代码状态长期背离。本条即那次回填。
+- **回填范围（按模块归组；锚点一律写符号名，不写 file:line）**：
+  - `main.py`：全局配置键集合收敛（M-06 / M-11 / M-15）。
+  - `src/stream_select.py`：`probe_client` 显式初始化、`security_rejected` 集合正确填充（M-20 / M-23 / M-25）；Windows 保留名判定、`_is_h265` 单点收敛、Range GET 分片层探测 `_probe_hls_segment`（S-03 / S-04 / S-05）。
+  - `src/scheduler.py`：`_compute_capacity` 在动态模式下收敛为 `min(上限, max(配置值, ceil(活跃数/缩放因子)))`，固定模式恒取配置值且刻意不按上限夹取；熔断需 `fail_rate > 0`（M-35 / M-36 / M-42）。
+  - 并发与生命周期（M-37~M-40 / M-43）：`src/collector.py`、`src/danmaku_monitor.py`、room、recorder_status 四处的线程握手、有界队列、同锁快照。
+  - `src/ffmpeg_install.py`（M-44~M-49）：`swap_directories` 带回滚、下载重试 + 字节上限、PATH 统一前插。
+  - `src/config_read.py`：续行解析容错（M-54）。
+  - Web 面：`src/web_api.py` 危险配置键黑名单扩容 + token 只存 sessionStorage/内存（M-60~M-64 / M-67 / M-88）；`src/web_config.py` 写侧拒绝含重复键的写入（M-68）。
+  - 注入面（M-84 / M-85 / M-88）：`web/app.js` 的 innerHTML 动态字段全部经 `esc()`、`scripts/smoke_test.py` 报告生成全部 `html.escape`、`StopRecording.vbs` 目录锚点改 `ContainsAtDirBoundary(s, LCase(appDir))`（该文件是 UTF-16 LE，按 UTF-8 读会误判为未命中）。
+  - 门禁 fail-closed：`scripts/check_coverage.py:: _data_is_stale` 数据过期即判失败（M-91）；`scripts/run_gates.py` 把「超时无结论 stalled」与「检查不通过 failed」分档（M-94）；`scripts/spike_arm64_static_ffmpeg.sh` 带 `set -euo pipefail` + `curl --max-time` + 官方 sha256（M-96）。
+  - `src/ws_client.py`：协议层 ping/pong + 指数退避重连 + 健康归零窗口，回调文案强制脱敏（M-30）；`src/async_http.py`：HEAD 失败自动 Range-GET 复核、响应体读取带上界（M-32）。
+- **不属本次回填**：M-13（`get_huajiao_sn`）与 M-87（`liveme.js` 调试输出）当时确实未落地，已由本日的 CODE_REVIEW_2026-10-27 整改条目分别改判据与删除；M-66（Origin 头缺失放行）、M-69（`web_tray` 的 `os._exit`）、M-70（宽 `except Exception`）三处经论证为**有意设计**，维持现状并各有锁或观察记录。
+- **验证**：本次为纯文档回填，零代码改动。逐条结论取自 `docs/worklog/CODE_REVIEW_2026-10-27.md` §3.1 对当前代码的实证复核；本条另按符号名抽查 15 个锚点（含 UTF-16 的 `StopRecording.vbs`）全部命中。门禁未受影响。
+
+### v4.6.0-dev (2026-10-28) — CODE_REVIEW_2026-10-27 整改：花椒写回判据改判 / liveme.js 调试输出清理 / web_tray 退出路径加固
+
+- **成因**：`docs/worklog/CODE_REVIEW_2026-10-27.md`（只读全仓审查，4 项发现：中等 1 / 轻微 3）交回的整改清单。
+- **4.1（中等，M-13）**：`src/spider.py::get_huajiao_sn` 是零生产调用的死代码（活链路为 `main.py` → `get_huajiao_stream_url` → `get_huajiao_user_info` / `get_huajiao_stream_url_app`），却携带全仓唯一的 `utils.replace_url(..., new="#" + url)`。原判据把「无 `var feed`」也算地址失效，而 WAF/风控壳页正是「HTTP 200 + 有响应体但不含 `var feed`」——一次风控命中即永久注释掉用户房间。现判据收紧为「响应可解析且字段确实为空」：`except` 由 `(ValueError, KeyError)` 改为只留 `KeyError`，并新增「`_loads_dict` 回空 dict = 不可解析」这道闸（该函数恒不抛、只回 `{}`，漏闸时畸形响应会顺着字段判空走进写回分支）。空响应 / 无 `var feed` / feed 不可解析三类一律告警 + 抛错 + 不写回。
+- **4.2（轻微）**：`src/javascript/liveme.js` 删除 6 处调试打印（sKey / data_e / data_i / fake lm_s_sign / signParams / final lm_s_sign），签名素材与完整请求参数不再随 node 子进程 stdout 扩散。该文件被 `src/utils.py::_JS_SHA256_EXPECTED` 钉定，哈希已按原始字节重算并同步（`7fad3e96…` → `0ee11b8f…`）。
+- **4.3（轻微）**：`tests/test_web_tray.py::test_on_exit_signals_uvicorn_shutdown` 补 `os._exit` 反向断言——有 server 分支只置 `should_exit`，不得触发强制退出（否则 uvicorn 优雅关闭与 `web.py` finally 段的 ffmpeg / 连接池清理会被整体跳过）。替身沿用文件内既有的 `_imported_module_shim("os", _exit=...)` 口径。
+- **4.4（轻微）**：宽 `except Exception` 分布维持观察、不单独排期，本轮零改动。
+- **验证**：`pytest` 全量绿；`black` / `isort` / `mypy`（win32 + linux 双平台）/`basedpyright` 全绿；`node --check` 通过且真机跑一次 `liveme.js::sign` 的输出结构与改动前一致；三处改动各做一次变异验证（回退写回判据 / 摘掉空 dict 闸 / 把 `os._exit` 移出 else 分支），对应用例均按要求转红后还原。
+- **未动**：`get_huajiao_sn` 本体按用户选向**保留未删**（报告给的删除方案需同步改 `tests/test_exception_log_masking.py` 与 `tests/test_spider_hardening.py` 两处活锁登记，本轮不采纳）；`x-bogus.js` 的混淆形态按报告口径仅备案；报告 §7 建议的「补记 2026-10-21 批次约 20 项已落地修复」属独立的文档回填工作，不在本轮范围。
+
 ### v4.6.0-dev (2026-10-27) — 项目级 Skill 同类合并：6 目录 → 4（三个领域 Skill 合一、注释重构两 Skill 合一）+ 去重与指针修正
 
 - **成因**：`.agents/skills/` 下 `ffmpeg-command-construction` / `platform-source-selection` / `runtime-pin-verification` 同构——都是从 `dlr-dev-playbook/references/known-pitfalls.md` 切出的领域约束片，frontmatter + 路由表 + 验证模板逐字一致，且「验证」段在每个文件内被写了两遍（共 6 份副本）；`comment-refactor-equivalence-proof` 与 `dispatch-quota-aware-write-agents` 互为上下游（前者给等价性契约、后者给波次/台账/恢复），JSONL 台账 schema 与 pre-flight 检查两边各存一份。
