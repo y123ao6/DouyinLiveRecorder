@@ -557,7 +557,7 @@ jobs:
         run: python -c "from PySide6.QtWidgets import QApplication; app = QApplication([]); print('Qt offscreen OK', app.platformName())"
 
       # pytest 全程跑在 xvfb 下：非 Tk 用例不受影响（不读 DISPLAY），真窗用例因此真实执行。
-      # 全局覆盖率下限 fail_under = 50 由 pyproject [tool.coverage.report] 强制
+      # 全局覆盖率下限 fail_under = 60 由 pyproject [tool.coverage.report] 强制
       - name: Run pytest with coverage
         run: xvfb-run -a pytest --cov=src --cov-report=term-missing --cov-report=xml
 

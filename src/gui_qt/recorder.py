@@ -23,8 +23,13 @@ from typing import Callable, Final
 
 from PySide6.QtCore import QObject, Signal
 
+# 日志文案统一走 i18n.tr 常量模板（占位符用目录登记的归一形态 {pid}/{path}/{err}/{type_name}），
+# 与 gui.py 旧 GUI 同一契约；src/utils 的 mask_credentials 供路径进日志前脱敏。
+import i18n
+
 # 子进程环境构造：src/logger.py 的 child_process_env（剔除 GUI 父进程标记）。
 from src.logger import child_process_env
+from src.utils import mask_credentials
 
 from .shared import ANSI_ESCAPE_PATTERN, STOP_REUSE_JOIN_SECONDS, cleanup_process_tree, send_ctrl_break_to_child
 
@@ -151,7 +156,7 @@ class RecorderController(QObject):
             if os.path.isfile(console_exe):
                 exe = console_exe
             else:
-                self._log(f"未找到 console 解释器 {console_exe}，优雅停止将不可用", "warn")
+                self._log(i18n.tr("未找到 console 解释器 {path}，优雅停止将不可用", path=console_exe), "warn")
         return [exe, main_py]
 
     def start(self) -> tuple[bool, int | None, str]:
@@ -207,9 +212,12 @@ class RecorderController(QObject):
             session = self._session_id
 
         self._log("━" * 40)
-        self._log(f"录制进程已启动 (PID: {proc.pid})")
-        self._log(f"执行程序: {record_cmd[0]}")
-        self._log(f"工作目录: {self.script_dir}")
+        self._log(i18n.tr("录制进程已启动 (PID: {pid})", pid=proc.pid))
+        # 2026-10-29 自 gui.py:3583 同步红线：执行程序/工作目录是绝对路径，落日志前必须过
+        # mask_credentials 脱敏（Qt 移植时丢了 tr + 脱敏，本次回填；tests/test_gui_legacy_guards.py
+        # 的 _MASKED_PATH_MSGIDS 守护同一契约）。
+        self._log(i18n.tr("执行程序: {path}", path=mask_credentials(record_cmd[0])))
+        self._log(i18n.tr("工作目录: {path}", path=mask_credentials(self.script_dir)))
         self._log("━" * 40)
 
         # 看门狗线程：读 stdout 并以「批次 + 结束哨兵」两种形态投给主线程；
@@ -248,7 +256,7 @@ class RecorderController(QObject):
     def _stop_child_once(self, proc: subprocess.Popen[str]) -> None:
         worker = self._current_stop_worker()
         if worker is not None and worker is not threading.current_thread():
-            self._log("已有停止流程在途，等待其完成后再收尾（避免并发操作同一子进程控制台）")
+            self._log(i18n.tr("已有停止流程在途，等待其完成后再收尾（避免并发操作同一子进程控制台）"))
             worker.join(timeout=STOP_REUSE_JOIN_SECONDS)
         with self._console_stop_lock:
             # 拿锁后必须复核进程状态：在途那轮（或另一条路径）可能已经把子进程终止，
@@ -262,23 +270,23 @@ class RecorderController(QObject):
     def _send_stop_signal_and_wait(self, proc: subprocess.Popen[str]) -> bool:
         graceful_signal_sent = False
         if sys.platform == "win32":
-            self._log("正在发送 CTRL_BREAK 信号（触发子进程 safe_exit 清理 ffmpeg）...")
+            self._log(i18n.tr("正在发送 CTRL_BREAK 信号（触发子进程 safe_exit 清理 ffmpeg）..."))
             graceful_signal_sent = send_ctrl_break_to_child(proc.pid)
             if not graceful_signal_sent:
                 # 不能只 proc.terminate()：TerminateProcess 硬杀不触发 safe_exit，
                 # 其下 ffmpeg 会孤儿化继续录制，且 wait() 立即成功会绕过 taskkill /T 兜底。
-                self._log("发送 CTRL_BREAK 失败，整树强制终止（避免 ffmpeg 孤儿化）", "warn")
+                self._log(i18n.tr("发送 CTRL_BREAK 失败，整树强制终止（避免 ffmpeg 孤儿化）"), "warn")
                 try:
                     subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=5)
                 except Exception as e:
-                    self._log(f"taskkill 整树终止失败，回退 terminate: {e}")
+                    self._log(i18n.tr("taskkill 整树终止失败，回退 terminate: {err}", err=e))
                     proc.terminate()
         else:
-            self._log("正在发送 SIGINT 信号...")
+            self._log(i18n.tr("正在发送 SIGINT 信号..."))
             try:
                 os.kill(proc.pid, signal.SIGINT)
             except Exception as e:
-                self._log(f"发送 SIGINT 失败，回退 terminate: {e}")
+                self._log(i18n.tr("发送 SIGINT 失败，回退 terminate: {err}", err=e))
                 proc.terminate()
 
         terminated = False
@@ -286,14 +294,14 @@ class RecorderController(QObject):
             proc.wait(timeout=15)
             terminated = True
             if graceful_signal_sent:
-                self._log("进程已优雅退出（ffmpeg 已由子进程清理）")
+                self._log(i18n.tr("进程已优雅退出（ffmpeg 已由子进程清理）"))
             else:
                 # 硬杀路径不能宣称「ffmpeg 已由子进程清理」
-                self._log("进程已终止（硬杀路径，ffmpeg 已随进程树终止）")
+                self._log(i18n.tr("进程已终止（硬杀路径，ffmpeg 已随进程树终止）"))
         except subprocess.TimeoutExpired:
-            self._log("进程未能及时退出，整树强制终止...")
+            self._log(i18n.tr("进程未能及时退出，整树强制终止..."))
         except Exception as e:
-            self._log(f"等待子进程退出异常: {e}")
+            self._log(i18n.tr("等待子进程退出异常: {err}", err=e))
 
         if not terminated and proc.poll() is None:
             try:
@@ -303,11 +311,11 @@ class RecorderController(QObject):
                     proc.kill()
                     subprocess.run(["pkill", "-P", str(proc.pid), "-x", "ffmpeg"], capture_output=True, timeout=5)
                 proc.wait(timeout=5)
-                self._log("进程已强制终止")
+                self._log(i18n.tr("进程已强制终止"))
             except subprocess.TimeoutExpired:
-                self._log("警告：进程可能仍在运行！", "warn")
+                self._log(i18n.tr("警告：进程可能仍在运行！"), "warn")
             except Exception as e:
-                self._log(f"强制终止失败: {e}")
+                self._log(i18n.tr("强制终止失败: {err}", err=e))
         return graceful_signal_sent
 
     # 用户点「停止录制」：只负责置位与拉起后台线程，不做任何阻塞操作（界面必须立刻回弹）。
@@ -316,7 +324,7 @@ class RecorderController(QObject):
             return False
         self._stopping = True
         self._log("━" * 40)
-        self._log("正在停止录制...")
+        self._log(i18n.tr("正在停止录制..."))
         worker = threading.Thread(target=self._stop_worker_body, name="gui-stop", daemon=True)
         self._register_stop_worker(worker)
         worker.start()
@@ -352,13 +360,13 @@ class RecorderController(QObject):
                 # 进程退出即进复用池，命中新主人比多打一行日志严重得多）。
                 self._cleanup_target_pid = None
             if session != self._session_id:
-                self._log("检测到新录制会话，跳过旧会话的停止收尾")
+                self._log(i18n.tr("检测到新录制会话，跳过旧会话的停止收尾"))
                 return
             self._clear_process()
             self.ended.emit(session)
         except Exception as e:
             self._stopping = False
-            self._log(f"停止流程收尾异常: {type(e).__name__}: {e}", "error")
+            self._log(i18n.tr("停止流程收尾异常: {type_name}: {err}", type_name=type(e).__name__, err=e), "error")
             # 异常路径必须走与成功路径相同的出口——main_window.stop_recording 在发起停止时
             # 就禁用了两个按钮并约定「由 _on_recorder_ended 统一恢复」，不 emit ended 会让按钮
             # 永久禁用、只能重启 GUI；不清进程句柄则 is_running() 仍为真、start() 的闸门继续拦。
@@ -379,7 +387,7 @@ class RecorderController(QObject):
                 self._clear_process()
             cleanup_process_tree(child_pid, lambda msg, level="info": self._log(msg, level))
         except Exception as e:
-            self._log(f"退出清理流程异常: {e}", "warn")
+            self._log(i18n.tr("退出清理流程异常: {err}", err=e), "warn")
         finally:
             self._finish_stop_worker()
         callback = getattr(self, "_shutdown_callback", None)
@@ -476,4 +484,4 @@ class RecorderController(QObject):
 
     def note_finish_skip(self) -> None:
         # UI 线程不 join 输出线程（join 会冻结界面），因此这里只 emit 一条日志。
-        self._log("录制进程已结束但输出线程仍在收尾，直接重置 UI（不阻塞主线程）")
+        self._log(i18n.tr("录制进程已结束但输出线程仍在收尾，直接重置 UI（不阻塞主线程）"))

@@ -91,7 +91,7 @@ Excluding `.git/`/`.venv/`/`node_modules/`, the workspace contains **106** Markd
 ### Project Basic Information
 
 - **Project Name**: DouyinLiveRecorder (Douyin Live Recorder)
-- **Version**: 4.5.0
+- **Version**: 4.6.0
 - **Author**: y123ao6
 - **License**: MIT
 - **Project URL**: [GitHub](https://github.com/y123ao6/DouyinLiveRecorder)
@@ -104,7 +104,7 @@ Excluding `.git/`/`.venv/`/`node_modules/`, the workspace contains **106** Markd
 - ✅ Three run modes: CLI + GUI + Web management panel
 - ✅ Multi-platform message push: DingTalk, WeChat, email, Telegram, Bark, NTFY, PushPlus
 - ✅ Docker containerized deployment
-- ✅ Internationalization support (Chinese/English)
+- ✅ Internationalization support (Simplified Chinese / English (US) / English (UK) / Traditional Chinese)
 - ✅ Flexible configuration: quality selection, segmented recording, custom save paths, etc.
 - ✅ Actual quality feedback and downgrade alerting (supports Douyin, TikTok, Kuaishou, Huya, Douyu, Bilibili, NetEase CC)
 - ✅ Web security: Token authentication, path traversal protection, sensitive config masking
@@ -144,13 +144,12 @@ Platforms that support actual quality feedback and downgrade alerting: Douyin, T
 | FFmpeg | Video recording and transcoding |
 | Node.js + exejs/PyExecJS | Run JavaScript signing algorithms (exejs preferred, PyExecJS fallback) |
 | Loguru | Structured logging |
-| PySide6 (Qt6) + pystray + Pillow | GUI and system tray (the window layer is `src/gui_qt/` since 2026-10-17; the Web entry tray `src/web_tray.py` also uses QSystemTrayIcon since 2026-10-20; the tkinter.ttk implementation is kept during the migration and still uses pystray + Pillow) |
+| PySide6 (Qt6) | GUI and system tray (the window layer is `src/gui_qt/` since 2026-10-17; both the GUI and Web entry trays use QSystemTrayIcon (since 2026-10-20); the tkinter.ttk implementation is kept during the migration and carries no tray since that date) |
 | Starlette + uvicorn | Web management panel backend |
 | HTML + CSS + JavaScript | Web management panel frontend |
 | Docker | Containerized deployment |
 | gettext (msgfmt) | Internationalization translation compilation |
-| mypy | Static type checking (`--strict` mode, `disallow_untyped_defs = true`) |
-| pyflakes | Static code checking |
+| mypy | Static type checking (`disallow_untyped_defs = true`) |
 | websockets | Danmaku (live comments) WebSocket transport layer (`src/ws_client.py`, shared across platforms) |
 | protobuf | Douyin danmaku protocol decoding (`src/proto/douyin_pb2`, protoc-generated module) |
 | brotli | Bilibili danmaku decompression (protover=3 requires brotli decompression) |
@@ -972,11 +971,8 @@ def host_of(url: str) -> str: ...
 | exejs | >=1.0.1 | JavaScript execution engine (active-maintained successor to PyExecJS, preferred) |
 | PyExecJS | >=1.5.1 | JS execution engine fallback compatibility (used when exejs is not installed) |
 | PySide6 | >=6.12.0 | GUI window layer (`src/gui_qt/`, QSS token themes + Qt widgets) + Web entry system tray (`src/web_tray.py`, migrated from pystray on 2026-10-20; the 6.12 floor is the measured minimum that supports Python 3.14.8) |
-| pystray | >=0.19.5 | System tray (GUI entry `gui.py`; the Web tray uses QSystemTrayIcon since 2026-10-20) |
-| Pillow | >=12.3.0 | Image processing (tray icon generation) |
 | starlette | >=1.3.1 | ASGI framework (`src/web_api.py` migrated from FastAPI to depend on Starlette directly in phase 2; lower bound 0.49.1 → 1.0.1 → 1.3.1, see the CVE/PYSEC notes) |
 | uvicorn[standard] | >=0.51.0 | ASGI server |
-| python-multipart | >=0.0.32 | Form/file upload parsing |
 | websockets | >=14.0 | Danmaku WebSocket client (`src/ws_client.py`; `additional_headers` is a 14.0+ API) |
 | protobuf | >=6.33.5,<8 | Douyin danmaku protocol decoding (`src/proto/douyin_pb2.py`; the `<8` cap is a gencode compatibility guard) |
 | brotli | >=1.2.0 | Bilibili danmaku decompression (protover=3) |
@@ -1295,7 +1291,7 @@ dist/DouyinLiveRecorder/
 ├── downloads/                       # 默认下载目录（config.ini 未指定时位于 exe 同级）
 ├── backup_config/                   # 配置备份目录（exe 同级）
 └── _internal/                       # 依赖包 + src/ 及打包资源统一管理
-    ├── (Crypto/ PIL/ certifi/ h2/ watchfiles/ websockets/ yaml/ + 运行库 .dll)
+    ├── (Crypto/ PySide6/ certifi/ h2/ watchfiles/ websockets/ yaml/ + 运行库 .dll)
     ├── src/            src/javascript/
     ├── i18n/
     └── web/
@@ -1362,8 +1358,8 @@ Workflow file: `.github/workflows/ci.yml`, runs on push to main / PR, ensuring c
 | Job | Environment | Content |
 | --- | --- | --- |
 | `static` | py3.14 | `black --check .` + `isort --check .` + `python scripts/check_version.py` (version single-source-of-truth check) + `python scripts/compile_po.py --check` (i18n po/mo sync check, zero side effects) + `python scripts/check_annotations.py` (annotation conventions: no docstrings / density floor / module headers, zero side effects) |
-| `typecheck` | py3.14 | Install requirements + pinned mypy, then run `mypy` (scope comes entirely from `pyproject.toml [tool.mypy].files`; the minimum supported version is still used so conclusions hold for the oldest interpreter) |
-| `test` | py3.14 | `pytest --cov=src --cov-report=term-missing` (global `fail_under=50` gate, `fail-fast: false`); on the minimum version additionally runs the `scripts/check_coverage.py` per-module gate + coverage.xml upload + optional Codecov |
+| `typecheck` | py3.14 | Install requirements + pinned mypy/pytest, then run `mypy` (scope comes entirely from `pyproject.toml [tool.mypy].files`; the minimum supported version is still used so conclusions hold for the oldest interpreter) |
+| `test` | py3.14 | `pytest --cov=src --cov-report=term-missing` (global `fail_under=60` gate, `fail-fast: false`) + the `scripts/check_coverage.py` per-module gate (runs once on the minimum version) + coverage.xml upload + optional Codecov |
 | `concurrency-test` | py3.14 | Concurrency-specific: under `COVERAGE_RCFILE=.coveragerc-concurrency` runs `test_concurrency_rate_limit.py` + `test_concurrency.py` + `test_async_http_lock.py` (dedicated config sets no global threshold) |
 | `integration-verify` | py3.14 + Node 24 | apt install ffmpeg; verify the ffmpeg/node binaries are discoverable, and call `check_ffmpeg_installed()` / `check_nodejs_installed()` to verify detection logic |
 | `build-verify` | py3.14 packaging interpreter | `build_exe.py --smoke --no-runtime --no-zip` (lite packaging + CLI/Web/GUI three-entry smoke, on Linux via `xvfb-run -a`); release-grade full packaging is left to build-release.yml |
@@ -1685,6 +1681,33 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > Scripts: `tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`
 > (`python file.py <URL> [seconds]`; requires a live room + network; manual channel by default).
 > **Rolling archive**: this section keeps only the current release window; older entries live verbatim in [`docs/changelog/code-wiki-history-en.md`](docs/changelog/code-wiki-history-en.md) (rule stated in the "Changelog Archive Index" above).
+
+### v4.6.0-dev (2026-10-29) — i18n tr() migration wrap-up: three concatenated spider logs wired into the four catalogs, all 22 `_log` sites in gui_qt/recorder given back the tr() lost in the Qt port (plus the path-masking red line)
+
+- **Why**: the two known gaps called out by the user — ① `src/spider.py` FlexTV / TwitCasting exception logs and the PopkonTV status-code log bypassed `i18n.tr()` via "constant + `+` concatenation": the first two were deliberately kept during the 2026-10-20 credential-masking fix ("no new template, avoids four-catalog registration"; no catalog entries existed back then), while the third's entry `Failed to retrieve live stream source,` had been registered all along (zh_TW carries the real translation `獲取直播流源失敗，`) yet could never match, since runtime lookup is an exact whole-string match; ② all 22 `_log` messages in `src/gui_qt/recorder.py` (12 constants + 10 f-strings) lost gui.py's tr() migration wholesale in the Qt port — including the three f-strings registered under normalized placeholders (`录制进程已启动 (PID: {pid})` / `执行程序: {path}` / `工作目录: {path}`), which rendered source text forever under non-zh_CN languages, and the "executable / working directory" pair also lost gui.py's mask_credentials path masking (the same red line guarded by tests/test_gui_legacy_guards.py).
+- **Modified** · `src/spider.py` — the three concatenations became `i18n.tr()` constant templates: `Failed to retrieve data from FlexTV live room {e}`, `TwitCasting login error, {e}` (argument still `utils.mask_credentials(str(e))`; on-disk masking semantics unchanged) and `Failed to retrieve live stream source, {status_msg}`; the original "keep concatenation" comments gained [2026-10-29 correction] paragraphs (append-only).
+- **Modified** · `src/gui_qt/recorder.py` — all `_log` messages now go through `i18n.tr()` constant templates (adds `import i18n` and `from src.utils import mask_credentials`): placeholders normalized to the registered forms (`{pid}`/`{path}`/`{err}`/`{type_name}`, aligned line by line with gui.py); the "executable / working directory" pair wraps its path args in `mask_credentials(...)`; the "━" decoration lines and variable-forwarding args stay as-is.
+- **Modified** · `i18n/zh_CN.po`, `i18n/en_US.json`, `i18n/en_GB.json`, `i18n/zh_TW.yaml` — 2 entries added (FlexTV / TwitCasting templates) and the PopkonTV entry renamed in place with a `{status_msg}` placeholder (995 → 997, five-way key sets incl. .mo identical item for item); the two new zh_CN entries follow the section's convention with Chinese translations (FlexTV → `获取TTingLive(原Flextv)直播间数据失败: {e}`, TwitCasting → `TwitCasting登录错误: {e}`), zh_TW gained traditional-Chinese translations; .po header date bumped to 2026-10-29, .mo recompiled (998 entries incl. header, 140908 bytes).
+- **Modified** · `tests/test_gui_qt_units.py` — two new AST regression locks: `test_recorder_log_messages_route_through_tr` (no raw constant / raw f-string as `_log` first arg; mutation-verified red) and `test_recorder_path_logging_masks_credentials` ({path} templates must wrap mask_credentials; scope aligned with test_gui_legacy_guards' `_MASKED_PATH_MSGIDS` — `未找到 console 解释器 {path}` stays unmasked as in gui.py, red line not widened). `tests/test_spider.py`'s M12 class comment gained the migration correction line (assertions unchanged under conftest's identity pin).
+- **Verification**: `scripts/compile_po.py --check` in sync; runtime smoke across three languages (zh_CN/en_US/zh_TW tr rendering matches the catalogs item by item); extractor re-run shows zero missing and suspected-redundant 44 → 43; full pytest 5006 passed with an empty warnings summary; `scripts/run_gates.py` all 10 gates green; `scripts/check_coverage.py` PASS against fresh coverage data (69 modules at threshold); basedpyright 0 errors / 0 warnings.
+- **DoD scope**: touches error-log branches of platform resolvers and GUI log rendering; platform-level live verification not executed (the error branches need real FlexTV/PopkonTV failure scenes with a proxy — handed back to the user to run when a live room is available). Real verification executed: test_spider M12 drives the two migrated sites through the real function chain (only the network mocked), test_gui_qt_units drives every migrated start()/stop line offscreen with a real child process, plus the three-language catalog rendering smoke; steps 1+3+4+5+6 executed, step 2 partially (as above).
+
+### v4.6.0-dev (2026-10-28) — i18n four-catalog orphan cleanup: full re-extraction comparison removed 205 dead entries and recompiled zh_CN.mo (data-only plus one test-fixture swap, zero runtime code change)
+
+- **Why**: after the f-string → `i18n.tr()` migration (2026-09-10) and several rounds of rewording, old fragment/superseded-wording entries remained in the four catalogs (zh_CN.po / en_US.json / en_GB.json / zh_TW.yaml, 1200 entries each), a batch of which no longer had any runtime lookup path: runtime lookup is an **exact whole-string match**, so these "old-form" strings (e.g. pre-templating fragments such as `共监测` / `个直播中`, or the pre-rewording `FLV URL validation failed, trying record_url fallback`) could never match current output. The extractor's "suspected redundant" section was reference-only by design; this entry completes that manual sweep as requested.
+- **Triage rule (967 live strings)**: the `scripts/extract_i18n_strings.py` scan surface (first args of print/logger/tr/T, 951 strings) ∪ by-name tr/T candidates (reusing the chained resolution from `tests/test_i18n_catalog_coverage.py`, covering scanner blind spot ④) ∪ an explicit blind-spot sweep (`print_colored` first args / `messagebox.show*,ask*` argument constants). The 233-entry difference was then triaged three ways — AST comparison against every string constant in runtime .py files, a raw grep across all text files, and per-entry context verification: 28 entries are genuinely alive via blind spots/tooling (messagebox titles, build_exe.py `[build]`/`[smoke:*]` output, kwarg-position constants in `recorder_status`/GUI) and were **kept**; 205 were judged true orphans and **removed**. No entry lost its runtime translation by this removal.
+- **Modified** · `i18n/zh_CN.po`, `i18n/en_US.json`, `i18n/en_GB.json`, `i18n/zh_TW.yaml` — the same 205 entries removed from all four (1200 → 995), with the drop set verified per file to match the triage result exactly and the five-way key sets (including .mo) identical item for item; the .po header "更新日期 / PO-Revision-Date" bumped to 2026-10-28. Deletion only, nothing added or rewritten: the extraction comparison shows zero missing, the source text (i.e. the key itself) of every surviving key is unchanged, and all existing translations are preserved.
+- **Modified** · `tests/test_i18n.py` — the sample entry `开始录制` (an orphan with no runtime lookup path) replaced by the still-live `\r检测直播间中...`; the verified semantics (three-format priority / hot swap / fallback) are unchanged.
+- **Verification**: `scripts/compile_po.py --check` in sync (996 entries incl. header, 140690 bytes); .mo loaded directly via gettext with 995 entries and correct fallback-to-source on miss; extractor re-run shows zero missing; full pytest 5004 passed with an empty warnings summary; `scripts/run_gates.py` all 10 gates green; basedpyright 0 errors / 0 warnings; `scripts/check_coverage.py` PASS against fresh coverage data.
+- **DoD scope**: data cleanup plus a test-fixture swap, exempt from step 2 (no recording chain / source selection / ffmpeg arguments / platform resolvers involved); steps 1+3+4+5+6 executed.
+
+### v4.6.0-dev (2026-10-28) — pyproject metadata reconciliation: version 4.6.0 propagated to this file's header, three retired dependencies dropped from the dependency table, CI-table coverage numbers aligned with fail_under=60 (documentation plus one workflow comment, zero code change)
+
+- **Why**: the version-bump commit of 2026-10-18 (adc5a1e) touched `pyproject.toml` only, leaving the "Project Basic Information" version in this file at 4.5.0; the two 2026-10-20 dependency removals (pystray/Pillow, python-multipart) updated `AGENTS.md` and both README trees but missed this file's "Tech Stack" table, "Python Dependencies" table, and the `_internal` bundle listing; the 2026-10-24 coverage floor raise (50 → 60) likewise touched only `pyproject.toml` and `scripts/check_coverage.py`. This entry clears all of that in one pass under the "pyproject.toml as the single source of truth" reconciliation rule.
+- **Modified** · `CODE_WIKI.md`, `CODE_WIKI_EN.md` — ① header version 4.5.0 → 4.6.0; ② tech-stack GUI row `PySide6 (Qt6) + pystray + Pillow` → `PySide6 (Qt6)`, with the tray described as QSystemTrayIcon for both the GUI and Web entries and the legacy tkinter path carrying no tray; ③ the tech-stack mypy row drops the "`--strict` mode" wording (`[tool.mypy]` actually enables only a subset such as `disallow_untyped_defs`) and the pyflakes row is deleted (zero references anywhere and absent from every dependency list); ④ the Python dependency table drops the `pystray` / `Pillow` / `python-multipart` rows (21 → 18 rows, row-for-row equal with `requirements.txt` / `[project.dependencies]` again); ⑤ the `_internal` bundle listing swaps `PIL/` for `PySide6/` (PIL left the bundle with its dependency removal; PySide6 is the current GUI/Web dependency); ⑥ CI table `test` row `fail_under=50` → `60` plus a note that the per-module gate runs once on the minimum version; the EN side additionally gains the pinned pytest in the `typecheck` row (aligning with ci.yml and the CN row) and the four-locale note in the "Internationalization" feature row — every edit mirrored one-to-one across both languages.
+- **Modified** · `.github/workflows/ci.yml` — comment only: the global coverage floor note `fail_under = 50` → `60`, matching the actual value in `pyproject [tool.coverage.report]`; zero behavior change.
+- **Verification**: `scripts/sync_metadata.py --check` rc=0 (both uv.lock and the egg-info at 4.6.0); `scripts/check_version.py` all PASS (Dockerfile dynamic injection / main.py / src/web_api.py / zh_CN.po — all four consumers dynamic); `scripts/check_runtime_pins.py` structural mode OK; the dependency set remains backed by `tests/test_regression_2026_09_22_gates.py` and the four-way package-name-set equality locks. Both README changelogs stopping at v4.5.0 is expected — v4.6.0 has no tag yet and is unreleased, and the READMEs record released versions; the "pystray / Pillow kept" sentence in their v4.5.0 historical entries is deliberately left unchanged (a historical record true at the time, superseded by this entry).
+- **DoD scope**: documentation and workflow-comment changes only; per AGENTS.md "Definition of Done" this is exempt from step 2 (no recording chain / source selection / ffmpeg arguments / platform resolvers involved); steps 1+4+5+6 executed.
 
 ### v4.6.0-dev (2026-10-28) — Backfill: entries from the CODE_REVIEW_2026-10-21 batch that the fix log marked as not implemented but that actually landed (documentation only, zero code change)
 

@@ -12,6 +12,7 @@
 # 「不靠真窗」口径的刻意例外：登记表回填与「原地停旧语言」只有真控件树 + 真翻译目录
 # 才测得出来（夹具与 test_gui_qt_window.py 同源，登记表按用例快照还原）。
 
+import ast
 import json
 import os
 import signal as signal_module
@@ -271,6 +272,76 @@ def _controller(tmp_path: Path) -> RecorderController:
         app_root=str(tmp_path),
         script_dir=str(tmp_path),
     )
+
+
+# ─── recorder：i18n 迁移回归锁（AST 静态判据，零运行时依赖） ───
+
+
+def test_recorder_log_messages_route_through_tr() -> None:
+    # Qt 移植曾整批丢失 gui.py 的 tr() 迁移（2026-10-29 回填）：_log 首参一律经 i18n.tr 常量
+    # 模板（占位符沿用目录登记的归一形态 {pid}/{path}/{err}/{type_name}），裸常量/裸 f-string
+    # 在非 zh_CN 语言下永远渲染源文。判据只认「有价值的」首参——装饰线（"━" * 40 是 BinOp）
+    # 与转发变量实参（Name）不在判据面内。模板是否登记进目录由 tests/test_i18n_migration.py
+    # 的不变量③ runtime_templates_covered_by_catalog 跨仓把守，本用例只锁「调用形态」。
+    source = (Path(__file__).resolve().parent.parent / "src" / "gui_qt" / "recorder.py").read_text(encoding="utf-8")
+    offenders: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_log"
+            and node.args
+        ):
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.JoinedStr):
+            offenders.append(f"L{node.lineno}: 裸 f-string")
+        elif isinstance(first, ast.Constant) and isinstance(first.value, str) and first.value.strip():
+            offenders.append(f"L{node.lineno}: 裸常量 {first.value!r}")
+    assert not offenders, "recorder._log 存在绕过 tr() 的文案（移植丢失迁移的回归）: " + "; ".join(offenders)
+
+
+def test_recorder_path_logging_masks_credentials() -> None:
+    # 红线判据同 tests/test_gui_legacy_guards.py::test_absolute_paths_are_masked_before_logging
+    # （gui.py 当年正是路径日志漏过脱敏才立的判据）：「执行程序/工作目录」两条 {path} 模板的
+    # path= 实参必须是 mask_credentials(...) 调用。「未找到 console 解释器 {path}」不在旧守护
+    # 的 _MASKED_PATH_MSGIDS 集合内（gui.py 同款调用点就不脱敏，解释器位置属低敏诊断信息），
+    # 与 gui.py 逐行对齐、不扩大红线范围。
+    masked_msgids = ("执行程序: {path}", "工作目录: {path}")
+    source = (Path(__file__).resolve().parent.parent / "src" / "gui_qt" / "recorder.py").read_text(encoding="utf-8")
+    seen = 0
+    for node in ast.walk(ast.parse(source)):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_log"
+            and node.args
+        ):
+            continue
+        for inner in ast.walk(node):
+            if not (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "tr"
+                and inner.args
+                and isinstance(inner.args[0], ast.Constant)
+                and isinstance(inner.args[0].value, str)
+            ):
+                continue
+            template = inner.args[0].value
+            if template not in masked_msgids:
+                continue
+            seen += 1
+            path_kw = next((kw for kw in inner.keywords if kw.arg == "path"), None)
+            masked = (
+                path_kw is not None
+                and isinstance(path_kw.value, ast.Call)
+                and isinstance(path_kw.value.func, ast.Name)
+                and path_kw.value.func.id == "mask_credentials"
+            )
+            assert masked, f"路径未经 mask_credentials 脱敏就进日志: {template!r}"
+    # 反向见证：判据必须真的看见两条 {path} 日志点，否则「全部通过」只说明什么都没扫到
+    assert seen == 2, f"路径日志点的枚举面失效（应恰好 2 处，实得 {seen}）"
 
 
 def test_build_record_command_is_source_mode_outside_frozen(qt_app: QApplication, tmp_path: Path) -> None:

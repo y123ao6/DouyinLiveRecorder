@@ -3863,7 +3863,9 @@ async def get_flextv_stream_data(
         # 2026-10-20：连接/代理异常的 str(e) 会内嵌含 user:pass@ 的代理 URL，而 logger.error
         # 直落轮转日志（logs/ 按大小轮转保留多份＝凭据长期落盘），故拼接位改为 utils.mask_credentials(str(e))。
         # 保留原拼接形态与原文本（不新建 i18n.tr 模板，免四目录登记）；脱敏仅在日志侧，抛出/返回语义不变。
-        logger.error("Failed to retrieve data from FlexTV live room " + utils.mask_credentials(str(e)))
+        # [更正 2026-10-29] 上一行「保留原拼接形态」已按用户裁决废止：改走 i18n.tr 常量模板并登记四目录
+        # （zh_CN 下渲染为中文译文）；脱敏位保留——掩码后文本仍作为 {e} 实参，落盘脱敏语义不变。
+        logger.error(i18n.tr("Failed to retrieve data from FlexTV live room {e}", e=utils.mask_credentials(str(e))))
     result["new_cookies"] = new_cookies
     return result
 
@@ -4282,7 +4284,9 @@ async def get_popkontv_stream_url(
         # L000A：未实名/未手机验证会员，服务端拒绝提供流；L0000：成功拿到 HLS；L0001：首请求需二次确认。
         if status_cd == "L000A":
             # 多参数用字符串拼接，避免 f-string 触发 i18n 门禁
-            logger.error("Failed to retrieve live stream source, " + str(status_msg))
+            # [更正 2026-10-29] 拼接绕过了 i18n.tr，目录里已登记的「Failed to retrieve live stream source,」
+            # 在运行时永不匹配（zh_TW 有真实译文「獲取直播流源失敗，」）。改走 tr 常量模板，占位符用归一形 {status_msg}。
+            logger.error(i18n.tr("Failed to retrieve live stream source, {status_msg}", status_msg=str(status_msg)))
             raise RuntimeError(
                 "You are an unverified member. After logging into the popkontv official website, "
                 "please verify your mobile phone at the bottom of the 'My Page' > 'Edit My "
@@ -4370,7 +4374,9 @@ async def login_twitcasting(
     except Exception as e:
         # 2026-10-20：登录/代理异常原文含 user:pass@ 的代理 URL，落轮转日志前必须脱敏；
         # 保留拼接形态与原 msgid 文本，不新建 i18n.tr 模板免四目录登记。脱敏仅在日志侧，返回 None 语义不变。
-        logger.error("TwitCasting login error, " + utils.mask_credentials(str(e)))
+        # [更正 2026-10-29] 上一行「保留拼接形态」已按用户裁决废止：改走 i18n.tr 常量模板并登记四目录
+        # （zh_CN 下渲染为中文译文）；脱敏位保留——掩码后文本仍作为 {e} 实参，落盘脱敏语义不变。
+        logger.error(i18n.tr("TwitCasting login error, {e}", e=utils.mask_credentials(str(e))))
     return None
 
 

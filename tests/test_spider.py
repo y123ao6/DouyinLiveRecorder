@@ -881,6 +881,7 @@ class TestM12ProxyCredentialMaskedInPlatformErrorLogs:
     # logger.error，而 httpx/urllib 的连接·代理异常原文内嵌含 user:pass@ 的代理 URL，logger.error
     # 直落轮转日志（logs/ 多份＝凭据长期落盘）。判据同 TestM3RoomPasswordNotInErrorPaths：值确实消失。
     # 两处刻意保留原字符串拼接形态与原 msgid 文本，故脱敏后仍能在日志里看到整句话。
+    # [2026-10-29 更正] 两处拼接已迁移 i18n.tr 常量模板（模板文本未变，conftest 恒等钉定下断言不受影响）。
 
     _PROXY_BOOM_MSG = "Cannot connect to proxy http://proxyuser:SECRETPW@proxy.internal:3128"
 

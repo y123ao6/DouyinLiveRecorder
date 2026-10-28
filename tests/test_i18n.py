@@ -126,13 +126,15 @@ class TestMultiFormatCatalogs:
         assert catalog is not None
         assert catalog.get("The anchor did not start broadcasting.") == "主播并未开播"
         # en_US 命中 JSON
+        # [历史注] 样例条目原为「开始录制」，该串是 f-string 时代孤儿（无任何运行时查表路径），
+        # 已随 2026-10-28 目录清理移除；换用仍活跃的等值样例，本用例验证的三格式优先级不变。
         en = i18n._load_translations(i18n.locale_path, "en_US")
         assert en is not None
-        assert en.get("开始录制") == "Start Recording"
+        assert en.get("\r检测直播间中...") == "\rChecking live room..."
         # zh_TW 命中 YAML
         tw = i18n._load_translations(i18n.locale_path, "zh_TW")
         assert tw is not None
-        assert tw.get("开始录制") == "開始錄製"
+        assert tw.get("\r检测直播间中...") == "\r檢測直播間中..."
 
     def test_load_yaml_catalog_corrupted_returns_none(self, tmp_path: Path) -> None:
         # 损坏的 YAML 抛 yaml.YAMLError（非 OSError/ValueError 子类）：须捕获并返回 None 降级，
@@ -159,11 +161,13 @@ class TestLanguageSwitching:
         _ = i18n.set_language("en_US")
         assert i18n.get_language() == "en_US"
         assert i18n._tr(sample) == sample  # 英文源恒等
-        assert i18n._tr("开始录制") == "Start Recording"
+        # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随 2026-10-28 目录清理移除），
+        # 换用仍活跃的「\r检测直播间中...」，验证的热切换语义不变。
+        assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
         _ = i18n.set_language("zh_TW")
         assert i18n._tr(sample) == "主播並未開播"
         _ = i18n.set_language("en_GB")
-        assert i18n._tr("开始录制") == "Start Recording"
+        assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
 
     def test_set_language_normalizes_input(self) -> None:
         # set_language 返回**实际生效**的语言码，不再返回布尔
@@ -185,7 +189,9 @@ class TestLanguageSwitching:
             # get_language() 必须与**实际装载**的翻译器同源，否则调用方无从发现回退
             assert i18n.get_language() == effective
             assert i18n._tr is not original_tr
-            assert i18n._tr("开始录制") == "Start Recording"
+            # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随 2026-10-28 目录清理移除），
+            # 换用仍活跃的「\r检测直播间中...」，验证的回退装载语义不变。
+            assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
         finally:
             i18n._tr = original_tr
             i18n._current_language = i18n.DEFAULT_LANGUAGE
