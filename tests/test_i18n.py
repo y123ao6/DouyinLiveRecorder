@@ -18,7 +18,7 @@ MO_PATH = ROOT / "i18n" / "zh_CN" / "LC_MESSAGES" / "zh_CN.mo"
 class TestInitGettext:
     def test_no_lang_env_pollution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 原实现导入即写死 LANG=zh_CN.utf8（macOS 非法 locale），并传染子进程。
-        # LT-09（2026-10-18 审查）：判据改为「执行模块体前后取值对比」，旧断言拿**宿主此刻
+        # （2026-10-18 审查）：判据改为「执行模块体前后取值对比」，旧断言拿**宿主此刻
         # 的取值**当判据——设了 LANG=zh_CN.utf8 的开发机会恒红，宿主未设时又从未检验过真判据。
         # 基线必须先把这一族变量清空再取：本文件顶部的 `import i18n` 已跑过一次模块体，
         # 基线若在那之后取，「导入期写 LANG」会被一并吸收（变异实测：不清空时加回写入语句仍恒绿）。
@@ -39,7 +39,7 @@ class TestInitGettext:
     def test_locale_path_exists(self) -> None:
         assert Path(i18n.locale_path).exists()
 
-    # [历史注] MIN-2254 删除了 `i18n.init_gettext()` 及其用例：该函数返回绑死 locale_name
+    # [历史注] 该删除了 `i18n.init_gettext()` 及其用例：该函数返回绑死 locale_name
     # 的 gettext、不随 set_language 重读 `_tr`，与本模块热切换契约相反且生产零调用。
 
 
@@ -51,7 +51,7 @@ class TestMoCatalog:
     def test_translation_works_without_lang_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Windows 客户端普遍不设 LANG/LC_*，翻译加载不得依赖它们：清空后直接走本模块的
         # .mo 加载器查表，若实现回退成按环境变量查找的全局 gettext，这里会查不到而失败。
-        # [历史注] MIN-2254 前本用例经已删除的 `init_gettext()` 走全局 gettext（进程级副作用
+        # [历史注] 该前本用例经已删除的 `init_gettext()` 走全局 gettext（进程级副作用
         # 且不随 set_language 生效），意图不变、现改驱 `_load_mo_catalog`。
         # 必须用 monkeypatch 逐键删除：patch.dict(os.environ) 整体快照写回会撞 Windows
         # 32767 字符上限（见 AGENTS.md 已知坑）。
@@ -89,7 +89,7 @@ class TestTranslatedPrint:
         assert i18n._should_translate("C:/somewhere/else/file.py") is False
 
     def test_should_requires_separator_boundary(self) -> None:
-        # L-03：与项目根「同名前缀的兄弟目录」不是项目源码。裸 startswith(_project_root)
+        # 与项目根「同名前缀的兄弟目录」不是项目源码。裸 startswith(_project_root)
         # 下 /proj-evil/x.py 会被 /proj 命中，第三方目录的 print 也被翻译；补分隔符边界后必须判 False。
         sibling = f"{i18n._project_root}-evil{os.sep}evil.py"
         assert i18n._should_translate(sibling) is False
@@ -126,13 +126,15 @@ class TestMultiFormatCatalogs:
         assert catalog is not None
         assert catalog.get("The anchor did not start broadcasting.") == "主播并未开播"
         # en_US 命中 JSON
+        # [历史注] 样例条目原为「开始录制」，该串是 f-string 时代孤儿（无任何运行时查表路径），
+        # 已随 2026-10-28 目录清理移除；换用仍活跃的等值样例，本用例验证的三格式优先级不变。
         en = i18n._load_translations(i18n.locale_path, "en_US")
         assert en is not None
-        assert en.get("开始录制") == "Start Recording"
+        assert en.get("\r检测直播间中...") == "\rChecking live room..."
         # zh_TW 命中 YAML
         tw = i18n._load_translations(i18n.locale_path, "zh_TW")
         assert tw is not None
-        assert tw.get("开始录制") == "開始錄製"
+        assert tw.get("\r检测直播间中...") == "\r檢測直播間中..."
 
     def test_load_yaml_catalog_corrupted_returns_none(self, tmp_path: Path) -> None:
         # 损坏的 YAML 抛 yaml.YAMLError（非 OSError/ValueError 子类）：须捕获并返回 None 降级，
@@ -159,20 +161,22 @@ class TestLanguageSwitching:
         _ = i18n.set_language("en_US")
         assert i18n.get_language() == "en_US"
         assert i18n._tr(sample) == sample  # 英文源恒等
-        assert i18n._tr("开始录制") == "Start Recording"
+        # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随 2026-10-28 目录清理移除），
+        # 换用仍活跃的「\r检测直播间中...」，验证的热切换语义不变。
+        assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
         _ = i18n.set_language("zh_TW")
         assert i18n._tr(sample) == "主播並未開播"
         _ = i18n.set_language("en_GB")
-        assert i18n._tr("开始录制") == "Start Recording"
+        assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
 
     def test_set_language_normalizes_input(self) -> None:
-        # set_language 返回**实际生效**的语言码（MID-52），不再返回布尔
+        # set_language 返回**实际生效**的语言码，不再返回布尔
         assert i18n.set_language("zh-cn") == "zh_CN"
         assert i18n.get_language() == "zh_CN"
         assert i18n.set_language("EN") == "en_US"
         assert i18n.get_language() == "en_US"
 
-    # MID-52 回归锁：语言目录缺失时不得安装「恒等映射 + 仍回报请求码」的组合。
+    # 语言目录缺失时不得安装「恒等映射 + 仍回报请求码」的组合。
     # 旧实现会让 GUI 打印「语言已切换」、把请求码写进 config.ini，而录制子进程按
     # resolve_language 落到 en_US——同一部署两个进程两种语言。
     def test_set_language_falls_back_when_catalog_missing(self) -> None:
@@ -185,7 +189,9 @@ class TestLanguageSwitching:
             # get_language() 必须与**实际装载**的翻译器同源，否则调用方无从发现回退
             assert i18n.get_language() == effective
             assert i18n._tr is not original_tr
-            assert i18n._tr("开始录制") == "Start Recording"
+            # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随 2026-10-28 目录清理移除），
+            # 换用仍活跃的「\r检测直播间中...」，验证的回退装载语义不变。
+            assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
         finally:
             i18n._tr = original_tr
             i18n._current_language = i18n.DEFAULT_LANGUAGE
@@ -208,7 +214,7 @@ class TestLanguageSwitching:
             assert i18n.set_language(code) == code
             assert i18n.get_language() == code
 
-    # MID-53 回归锁：语言选择器的显示名必须逐码唯一，否则「显示名 → 语言码」反查表
+    # 语言选择器的显示名必须逐码唯一，否则「显示名 → 语言码」反查表
     # 会被后写覆盖（en_US / en_GB 都折成 English 时永远只能选到 en_GB）。
     def test_unique_display_names_are_injective(self) -> None:
         names = i18n.unique_display_names()

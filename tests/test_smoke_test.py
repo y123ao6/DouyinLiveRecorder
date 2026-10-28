@@ -1,8 +1,8 @@
-# scripts/smoke_test.py 的 **HTML 报告输出面**回归用例（M-97，2026-10-21 审查）。
+# scripts/smoke_test.py 的 **HTML 报告输出面**回归用例。
 #
 # 为什么单独成文件：tests/test_scripts_error_paths.py 锁的是 load_config 的形态契约与退出码
 # （rc=0/1/2 的分档，消费方 scripts/_ci_web_smoke.sh 与 .github/actions/retry 的 fail_fast_codes
-# 依赖它），tests/test_build_exe.py::MIN-2260 组锁的是「0 断言不算通过」——两条都不覆盖
+# 依赖它），tests/test_build_exe.py 组锁的是「0 断言不算通过」——两条都不覆盖
 # write_html_report。而 HTML 报告正是本工具**唯一被浏览器打开**的出口（CI 附件），
 # 也是本文件唯一的判据对象：动态片段必须在拼接前过 html.escape。
 #
@@ -88,7 +88,7 @@ def test_html_report_escapes_every_dynamic_fragment(tmp_path: Path, payload: str
 
 def test_html_report_escapes_response_derived_error_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # 端到端：注入串来自**响应体**（expect_json 的实际值位），而不是配置文件——
-    # 这正是 M-97 里「依赖配置可信」这条假设失效的那一类内容，必须走真实 run_check 通路取证。
+    # 这正是该里「依赖配置可信」这条假设失效的那一类内容，必须走真实 run_check 通路取证。
     body = json.dumps({"status": _INJECT_TAG}).encode("utf-8")
 
     class _FakeResponse:

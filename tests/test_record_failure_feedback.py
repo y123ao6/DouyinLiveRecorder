@@ -8,7 +8,7 @@
 # 内部消化成 False，调用方按「未被注释且无退出标志」判为真-失败并记 record_error，否则坏线路绕开
 # 熔断统计被无限重撞。控制台并发容量显示调度器实时自适应值（旧实现显示配置值，实测 12 显示 3）。
 #
-# 2026-10-21 追加 M-39（CODE_REVIEW_2026-10-21）：状态读取侧对 error_count / error_window 的
+# 2026-10-21 追加（CODE_REVIEW_2026-10-21）：状态读取侧对 error_count / error_window 的
 # 采样必须与写侧 src/notify.py::record_error 用**同一把锁、同一次持锁**——见文件末尾两条锁。
 
 import ast
@@ -28,7 +28,7 @@ import httpx
 import pytest
 
 # ffmpeg 输出路径必须落在**真实存在**的目录里：check_subprocess 以「输出父目录不存在」判定输出侧
-# 本地 IO 失败并豁免探针退避（MID-02 引入、MID-N01 于 2026-09-22 收敛为单判据）。旧写法 "/tmp/out.ts"
+# 本地 IO 失败并豁免探针退避（该引入、MID-N01 于 2026-09-22 收敛为单判据）。旧写法 "/tmp/out.ts"
 # 在 Linux 父目录存在、Windows 不存在，同一条用例两侧语义相反；取 tempfile.gettempdir() 后两侧
 # 都是健康可写目录，断言语义与平台无关。
 _OUT_TS = str(Path(tempfile.gettempdir()) / "dvr_probe_out.ts")
@@ -49,7 +49,7 @@ def main_mod() -> Generator[Any, None, None]:
 
 
 def _module_shim(module: ModuleType) -> types.SimpleNamespace:
-    # MID-66：把 stdlib / 第三方模块浅拷贝成替身，只替换 **main 命名空间里的全局名**，绝不 setattr
+    # 把 stdlib / 第三方模块浅拷贝成替身，只替换 **main 命名空间里的全局名**，绝不 setattr
     # 到模块本体——time/os/httpx 是全进程唯一对象，loguru 的 enqueue 线程、harness 守护线程与
     # coverage 都在同一进程里跑，会被假实现波及。与 _make_subprocess_shim 同源，即 AGENTS.md 规定的模式。
     return types.SimpleNamespace(**vars(module))
@@ -258,7 +258,7 @@ def test_live_network_capacity_fallback_and_scheduler_value(main_mod: Any, monke
     monkeypatch.setattr(main, "scheduler", None)
     assert _live_network_capacity() == 3
 
-    # SEV-01：控制台显示的并发容量取调度器的 capacity（上限），不再是 value（剩余许可）
+    # 控制台显示的并发容量取调度器的 capacity（上限），不再是 value（剩余许可）
     fake_scheduler = types.SimpleNamespace(network_semaphore=types.SimpleNamespace(value=12, capacity=12))
     monkeypatch.setattr(main, "scheduler", fake_scheduler)
     assert _live_network_capacity() == 12
@@ -303,7 +303,7 @@ def test_direct_download_stream_rejects_non_200_as_failure(
     main = main_mod
     monkeypatch.setattr(main, "get_record_headers", lambda *a, **k: {})
     monkeypatch.setattr(main, "get_record_user_agent", lambda *a, **k: "")
-    # MID-66：httpx 同样是全进程共享的三方模块本体，改走浅拷贝替身
+    # httpx 同样是全进程共享的三方模块本体，改走浅拷贝替身
     _httpx_shim = _module_shim(httpx)
     _httpx_shim.Client = lambda **kw: _FakeHttpClient(_FakeStreamResponse(403, []))
     monkeypatch.setattr(main, "httpx", _httpx_shim)
@@ -324,7 +324,7 @@ def test_direct_download_stream_writes_chunks_on_success(
     main = main_mod
     monkeypatch.setattr(main, "get_record_headers", lambda *a, **k: {})
     monkeypatch.setattr(main, "get_record_user_agent", lambda *a, **k: "")
-    # MID-06 后「200 + 零/极小响应体」不再算成功，替身体量必须过 `_MIN_VALID_RECORD_BYTES`
+    # 后「200 + 零/极小响应体」不再算成功，替身体量必须过 `_MIN_VALID_RECORD_BYTES`
     # 门槛，否则失败原因与断言不符（门槛本身由 tests/test_record_watchdog.py 逐条锁定）。
     payload = [b"flv-header", b"chunk" * 500, b"tail"]
     assert sum(len(c) for c in payload) > main._MIN_VALID_RECORD_BYTES, "替身须大于直下成功门槛"
@@ -342,7 +342,7 @@ def test_direct_download_stream_writes_chunks_on_success(
     assert save_path.read_bytes() == b"".join(payload)
 
 
-# ── M-39（CODE_REVIEW_2026-10-21）：状态读取侧的错误字段采样必须与写侧同锁同批 ──
+# ── （CODE_REVIEW_2026-10-21）：状态读取侧的错误字段采样必须与写侧同锁同批 ──
 #
 # 写侧 src/notify.py::record_error 在 main.max_request_lock 内做 `error_count += 1`（读-改-写三步、
 # 非原子）并追加 error_window 样本；读侧 src/recorder_status.py 此前有 3 处不受这把锁保护的读取

@@ -121,7 +121,7 @@ def test_get_bilibili_danmaku_info_spi_empty_uses_fallback_buvid() -> None:
         return ""
 
     # 同时 mock 首页 Set-Cookie 备取（返回空）与冻结时间；spi 两跳空走 uuid 兜底路径。
-    # MID-65：async_req 是 `async def`，patch 自动选 AsyncMock 属隐式行为——换成普通 Mock 后
+    # async_req 是 `async def`，patch 自动选 AsyncMock 属隐式行为——换成普通 Mock 后
     # side_effect 返回的协程无人 await，GC 时抛「coroutine was never awaited」RuntimeWarning
     # （本仓禁止用 filterwarnings 压制）。故显式写 new_callable=AsyncMock，把「驱动 async 路径
     # 必须用 awaitable 桩」钉成可读契约。
@@ -350,7 +350,7 @@ def test_buvid_prefers_cookie_over_spi() -> None:
 
 class _FakeAuthWs:
     # 捕获断开调用的假 WebSocket 客户端。
-    # MID-2245 后生产代码从 `self._ws.close()` 改走 `self._ws.fail(reason)`：前者语义是「调用方
+    # 后生产代码从 `self._ws.close()` 改走 `self._ws.fail(reason)`：前者语义是「调用方
     # 主动停止」，后者才能回调 on_close（用 close 会让 collector 侧与 room_connected 配对的
     # hub.room_closed() 永不发出，监控页永久停在「已连接 / 0 条」）。故替身必须实现 fail()：
     # 置 closed 并记下 reason，否则 ensure_future 起的协程会在无人持引用时抛 AttributeError，
@@ -405,7 +405,7 @@ def test_auth_reply_failure_closes_connection() -> None:
         client, ws = _decode_auth_reply(b'{"code":-101,"message":"auth failed"}')
     assert client._stopped is True
     assert ws.closed is True
-    # MID-2245 的真实不变量不是「连接被关」而是「走的是会被上报的 fail() 出口」：只断言 closed
+    # 真实不变量不是「连接被关」而是「走的是会被上报的 fail() 出口」：只断言 closed
     # 会让「退回 close()」照样通过（close 同样置 closed），监控页「已连接 / 0 条」的原始缺陷
     # 可以无声回归。
     assert ws.fail_reasons and ws.fail_reasons[0], "认证被拒未走 WsClient.fail()，on_close 不会上报"
@@ -499,7 +499,7 @@ def test_auth_watchdog_fires_without_reply() -> None:
     # 软拒绝路径：连接被标记停止并主动断开，buvid 缓存失效钩子恰好调用一次。
     assert client._stopped is True
     assert ws.closed is True
-    # 同上：MID-2245 的真实不变量是「走会被上报的 fail() 出口」。只断言 closed 会让「退回
+    # 同上：该真实不变量是「走会被上报的 fail() 出口」。只断言 closed 会让「退回
     # close()」照样通过（close 同样置 closed），监控页「已连接 / 0 条」的缺陷可无声回归。
     assert ws.fail_reasons and ws.fail_reasons[0], "认证被拒未走 WsClient.fail()，on_close 不会上报"
     inv.assert_called_once()

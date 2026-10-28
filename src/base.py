@@ -45,11 +45,11 @@ def _log_task_exception(task: "asyncio.Task[None]") -> None:
         from src import utils
         from src.logger import logger
 
-        # 2026-10-21 M-41：原写法把异常**对象**直接塞进 {exc}，由 loguru 就地 str() ——
-        # 后台弹幕协程抛出的多是 httpx/websockets 的异常，其 str() 内嵌完整请求 URL
-        # （带 token/签名/代理 userinfo），而 logs/ 按大小轮转保留多份 = 凭据长期落盘。
-        # 与 async_http / collector 同口径：先 str() 再过 mask_credentials。
+        # 异常必须先 str() 再过 mask_credentials：后台弹幕协程抛出的多是 httpx/websockets 异常，
+        # 其 str() 内嵌完整请求 URL（带 token/签名/代理 userinfo），而 logs/ 按大小轮转保留多份
+        # = 凭据长期落盘。与 async_http / collector 同口径。
         # msgid 保持不变（四语目录 + web/app.js 五处同源，本文件不动目录）。
+        # [历史注] 旧写法把异常**对象**直接塞进 {exc}，由 loguru 就地 str()，绕过了脱敏。
         logger.warning(
             i18n.tr(
                 "[弹幕]后台协程异常: {type_name}: {exc}",

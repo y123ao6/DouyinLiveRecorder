@@ -1,4 +1,4 @@
-# tests/frontend/test_motion.mjs 的 pytest 驱动入口（M-28，CODE_REVIEW_2026-09-29_2）。
+# tests/frontend/test_motion.mjs 的 pytest 驱动入口。
 #
 # 被驱动的 .mjs 锁 web/motion.js 的 5 条不变量：粒子数边界与移动端/低核数减半、
 # reduced-motion 不建 canvas、正常模式单 rAF 循环、destroy() 的完整清理、
@@ -9,8 +9,8 @@
 # pytest 与 ci.yml 的 node 清单两条回路，缺一条就会退回「游离门禁」。
 #
 # 子进程驱动复用 tests/test_frontend_quality_ui.py 的 _run_node / _parse_node_summary
-# （MID-64 的管道挂死与 GBK 解码坑已在那侧沉淀成硬化代码，不复制第二份）。Node 缺失时
-# 整体 skip（环境限制，不是失败），由 ci.yml 的「有 skip 即红」判据兜住这种静默消失（MID-2264）。
+# （管道挂死与 GBK 解码坑已在那侧沉淀成硬化代码，不复制第二份）。Node 缺失时整体 skip
+# （环境限制，不是失败），由 ci.yml 的「有 skip 即红」判据兜住这种静默消失。
 from pathlib import Path
 
 import pytest
@@ -19,7 +19,7 @@ from tests.test_frontend_quality_ui import _NODE_BIN, _parse_node_summary, _run_
 
 _FRONTEND_TEST = Path(__file__).parent / "test_motion.mjs"
 
-# 用例条数下限（M-28）：node --test 收集到 0 条也退出 0，只看 returncode 就是假绿。取下限而非
+# 用例条数下限：node --test 收集到 0 条也退出 0，只看 returncode 就是假绿。取下限而非
 # 等号：新增不变量不必改这里，删掉既有用例则立刻变红。当前 .mjs 实跑 5 条。
 _EXPECTED_MIN_PASS = 5
 
@@ -38,7 +38,7 @@ def test_motion_frontend() -> None:
     summary = _parse_node_summary(stdout)
     assert {"tests", "pass", "fail"} <= set(summary), f"未能从 node 输出解析到汇总行:\n{stdout}\n{stderr}"
     assert summary["fail"] == 0, detail
-    # skipped 也要判：node 侧 test(..., {skip: true}) 既不红也不绿，是 M-2264 同族的静默消失形态。
+    # skipped 也要判：node 侧 test(..., {skip: true}) 既不红也不绿，是静默消失形态。
     assert summary.get("skipped", 0) == 0, f"存在被跳过的动效用例（降级/清理锁未执行）:\n{stdout}"
     assert summary["pass"] >= _EXPECTED_MIN_PASS, (
         f"node --test 执行的用例数低于下限 {_EXPECTED_MIN_PASS}（包装层未真正驱动 .mjs，"

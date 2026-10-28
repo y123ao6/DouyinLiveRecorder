@@ -49,7 +49,7 @@ def test_px_scales_with_factor() -> None:
 
 
 def test_stylesheet_uses_objectname_selectors() -> None:
-    # 四个选择器覆盖卡片/导航按钮/侧栏/终端四个具名控件；漏一个就会退化到同类通配。
+    # 四个具名控件（卡片/导航按钮/侧栏/终端）各须一条选择器；漏一个即退化到同类通配。
     sheet = theme_module.build_stylesheet(theme_module.palette(theme_module.THEME_LIGHT))
     for selector in ("QFrame#card", "QPushButton#nav", "QWidget#sidebar", "QTextEdit#terminal"):
         assert selector in sheet, f"QSS 缺选择器 {selector}：样式会命中其它同类控件"

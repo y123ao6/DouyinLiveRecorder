@@ -1,4 +1,4 @@
-# CR-03 畸形 Tars 帧边界回归锁（src/platforms/_tars.py，2026-09-21 补）。
+# 畸形 Tars 帧边界回归锁（src/platforms/_tars.py，2026-09-21 补）。
 #
 # 被守的失败形态：解码器把协议里的长度字段当游标增量直接用，且只判「未越上界」不判负数。
 # 负长度 → 切片得空串且游标**回退**到刚消费的头字节之前，而 _goto / finish_struct /
@@ -111,7 +111,7 @@ def test_huge_container_sizes_rejected(type_id: int, size: int) -> None:
 @pytest.mark.parametrize("type_id", [9, 8])
 def test_negative_container_size_terminates_without_rewinding(type_id: int) -> None:
     # 现状：容器用的是 `if n > len(data)` 而**没有**下界判定，故负 size 不抛错，
-    # 只是 range(负数) 零次迭代 = 当作空容器跳过。这不再制造死循环（CR-03 的主症状已消除），
+    # 只是 range(负数) 零次迭代 = 当作空容器跳过。这不再制造死循环（该主症状已消除），
     # 但把「损坏帧」当成「空容器」静默放过，与 C1 的负长度裁决口径不一致 → 已作为遗留点上报。
     # 本用例因此钉的是真正要紧的性质：立刻返回、且游标不回退（不会重新吃掉同一字段）。
     frame = bytes([type_id]) + _int_field(-1) + b"\x00"
@@ -154,7 +154,7 @@ def test_every_truncated_prefix_fails_fast_and_never_rewinds() -> None:
 def test_documented_residual_escape_types() -> None:
     # _skip 的 STRING1 长度读取（`n = self._data[self._pos]`）与 _take_head 的扩展 tag、
     # read_int 的 unpack_from 均未先过 _need → 截断帧抛出的是 IndexError / struct.error，
-    # 而不是 CR-03 注释承诺的 ValueError。三者都被平台侧 except Exception 吸收（见 C5），
+    # 而不是该注释承诺的 ValueError。三者都被平台侧 except Exception 吸收（见 C5），
     # 不构成挂死或崩溃，但异常类型不统一会让「畸形帧」与「解码器 bug」在日志里难以区分。
     with pytest.raises(IndexError):
         TarsInputStream(b"\x16").finish_struct()  # STRING1 头之后没有长度字节

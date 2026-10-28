@@ -34,7 +34,7 @@ _STATS_INTERVAL = 5.0
 # 弹幕速率窗口：10 秒一桶 × 6 桶 = 60 秒，窗口内计数之和即 条/分
 _RATE_WINDOW_SEC = 60.0
 
-# MID-25：边车落盘队列上限。80 房间 × 10 条/秒采样 ≈ 800 行/秒，每行约 150 字节，2 万条缓冲
+# 边车落盘队列上限。80 房间 × 10 条/秒采样 ≈ 800 行/秒，每行约 150 字节，2 万条缓冲
 # 可吸收约 25 秒的极端慢盘抖动；超出即计数丢弃（丢弃必须可观测），与 collector 侧 SRT 队列同口径。
 _SIDECAR_QUEUE_MAXSIZE = 20000
 # 等待落盘队列排空的上限（秒）。close_file() 由日志归档在改名前调用——Windows 下句柄未关的文件
@@ -42,7 +42,7 @@ _SIDECAR_QUEUE_MAXSIZE = 20000
 # 绝不无限阻塞停止流程。
 _SIDECAR_DRAIN_SECONDS = 5.0
 
-# 边车轮转失败的退避周期（秒，L-18）：`.1` 备份被第三方进程占用 / 目标跨卷时 os.replace 必失败，
+# 边车轮转失败的退避周期（秒）：`.1` 备份被第三方进程占用 / 目标跨卷时 os.replace 必失败，
 # 而失败后仍以追加模式重开、fh.tell() 依旧 >= _ROTATE_BYTES，于是**此后每一条**事件都会重走一遍
 # 必败的 close → replace → open（最后写入循环与每秒采样叠加下即每秒数百次）。现按路径记一个退避窗口：
 # 期内直接跳过轮转、照常追加。两条边界：① 这不是「把轮转关掉」——标记带过期时间，到期即回收并重试；
@@ -83,7 +83,7 @@ def _note_rotate_failure(path: str, err: OSError) -> None:
     )
 
 
-# ── JSONL 边车落盘（进程级单写线程，MID-25）──────────────────
+# ── JSONL 边车落盘（进程级单写线程）──────────────────
 #
 # room_message() 跑在**各房间自己的事件循环线程**上，旧实现在全局 _lock 内 open/write/flush：10 条/秒
 # 每房间、80 房间即最高 800 次带 flush 的串行落盘/秒，任一次 flush 被慢盘/网络盘/杀毒扫描拖住 →
@@ -91,13 +91,13 @@ def _note_rotate_failure(path: str, err: OSError) -> None:
 # 一把锁——与 collector「SRT 写盘必须挪到独立线程否则阻塞 ws_recv」同因。现锁内只剩统计 + payload 构造，
 # 磁盘 IO 交下面这支守护线程（有界队列 + 丢弃计数）；句柄只被写线程读写，故 _files 无需加锁。
 # close_file() = 入队一条 close 指令 + 等待队列排空（改名前必须关句柄，关闭后惰性重开）。
-# MID-2243：归档另有「抑制窗口」——suspend_writes()/resume_writes() 之间的 line 指令（含置位前就已
+# 归档另有「抑制窗口」——suspend_writes()/resume_writes() 之间的 line 指令（含置位前就已
 # 入队的）一律丢弃、不落句柄，改名窗口内不会再有人持有该文件；close_file() 本身语义不变。
 
 
 # 把一行 JSON 追加到边车文件并按需轮转（保留一代 .1 备份）。独立成模块级函数是**给测试留的注入口**：
-# MID-25 的回归锁把它换成慢速写，以此证明「写盘期间不持有 hub._lock」。写失败静默重置该路径句柄，
-# 下一条事件重新打开；轮转失败另按路径记退避窗口（L-18，见 _note_rotate_failure）。
+# 回归锁把它换成慢速写，以此证明「写盘期间不持有 hub._lock」。写失败静默重置该路径句柄，
+# 下一条事件重新打开；轮转失败另按路径记退避窗口（见 _note_rotate_failure）。
 def _append_sidecar_line(files: dict[str, TextIO], path: str, line: str) -> None:
     fh: Optional[TextIO] = None
     try:
@@ -105,7 +105,7 @@ def _append_sidecar_line(files: dict[str, TextIO], path: str, line: str) -> None
         if fh is None:
             fh = files[path] = open(path, "a", encoding="utf-8")
         # 轮转判定用当前句柄的真实大小，避免长期运行下误差累积；退避期内跳过轮转但**照常追加**，
-        # 既不丢监控流也不把轮转永久关掉（L-18）。
+        # 既不丢监控流也不把轮转永久关掉。
         if fh.tell() >= _ROTATE_BYTES and not _rotate_in_backoff(path):
             fh.close()
             files.pop(path, None)
@@ -113,7 +113,7 @@ def _append_sidecar_line(files: dict[str, TextIO], path: str, line: str) -> None
                 os.replace(path, path + ".1")
             except OSError as e:
                 # 吞没即正确：轮转失败（.1 被占用 / 跨卷）只是没有备份，随后仍以追加模式继续写，
-                # 绝不因一次改名失败丢掉整段监控流；另补退避标记 + warning（L-18）。
+                # 绝不因一次改名失败丢掉整段监控流；另补退避标记 + warning。
                 _note_rotate_failure(path, e)
             # 成功一侧不另设「清除标记」分支：能走到这里就说明 _rotate_in_backoff 已把过期条目弹出
             # （未过期根本进不来），字典此刻对本路径本就是空的，写清除等于留一条永不为真的死分支。
@@ -189,7 +189,7 @@ class _SidecarWriter:
     def submit(self, op: str, path: str, line: str = "") -> bool:
         if op == "line" and self.is_suspended(path):
             # 抑制期内连队列都不进：否则 drain 返回后这些残留指令仍会把文件重新打开，
-            # 正好是 MID-2243 的失效形态（丢弃计数留痕，边车是旁路数据可接受）
+            # 正好是该失效形态（丢弃计数留痕，边车是旁路数据可接受）
             with self._suspend_lock:
                 suppressed = self._suppressed.get(path, 0) + 1
                 self._suppressed[path] = suppressed
@@ -277,7 +277,7 @@ class DanmakuMonitorHub:
     # （仅供测试/无 GUI 消费方场景）；目录不可写时自动降级为禁用。
     def __init__(self, log_path: Optional[str] = None) -> None:
         self._lock = threading.Lock()
-        # MID-25：磁盘句柄不再由本实例持有，改由进程级 _SidecarWriter 独占（见其注释）。
+        # 磁盘句柄不再由本实例持有，改由进程级 _SidecarWriter 独占（见其注释）。
         # 原 self._file / self._file_lock 一并移交；_file 保留同名只读属性以兼容既有断言。
         self._log_path: Optional[str] = self._prepare_log_path(log_path)
         # 房间状态表：{room: {platform/connected/started_at/msg_total/gift_total/
@@ -301,7 +301,7 @@ class DanmakuMonitorHub:
         return _get_sidecar().open_handle(self._log_path)
 
     # 等待本枢纽已入队的边车指令全部落盘（带超时）；返回是否排空。
-    # 写盘已在独立线程异步进行（MID-25），同步读 JSONL 的调用方需先 flush 才能看到全部内容。
+    # 写盘已在独立线程异步进行，同步读 JSONL 的调用方需先 flush 才能看到全部内容。
     def flush(self, timeout: float = _SIDECAR_DRAIN_SECONDS) -> bool:
         return _get_sidecar().drain(timeout)
 
@@ -392,7 +392,7 @@ class DanmakuMonitorHub:
     # 房间行，Web 快照随房间表自动消失；同房间重新录制时由 room_started 重新登记。
     # 条目必须删除：URL 被移除/注释后房间线程已退出，旧实现却让监控页一直残留失效直播间及其旧数据。
     def room_stopped(self, room: str, reason: Optional[str] = None) -> None:
-        # L-24（2026-10-02）：默认文案改函数内 i18n.tr（原默认参数在 import 期求值一次，
+        # 2026-10-02：默认文案改函数内 i18n.tr（原默认参数在 import 期求值一次，
         # 语言热切换后不更新；缺省 None + 函数内取值保证每次调用按当前语言解析）
         if reason is None:
             reason = i18n.tr("房间已停止监控")
@@ -451,7 +451,7 @@ class DanmakuMonitorHub:
                         state["online"] = int(str(data).strip())
                     else:
                         state["online"] = self._parse_online(text, int(state["online"]))
-                # MIN-2236④：弹幕能到达即说明「该房间仍在被监控」，这里一并兜底拉起 stats 线程。
+                # ④：弹幕能到达即说明「该房间仍在被监控」，这里一并兜底拉起 stats 线程。
                 # 只靠 room_started 会漏两种形态：stats 线程异常退出后房间表非空、以及未经
                 # room_started 隐式注册的房间（上面的 get→建条目分支）——二者都会让 GUI 的
                 # msg_rate/online 永久冻结且无任何线索。判活只是 is_alive() 一次属性读。
@@ -688,7 +688,7 @@ class DanmakuMonitorHub:
                 )
             )
         finally:
-            # MIN-2236④：无论正常 break、异常退出还是被 stop 置位退出，都要在持锁状态下比对身份后
+            # ④：无论正常 break、异常退出还是被 stop 置位退出，都要在持锁状态下比对身份后
             # 清掉 self._stats_thread。缺这一步时 _ensure_stats_thread 的 is_alive() 永远读到那支
             # 已死线程，重启链路整体失效。身份比对不可省：本线程可能已被更新的一轮
             # _ensure_stats_thread 换掉，无条件置 None 会误清正在运行的新线程引用。
@@ -697,7 +697,7 @@ class DanmakuMonitorHub:
                 with self._lock:
                     if self._stats_thread is thread:
                         self._stats_thread = None
-                        # 2026-10-21 M-37：break（房间表当时为空）与这里之间存在窗口——期间新登记的
+                        # 2026-10-21 ：break（房间表当时为空）与这里之间存在窗口——期间新登记的
                         # 房间调 _ensure_stats_thread() 时本线程**仍 is_alive()**，于是判定为
                         # 「已有线程在跑」而不新建；本线程随后把引用清成 None 并退出，结果该房间
                         # 永久拿不到周期 stats（GUI 的 msg_rate/online 冻结，直到下一条弹幕或
@@ -727,7 +727,7 @@ class DanmakuMonitorHub:
         if not log_path:
             return None
         try:
-            # 2026-10-21 M-43：裸文件名（如 "danmaku_monitor.jsonl"，无目录段）时
+            # 2026-10-21 ：裸文件名（如 "danmaku_monitor.jsonl"，无目录段）时
             # os.path.dirname() 返回空串，os.makedirs("") 抛 FileNotFoundError 落进下面的
             # except 被当成「目录不可写」→ 边车输出**静默禁用**，GUI/Web 的 tail 链路整体失效。
             # 空父目录本就等价于「当前目录」，无需创建，直接放行。
@@ -739,7 +739,7 @@ class DanmakuMonitorHub:
             logger.debug(i18n.tr("[弹幕监控]日志目录创建失败，禁用文件输出: {e}", e=e))
             return None
 
-    # 把一行 JSON 事件**入队**交给进程级写线程落盘（MID-25：调用方持 self._lock 时只做序列化 +
+    # 把一行 JSON 事件**入队**交给进程级写线程落盘（调用方持 self._lock 时只做序列化 +
     # O(1) 入队，绝不碰磁盘）。真正的追加与轮转见 _append_sidecar_line；队列满时计数丢弃，
     # 绝不阻塞调用方（调用方是各房间的事件循环线程）。
     def _write_line(self, payload: dict[str, Any]) -> None:
@@ -753,7 +753,7 @@ class DanmakuMonitorHub:
             logger.debug(i18n.tr("弹幕边车文件写入失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
 
     # flush 并关闭 JSONL 边车文件句柄（停止录制归档流程在改名前调用）。
-    # MID-25 后写盘在独立线程，故「关闭」= 入队一条 close 指令 + 等待队列排空，顺序与旧实现一致：
+    # 后写盘在独立线程，故「关闭」= 入队一条 close 指令 + 等待队列排空，顺序与旧实现一致：
     # 改名前句柄必已关闭，且已 accept 的事件不会丢。排空超时时抛 TimeoutError 由下面的容错记日志
     # ——归档侧会因句柄未关而跳过该文件的改名，绝不中断停止流程。关闭后下一条事件经写线程的
     # 惰性重开自动重建句柄。
@@ -763,7 +763,7 @@ class DanmakuMonitorHub:
             if not path:
                 return
             writer = _get_sidecar()
-            # L-23（2026-10-02）：submit 返回 False（队列满被丢弃）必须与 drain 超时同语义
+            # 2026-10-02：submit 返回 False（队列满被丢弃）必须与 drain 超时同语义
             # 处理——静默丢弃 close 指令会让句柄未关而本函数「成功」返回，随后的归档改名
             # 必抛 PermissionError 且无法归因。外层容错会记日志（归档侧跳过该文件）。
             if not writer.submit("close", path):
@@ -775,7 +775,7 @@ class DanmakuMonitorHub:
             # 这里的外抛会让整批运行日志都不再归档；句柄最坏随进程退出回收。
             logger.debug(i18n.tr("[弹幕监控]关闭边车文件异常(忽略): {type_name}: {e}", type_name=type(e).__name__, e=e))
 
-    # 进入「停止录制 → 日志归档改名」窗口（MID-2243）：先置位抑制标记，再复用 close_file() 的
+    # 进入「停止录制 → 日志归档改名」窗口：先置位抑制标记，再复用 close_file() 的
     # 「入队 close + 等待排空」。差别就在那一步置位——旧实现只关一次，之后延迟/已排队事件仍经写线程
     # 惰性重开重持 logs/danmaku_monitor.jsonl 句柄，而归档改名与 close 无同步点、delay_default 最长
     # 120s 仍在推事件，于是 Windows 下「句柄未关的文件 rename 必抛 PermissionError」几乎必然发生，

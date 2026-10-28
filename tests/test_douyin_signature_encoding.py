@@ -1,8 +1,8 @@
-# F-13 回归用例：抖音弹幕 WS 握手的 signature 参数不做 URL 编码。
+# 回归用例：抖音弹幕 WS 握手的 signature 参数不做 URL 编码。
 #
-# 契约依据：上游 dart simple_live_core 以 `var url = "$uri&signature=$sign";` 原样拼接，
-# 社区实现长期沿用且线上可用；本端若加 percent-encode 会成为唯一异类指纹，反而可能触发风控。
-# 变更时必须同步改本用例与 F-13 结论，避免又一轮无依据的来回改动。
+# 契约依据：上游 dart simple_live_core 以 `var url = "$uri&signature=$sign";` 原样拼接，服务端不按
+# form-urlencoded 把 '+' 解成空格；本端若 percent-encode 会成为唯一异类指纹，反而可能触发风控。
+# 改编码须同步改本用例与该结论（known-pitfalls.md「抖音弹幕 signature 保持不编码」）。
 
 import asyncio
 from unittest.mock import MagicMock
@@ -24,7 +24,7 @@ def test_signature_uses_xbogus_alphabet_only() -> None:
 
 
 def test_signature_charset_can_contain_url_sensitive_chars() -> None:
-    # 上游若换成 URL-safe 表，本用例转红以提醒重新评估 F-13，而不是让结论悄悄失效。
+    # 上游若换成 URL-safe 表，本用例转红以提醒重新评估，而不是让结论悄悄失效。
     assert "+" in XBOGUS_ALPHABET or "/" in XBOGUS_ALPHABET
 
 

@@ -2,15 +2,15 @@
 # GUI 动效层：动效等级 + 插值原语 + 系统「关闭动画」感知。
 #
 # 设计约束（延续 ui_theme/ui_kit 的分层约定）：
-#   · 只有三档且默认克制：full/subtle/off。Tk 没有 GPU 合成，每帧都是 Tcl 层重绘，
-#     after 链越密、控件越多占用越明显，故除档位外还设硬性帧数上限（MAX_FRAMES）。
-#   · 降级优先于禁用：off 不是「什么都不做」，而是直接落到终态（位移归零、状态点停呼吸），
-#     不留半途状态——半途状态就是用户看到控件卡在中间位置。
-#   · 系统级无障碍优先于用户档位：Windows「在 Windows 中显示动画」关闭
-#     （SPI_GETCLIENTAREAANIMATION = 0）与 Linux GNOME「减少动画」等价，一律压到 off。
+#   · 只有三档且默认克制：full/subtle/off。Tk 没有 GPU 合成，每帧都是 Tcl 层重绘，after 链越密、
+#     控件越多占用越明显，故除档位外还设硬性帧数上限（MAX_FRAMES）。
+#   · 降级优先于禁用：off 不是「什么都不做」，而是直接落到终态（位移归零、状态点停呼吸），不留半途
+#     状态——半途状态就是用户看到控件卡在中间位置。
+#   · 系统级无障碍优先于用户档位：Windows「在 Windows 中显示动画」关闭（SPI_GETCLIENTAREAANIMATION
+#     为 0）与 Linux GNOME「减少动画」等价，一律压到 off。
 #   · import 期零 Tk 对象：探测函数只在调用时读系统，纯插值函数可无头测。
-# Tk 的硬限制：ttk 控件没有 alpha 通道、没有圆角与阴影，故「淡入」只能做不透明度等效的
-# 位移+尺寸插值，卡片圆角只能落在 Canvas 自绘件上；不为「看起来有」堆无效代码。
+# Tk 的硬限制：ttk 控件没有 alpha 通道、没有圆角与阴影，故「淡入」只能做不透明度等效的位移+尺寸插值，
+# 卡片圆角只能落在 Canvas 自绘件上；不为「看起来有」堆无效代码。
 from __future__ import annotations
 
 import configparser
@@ -66,11 +66,10 @@ def is_valid_motion(value: str) -> bool:
 
 def detect_system_animations() -> bool:
     # 探测系统是否开了动画。False 表示系统侧已关闭（应降级为 off）。
-    #   Windows：SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION=0x1042)，它已是「在 Windows
-    #     中显示动画」的权威取值，不再叠加高对比度等开关。
+    #   Windows：SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION=0x1042)，它已是「在 Windows 中显示
+    #     动画」的权威取值，不再叠加高对比度等开关。
     #   macOS：`defaults read -g reduceMotion` 为 1 / true 时判为关闭。
-    #   其余平台（Linux/Wayland 等）无统一口径，一律返回 True——猜错的方向是「关掉用户要的
-    #     动效」，宁可不动也不误关。
+    #   其余平台（Linux/Wayland 等）无统一口径，一律返回 True——猜错的方向是「关掉用户要的动效」。
     # 任何异常都回 True：探测失败不得让界面失去反馈。
     if sys.platform == "win32":
         try:
@@ -176,17 +175,15 @@ def _noop() -> None:
 class MotionController:
     # 动效运行时状态：有效等级 + 已登记的 after 句柄。
     #
-    # 为什么自己管句柄：Tk 的 after 回调在窗口销毁后仍会触发一次，而动效回调里要写
-    # Canvas 坐标/place 位置，对象已死就是 TclError。故每条链的句柄登记在册，
-    # cancel()/cancel_all() 统一撤销（含对 Tcl 的 after_cancel），
-    # 且回调入口先按链令牌核对自己的 job 是否仍然有效。
-    # [历史注] 本段原文引用了一个从未存在的 disable() 方法（2026-10-21 M-82 复核证伪，
-    # 真实撤销出口只有 cancel/cancel_all 两处）；且旧实现的 cancel 只清 Python 侧字典、
-    # 从不 after_cancel，被「撤销」的链仍会被 Tcl 事件队列唤醒写完剩余帧。
+    # 为什么自己管句柄：Tk 的 after 回调在窗口销毁后仍会触发一次，而动效回调里要写 Canvas 坐标 /
+    # place 位置，对象已死就是 TclError。故每条链的句柄登记在册，cancel()/cancel_all() 统一撤销
+    # （含对 Tcl 的 after_cancel），且回调入口先按链令牌核对自己的 job 是否仍然有效。
+    # [历史注] 旧实现的 cancel 只清 Python 侧字典、从不 after_cancel，被「撤销」的链仍会被 Tcl
+    # 事件队列唤醒写完剩余帧。
     def __init__(self, motion_id: str = "subtle") -> None:
         self._motion_id: str = motion_id if is_valid_motion(motion_id) else "subtle"
-        # 登记项 = (排帧用的 root, 最新 after 句柄, 链令牌)。root 与令牌都是 M-82 补的：
-        # after_cancel 要 root 才打得出去；令牌让 _step 入口能分辨「这条链还是不是我」。
+        # 登记项 = (排帧用的 root, 最新 after 句柄, 链令牌)。root 与令牌都不可省：after_cancel 要
+        # root 才打得出去；令牌让 _step 入口能分辨「这条链还是不是我」。
         # root 为 None 表示「裸句柄登记」（诊断/测试形态），cancel 时只清册不调 after_cancel。
         self._jobs: dict[str, tuple[tk.Misc | None, str, int]] = {}
         self._next_token: int = 0
@@ -214,10 +211,10 @@ class MotionController:
 
     def cancel(self, job_key: str) -> None:
         # 撤销一条链（按 key，不是按句柄——调用方不该关心句柄值）。
-        # M-82：旧实现只 pop 字典——已排进 Tcl 事件队列的下一帧回调仍会被唤醒并继续写
-        # place/几何，正是「关掉动效后控件还在抖、页面切完旧控件被拽回中途位置」的形态。
-        # 定稿 = 先摘册再对该句柄 after_cancel；已经在执行当帧的迟到回调由 _step 入口的
-        # 令牌守卫兜住（摘册即失效）。after_cancel 传空串/已触发句柄是 no-op，不额外判。
+        # 定稿 = 先摘册再对该句柄 after_cancel；已经在执行当帧的迟到回调由 _step 入口的令牌守卫
+        # 兜住（摘册即失效）。只清册不 after_cancel 的话，已排进 Tcl 队列的下一帧仍会唤醒并继续写
+        # place/几何，表现为「关掉动效后控件还在抖、页面切完旧控件被拽回中途位置」。
+        # after_cancel 传空串/已触发句柄是 no-op，不额外判。
         entry = self._jobs.pop(job_key, None)
         if entry is None:
             return
@@ -232,15 +229,13 @@ class MotionController:
 
     def cancel_all(self) -> None:
         # 撤销全部在途链。逐条走 cancel：句柄既要从册上摘掉，也要真的 after_cancel
-        # （M-82 前只 clear 字典，被「撤销」的链照跑不误）。
+        # （只 clear 字典会让被「撤销」的链照跑不误）。
         for job_key in list(self._jobs):
             self.cancel(job_key)
 
     def track(self, job_key: str, after_id: str, root: tk.Misc | None = None, token: int = -1) -> None:
-        # 登记一条链的句柄。key 重复时旧的已失效，不再单独 cancel（_step 入口的令牌
-        # 守卫会认出「登记已被本 key 的新链替换」并让旧链静默终止；[历史注] 原注释引用
-        # 的 call_with_tracking 并不存在，守卫实现在 run_frames 的闭包里，2026-10-21 M-82
-        # 按真实形态改正）。
+        # 登记一条链的句柄。key 重复时旧的已失效，不再单独 cancel：_step 入口的令牌守卫会认出
+        # 「登记已被本 key 的新链替换」并让旧链静默终止（守卫实现在 run_frames 的闭包里）。
         self._jobs[job_key] = (root, after_id, token)
 
     def run_frames(
@@ -266,15 +261,14 @@ class MotionController:
             return
         per_frame = max(MIN_FRAME_MS, duration_ms // (len(plan) + 1))
         # 链令牌：本条 run_frames 调用的唯一标识。cancel/cancel_all 摘册、同 key 换新链
-        # 都会让它对不上号，_step 据此在入口终止已失效的链（M-82）。
+        # 都会让它对不上号，_step 据此在入口终止已失效的链。
         self._next_token += 1
         token = self._next_token
 
         def _step() -> None:
-            # 守卫①（M-82）：链是否仍然有效——登记缺失（被 cancel/cancel_all 撤销，含
-            # 切 off 的收尾）或令牌更替（同 key 已被新链接管）时，本次唤醒属于「已撤销
-            # 排程的迟到回调」：既不写几何，也不代落终态（终态由撤销方负责，落它反而
-            # 把用户/调用方新设的状态打回旧链的半途）。
+            # 守卫①：链是否仍然有效——登记缺失（被 cancel/cancel_all 撤销，含切 off 的收尾）或令牌
+            # 更替（同 key 已被新链接管）时，本次唤醒属于「已撤销排程的迟到回调」：既不写几何，也不
+            # 代落终态（终态由撤销方负责，落它反而把用户/调用方新设的状态打回旧链的半途）。
             entry = self._jobs.get(job_key)
             if entry is None or entry[2] != token:
                 return
@@ -302,7 +296,6 @@ class MotionController:
 
 
 def cast_after(value: str) -> str:
-    # root.after 返回 Tk 的 after id（存根是 str|None）。运行期不会是 None，但类型上需要
-    # 收敛；这里显式给一个可复核的落点而不是散落 cast。None 只在 Tk 内部异常时出现，用空串
-    # 占位即可（track 存空串不影响正确性，cancel 只是删 key），比塞一个假 id 更好排查。
+    # root.after 返回 Tk 的 after id（存根是 str|None）。None 只在 Tk 内部异常时出现，用空串占位即可
+    # （track 存空串不影响正确性，cancel 只是删 key）。显式收口在这里，避免散落 cast。
     return value if isinstance(value, str) else ""

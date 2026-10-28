@@ -3,21 +3,19 @@
 # ① 鉴权中间件（启用认证时所有 /api/* 须 401，禁用时开放）；② 登录限流（防 XFF 伪造绕过、
 # 失败计数与成功重置、密码变更吊销 token）；③ 写接口的注入/越权防护（quality 含换行被 422、
 # 危险配置键被 403 阻断 RCE）；④ 并发安全（TOCTOU 重复添加房间）与副作用（停止录制触发日志归档、
-# 语言即时切换写回 config）；⑤ 房间写入口裁决一致（POST/PUT/quality 对同一载荷同一结论，SEV-02）；
-# ⑥ Host/Origin 白名单与「非回环 + 无认证」每请求不变量（SEV-04、MID-36）；
-# ⑦ 事件循环不被阻塞调用拖住、对外不回显内部异常（MID-34/39）。
+# 语言即时切换写回 config）；⑤ 房间写入口裁决一致（POST/PUT/quality 对同一载荷同一结论）；
+# ⑥ Host/Origin 白名单与「非回环 + 无认证」每请求不变量；⑦ 事件循环非阻塞与内部异常不回显——
+# 各契约的回归编号（/04、/36/39 等）见对应 Test* 类注释。
 # 测试策略：用 types.ModuleType 注入轻量 fake main（避免导入真实 main.py 触发的 FFmpeg/Node 检查
 # 等重副作用，web_api 仅在请求处理时才 import main、仅用到 file_update_lock 等符号）；通过
 # create_app 注入临时 config/URL_config/downloads/logs 目录隔离文件系统；用 Starlette TestClient
 # 同步驱动异步路由，全程不监听端口。用例内 C4/C8/C10/C11 等为安全/健壮性回归编号（见 CODE_WIKI 变更记录）。
 #
 # 两条与被测代码同步演进的环境约束：
-# · TestClient 一律带 base_url="http://127.0.0.1:8000"：MID-36 之后 Host 头必须落在
-#   服务端推导的允许名单内，默认 base_url 的 "testserver" 会被 400 拒（单标签名亦被放行，
-#   但显式写清来源比依赖兜底规则更可判定）。
-# · 全程打桩 DNS seam（_resolve_host_ips）：SEV-03 之后房间地址要过 getaddrinfo，
-#   不打桩则「live.douyin.com 是否放行」会变成对宿主网络可达性的断言。桩只替换解析这一步，
-#   内网/回环/保留段的分类逻辑仍走真实代码（tests/test_web_config.py 逐条锁定）。
+# · TestClient 一律带 base_url="http://127.0.0.1:8000"：Host 头必须落在服务端推导的
+#   允许名单内，默认 base_url 的 "testserver" 会被 400 拒（单标签名亦被放行，但显式写清来源比依赖兜底规则更可判定）。
+# · 全程打桩 DNS seam（_resolve_host_ips）：不打桩则「live.douyin.com 是否放行」随宿主
+#   网络可达性漂移；桩的判据与边界见 _stub_public_dns，分类逻辑走真实代码（tests/test_web_config.py 逐条锁定）。
 
 import os
 import sys
@@ -37,7 +35,7 @@ _BASE_URL = "http://127.0.0.1:8000"
 
 @pytest.fixture(autouse=True)
 def _stub_public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 把「域名 → IP」这一步固定为公网可解析：房间地址校验（SEV-03）在写入前会解析 host，
+    # 把「域名 → IP」这一步固定为公网可解析：房间地址校验在写入前会解析 host，
     # 不桩化会让本文件的用例随宿主 DNS 可用性漂移。114.114.114.114 是真实公网 DNS 地址，
     # 不在任何回环/私网/保留段内（TEST-NET 段在 3.14 的 ipaddress 里算私网，不可用作本桩）。
     from src import web_config as wc
@@ -49,8 +47,7 @@ def _stub_public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _install_fake_main() -> types.ModuleType:
-    # 注入轻量 fake main 模块：避免导入真实 main.py 触发 FFmpeg/Node 检查等重副作用。
-    # web_api 路由在请求处理中才 import main，仅使用其 file_update_lock 等符号。
+    # 注入轻量 fake main，避免导入真实 main.py 触发 FFmpeg/Node 检查等重副作用（完整口径见模块头「测试策略」）。
     fake = types.ModuleType("main")
     # types.ModuleType 不接受静态注解的任意属性赋值，用 setattr 注入测试替身符号
     # 与生产同源：main.file_update_lock 是 RLock（config_io.delete_line 内部还会再取一次
@@ -105,8 +102,8 @@ def _write_web_section(
 
 
 def _reset_web_api_state(wa: types.ModuleType) -> None:
-    # 逐个用例把 web_api 的进程级状态清干净：token 表、限流表（含 MID-35 的全局失败预算）、
-    # 中间件的配置缓存、MID-34 的状态快照缓存。这些缓存/计数器都是模块级全局，
+    # 逐个用例把 web_api 的进程级状态清干净：token 表、限流表（含该全局失败预算）、
+    # 中间件的配置缓存、该状态快照缓存。这些缓存/计数器都是模块级全局，
     # 跨用例残留会让「第 N 次请求应当 429」这类断言随机漂移。
     with wa._tokens_lock:
         wa._tokens.clear()
@@ -176,12 +173,10 @@ class TestAuthMiddleware:
         assert resp.status_code == 401
 
     def test_static_panel_reachable_without_trailing_slash(self, app_env: types.SimpleNamespace) -> None:
-        # L-20（2026-10-18）行为锁：认证开启时 GET `/web`（无尾斜杠）不得被鉴权拦成 401。
+        # 2026-10-18：行为锁：认证开启时 GET `/web`（无尾斜杠）不得被鉴权拦成 401。
         # 中间件由 BaseHTTPMiddleware 包在 StaticFiles **之外**，StaticFiles 自己那条「/web → /web/」
-        # 的 307 要等中间件判完才有机会执行，所以 401 落在第一跳而非跳转之后（2026-10-18 实测：
-        # auth=true 无 token → /web 直接 401 {"detail":"unauthorized"}；带 token 或 auth=false → 307；
-        # /web/ 三种形态一律 200）。用户侧症状是「新标签输 http://<host>:8000/web 只见一串
-        # unauthorized、登录页根本打不开」，极易被误判成认证坏了。
+        # 的 307 要等中间件判完才有机会执行，所以 401 落在第一跳而非跳转之后（实测：
+        # auth=true 无 token → /web 直接 401 {"detail":"unauthorized"}；带 token 或 auth=false → 307；/web/ 一律 200）。
         # 断言取「跳转语义 + 跟随后拿到首页」两级行为，不钉源码里的路径字面量：
         # 白名单换成任何等价实现都仍应通过，删掉这条放行则两级同时转红。
         strict_client = TestClient(app_env.app, base_url=_BASE_URL, follow_redirects=False)
@@ -274,15 +269,15 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
-        # version 与 /health 的数据来源同源（Starlette 无 FastAPI 的 app.version 元数据，
-        # 阶段2 后以 web_api._APP_VERSION 为同一事实），避免面板与探活报告各写一份版本号
+        # version 与 /health 数据同源（Starlette 无 FastAPI 的 app.version 元数据，以 web_api._APP_VERSION
+        # 为同一事实），避免面板与探活报告各写一份版本号
         assert body["version"] == app_env.wa._APP_VERSION
 
     def test_health_ignores_engine_state(self, app_env: types.SimpleNamespace, fake_main: types.ModuleType) -> None:
         # 探活不得掺入录制引擎健康度：把引擎状态接口打成抛异常（/api/status 会自行
         # 包成 {"error": ...}，见 get_status），/health 仍须 200。否则「引擎报错」与
         # 「面板挂了」在 CI 里无法区分，门禁会在只需重启面板的场景下误红。
-        # MID-39 之后 error 字段是固定 code 而非异常原文，故断言同时锁住「不外泄 engine down」。
+        # 之后 error 字段是固定 code 而非异常原文，故断言同时锁住「不外泄 engine down」。
         def _boom() -> dict[str, object]:
             raise RuntimeError("engine down")
 
@@ -298,7 +293,7 @@ class TestHealthEndpoint:
 
 
 class TestStatusNonBlocking:
-    # MID-34：状态快照不得在事件循环里做阻塞采样。三条契约：
+    # 状态快照不得在事件循环里做阻塞采样。三条契约：
     # ① 一次卡死的采样只让 /api/status 回**陈旧快照 + stale:true**，其他端点照常响应；
     # ② TTL 内的连续轮询只触发一次真实采样（磁盘容量这类秒级值不必每次触盘）；
     # ③ 采样失败期间不会每个轮询都再起一条线程（单飞门）。
@@ -328,8 +323,7 @@ class TestStatusNonBlocking:
             gate.set()
 
     def test_status_cached_within_ttl(self, app_env: types.SimpleNamespace, fake_main: types.ModuleType) -> None:
-        # TTL 窗口内连续 5 次轮询只采样一次：旧实现每次 /api/status 都做
-        # shutil.disk_usage + 抢两把跨线程锁，多标签页线性叠加成磁盘 IO 压力。
+        # TTL 窗口内连续 5 次轮询只采样一次：每次轮询都做 disk_usage + 抢跨线程锁会随标签页数线性叠加磁盘 IO 压力。
         calls: list[int] = []
 
         def _counting() -> dict[str, object]:
@@ -347,8 +341,7 @@ class TestStatusNonBlocking:
     def test_status_error_is_not_cached_and_recovers(
         self, app_env: types.SimpleNamespace, fake_main: types.ModuleType
     ) -> None:
-        # 失败结果不进缓存：引擎恢复后下一次轮询即拿到新鲜值（旧实现把 error 也当快照返回，
-        # 一旦缓存就会让面板连续 TTL 周期显示过期数据）。
+        # 失败结果不进缓存：引擎恢复后下一次轮询即拿到新鲜值（把 error 当快照缓存会让面板连续 TTL 周期显示过期数据）。
         state = {"n": 0}
 
         def _flaky() -> dict[str, object]:
@@ -408,7 +401,7 @@ class TestLoginRateLimit:
         assert resp.status_code == 200
 
     def test_trusted_proxy_peels_xff_right_to_left(self, app_env: types.SimpleNamespace) -> None:
-        # MID-35：即使直连对端可信，XFF 的**最左值**仍是请求方自填的（可写 66.66.66.66），
+        # 即使直连对端可信，XFF 的**最左值**仍是请求方自填的（可写 66.66.66.66），
         # 按最左值计键 → 一台真实客户端可被拆成无数个失败窗口。
         # 正确语义是从右往左剥：跳过仍属可信代理的条目，第一个非可信地址才是客户端。
         # 这里两条请求的最左值不同、右端客户端相同 → 必须共用同一个失败窗口。
@@ -439,7 +432,7 @@ class TestLoginRateLimit:
         assert resp.status_code == 429
 
     def test_spoofed_xff_leftmost_never_used_as_bucket_key(self, app_env: types.SimpleNamespace) -> None:
-        # MID-35 的直接断言：直连对端不可信时，伪造的 XFF 不得成为限流键的一部分
+        # 直接断言：直连对端不可信时，伪造的 XFF 不得成为限流键的一部分
         # （旧实现把 scope["client"] 当直连对端用，而 uvicorn 默认已用 XFF 最左值覆盖它）。
         from src import web_api as wa
 
@@ -453,7 +446,7 @@ class TestLoginRateLimit:
         assert buckets == ["testclient"], f"伪造的 XFF 被当成了限流键: {buckets}"
 
     def test_global_failure_budget_caps_unbounded_buckets(self, app_env: types.SimpleNamespace) -> None:
-        # MID-35：按 IP 计数存在对称失效面——攻击者换键即换窗口（Docker/反代下 client.host
+        # 按 IP 计数存在对称失效面——攻击者换键即换窗口（Docker/反代下 client.host
         # 可被随意伪造时尤其明显）。全局失败预算与键无关，超预算即整站 429。
         from src import web_api as wa
 
@@ -464,7 +457,7 @@ class TestLoginRateLimit:
             trusted_proxy="1.1.1.1,1.1.1.2,1.1.1.3",  # 三个「可信代理」→ 三个独立键
         )
         # 直接把全局预算灌满（等价于大量分布式失败，且每个键都没到 5 次）
-        # M-59（2026-10-21）同步：条目形态为 (时刻, 来源)，这里灌的是**别的来源**的条目，
+        # 2026-10-21：同步：条目形态为 (时刻, 来源)，这里灌的是**别的来源**的条目，
         # 与 login 侧 test_successful_login_reclaims_only_own_global_entries 构成正反配对
         now = __import__("time").time()
         with wa._FAILED_LOGINS_LOCK:
@@ -474,10 +467,9 @@ class TestLoginRateLimit:
         assert resp.status_code == 429
 
     def test_successful_login_reclaims_only_own_global_entries(self, app_env: types.SimpleNamespace) -> None:
-        # M-59（2026-10-21）：全局预算按 (时刻, 来源) 记账后，成功登录只回收**本来源**挣出的条目。
-        # 两条断言各封一个退化方向：全清 → 攻击者可借自己成功登录重置整站预算（旧注释担心的形态）；
-        # 全不回收 → 本用例前半段（testclient 自己贡献的份额持续累计，最终把所有合法用户 429 在
-        # 门外直到窗口滑完，即本条要修的锁死面）。
+        # 2026-10-21：全局预算按 (时刻, 来源) 记账后，成功登录只回收**本来源**挣出的条目。
+        # 两条断言各封一个退化方向：全清 → 攻击者可借自己成功登录重置整站预算；
+        # 全不回收 → testclient 自己贡献的份额持续累计，最终把所有合法用户 429 在门外直到窗口滑完。
         import time as _time
 
         from src import web_api as wa
@@ -498,7 +490,7 @@ class TestLoginRateLimit:
 
 
 class TestRoomWriteParity:
-    # SEV-02：PUT /api/rooms 曾**完全不做**房间校验（POST 与 PUT/quality 都做），
+    # PUT /api/rooms 曾**完全不做**房间校验（POST 与 PUT/quality 都做），
     # 于是它成为绕过 SSRF/任意 scheme/画质白名单的第二条写入口。
     # 校验现已下沉进 format_url_line（唯一写入口），本类锁「同一载荷在两个写入口裁决一致」。
 
@@ -519,14 +511,13 @@ class TestRoomWriteParity:
     def test_put_to_existing_url_returns_409_without_duplicate_line(
         self, app_env: types.SimpleNamespace, fake_main: types.ModuleType
     ) -> None:
-        # L-29 行为锁（2026-10-02）：PUT 改写为已存在的 URL 必须回 409，且文件不出现重复
-        # URL 行（原实现漏检，成功后删除/画质操作命中不确定）。仅改画质/名字（new_url ==
-        # old_url）不得被误杀。
+        # 行为锁：PUT 改写为已存在的 URL 必须回 409，且文件不出现重复 URL 行（原实现漏检，
+        # 成功后删除/画质操作命中不确定）。仅改画质/名字（new_url == old_url）不得被误杀。
         token = _login(app_env.client)
         headers = {"Authorization": f"Bearer {token}"}
 
         def _fake_update_file(path: str, old_str: str, new_str: str, **kw: str) -> str:
-            # 端点在 update_file 后会重解析文件做「真写入了」裁决（MIN-2243），替身必须
+            # 端点在 update_file 后会重解析文件做「真写入了」裁决，替身必须
             # 真的改写文件，否则同址更新分支被判 500
             p = Path(path)
             text = p.read_text(encoding="utf-8-sig")
@@ -579,8 +570,8 @@ class TestRoomWriteParity:
             post = app_env.client.post("/api/rooms", json=body, headers=headers)
             put = app_env.client.put("/api/rooms", json={**body, "old_url": seed}, headers=headers)
             # POST 的 409（重复）与 PUT 的 404/200 属各自语义，其余裁决必须逐字一致。
-            # [历史注] L-29（2026-10-02）后 PUT 对「新 URL 与其它房间重复」同样回 409
-            # （原实现漏检、会写成重复 URL 行），故 PUT=409 恒为合法裁决。
+            # [历史注] 该漏检修复后（判据全文见上方 test_put_to_existing_url_returns_409_without_duplicate_line），
+            # PUT 对「新 URL 与其它房间重复」同样回 409，故 PUT=409 恒为合法裁决。
             same = (
                 post.status_code == put.status_code
                 or (post.status_code == 409 and put.status_code == 200)
@@ -630,7 +621,7 @@ class TestRoomWriteParity:
 
 
 class TestInternalErrorNotEchoed:
-    # MID-39：内部异常原文（Windows 绝对路径、Errno 13）曾被 {"detail": ...} / error 字段
+    # 内部异常原文（Windows 绝对路径、Errno 13）曾被 {"detail": ...} / error 字段
     # 原样回显并被前端弹成 toast，对局域网泄露安装路径。现对外只给固定 code，细节进日志。
 
     def test_logs_endpoint_hides_os_error(
@@ -709,12 +700,11 @@ class TestRoomEndpoints:
     def test_add_room_prepends_newline_when_tail_probe_blocked(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-63（2026-10-21）：末字节探测 open(...,"rb") 被 Windows sharing violation 挡住是常态
-        # （录制进程正持有 URL_config.ini），旧 `except OSError: pass` 让 _needs_newline 停在
-        # False → 直接追加，恰好重开 MIN-2242 的「新房间粘上无尾换行的末行、两个房间同时坏掉」。
-        # 现保守补一个 \n。打桩按「对象+模式」收窄：只对本用例 url_cfg 的二进制读制造失败，
-        # 其余调用透传真实 open（AGENTS 替身收窄口径；同文件 test_logs_endpoint_hides_os_error
-        # 为同一先例形态）。变异可见性：改回 pass → 追加粘连成 oldhttps://…，逐字节断言转红
+        # 2026-10-21：末字节探测 open(...,"rb") 被 Windows sharing violation 挡住是常态（录制进程
+        # 正持有 URL_config.ini），此时必须保守补一个 \n——让 _needs_newline 停在 False 直接追加
+        # 会重开该「新房间粘上无尾换行的末行、两个房间同时坏掉」形态。
+        # 打桩按「对象+模式」收窄：只对本用例 url_cfg 的二进制读制造失败，其余调用透传真实 open
+        # （AGENTS 替身收窄口径）。变异可见性：改回 pass → 追加粘连成 oldhttps://…，逐字节断言转红
         token = _login(app_env.client)
         app_env.url_cfg.write_text("https://live.douyin.com/old", encoding="utf-8-sig")  # 无尾换行
         target = str(app_env.url_cfg)
@@ -723,8 +713,7 @@ class TestRoomEndpoints:
         def fake_open(file: object, mode: Any = "r", **kw: object) -> object:
             if str(file) == target and "b" in mode:
                 raise OSError(32, "Sharing violation", str(file))
-            # 逐个具名传参（**kw 的展开形态 mypy 无法匹配 open() 的重载），与本文件
-            # test_logs_endpoint_hides_os_error 的桩同型：其余路径仍走真实 open
+            # 与 test_logs_endpoint_hides_os_error 桩同型：逐个具名传参后其余路径走真实 open（具名传参理由见彼处首注）
             return real_open(
                 str(file),
                 mode,
@@ -767,7 +756,7 @@ class TestRoomEndpoints:
             t.start()
         for t in threads:
             t.join(timeout=20)
-        # 审查 7.11（2026-10-18）：join(timeout=20) 静默返回时线程可能还卡在 add_room 的锁上；
+        # 审查 7.11：join(timeout=20) 静默返回时线程可能还卡在 add_room 的锁上；
         # 此时 results 已够 n 条（append 在 post 之后）却仍有线程未收尾，「仅一条 200」的判据
         # 会被半截状态满足。逐线程确认退出，才钉住 TOCTOU 竞态窗口真的被并发跑满。
         alive = [t.name for t in threads if t.is_alive()]
@@ -926,11 +915,10 @@ class TestPasswordManagement:
         client = app_env.client
         token = _login(client)
         headers = {"Authorization": f"Bearer {token}"}
-        # MID-2241 复验守卫的本地锁（与 tests/test_regression_2026_09_22_web_g.py::
-        # TestAuthKeyReauth::test_password_write_without_reauth_is_403 同源）：
-        # 不带 reauth_password 必须先 403，且配置文件一个字节都不能动。
-        # 本用例测的是「改密后旧 token 失效」，与复验无关，故随后带上正确口令，
-        # 把复验这一前置条件满足掉——顺带证明正向 200 确实是**被复验放行的**，而非别的分支。
+        # 复验守卫的本地锁（与 tests/test_regression_2026_09_22_web_g.py:
+        # TestAuthKeyReauth::test_password_write_without_reauth_is_403 同源）：不带 reauth_password
+        # 必须先 403 且配置文件一个字节都不能动。本用例测「改密后旧 token 失效」，与复验正交，
+        # 故随后带上正确口令满足前置——200 也因此证明确实是被复验放行的，而非别的分支。
         before = app_env.cfg.read_bytes()
         denied = client.put(
             "/api/config",
@@ -978,9 +966,9 @@ class TestPasswordManagement:
         assert "pbkdf2_sha256$" in text
 
     def test_password_with_surrounding_whitespace_not_self_locking(self, app_env: types.SimpleNamespace) -> None:
-        # M-06（2026-09-30）：「首尾带空格」的口令在写入/登录/reauth 三处必须同口径 strip。
-        # 旧实现写入侧用原文哈希、reauth 侧 strip 比对——这类口令（粘贴/输入法尾随空格是
-        # 常见来源）一旦设置，此后所有 reauth 永远 403，认证配置经面板永久自锁。
+        # 2026-09-30：「首尾带空格」的口令在写入/登录/reauth 三处必须同口径 strip——若写入侧用原文哈希
+        # 而 reauth 侧 strip 比对，这类口令（粘贴/输入法尾随空格是常见来源）一旦设置，
+        # 此后所有 reauth 永远 403，认证配置经面板永久自锁。
         # 口令值沿用本文件既有夹具取值（拆写拼接），被测行为与口令取值本身无关。
         client = app_env.client
         current = "secret" + "123"
@@ -1010,7 +998,7 @@ class TestPasswordManagement:
 
 
 class TestPasswordGuardCaseParity:
-    # SEV-04：Web 节的三项守卫（口令哈希化 / 防清空 / 改密吊销 token）曾被大小写变体整体绕过
+    # Web 节的三项守卫（口令哈希化 / 防清空 / 改密吊销 token）曾被大小写变体整体绕过
     # ——危险键黑名单做了 casefold，这三处却是精确比较，而 configparser 的 option 本就
     # 大小写不敏感：写入 WEB_PASSWORD 命中同一行配置却跳过全部守卫。
     # 现统一在入口处归一 key_norm，本类锁「大小写变体与规范写法裁决一致」。
@@ -1019,14 +1007,12 @@ class TestPasswordGuardCaseParity:
     def test_password_variant_always_hashed_and_revokes(self, app_env: types.SimpleNamespace, key: str) -> None:
         client = app_env.client
         token = _login(client)
-        # 本用例测的是「键名大小写/空白变体不得跳过口令守卫」，与 MID-2241 的复验要求正交，
-        # 故固定带正确 reauth_password 把复验满足掉。
+        # 本用例测「键名大小写/空白变体不得跳过口令守卫」，与该复验正交：
+        # 固定带正确 reauth_password 把复验满足掉（同 test_password_change_revokes_tokens 的处理）。
         # 关键一点：**复验也必须走同一份归一化**——若实现里用 req.reauth_password 去比对
-        # 而未先解析当前口令哈希，四个变体会一起变红（复验与哈希化是两个独立防线，
-        # 这里保证前者不掩盖后者的覆盖面）。
-        # 前置一段（MID-2241 本地锁）：变体名同样不得绕过**复验**守卫——判定用的是 key_norm
-        # （strip + lower），故四个变体不带 reauth_password 时必须一律 403 且配置字节不变。
-        # 少了这一段，本用例只在「带口令」这一侧证变体被守卫，归一化被摘掉时仍是全绿。
+        # 而未先解析当前口令哈希，四个变体会一起变红（复验与哈希化是两个独立防线）。
+        # 前置一段（该本地锁）：判定用的是 key_norm（strip + lower），四个变体不带
+        # reauth_password 时必须一律 403 且配置字节不变；少了这一段，归一化被摘掉时仍是全绿。
         before = app_env.cfg.read_bytes()
         denied = client.put(
             "/api/config",
@@ -1062,7 +1048,7 @@ class TestPasswordGuardCaseParity:
         assert resp.status_code == 400
 
     def test_auth_enable_variant_still_requires_password(self, tmp_path: Path, fake_main: types.ModuleType) -> None:
-        # 反向路径（CR-08）：认证关闭 + 密码为空时把 WEB_AUTH_ENABLE 写成 true，
+        # 反向路径：认证关闭 + 密码为空时把 WEB_AUTH_ENABLE 写成 true，
         # 会让全部 /api/* 变 401 且 /api/login 直接 500 → 面板永久锁死，只能手工改文件。
         # 大小写变体必须与规范写法一样被 400 拦住（旧实现该判定用精确比较，变体可绕）。
         from src import web_api as wa
@@ -1088,7 +1074,7 @@ class TestPasswordGuardCaseParity:
 
 
 class TestAuthDowngradeRejected:
-    # SEV-04：把「认证降级」当作敏感变更 —— 非回环监听地址下拒绝 web_auth_enable=false，
+    # 把「认证降级」当作敏感变更 —— 非回环监听地址下拒绝 web_auth_enable=false，
     # 并让「非回环 + 无认证」不变量在**每个请求**上重跑（旧实现只在 web.py 启动时看一次）。
 
     def _env(self, tmp_path: Path, fake_main: types.ModuleType, wa: object, *, host: str, auth: str) -> TestClient:
@@ -1129,12 +1115,11 @@ class TestAuthDowngradeRejected:
 
     def test_downgrade_on_loopback_allowed(self, app_env: types.SimpleNamespace) -> None:
         # 回环监听下关闭认证仍是合法操作（出厂默认即如此），不得因新守卫而锁死本机用户。
-        # MID-2241 后这条「合法降级」还须带正确复验口令才放行——本用例正是那半边的
-        # 反向边界：拦的是「无口令降级」，不是「降级」本身。
+        # 后这条「合法降级」还须带正确复验口令才放行：拦的是「无口令降级」，不是「降级」本身。
         token = _login(app_env.client)
         headers = {"Authorization": f"Bearer {token}"}
-        # 本条同时锁「回环不是复验的豁免条件」：SEV-04 在回环下放行降级，
-        # MID-2241 必须仍然把不带口令的那一次挡在门外（配置字节不得变化）。
+        # 本条同时锁「回环不是复验的豁免条件」：该在回环下放行降级，
+        # 必须仍然把不带口令的那一次挡在门外（配置字节不得变化）。
         before = app_env.cfg.read_bytes()
         denied = app_env.client.put(
             "/api/config",
@@ -1189,7 +1174,7 @@ class TestAuthDowngradeRejected:
 
 
 class TestSecurityConfigCacheInvalidation:
-    # L-23（2026-10-18）：安全判定键的写入必须让中间件的配置缓存**即时**失效。
+    # 2026-10-18：安全判定键的写入必须让中间件的配置缓存**即时**失效。
     # 缓存本会按 mtime+size 自然失效，本类把这条物理前提冻住（web_api 命名空间里的 os.stat 换成
     # 恒返同一 (mtime, size) 的替身），等价于「同秒等长改写 + 粗精度时间戳」那一档病态场景；
     # 于是「改完立刻生效」只剩写侧 _invalidate_web_cfg_cache() 一条路——失效清单里漏掉该键即红。
@@ -1231,13 +1216,12 @@ class TestSecurityConfigCacheInvalidation:
     def test_web_host_change_takes_effect_without_mtime_change(
         self, tmp_path: Path, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 端到端锁：Host 允许名单（MID-36 的 DNS 重绑定防线）只从这份带缓存的 cfg 里取，
+        # 端到端锁：Host 允许名单（ DNS 重绑定防线）只从这份带缓存的 cfg 里取，
         # 所以「把名单改宽/改窄」是否即时生效，直接 observable 在带 Host 头的请求上。
         # 三段顺序本身就是判据：改宽前 400（证明用例不恒真）→ 改宽后 200 → 改窄后重新 400
         # （证明失效是双向的，而不是「第一次读了盘之后就一直对」）。
-        # [历史注] 本条原用 web_allowed_hosts 驱动；M-64（2026-10-21）起该键进危险黑名单、
-        # 面板不可写（见 TestDangerousKeys 的 M-64 参数化用例），L-23 的同款失效场景改由
-        # **仍可写**的安全键 web_host 承担——get_allowed_hosts 同样吃它，判定面逐字等价
+        # [历史注] 本条原用 web_allowed_hosts 驱动；此起该键进危险黑名单（见 TestDangerousKeys
+        #  该参数化用例），场景改由**仍可写**的安全键 web_host 承担——get_allowed_hosts 同样吃它，判定面逐字等价
         from src import web_api as wa
 
         client = self._frozen_client(tmp_path, monkeypatch, wa)
@@ -1267,11 +1251,10 @@ class TestSecurityConfigCacheInvalidation:
     def test_proxy_and_hosts_keys_are_no_longer_panel_writable(
         self, tmp_path: Path, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # [历史注] 本条原锁「web_trusted_proxy 经面板变更后的缓存失效 + XFF 分桶换窗」。
-        # M-64（2026-10-21）把 web_trusted_proxy / web_allowed_hosts 列入危险键黑名单后，
-        # 「面板改这两个键」这条路整体不复存在（携带合法 bearer 也 403），原判据失去可达的
-        # 驱动路径；XFF 分桶行为本身仍由 TestLoginRateLimit 三条用例在 create_app 起点锁住。
-        # 这里改为锁 M-64 的**认证开启侧**：两键在登录态下必须 403 且文件逐字不变
+        # [历史注] 本条原锁「web_trusted_proxy 经面板变更后的缓存失效 + XFF 分桶换窗」；该把
+        # web_trusted_proxy / web_allowed_hosts 列入危险键黑名单后该驱动路径整体不复存在，
+        # XFF 分桶仍由 TestLoginRateLimit 在 create_app 起点锁住。
+        # 现锁 **认证开启侧**：两键在登录态下必须 403 且文件逐字不变
         from src import web_api as wa
 
         client = self._frozen_client(tmp_path, monkeypatch, wa)
@@ -1288,7 +1271,7 @@ class TestSecurityConfigCacheInvalidation:
 
 
 class TestHostHeaderAllowList:
-    # MID-36：同源判定曾拿**请求自带的 Host** 与 Origin 比较，DNS 重绑定
+    # 同源判定曾拿**请求自带的 Host** 与 Origin 比较，DNS 重绑定
     # （attacker.tld 的 A 记录 TTL=0 指向 127.0.0.1）下二者必然相同 → SOP 与 CSRF 同时失效。
     # 现在 Host 必须命中服务端推导的允许名单；Origin 亦按同一名单判定。
 
@@ -1340,7 +1323,7 @@ class TestHostHeaderAllowList:
         assert resp.status_code == 403
 
     def test_uvicorn_must_not_rewrite_client_addr(self) -> None:
-        # MID-35 的结构性前提：web.py 必须以 proxy_headers=False 起 uvicorn。
+        # 结构性前提：web.py 必须以 proxy_headers=False 起 uvicorn。
         # 否则 uvicorn 的 ProxyHeaders 中间件会在鉴权中间件之前用 XFF 最左值覆盖
         # scope["client"]，_get_client_ip 的「只信直连对端」就变成「只信伪造值」。
         # 本用例锁源码事实（与仓库既有的 AST/文本级防回归断言同口径）。
@@ -1354,12 +1337,11 @@ class TestHostHeaderAllowList:
 
 
 class TestInsecureBindInvariantUsesRealAddress:
-    # SEV-N03 修复（2026-09-21，CODE_REVIEW_2026-09-21）：
-    # SEV-04 建立的「非回环 + 无认证」不变量，其判定基准是 config.ini 里的 web_host，
-    # 而 web_host 自身可经同一个 PUT /api/config 改写（既非敏感项、也不在危险键黑名单内），
-    # 于是「① 写 web_host=127.0.0.1 ② 写 web_auth_enable=false」两步即可把仍监听 0.0.0.0 的
-    # 进程变成「无认证 + 全网卡」——一个由请求方可写的量不能用来证明请求方安全。
-    # 现在两处判定都以**进程实际绑定地址**为准，并对 web_host 的写入补一道目标态校验。
+    # SEV-N03：「非回环 + 无认证」不变量若以 config.ini 的 web_host 为判定基准，而
+    # web_host 自身可经同一个 PUT /api/config 改写（既非敏感项、也不在危险键黑名单内），
+    # 「① 写 web_host=127.0.0.1 ② 写 web_auth_enable=false」两步即可把仍监听 0.0.0.0 的进程
+    # 变成「无认证 + 全网卡」——一个由请求方可写的量不能用来证明请求方安全。
+    # 现状：两处判定都以**进程实际绑定地址**为准，并对 web_host 的写入补一道目标态校验。
 
     def _client(
         self,
@@ -1390,7 +1372,7 @@ class TestInsecureBindInvariantUsesRealAddress:
         return TestClient(app, base_url=_BASE_URL)
 
     def test_two_step_web_host_then_auth_off_is_403(self, tmp_path: Path, fake_main: types.ModuleType) -> None:
-        # 攻击序列本体（回归锁表 SEV-N03 第一条）：现有 SEV-04 用例只测「一步关认证」，
+        # 攻击序列本体（回归锁表 SEV-N03 第一条）：现有该用例只测「一步关认证」，
         # 两步序列在修复前是完全通过的。
         from src import web_api as wa
 
@@ -1404,12 +1386,11 @@ class TestInsecureBindInvariantUsesRealAddress:
             )
             assert step1.status_code == 200, step1.text
             # 前提自证：配置里现在确实写着回环值——否则第②步的 403 可能来自别的分支，
-            # 本用例就会退化成「与 SEV-04 单步用例同义」的假绿。
+            # 本用例就会退化成「与该单步用例同义」的假绿。
             cfg_text = (tmp_path / "config.ini").read_text(encoding="utf-8-sig")
             assert "web_host = 127.0.0.1" in cfg_text, cfg_text
-            # 第②步：关认证。修复前判定读的是刚写进去的 127.0.0.1（判为回环）→ 放行；
-            # 修复后读实际绑定 0.0.0.0 → 必须 403。
-            # 带上**正确**复验口令（MID-2241）：否则这条 403 可能来自复验守卫而非监听地址守卫，
+            # 第②步：关认证。判定读实际绑定 0.0.0.0 → 必须 403（修复前读刚写进去的 127.0.0.1 判为回环 → 放行）。
+            # 带上**正确**复验口令：否则这条 403 可能来自复验守卫而非监听地址守卫，
             # 与下面 test_two_step_sequence_allowed_when_real_bind_is_loopback 也不再是
             # 「唯一差别是 bind_host」的对照。下面的 detail 断言才是归因所在。
             step2 = client.put(
@@ -1431,9 +1412,8 @@ class TestInsecureBindInvariantUsesRealAddress:
     ) -> None:
         # 与上一条**唯一**差别是 bind_host（127.0.0.1 vs 0.0.0.0），其余入参逐字相同：
         # 配置里写着 0.0.0.0、先改回环、再关认证——这一步序列在两种绑定下结论必须相反。
-        # 若把判定基准错配回 cfg["web_host"]（或错配回 req.value），本用例会与上一条同时通过，
-        # 于是「403 那条到底是被谁拒的」就无法归因；本条正是那条 403 的反向对照，
-        # 证明拒绝来自「进程实际监听地址」而非「配置值」。
+        # 若判定基准错配回 cfg["web_host"]（或错配回 req.value），两条会同时通过、拒绝无法归因；
+        # 本条正是那条 403 的反向对照，证明拒绝来自「进程实际监听地址」而非「配置值」。
         # 出厂默认形态（绑回环 + 允许关认证）不得被这次收紧打死。
         from src import web_api as wa
 
@@ -1445,7 +1425,7 @@ class TestInsecureBindInvariantUsesRealAddress:
                 "/api/config", json={"section": "Web", "key": "web_host", "value": "127.0.0.1"}, headers=headers
             )
             assert step1.status_code == 200, f"实际绑定回环时第①步被误拒: {step1.text}"
-            # MID-2241 本地锁：第②步不带复验必须先被拒（且这一步之后配置字节不变），
+            # 本地锁：第②步不带复验必须先被拒（且这一步之后配置字节不变），
             # 于是本用例的 200 唯一来自「bind 是回环 + 口令正确」这一组合，
             # 与对照用例（bind=0.0.0.0、同样带正确复验 → 403）仍然逐字段可比。
             after_step1 = (tmp_path / "config.ini").read_bytes()
@@ -1493,12 +1473,11 @@ class TestInsecureBindInvariantUsesRealAddress:
     def test_loopback_web_host_write_blocked_when_config_cache_says_auth_on(
         self, tmp_path: Path, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # web_host 写入侧的目标态校验（任务要求的第二道）。
-        # 可达性说明：中间件与写侧守卫用的是同一个 _guard_bind_host，因此在「缓存视图与
-        # 磁盘视图一致」时，认证已关闭 + 非回环绑定这一状态永远到不了处理函数（先被 403 锁住）。
-        # 两者真正分歧的时机是缓存按 mtime+size 失效失灵（同秒等长改写）或改文件绕过失效逻辑
-        # ——那正是这道守卫存在的理由，故本用例把「中间件认为认证开着、文件里其实已关」
-        # 这一分歧直接造出来，证明写侧不是永不生效的死分支。
+        # web_host 写入侧的目标态校验。可达性说明：中间件与写侧守卫用的是同一个 _guard_bind_host，
+        # 缓存视图与磁盘视图一致时「认证已关 + 非回环」永远到不了处理函数（先被 403 锁住）；
+        # 真正分歧只发生在 mtime+size 缓存失效失灵（同秒等长改写）或改文件绕过失效逻辑时——
+        # 这正是这道守卫存在的理由。本用例直接造出「中间件认为认证开着、文件其实已关」的分歧，
+        # 证明写侧不是永不生效的死分支。
         from src import web_api as wa
 
         client = self._client(tmp_path, wa, cfg_host="0.0.0.0", auth="true", bind_host="0.0.0.0", bind_port=8000)
@@ -1554,12 +1533,10 @@ class TestInsecureBindInvariantUsesRealAddress:
         self, tmp_path: Path, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 归因用例（本工作区禁止「改坏生产实现再跑用例」的变异验证）：在**测试内**把判定基准
-        # 临时换回修复前的 cfg["web_host"]，中间件顺序、写侧守卫、请求载荷逐字不动。
-        # 若此时两步序列一路通过，就证明上面那条 403 唯一来自 _guard_bind_host 的
-        # 「实际绑定地址」基准，而不是来自危险键黑名单 / 敏感项空值守卫 / CR-08 目标态校验
-        # 等其它分支——否则那 403 可能只是被别的东西顺手挡掉的假绿。
-        # 这也同时是「防线被摘除后回归会重新出现」的证据：把 _guard_bind_host 整个删掉
-        # （退化为未接线时的配置回落）会得到同一结论。
+        # 换回修复前的 cfg["web_host"]，中间件顺序、写侧守卫、请求载荷逐字不动。
+        # 若此时两步序列一路通过，即证明上面那条 403 唯一来自 _guard_bind_host 的「实际绑定地址」
+        # 基准，而非危险键黑名单 / 敏感项空值守卫 / 该目标态校验等其它分支恰好挡掉的假绿；
+        # 把 _guard_bind_host 整个删掉（退化为未接线时的配置回落）会得到同一结论。
         from src import web_api as wa
 
         def _legacy_basis(_app: object, cfg: dict[str, str | int | bool]) -> str:
@@ -1574,9 +1551,8 @@ class TestInsecureBindInvariantUsesRealAddress:
                 "/api/config", json={"section": "Web", "key": "web_host", "value": "127.0.0.1"}, headers=headers
             )
             assert step1.status_code == 200, step1.text
-            # 第②步必须带正确复验口令：否则 MID-2241 的 403 会抢在「旧基准放行」之前发生，
-            # 本用例就退化成「403 来自复验守卫」而非「来自配置基准」，归因失效（假红）。
-            # 先补一次不带复验的探测（MID-2241 本地锁）：即便判定基准已被换回配置值，
+            # 第②步必须带正确复验口令：否则 403 会抢在「旧基准放行」之前发生、归因失效（假红）。
+            # 先补一次不带复验的探测（该本地锁）：即便判定基准已被换回配置值，
             # 无口令的降级仍必须被拒且不动配置——证明复验守卫与监听地址守卫**互不覆盖**，
             # 摘掉任一道的形态都各自有红点，而不是「两道守卫视作同一件事」。
             after_step1 = (tmp_path / "config.ini").read_bytes()
@@ -1630,7 +1606,7 @@ class TestInsecureBindInvariantUsesRealAddress:
     def test_middleware_insecure_bind_message_translated(
         self, tmp_path: Path, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 中间件分支（SEV-04 每请求检查）：配置已「无认证 + 非回环」时 /api/* 被 403 拦截；
+        # 中间件分支（该每请求检查）：配置已「无认证 + 非回环」时 /api/* 被 403 拦截；
         # detail 是机器码契约（不翻），message 是展示文案（必须翻）。
         import i18n
         from src import web_api as wa
@@ -1648,11 +1624,10 @@ class TestInsecureBindInvariantUsesRealAddress:
 
 
 class TestOriginSameHostAndPort:
-    # MID-N42 修复（2026-09-21，CODE_REVIEW_2026-09-21）：Origin 同源判定曾直接复用
-    # 为 Host 头设计的 web_config.is_host_allowed，后者放行「任何 IP 字面量」「任何无点单标签名」
-    # 并且 _strip_host_port 把端口丢掉 —— 于是局域网里另一台设备的页面（http://192.168.1.47/）
-    # 与本机任意 dev server（http://localhost:3000/）都算同源。认证关闭（出厂默认）时
-    # 这条判定是写接口唯一的 CSRF 防线，故 Origin 单独判：host 与端口都要命中期望集合。
+    # MID-N42：Origin 同源判定不得复用为 Host 头设计的 web_config.is_host_allowed——它放行
+    # 「任何 IP 字面量」「任何无点单标签名」且 _strip_host_port 把端口丢掉，于是局域网里另一台
+    # 设备的页面（http://192.168.1.47/）与本机任意 dev server（http://localhost:3000/）都算同源。
+    # 认证关闭（出厂默认）时这条判定是写接口唯一的 CSRF 防线，故 Origin 单独判：host 与端口都要命中期望集合。
 
     def _client(
         self,
@@ -1718,10 +1693,9 @@ class TestOriginSameHostAndPort:
             client.close()
 
     def test_denial_follows_port_when_host_is_held_constant(self, tmp_path: Path, fake_main: types.ModuleType) -> None:
-        # 「拒绝确实来自端口判定」的归因对（对应 CODE_REVIEW_2026-09-21 的 MID-N42）：
-        # 同一条用例里 host 逐字不变、只把端口在 8000 与不匹配值之间切换，结论必须翻转。
-        # 拆到两条 parametrize 用例里也能看出差分，但那是「两个 client + 两次构造」的间接对比，
-        # 一旦某一侧的构造参数被改动就会悄悄失去对照意义，故此处把差分钉在同一个客户端上。
+        # 「拒绝确实来自端口判定」的归因对（MID-N42）：同一条用例里 host 逐字不变、只把端口在
+        # 8000 与不匹配值之间切换，结论必须翻转。拆到两条 parametrize 用例里也能看出差分，但那是
+        # 「两个 client + 两次构造」的间接对比，一旦某一侧的构造参数被改动就会悄悄失去对照意义。
         from src import web_api as wa
 
         client = self._client(tmp_path, wa, bind_host="127.0.0.1", bind_port=8000)
@@ -1742,8 +1716,8 @@ class TestOriginSameHostAndPort:
 
     def test_denial_follows_host_when_port_is_held_constant(self, tmp_path: Path, fake_main: types.ModuleType) -> None:
         # 另一半归因：http://192.168.1.47 被拒不能只是因为「默认端口 80 ≠ 8000」。
-        # 这里把端口钉死为绑定端口 8000，只有 host 变化，结论仍须区分——证明「IP 字面量
-        # 即同源」这条来自 is_host_allowed 的宽松规则确实没有漏进 Origin 判定。
+        # 这里把端口钉死为绑定端口 8000、只有 host 变化，结论仍须区分——证明「IP 字面量即同源」
+        # 这条来自 is_host_allowed 的宽松规则确实没有漏进 Origin 判定。
         # 认证开启（避免与「非回环 + 无认证」锁住逻辑混叠）：过了 Origin 关的请求回 401 而非 403，
         # 401/403 的差值即「Origin 判定在生效」的直接读数。
         from src import web_api as wa
@@ -1839,7 +1813,7 @@ class TestOriginSameHostAndPort:
             client.close()
 
     def test_host_header_policy_is_unchanged(self, tmp_path: Path, fake_main: types.ModuleType) -> None:
-        # MID-N42 的边界：Origin 收紧**不得**顺带改 Host 那套规则，否则 MID-36 的
+        # MID-N42 的边界：Origin 收紧**不得**顺带改 Host 那套规则，否则
         # DNS 重绑定防线会退化（Host 侧放行 IP 字面量/无点名是刻意的，见 is_host_allowed 注释）。
         from src import web_api as wa
 
@@ -1922,12 +1896,12 @@ class TestOriginSameHostAndPort:
     def test_foreign_origins_pass_when_rule_reverts_to_host_allow_list(
         self, tmp_path: Path, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 归因用例：把 Origin 的判定基准换回修复前的形态（Origin 复用为 Host 头设计的
-        # is_host_allowed），中间件顺序与请求载荷逐字不动。两条被点名的 Origin 此时必须**通过**，
-        # 由此证明 test_foreign_origin_write_denied 的 403 唯一来自 MID-N42 的新规则，
-        # 而不是 Host 名单、Sec-Fetch-Site 分支或认证开关恰好挡住了同一请求。
-        # 注：这里替换的是 web_api 全局引用里的名字（from-import 后的模块属性），
-        # 不触碰 stdlib、也不改 web_config 的 is_host_allowed 本体（Host 那侧必须仍是真代码）。
+        # 归因用例：把 Origin 判定基准换回修复前形态（复用为 Host 头设计的 is_host_allowed），
+        # 中间件顺序与请求载荷逐字不动。两条被点名的 Origin 此时必须**通过**，由此证明
+        # test_foreign_origin_write_denied 的 403 唯一来自 MID-N42 新规则，而非 Host 名单、
+        # Sec-Fetch-Site 分支或认证开关恰好挡住同一请求。
+        # 注：替换的是 web_api 全局引用里的名字（from-import 后的模块属性），不触碰 stdlib、
+        # 也不改 web_config 的 is_host_allowed 本体（Host 那侧必须仍是真代码）。
         from urllib.parse import urlparse
 
         from src import web_api as wa
@@ -1951,10 +1925,9 @@ class TestOriginSameHostAndPort:
 
 
 class TestSensitiveValueBlankRejected:
-    # MID-37（后端半边）：面板对敏感项回显 '***'，用户全选删空后提交 '' 既 ≠ '***'
+    # （后端半边）：面板对敏感项回显 '***'，用户全选删空后提交 '' 既 ≠ '***'
     # 也 ≠ 旧值 → 真实 cookie/token 被空串静默覆盖。现与 web_password 同口径：400。
-    # 2026-09-21 补：字面掩码 '***' 本身同样必须被服务端拦住（此前只有前端 saveConfig
-    # 跳过它一条防线，直接打接口的调用方可把真实凭据覆写成掩码）。
+    # 字面掩码 '***' 本身同样必须被服务端拦住——此前防线只有前端 saveConfig 跳过它，直接打接口的调用方可把凭据覆写成掩码。
 
     @pytest.mark.parametrize(
         "section,key",
@@ -2009,10 +1982,8 @@ class TestSensitiveValueBlankRejected:
     def test_mask_sensitive_value_rejected(
         self, app_env: types.SimpleNamespace, section: str, key: str, value: str
     ) -> None:
-        # MID-37 残留（2026-09-21）：面板回显的就是字面 '***'（read_config_safe 的 SENSITIVE_MASK）。
-        # 前端 saveConfig 跳过掩码曾是**唯一**防线——任何直接打 PUT /api/config 的调用方
-        # （脚本 / 旧版或改过的页面）都能把真实凭据覆写成 '***'，且 backup_config 副本
-        # 已按 CR-07 脱敏、无从恢复。后端拒绝后，前端那条跳过只是省一次无谓写入。
+        # read_config_safe 的 SENSITIVE_MASK 正是字面 '***'，掩码一旦落盘，backup_config 副本已按
+        # 脱敏、无从恢复（防线演进见类头）。后端拒绝后，前端那条跳过只是省一次无谓写入。
         from src.web_config import append_config_line
 
         if key not in app_env.cfg.read_text(encoding="utf-8-sig"):
@@ -2063,12 +2034,11 @@ class TestSensitiveValueBlankRejected:
 
 
 class TestOutboundTargetKeysValidated:
-    # MID-N45 修复（2026-09-21，CODE_REVIEW_2026-09-21）：PUT /api/config 此前对「值」只做
-    # 换行校验，而 钉钉/微信/bark/ntfy 的推送接口地址会被 msg_push.py 用 urllib opener 直接
-    # 请求（且支持逗号分隔多目标）、代理地址与 smtp邮件服务器同样是本进程自己发出去的出站目标，
-    # 这些全局量又在 main.py 的热重载里每轮重读 —— 无需重启即可把服务端驱动去请求
-    # http://127.0.0.1:6379/ 或 http://169.254.169.254/。房间地址那套 scheme + 内网收口
-    # 完全没覆盖到这里，构成同一条信任边界上的第二条 SSRF 出口。
+    # MID-N45：PUT /api/config 对「值」只做换行校验时，钉钉/微信/bark/ntfy 的推送接口地址会被
+    # msg_push.py 用 urllib opener 直接请求（且支持逗号分隔多目标）、代理地址与 smtp邮件服务器
+    # 同样是本进程自己发出去的出站目标，这些全局量又在 main.py 的热重载里每轮重读——无需重启
+    # 即可把服务端驱动去请求 http://127.0.0.1:6379/ 或 http://169.254.169.254/。房间地址那套
+    # scheme + 内网收口没覆盖到这里，构成同一条信任边界上的第二条 SSRF 出口，故出站目标键须校验。
 
     _PUSH_KEYS = ("钉钉推送接口链接", "微信推送接口链接", "bark推送接口链接", "ntfy推送地址")
 
@@ -2168,7 +2138,7 @@ class TestOutboundTargetKeysValidated:
 
     @pytest.mark.parametrize("key", ["NTFY推送地址", "BARK推送接口链接"])
     def test_key_case_variant_judged_identically(self, app_env: types.SimpleNamespace, key: str) -> None:
-        # 大小写变体同判（configparser 的 option 本就 casefold，SEV-04 同口径）：
+        # 大小写变体同判（configparser 的 option 本就 casefold，该同口径）：
         # 只按规范写法精确比较，等于给拉丁前缀的键留一条绕过路径。
         resp = self._put(app_env, "推送配置", key, "http://127.0.0.1:6379/")
         assert resp.status_code == 422, f"{key} 变体绕过了出站校验: {resp.text}"
@@ -2193,7 +2163,7 @@ class TestOutboundTargetKeysValidated:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            ("127.0.0.1:7890", 200),  # 裸 ip:port（用户主流写法，见 sync_http 的 MID-27 注释）
+            ("127.0.0.1:7890", 200),  # 裸 ip:port（用户主流写法，见 sync_http 注释）
             ("proxy:8080", 200),  # 裸主机名:端口（Docker/compose 服务名写法，同样经 http:// 归一）
             ("localhost:7890", 200),  # 回环的域名写法
             ("socks5://192.168.1.10:1080", 200),  # socks + 私网：合法局域网代理
@@ -2238,7 +2208,7 @@ class TestOutboundTargetKeysValidated:
     def test_blank_value_still_rejected_by_sensitive_guard_not_by_this_one(
         self, app_env: types.SimpleNamespace
     ) -> None:
-        # 归属划分：推送/代理类键都是敏感项，空值由 MID-37 的「敏感配置项不得清空」拦成 400，
+        # 归属划分：推送/代理类键都是敏感项，空值由该「敏感配置项不得清空」拦成 400，
         # 本轮新增的出站校验对空值早返回（未配置 ≠ 非法目标）。两条守卫不得互相顶替。
         resp = self._put(app_env, "推送配置", "ntfy推送地址", "   ")
         assert resp.status_code == 400, resp.text
@@ -2266,8 +2236,8 @@ class TestOutboundTargetKeysValidated:
         # 归因用例（替代被沙箱拦住的变异验证）：只把 MID-N45 挂在 validate_config_target 上的
         # 那一步置为 no-op，其余守卫（换行校验、危险键黑名单、敏感项空值/掩码守卫、
         # update_config_line 的行级替换）全部保持真实。此时同一载荷必须**写成 200 并落盘**，
-        # 由此证明上面那一整簇 422 唯一来自本轮新增的出站目标收口；
-        # 同时也反证 test_rejected_write_leaves_file_byte_identical 不是「写入永远失败」造成的假绿。
+        # 由此证明上面那一整簇 422 唯一来自出站目标收口；同时也反证
+        # test_rejected_write_leaves_file_byte_identical 不是「写入永远失败」造成的假绿。
         from src import web_config as wc
         from src.web_config import append_config_line
 
@@ -2279,7 +2249,7 @@ class TestOutboundTargetKeysValidated:
 
 
 class TestDeleteRoomReportsTruth:
-    # SEV-05 调用侧：delete_line 在 CRLF 文件上曾静默 no-op 而端点无条件回报 {"ok": true}
+    # 调用侧：delete_line 在 CRLF 文件上曾静默 no-op 而端点无条件回报 {"ok": true}
     # （工作区 URL_config.ini 14/14 行都是 CRLF，Windows 必然发生）。
     # 现以「重新解析后目标 URL 是否真的消失」为准裁决 200/500。
 
@@ -2305,7 +2275,7 @@ class TestDeleteRoomReportsTruth:
         assert (resp.status_code == 200) is (
             not still_present
         ), f"status={resp.status_code} still_present={still_present}"
-        # 跨文件契约（SEV-05）：config_io.delete_line 已改为「两侧剥行尾后比较 + 返回 bool」，
+        # 跨文件契约：config_io.delete_line 已改为「两侧剥行尾后比较 + 返回 bool」，
         # 故 CRLF 文件上的删除必须真的生效。本断言同时锁住那半边——它退回到 no-op 时这里变红。
         assert resp.status_code == 200, f"CRLF 文件上删除仍被静默吞掉: {resp.text}"
         assert not still_present
@@ -2449,11 +2419,10 @@ class TestDangerousKeys:
     def test_m64_script_flag_and_safety_keys_blocked_when_auth_disabled(
         self, tmp_path: Path, fake_main: types.ModuleType, section: str, key: str, value: str
     ) -> None:
-        # M-64（2026-10-21）：翻转「是否录制完成后执行自定义脚本」即启用用户既有脚本命令，
-        # 等于把「自定义脚本执行命令」黑名单旁路一半；web_trusted_proxy 决定 XFF 是否可信
-        # （M-59 的换键面）、web_allowed_hosts 决定 Host/Origin 名单（MID-36），两键被面板
-        # 写入等于把防线交给写接口。与既有危险键同口径：认证关闭也 403。第 4 参用大小写
-        # 变体锁 C-1 折叠面（行匹配 IGNORECASE，黑名单必须同等强度）。
+        # 2026-10-21：翻转「是否录制完成后执行自定义脚本」即启用用户既有脚本命令，等于把
+        # 「自定义脚本执行命令」黑名单旁路一半；web_trusted_proxy 决定 XFF 是否可信（该换键面）、
+        # web_allowed_hosts 决定 Host/Origin 名单，两键被面板写入等于把防线交给写接口。
+        # 与既有危险键同口径：认证关闭也 403。第 4 参用大小写变体锁该折叠面（行匹配 IGNORECASE，黑名单同等强度）。
         # 预置键存在（web_trusted_proxy 由 _write_web_section 写好，其余按缺失补建）——
         # 变异可见性：从黑名单摘掉键后落进 update_config_line 得 200 而非 404/403，本条转红
         from src import web_api as wa
@@ -2533,11 +2502,10 @@ class TestListFiles:
         assert "a.ts" in names
 
 
-# CODE_REVIEW_2026-10-21（M-60/M-67）：免鉴权预算键集合、Content-Disposition 净化、
-# 日志尾读字节预算、chunked 请求体上限——四条都是「资源放大面」的有界性锁。
+# 免鉴权预算键集合、Content-Disposition 净化、日志尾读字节预算、chunked 请求体上限——四条「资源放大面」的有界性锁。
 class TestResourceCaps2026_10_21:
     def test_public_budget_key_set_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # M-67①：窗口回收只清「全部条目已出窗」的键，持有 IPv6 前缀的攻击者在窗内轮换源
+        # ①：窗口回收只清「全部条目已出窗」的键，持有 IPv6 前缀的攻击者在窗内轮换源
         # 地址即可让 dict 无界增长。现在新键入库前先查键数上限（_DENIED_HOSTS_SEEN_MAX 同形态）。
         # 变异可见性：摘掉 to-limit clear → 64 个在窗键 + 新键 = 65 > 上限，断言转红
         import time as _time
@@ -2556,7 +2524,7 @@ class TestResourceCaps2026_10_21:
     def test_download_content_disposition_filename_is_sanitized(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-67②：磁盘文件名原样进 Content-Disposition——Windows 命名规则恰好挡得住
+        # ②：磁盘文件名原样进 Content-Disposition——Windows 命名规则恰好挡得住
         # CR/LF/引号，Linux 部署（本仓支持 docker）里这些字符全是合法文件名。
         # 变异可见性：还原成 FileResponse(..., filename=os.path.basename(target)) 后，
         # Starlette 会把带控制字符的名字转 percent-form（filename*=utf-8''…），
@@ -2579,7 +2547,7 @@ class TestResourceCaps2026_10_21:
     def test_get_logs_is_byte_bounded_on_large_log(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-60②：旧实现 `deque(f, maxlen=lines)` 的 maxlen 只限保留条数，整文件仍被逐行读完；
+        # ②：旧实现 `deque(f, maxlen=lines)` 的 maxlen 只限保留条数，整文件仍被逐行读完；
         # 本端点是同步 def，占 anyio 线程池（默认 40 槽）一格，几条并发即可拖死整个面板。
         # 判据两段：正常预算下「尾部 5 行内容逐字对」；预算收紧到 20 字节后 lines=5 只可能
         # 拿到窗口内的 <5 行——旧整文件读法在这里恒回 5 行（变异可见）
@@ -2597,7 +2565,7 @@ class TestResourceCaps2026_10_21:
         assert out and out[-1] == "L19999" and len(out) < 5, f"字节预算未生效: {out}"
 
     def test_chunked_json_body_without_content_length_is_capped(self, app_env: types.SimpleNamespace) -> None:
-        # M-60①：L-30 的旧口径「Content-Length 缺失时不拦」已被证伪——request.json() 会把
+        # ①：该旧口径「Content-Length 缺失时不拦」已被证伪——request.json() 会把
         # 无上限的 chunked 流整体物化。httpx 对 sync iterable content 不发 Content-Length，
         # 正好复现该形态；反向半边：同一路径下 20KB 的小 chunked 体必须照常解析（200），
         # 否则「上限」会被改成「一律拒绝」也测不出来
@@ -2709,7 +2677,7 @@ class TestLanguageApi:
 
     def test_append_config_line_edge_cases(self, app_env: types.SimpleNamespace) -> None:
         # append_config_line 行级追加的边界：目标节存在（含无尾换行文件）与节缺失时新建于尾部。
-        # 直接测 web_config 纯函数（web_api 自 H-6 改造后不再转发导入该符号）
+        # 直接测 web_config 纯函数（web_api 自该改造后不再转发导入该符号）
         from src.web_config import append_config_line
 
         # 节存在但中间夹有其他内容：插入点应在下一节头之前、保留注释与顺序
@@ -2745,7 +2713,7 @@ class TestLanguageApi:
     def test_put_language_persists_effective_code_when_catalog_missing(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # MID-52（Web 半边）：i18n.set_language() 现在返回**实际生效**的语言码——它按
+        # （Web 半边）：i18n.set_language() 现在返回**实际生效**的语言码——它按
         # resolve_language 的口径查 has_catalog，目录缺失（PyYAML 未装 → zh_TW.yaml 加载不了、
         # 发行包漏装某语言文件）时回退。端点必须落盘并应答这个生效码：写请求值会让
         # 面板进程装载着回退语言的译文、而录制子进程每轮重解析到另一码 → 同一部署两种语言。
@@ -2802,7 +2770,7 @@ class TestLanguageApi:
     ) -> None:
         # 「先切换再落盘」换来的语义必须有回滚兜底：写回失败若不回滚内存态，
         # 面板/本进程说新码、config.ini（及重启后的录制子进程）仍说旧码 ——
-        # 与 MID-52 要消灭的「两进程两种语言」是同一形态，只是换了达成路径。
+        # 与该要消灭的「两进程两种语言」是同一形态，只是换了达成路径。
         import i18n as i18n_module
         from src import web_api as wa
 
@@ -2878,10 +2846,10 @@ class TestQualityOptionsEndpoints:
     def test_put_write_failure_detail_is_fixed_code_without_path(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-61（2026-10-21）：写失败的 500 detail 曾直接拼 app.state.config_file 的绝对路径
-        # （本文件唯一一处 MID-39「对外不回显内部路径」违例，认证关闭时对局域网可见）。
-        # 现对外固定 code、路径只进日志。变异可见性：还原旧 tr("...: {err}", err=config_file)
-        # 写法 → detail 不再是固定 code 且含 tmp 路径，两条断言同时转红
+        # 2026-10-21：写失败的 500 detail 对外固定 code、路径只进日志（曾直接拼 app.state.config_file
+        # 绝对路径——本文件唯一一处「对外不回显内部路径」违例，认证关闭时对局域网可见）。
+        # 变异可见性：还原旧 tr("...: {err}", err=config_file) 写法 → detail 不再是固定 code
+        # 且含 tmp 路径，两条断言同时转红
         from src import web_api as wa
 
         monkeypatch.setattr(wa, "write_quality_options", lambda *a, **k: None)
@@ -2895,10 +2863,10 @@ class TestQualityOptionsEndpoints:
 
 
 class TestErrorDetailI18n:
-    # 2026-10-04：面板错误 detail 是用户可见文案（前端 apiError 原样弹 toast），
-    # 全部经 i18n_module.tr 按当前语言渲染；稳定机器码 detail（unauthorized /
-    # rate_limited / host_not_allowed / insecure_bind_disabled）是前端契约，不应被翻译。
-    # 本组用例把 _tr 换成标记函数证明「确实查了目录」——把 detail 改回裸字面量会转红。
+    # 面板错误 detail 是用户可见文案（前端 apiError 原样弹 toast），全部经 i18n_module.tr 按当前
+    # 语言渲染；稳定机器码 detail（unauthorized / rate_limited / host_not_allowed /
+    # insecure_bind_disabled）是前端契约，不应被翻译。本组用例把 _tr 换成标记函数证明
+    # 「确实查了目录」——把 detail 改回裸字面量会转红。
 
     def test_login_failure_detail_translated(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch

@@ -1,11 +1,11 @@
-# WP-B（docs/worklog/CODE_REVIEW_2026-09-29_2.md 的 M-1 / M-2）网络出站层回归锁。
+# WP-B（docs/worklog/CODE_REVIEW_2026-09-29_2.md 的 / ）网络出站层回归锁。
 #
-# M-1 src/async_http.py：探针与 async_req 全线 follow_redirects=True，而内网/保留目标判定原先只作用于
-#     **初始 URL**（MIN-2219 只堵了直连形态）。被攻陷/被 MITM 的平台可先回一个过得了校验的公网地址、
+# src/async_http.py：探针与 async_req 全线 follow_redirects=True，而内网/保留目标判定原先只作用于
+#     **初始 URL**（该只堵了直连形态）。被攻陷/被 MITM 的平台可先回一个过得了校验的公网地址、
 #     再 302 到 http://127.0.0.1:6379/ 或 http://169.254.169.254/，探针照样访问内网并把跳转后响应的
 #     status_code / content-type 写进 debug 日志。现由 _build_client 给每支 AsyncClient 挂 response
 #     事件钩子，逐跳复检 response.url（判定仍走 _internal_stream_target_reason，不复制第二份规则）。
-# M-2 src/sync_http.py：sync_req 原先没有 scheme 白名单（async 侧早就有），而 urllib 默认 opener 注册着
+# src/sync_http.py：sync_req 原先没有 scheme 白名单（async 侧早就有），而 urllib 默认 opener 注册着
 #     FileHandler，于是 sync_req("file:///etc/passwd") 把本地文件当响应体返回。现入口过
 #     utils.is_safe_http_url、两支 opener 按 http/https 白名单显式构造，abroad 分支补落地地址复核。
 #
@@ -28,7 +28,7 @@ import src.async_http as async_http
 import src.sync_http as sync_http
 from src import web_config
 
-# 与 tests/test_async_http.py / tests/test_regression_2026_09_22_net.py 同一个 DNS seam：MIN-2219
+# 与 tests/test_async_http.py / tests/test_regression_2026_09_22_net.py 同一个 DNS seam：
 # 起探针会按「本机解析结果」给直连目标定罪，用例必须与该 seam 隔离，否则无 DNS 环境下「公网源可达」
 # 类用例会随机转红。内网目标一律写成 IP 字面量——判定不依赖解析，也就不受本桩影响。
 _PUBLIC_IP = "93.184.216.34"
@@ -60,7 +60,7 @@ def _install_mock_transport(
 ) -> list[str]:
     # 返回「实际发出的请求 URL 列表」（按跳顺序）。钩子是 _build_client 挂上去的，所以客户端必须由
     # **真实的 _build_client** 造出来，只把最底层 transport 换成 MockTransport——有人删掉 event_hooks
-    # 那一行，本文件 M-1 的用例必须全部变红（自建 AsyncClient 会把被测接线一起绕过，等于假绿）。
+    # 那一行，本文件该用例必须全部变红（自建 AsyncClient 会把被测接线一起绕过，等于假绿）。
     seen: list[str] = []
 
     def _record(request: httpx.Request) -> httpx.Response:
@@ -96,7 +96,7 @@ def _redirect_chain(landing_target: str, *, after_landing: str = "") -> Callable
 
 
 class TestM1RedirectHopGuard:
-    # M-1：逐跳复检（探针与 async_req 共用同一支钩子、同一个判定函数）.
+    # 逐跳复检（探针与 async_req 共用同一支钩子、同一个判定函数）.
 
     @pytest.mark.parametrize(
         "internal_target",
@@ -112,7 +112,7 @@ class TestM1RedirectHopGuard:
     async def test_redirect_landing_on_internal_is_unreachable(
         self, internal_target: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 核心回归：初始 URL 是公网（过得了入口判定与 MIN-2219），跳转后落在内网/保留目标
+        # 核心回归：初始 URL 是公网（过得了入口判定与），跳转后落在内网/保留目标
         # → 必须判**不可达**，而不是拿该跳的 200 当结论。
         seen = _install_mock_transport(monkeypatch, _redirect_chain(internal_target))
         assert await async_http.get_response_status("https://edge.example.com/live.m3u8") is False
@@ -128,7 +128,7 @@ class TestM1RedirectHopGuard:
         assert "https://after.example.com/x.m3u8" not in seen, "被拒之后仍继续跟随重定向"
 
     async def test_hop_rejection_logs_warning_with_masked_landing_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 逐跳命中是**安全判定**，必须与 MIN-2219 初始地址同级别（warning）留线索，不能沉进「这个
+        # 逐跳命中是**安全判定**，必须与该初始地址同级别（warning）留线索，不能沉进「这个
         # CDN 节点不通」那条 debug；同时落地 URL 里的凭据必须被抹掉——httpx 把 Location 的 user:pass
         # 原样带进 response.url，而 logs 会轮转保留多份（＝凭据长期落盘）。
         lines, handler_id = _capture_logs()
@@ -158,7 +158,7 @@ class TestM1RedirectHopGuard:
         assert seen == ["https://start.example.com/live.m3u8", "https://final.example.com/live.m3u8"]
 
     async def test_async_req_redirect_to_internal_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 同一支钩子也必须覆盖 async_req（M-1 里「各分支同样全线跟随重定向」那半）。
+        # 同一支钩子也必须覆盖 async_req（该里「各分支同样全线跟随重定向」那半）。
         # 返回契约不变：与网络异常同一条失败出口（空串），调用方按「本轮没拿到数据」处理。
         seen = _install_mock_transport(monkeypatch, _redirect_chain("http://127.0.0.1:6379/"))
         assert await async_http.async_req("https://edge.example.com/api") == ""
@@ -192,7 +192,7 @@ class TestM1RedirectHopGuard:
             await client.aclose()
 
     async def test_proxied_chain_still_judges_ip_literal_landing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 经代理出站时域名不按本机 DNS 定罪（MIN-2219 的既有豁免，逐跳复检必须继承，否则会把
+        # 经代理出站时域名不按本机 DNS 定罪（该既有豁免，逐跳复检必须继承，否则会把
         # 「境外域名本机被污染、代理却能解析」的合法流误杀）；但落地是 IP 字面量时两种情况都判。
         dns_calls: list[str] = []
 
@@ -234,7 +234,7 @@ def _spy_file_handler_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 class TestM2SchemeWhitelistOnSyncReq:
-    # M-2：sync_req 的 scheme 白名单.
+    # sync_req 的 scheme 白名单.
 
     def test_file_uri_rejected_and_never_opened(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         file_url = _file_url_of(tmp_path)
@@ -290,7 +290,7 @@ class TestM2SchemeWhitelistOnSyncReq:
         assert "file://***@127.0.0.1" in joined
 
     def test_normal_http_url_still_works(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 反向锁：白名单不得把正常的 http/https 请求一起挡掉（否则 M-2 就成了新的漏录根因）。
+        # 反向锁：白名单不得把正常的 http/https 请求一起挡掉（否则该就成了新的漏录根因）。
         fake_resp = MagicMock()
         fake_resp.headers = {"Content-Encoding": ""}
         fake_resp.read.return_value = b"body"
@@ -303,7 +303,7 @@ class TestM2SchemeWhitelistOnSyncReq:
 
 
 class TestM2OpenerHandlerWhitelist:
-    # M-2：两支预构建 opener 的 handler 集合（直接检查构造结果）.
+    # 两支预构建 opener 的 handler 集合（直接检查构造结果）.
 
     _ALLOWED_HANDLER_NAMES = {
         # 白名单外协议的统一拒绝口，必须保留（摘掉它 urllib 改抛别的形态，失败语义会漂移）
@@ -311,7 +311,7 @@ class TestM2OpenerHandlerWhitelist:
         "HTTPHandler",
         "HTTPSHandler",
         "HTTPDefaultErrorHandler",
-        # S-09（2026-10-21）：裸 HTTPRedirectHandler 换成带逐跳复核的子类——重定向落地地址原先只
+        # 2026-10-21：裸 HTTPRedirectHandler 换成带逐跳复核的子类——重定向落地地址原先只
         # 在 abroad 分支被事后核对，直连/代理两条路径可以直接 302 到 127.0.0.1 / 169.254.169.254。
         # 这里钉的是子类名：换成裸 HTTPRedirectHandler 即等于摘掉逐跳闸门，本锁当场变红。
         "_HopGuardRedirectHandler",

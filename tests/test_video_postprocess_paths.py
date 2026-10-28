@@ -1,6 +1,6 @@
 # tests/test_video_postprocess_paths.py - src/video_postprocess.py 的分支补全。
 #
-# test_video_postprocess.py 只锁了 MIN-04（转码超时放大 + 半成品清理）这一条
+# test_video_postprocess.py 只锁了（转码超时放大 + 半成品清理）这一条
 # 与 converts_mp4 相关的不变量；本文件补其余三条**会静默丢产物**的路径：
 #   1) segment_video / converts_m4a 的异常分类——超时必须与「转换失败」「未知错误」
 #      区分开，否则 ffmpeg 卡死被兜底成 unknown error，用户排查方向全错；
@@ -19,7 +19,7 @@
 #   · 退出条件——generate_subtitles 是后台逐秒追加写的线程，房间不在录制集合时
 #     必须立刻 return；否则会留下永久增长的字幕文件与不死的线程。
 # 另两个容易被改坏点单独锁住：
-#   · _convert_timeout 的下限/上限/显式优先三档（MIN-04 的放大策略）；
+#   · _convert_timeout 的下限/上限/显式优先三档（该放大策略）；
 #   · get_startup_info 的「os.name == nt 但 sys.platform 不是 win32」组合——这是
 #     交叉测试/异常环境里会走到的分支，不得尝试构造 Windows 专属对象。
 # Mock 口径：ffmpeg 由 _run_ffmpeg_checked 替身模拟；体积读取与 os.remove 都经

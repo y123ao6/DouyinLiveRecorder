@@ -35,7 +35,7 @@ class TestClientCacheConcurrency:
             ah._client_cache.clear()
 
     def teardown_method(self) -> None:
-        # LT-06：与 setup 对称的收尾清理。本文件塞进模块级缓存的全是 FakeAsyncClient，
+        # 与 setup 对称的收尾清理。本文件塞进模块级缓存的全是 FakeAsyncClient，
         # 只在 setup 清会让最后一例（及中途失败者）的条目跨文件滞留整个会话，后续按
         # 「缓存里是什么类型」推断的其它文件可能被这类替身污染。同样持锁清理。
         with ah._client_cache_lock:
@@ -67,7 +67,7 @@ class TestClientCacheConcurrency:
             for t in threads:
                 t.join(timeout=15)
         assert errors == []
-        # LT-01（2026-10-18 审查）：join(timeout=15) **返回**不等于线程已退出——被测逻辑挂死时
+        # （2026-10-18 审查）：join(timeout=15) **返回**不等于线程已退出——被测逻辑挂死时
         # join 超时静默返回、errors 仍空，本用例照绿（线程永不退出正是本文件要防的跨循环锁死
         # 形态）。必须逐线程断言 is_alive 为 False，才钉住「8 线程全部跑完」。
         for t in threads:
@@ -119,7 +119,7 @@ class TestClientCacheConcurrency:
             loop_a.call_soon_threadsafe(loop_a.stop)
             thread_a.join(timeout=15)
             loop_a.close()
-            # 审查 7.11（2026-10-18，与 LT-01 同口径）：stop() 已投递、join 也已返回，但「join
+            # 审查 7.11（2026-10-18，与该同口径）：stop() 已投递、join 也已返回，但「join
             # 返回」不等于「run_forever 退出」——循环没停下来时 thread_a 会一直活着，本用例仍
             # 假绿并留下一个在跑的循环。断言放在 loop_a.close() 之后：判红时资源已回收，
             # 不会因这条断言再漏关一个循环。

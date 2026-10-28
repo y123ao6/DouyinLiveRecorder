@@ -1,4 +1,4 @@
-# F-14 护栏：protobuf「gencode / runtime 组合」回归用例。
+# 护栏：protobuf「gencode / runtime 组合」回归用例。
 #
 # src/proto/douyin_pb2.py 是 protoc 25.x（gencode 4.25.3）生成物、标注 DO NOT EDIT，本环境无
 # protoc / grpcio-tools 无法重新生成，因此护栏落在三件事：
@@ -40,7 +40,7 @@ def _declared_protobuf_specifier() -> str:
 
 
 def test_declared_specifier_is_bounded_above() -> None:
-    # 上限是 F-14 的核心护栏：无上限意味着 pip 会自动升到下一个大版本，
+    # 上限是该核心护栏：无上限意味着 pip 会自动升到下一个大版本，
     # gencode 兼容窗口可能在某次升级后突然关闭。
     spec = _declared_protobuf_specifier()
     assert "<" in spec, f"protobuf 声明缺少上限（当前：{spec}）——F-14 护栏失效"

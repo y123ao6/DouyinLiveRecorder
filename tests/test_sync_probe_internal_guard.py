@@ -1,13 +1,13 @@
 # WP-J（2026-09-30，方案 1-A）同步流地址探针的内网收口回归锁。
 #
-# 背景（上一轮 M-1 在同步侧的补齐）：逐跳重定向复检当时只接在 src/async_http.py 的 _build_client
+# 背景（上一轮该在同步侧的补齐）：逐跳重定向复检当时只接在 src/async_http.py 的 _build_client
 # 单点上，而 src/stream_select.py 的同步探针自建两支 httpx.Client（_validate_stream_url 的 owns_client
 # 分支、select_source_url 的整轮共用分支），两处都 follow_redirects=True 却都不经 _build_client。
 # 更前面的缺口是：同步侧连**初始 URL** 的内网/回环/云元数据判定都没有——internal_stream_target_reason
 # 此前唯一的调用点是 async_http.get_response_status；stream_select 只有 _is_recordable_url 的协议
 # **形态**白名单（挡 file:///concat:，挡不住 http://127.0.0.1:6379）。于是一个被劫持/被 MITM 的平台
 # 接口回传内网地址，同步探针就照着去连，并把该跳的 status_code / content-type 回显进轮转日志
-# （= 稳定的内网端口观测口，MIN-2219 的跳转形态）。
+# （= 稳定的内网端口观测口，该跳转形态）。
 #
 # 打桩边界（AGENTS「测试不得自实现被测逻辑（假绿）」）：只替换两处——
 #   ① 传输层：httpx.MockTransport 造 3xx 链并登记实际发出的请求（判定链、钩子、退避、content-type
@@ -92,7 +92,7 @@ def no_recheck_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _stub_dns(monkeypatch: pytest.MonkeyPatch, ips: list[str]) -> list[str]:
     # 把 DNS seam 换成「记录被查过的主机名 + 返回固定结果」的桩：代理豁免类用例要断言
-    # 「有代理时一次都不查本机 DNS」（MIN-2219 的既有豁免必须被初始判定与逐跳钩子双双继承）。
+    # 「有代理时一次都不查本机 DNS」（该既有豁免必须被初始判定与逐跳钩子双双继承）。
     looked_up: list[str] = []
 
     def _resolve(host: str) -> list[str]:
@@ -195,7 +195,7 @@ class TestInitialUrlInternalTargetRejected:
     def test_internal_initial_url_rejected_even_as_last_resort(
         self, internal_url: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 末位候选的放行语义边界是「网络 / CDN 拒绝」（MID-19），内网目标不属此类：放行等于把
+        # 末位候选的放行语义边界是「网络 / CDN 拒绝」，内网目标不属此类：放行等于把
         # ffmpeg -i 指向回环/元数据端点。摘掉判定、或把命中后的 return False 并进末位放行，即红。
         seen = _install_mock_transport(monkeypatch, _ok_handler("application/vnd.apple.mpegurl"))
         assert ss._validate_stream_url(internal_url, last_resort=True) is False
@@ -234,7 +234,7 @@ class TestInitialUrlInternalTargetRejected:
 
     def test_rtmp_candidate_is_not_blocked_by_the_internal_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 初始判定用 internal_stream_target_reason 而**不是**带 scheme 白名单的
-        # redirect_hop_rejection_reason：本模块的候选允许 rtmp/rtmps（MID-19 / _ALLOWED_STREAM_SCHEMES，
+        # redirect_hop_rejection_reason：本模块的候选允许 rtmp/rtmps（ / _ALLOWED_STREAM_SCHEMES，
         # 斗鱼 rtmp 拼接、部分海外平台仍下发 rtmp），协议形态由 _is_recordable_url 把关。
         # 把初始判定写成「非 http(s) 即拒」会整体误杀 rtmp 候选——本条就是那条退化的见证。
         _install_mock_transport(monkeypatch, _ok_handler())
@@ -259,14 +259,14 @@ class TestRedirectHopRecheck:
         self, internal_target: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 末位候选同样不得因「探针异常」被放行——这正是钩子必须接进 except 链的意义
-        # （见 tests/test_hop_guard_wiring_locks.py 的 AST 顺序锁）。
+        # （见本文件 TestHopGuardWiringLocks 的 AST 顺序锁）。
         seen = _install_mock_transport(monkeypatch, _redirect_handler(internal_target))
         assert ss._validate_stream_url(_M3U8_START, last_resort=True) is False
         assert seen == [_M3U8_START, internal_target]
 
     def test_rejected_hop_does_not_become_evidence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 落地跳刻意回 200 + video/mp2t + 金丝雀正文：没有逐跳防线时探针据此判「可达」，并把该跳的
-        # status_code / content-type 写进 debug 日志（MIN-2219 的内网端口观测口本体）。
+        # status_code / content-type 写进 debug 日志（该内网端口观测口本体）。
         lines, handler_id = _capture_logs(level="DEBUG")
         try:
             seen = _install_mock_transport(
@@ -361,7 +361,7 @@ class TestRedirectHopRecheck:
 
 
 class TestProxyExemptionIsInherited:
-    # ④ 带代理时沿用「不按本机 DNS 定罪」的既有豁免（MIN-2219），代理房间的行为不得改变。
+    # ④ 带代理时沿用「不按本机 DNS 定罪」的既有豁免，代理房间的行为不得改变。
 
     def test_proxied_domain_chain_never_consults_local_dns(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 初始判定与逐跳钩子都必须继承豁免：域名不按本机解析结果定罪（境外域名本机被污染/查不到、
@@ -411,7 +411,7 @@ class TestSourceUrlHandoff:
         _install_mock_transport(monkeypatch, _ok_handler("application/vnd.apple.mpegurl"))
         monkeypatch.setattr(main, "hls_collection_enabled", True)
         monkeypatch.setattr(main, "hls_collection_exclude_platforms", ())
-        # record_url 与序列候选逐字相同 → 走 probed 复用分支（MID-18），一次探针都不发
+        # record_url 与序列候选逐字相同 → 走 probed 复用分支，一次探针都不发
         result = ss.select_source_url(
             {"m3u8_url": _INTERNAL_M3U8, "flv_url": "", "record_url": _INTERNAL_M3U8}, None, "斗鱼直播"
         )
@@ -583,7 +583,8 @@ class TestHopGuardWiringLocks:
 
     def test_factory_and_judgement_use_function_level_import_only(self) -> None:
         # 导入环约束：stream_select 有模块级 import main、main 又 from src.stream_select import ...，
-        # 模块级出边会改变各模块的初始化顺序（依据见 src/async_http.py:518-521 的同名说明）。
+        # 模块级出边会改变各模块的初始化顺序（依据见 src/async_http.py 里
+        # `_internal_stream_target_reason` 的同名说明）。
         tree = ast.parse(_STREAM_SELECT_PATH.read_text(encoding="utf-8-sig"))
         assert not any(
             isinstance(n, (ast.Import, ast.ImportFrom))

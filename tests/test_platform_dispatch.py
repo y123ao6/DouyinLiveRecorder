@@ -1,6 +1,6 @@
-# 平台分发表回归用例（CODE_REVIEW_FIX_1 F-01c）
+# 平台分发表回归用例（CODE_REVIEW_FIX_1 ）
 #
-# F-01 把 _resolve_platform_stream 的 60+ 层 elif 链改成了「（匹配器, 处理函数）」分发表。
+# 把 _resolve_platform_stream 的 60+ 层 elif 链改成了「（匹配器, 处理函数）」分发表。
 # 本文件锁定三条契约，防止后续「加平台 / 调顺序」时静默改变平台判定优先级：
 #   1. 分发表非空、无重复处理函数、顺序即优先级（头部若干项与主平台白名单一致）；
 #   2. 每个代表 URL 经分派后得到预期平台名，且走的是预期解析入口（记录 spider/stream 调用）；
@@ -176,7 +176,7 @@ def test_custom_stream_suffix_is_case_insensitive(dispatch_env: tuple, url: str,
 
 
 def test_new_platform_entry_can_be_registered(main_mod: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 「新平台接入成本」是 F-01 的核心诉求：追加一个处理函数 + 一条表项即可，不必进 600 行链里
+    # 「新平台接入成本」是该核心诉求：追加一个处理函数 + 一条表项即可，不必进 600 行链里
     # 插分支。此处用一个临时表项验证该扩展点确实可用。
     seen: list[str] = []
 
@@ -196,7 +196,7 @@ def test_new_platform_entry_can_be_registered(main_mod: Any, monkeypatch: pytest
 
 
 # --------------------------------------------------------------------------------------
-# MID-04（CODE_REVIEW_2026-09-20）：白名单 host 与分发表必须一一对应
+# 2026-09-20：白名单 host 与分发表必须一一对应
 #
 # 准入按 `url_host in PLATFORM_HOST` **精确 host**，分派按**子串**匹配。白名单里有、没有任何表项
 # 命中的 host 会让房间线程每轮走 _resolve_unrecognized：一条 error → sleep → 无限空转，永不录制、
@@ -215,7 +215,7 @@ def test_every_platform_host_has_a_resolver(main_mod: Any) -> None:
 
 def test_platform_host_entries_that_were_fixed_on_2026_09_20(main_mod: Any) -> None:
     # www.redelight.cn：全仓（spider / stream / JS 签名脚本 / 平台清单）零引用，
-    # 留在白名单里只会让用户配一个永不录制的地址 → 已按 MID-04 摘除。
+    # 留在白名单里只会让用户配一个永不录制的地址 → 已按该摘除。
     assert "www.redelight.cn" not in main_mod.PLATFORM_HOST
     # huodong.m.taobao.com：淘宝直播分享页 host（get_taobao_stream_url 的 Referer 即该域名），
     # 此前白名单有、表项没有 → 现已接入 _resolve_tb_cn。
@@ -225,18 +225,18 @@ def test_platform_host_entries_that_were_fixed_on_2026_09_20(main_mod: Any) -> N
 def test_douyu_mobile_host_is_admitted_and_dispatched(main_mod: Any) -> None:
     # 斗鱼移动端 host 必须在准入白名单（精确匹配）且分派表命中：缺前者时
     # https://m.douyu.com/8751648 在读取 URL 配置阶段就被判「未知链接」注释掉；缺后者则会落入
-    # _resolve_unrecognized 无限空转（SEV-2203 同型：永不录制、不记 record_error）。
+    # _resolve_unrecognized 无限空转（该同型：永不录制、不记 record_error）。
     assert "m.douyu.com" in main_mod.PLATFORM_HOST
     matcher = main_mod._match_host("www.douyu.com/", "m.douyu.com/")
     assert matcher("https://m.douyu.com/8751648")
     assert matcher("http://m.douyu.com/8751648/")
     assert matcher("https://www.douyu.com/8751648")
-    # 反例：路径里出现域名词不得被路由进斗鱼（M-03 同口径）
+    # 反例：路径里出现域名词不得被路由进斗鱼（该同口径）
     assert not matcher("https://example.com/m.douyu.com/8751648")
 
 
 # --------------------------------------------------------------------------------------
-# MID-03（CODE_REVIEW_2026-09-20）：录制链里的「平台名字面量」必须等于 resolver 回写值
+# 2026-09-20：录制链里的「平台名字面量」必须等于 resolver 回写值
 #
 # 这些列表参与运行期判定（是否强制 http、是否强制直下 FLV、是否纯音频、源地址日志走哪个字段），
 # 比对对象是 _resolve_* 回写的 `platform`。写成 host 片段（曾经的 "migu"）就是死项：不报错、
@@ -349,10 +349,10 @@ def test_migu_is_not_a_dead_http_record_entry(main_mod: Any) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# SEV-03 后续（2026-09-20）：自定义流判定必须按**路径扩展名**，不能整串子串包含
+# 后续（2026-09-20）：自定义流判定必须按**路径扩展名**，不能整串子串包含
 #
 # 旧实现 `".flv" in url.lower()` 让任意地址只要在 query 里塞 `?a=.flv` 就命中自定义流分支，
-# 于是面板写入的 http://127.0.0.1:8000/x?a=.flv 会被原样送进 ffmpeg 的 -i（CR-09 的 SSRF 旁路）。
+# 于是面板写入的 http://127.0.0.1:8000/x?a=.flv 会被原样送进 ffmpeg 的 -i（ SSRF 旁路）。
 # 反向要求：path 以 .m3u8/.flv 结尾、带任意 query/fragment 的合法形态必须照常命中（大小写不敏感）。
 # --------------------------------------------------------------------------------------
 _LEGITIMATE_STREAM_URLS = [
@@ -418,7 +418,7 @@ def test_custom_stream_keys_follow_path_extension(dispatch_env: tuple) -> None:
 
 
 def test_forced_direct_download_platforms_carry_cookie(main_mod: Any) -> None:
-    # L-04（CODE_REVIEW_2026-10-02）不变量锁：两个「强制直下」平台必须在 platform_cookie 映射
+    # 2026-10-02：不变量锁：两个「强制直下」平台必须在 platform_cookie 映射
     # 里有条目且绑定到配置项变量（*_cookie），而不是空串字面量。成因：[Cookie] shopee_cookie /
     # huajiao_cookie 已有读取点并透传给解析函数，却不在映射里，于是同一份 Cookie 在「解析」与
     # 「探针 / ffmpeg 录制头 / 直下」两条路口径不一——直下路径按游客态取流，CDN 可 403 或钳到最低档。

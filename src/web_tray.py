@@ -9,38 +9,32 @@
 # - 托盘图标菜单提供「显示控制台 / 隐藏控制台 / 打开 Web 界面 / 退出程序」；单击或双击
 #   托盘图标恢复控制台窗口；「退出程序」触发 uvicorn 优雅关闭（由调用方传入的 server 控制）。
 #
-# 【为什么用 Qt 而非 pystray】pystray 的图标要额外依赖 Pillow 才画得出来，且它必须跑在
-# 独立线程，菜单回调因此落在托盘线程上，操作控制台窗口要跨线程调 Win32。Qt 自带
-# QSystemTrayIcon，图标可用 QPainter 现画（不再依赖 Pillow），回调也全部落在跑事件循环的
-# 那一个线程里。
+# 【为什么用 Qt 而非 pystray】pystray 的图标要额外依赖 Pillow，且必须跑在独立线程，
+# 菜单回调因此落在托盘线程上，操作控制台窗口要跨线程调 Win32。Qt 自带 QSystemTrayIcon，
+# 图标可用 QPainter 现画，回调全部落在跑事件循环的那一个线程里。
 #
-# 【线程模型（改回旧形态前务必读）】QApplication 只能建在主线程——本机实测在子线程执行
-# QApplication(sys.argv) 直接段错误退出（进程 exit code 139，Python 层捕获不到），与 Qt
-# 文档「GUI 线程即主线程」一致。故 start() 返回 True 时调用方**必须**把主线程交给
-# run_event_loop()，uvicorn 改由调用方起的守护线程驱动（uvicorn 的 capture_signals()
-# 对非主线程直接跳过，信号改由调用方自己接管，见 web.py::_install_sigint_shutdown）。
-# 收益：菜单回调全部在主线程执行，ShowWindow 不再依赖「可从托盘线程调用」的时序假设。
+# 【线程模型】QApplication 只能建在主线程——本机实测在子线程执行 QApplication(sys.argv)
+# 直接段错误退出（进程 exit code 139，Python 层捕获不到）。故 start() 返回 True 时调用方
+# **必须**把主线程交给 run_event_loop()，uvicorn 改由调用方起的守护线程驱动（uvicorn 的
+# capture_signals() 对非主线程直接跳过，信号由调用方自己接管，见 web.py::_install_sigint_shutdown）。
+# 收益：菜单回调全部在主线程执行，ShowWindow 不再依赖跨线程时序假设。
 #
-# 注意：控制台窗口实际由 conhost.exe（独立进程）拥有，无法跨进程子类化其
-# WndProc，因此**不能**拦截 WM_SYSCOMMAND 来改写最小化行为。本模块改用窗口
-# 样式切换实现「不在任务栏显示」，配合常驻托盘图标达到「最小化到托盘」的效果。
+# 控制台窗口实际由 conhost.exe（独立进程）拥有，无法跨进程子类化其 WndProc，因此**不能**
+# 拦截 WM_SYSCOMMAND 改写最小化行为；本模块改用窗口样式切换 + 常驻托盘图标实现「最小化到托盘」。
 #
 # 【图标资源与打包后的路径处理】仓库不放二进制图标，托盘图标默认由 QPainter 现画
 # （见 _create_icon），因此 PyInstaller 冻结后既不必读 sys._MEIPASS、也不必拼 exe 同级
 # 目录——「图标文件没被收进包里」这个故障面根本不存在。若用户想换成自绘以外的图标，
 # 把 favicon.ico / icon.ico / icon.png 放到冻结态的 exe 同级目录（或源码运行时的仓库根）
-# 即可，由 _load_icon_from_disk 按 _resource_roots() 的顺序探测。
-# 真要把图标做成随包分发的资源时，三处必须同改，否则现象是「开发环境有图标、打包后没有」：
+# 由 _load_icon_from_disk 按 _resource_roots() 的顺序探测。要把图标做成随包分发的资源时，
+# 三处必须同改，否则现象是「开发环境有图标、打包后没有」：
 #   ① build_exe.py 的 datas 登记（把文件收进 _internal）；
 #   ② _ICON_FILE_NAMES（探测文件名）；
 #   ③ _resource_roots()（冻结态的 _MEIPASS 与 exe 同级目录这两条根）。
-#
-# [2026-10-22] 内置默认图标已落 assets/app.ico（16/24/32/48/64/128/256 七档），并同时挂到
-# build_exe.py 三个 EXE 的 icon= 与 datas 上——「打包后没图标」这个故障面因此由构建期覆盖，
-# 上面三处同改的对象就是它。运行期优先级见 _icon_candidates：config.ini [Web] web_tray_icon
+# 内置默认图标在 assets/app.ico（16/24/32/48/64/128/256 七档），同时挂在 build_exe.py 三个
+# EXE 的 icon= 与 datas 上。运行期优先级见 _icon_candidates：config.ini [Web] web_tray_icon
 # （面板「导入图标」上传的那份）> 目录探测 > 自绘；解析逻辑统一在 src/ui_icons.py，
-# 三个入口（GUI 托盘 / 本托盘 / GET /favicon.ico）都调它，不各写一套（各写一套的表现必然是
-# 「一处换了、另一处没换」）。
+# 三个入口（GUI 托盘 / 本托盘 / GET /favicon.ico）共用，不各写一套。
 #
 from __future__ import annotations
 
@@ -73,9 +67,8 @@ MF_BYCOMMAND = 0x0000
 MF_GRAYED = 0x0001
 SW_HIDE = 0
 SW_RESTORE = 9
-# SW_SHOW 当前无调用点（显示走 SW_RESTORE），但它是本组 Win32 魔数的一员，由
-# tests/test_web_tray.py::test_module_constants_match_win32_api 按「整组常量取值必须与
-# Win32 API 一致」钉住——抄错的症状是无异常抛出的视觉 bug，故不按「未使用」摘除。
+# SW_SHOW 当前无调用点（显示走 SW_RESTORE），但不按「未使用」摘除：整组魔数由上面
+# test_module_constants_match_win32_api 按「取值必须与 Win32 API 一致」钉住。
 SW_SHOW = 5
 # SetWindowPos 标志：只触发样式重评估，不动位置/尺寸/Z 序
 SWP_NOMOVE = 0x0002
@@ -270,7 +263,7 @@ class WebConsoleTray:
         self.open_action.triggered.connect(lambda _checked=False: self._on_open_browser())
         self.exit_action.triggered.connect(lambda _checked=False: self._on_exit())
         icon.setContextMenu(menu)
-        # 左键单击 / 双击 = 显示控制台（双击语义与旧托盘实现保持一致）
+        # 左键单击 / 双击 = 显示控制台
         icon.activated.connect(self._on_activated)
         icon.show()
         self.icon = icon
@@ -373,9 +366,9 @@ class WebConsoleTray:
         return self._create_icon()
 
     def _icon_candidates(self) -> list[str]:
-        # 图标探测顺序：① 配置里记的导入图标（web.py 解析后传入）→ ② 目录探测（favicon.ico /
-        # icon.ico / icon.png，兼容「手工往 exe 同级丢一个图标」的老用法）→ ③ 自绘（_create_icon）。
-        # 导入图标排在第一位：用户显式选过的图标必须压过任何约定文件名，否则「导入了却看不到」。
+        # 图标探测顺序：① 导入图标（web.py 按 config.ini [Web] web_tray_icon 解析后传入）→
+        # ② 目录探测（favicon.ico / icon.ico / icon.png）→ ③ 自绘（_create_icon）。
+        # 导入图标必须压过约定文件名与自绘，否则用户「导入了却看不到」。
         candidates: list[str] = []
         if self._icon_file:
             candidates.append(self._icon_file)
@@ -404,9 +397,7 @@ class WebConsoleTray:
 
     @staticmethod
     def _create_icon() -> "QIcon":
-        # 生成与 GUI 托盘同风格的图标（蓝底 + 白环 + 红点录制指示）。现画而非读文件的理由：
-        # 仓库不放二进制 asset，QPainter 产出的 QIcon 直接可用，打包后不必处理 _MEIPASS /
-        # exe 相对路径（见文件头）。
+        # 自绘托盘图标（与 GUI 托盘同风格：蓝底 + 白环 + 红点录制指示）；现画而非读文件的理由见文件头。
         from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 
         pixmap = QPixmap(_ICON_SIZE, _ICON_SIZE)
@@ -428,7 +419,7 @@ class WebConsoleTray:
         painter.end()
         return QIcon(pixmap)
 
-    # ─── 菜单回调（Qt 版全部跑在事件循环所在线程，不再跳线程） ────
+    # ─── 菜单回调（全部跑在事件循环所在线程） ─────────────
 
     def _on_activated(self, reason: "QSystemTrayIcon.ActivationReason") -> None:
         # 单击（Trigger）/ 双击（DoubleClick）都恢复控制台；右键（Context）交给上下文菜单，
@@ -448,8 +439,7 @@ class WebConsoleTray:
         self._apply_window(SW_HIDE)
 
     def _apply_window(self, cmd: int) -> None:
-        # 显示 / 隐藏控制台窗口。跑在事件循环线程（通常是主线程），不存在「托盘线程调
-        # ShowWindow」的跨线程时序假设。
+        # 显示 / 隐藏控制台窗口（跑在事件循环线程，无「托盘线程调 ShowWindow」的跨线程假设）。
         hwnd = self._hwnd
         if not hwnd:
             return
@@ -480,7 +470,7 @@ class WebConsoleTray:
         if self.server is not None:
             self.server.should_exit = True
         else:
-            # 函数内 import os：与 tests/test_web_tray.py 的 sys.modules 替身口径一致（MT-13/LT-12）
+            # 函数内 import os：与 tests/test_web_tray.py 的 sys.modules 替身口径一致
             import os
 
             os._exit(0)

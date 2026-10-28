@@ -81,5 +81,5 @@ class ConfigPage(QWidget):
         # 窗口停止流程只禁用 dashboard 的 start/stop 两键，从不触碰本页按钮，故「停止时禁用
         # 本页按钮」的断言必然失败；要那样做得先在 main_window 停止分支接线，断言补进
         # tests/test_gui_qt_units.py::test_config_page_saved_buttons_exposes_both_control_buttons。
-        # [2026-10-20 更正] 原注释称「供测试断言按钮可用性（停止流程会禁用控制按钮）」，前提不成立。
+        # [历史注] 原注释称「供测试断言按钮可用性（停止流程会禁用控制按钮）」，前提不成立。
         return self.reload_btn, self.save_btn

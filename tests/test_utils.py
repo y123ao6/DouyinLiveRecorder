@@ -1,4 +1,4 @@
-# src/utils.py 工具函数的回归锁：Cookie 拼装、MD5/磁盘查询、配置读写、URL 与代理归一、去重与 emoji 清理、JSONP 解包、节点脚本执行与异常兜底。
+# 2026-10-19：src/utils.py 工具函数的回归锁：Cookie 拼装、MD5/磁盘查询、配置读写、URL 与代理归一、去重与 emoji 清理、JSONP 解包、节点脚本执行与异常兜底。
 
 import ast
 import builtins
@@ -124,7 +124,7 @@ class TestRemoveDuplicateLines:
 
 
 class TestReadConfigValue:
-    # F-16：原 read_config_value，与 config_io 同名函数区分。
+    # 原 read_config_value，与 config_io 同名函数区分。
 
     # 存在的 section/key 须返回原始字符串值
     def test_read_existing_key(self, tmp_path: Path) -> None:
@@ -179,7 +179,7 @@ class TestUpdateConfig:
 
 
 class TestDuplicateKeyWriteback:
-    # M-08（2026-10-19）：src/utils.py 的两处解析器改走 config_read.tolerant_config_parser。
+    # 2026-10-19：src/utils.py 的两处解析器改走 config_read.tolerant_config_parser。
     # 旧形态 configparser.ConfigParser(interpolation=None) 的 strict 默认为 True，遇到「同一节内
     # 两行同名键」（2026-10-17 在本仓 config/config.ini 的 [录制设置] 实测到过）时在 read() 就抛
     # DuplicateOptionError → read_ini_value 吞成 warning 返 None、update_config 更早退，
@@ -337,9 +337,9 @@ class TestReplaceUrl:
         assert "https://new.com/stream" in content
 
     def test_replace_segment_in_config_line(self, tmp_path: Path) -> None:
-        # M-18（2026-09-30）：URL_config.ini 的真实行形态是逗号分段，URL 段须整段替换。
+        # 2026-09-30：URL_config.ini 的真实行形态是逗号分段，URL 段须整段替换。
         # [历史注] 本用例原为 `url = <url>` 行内子串替换形态（test_replace_inline），
-        # 那正是 M-18 判定要移除的无边界子串行为。
+        # 那正是该判定要移除的无边界子串行为。
         f = tmp_path / "URL_config.ini"
         f.write_text("https://old.com/live,主播: 张三,原画\n", encoding="utf-8-sig")
         replace_url(f, "https://old.com/live", "https://new.com/live")
@@ -347,7 +347,7 @@ class TestReplaceUrl:
         assert content == "https://new.com/live,主播: 张三,原画\n"
 
     def test_prefix_overlapping_sibling_line_untouched(self, tmp_path: Path) -> None:
-        # M-18 变异判据（安全不变量）：URL 前缀重叠的兄弟房间行不得被误伤。旧实现的
+        # 变异判据（安全不变量）：URL 前缀重叠的兄弟房间行不得被误伤。旧实现的
         # `elif old in line: line.replace(...)` 会把 …/l/1234567 整行 replace 成
         # 「#…/l/123456」+「7,主播: 长号」尾巴——兄弟房间被静默注释（停止监测）。
         f = tmp_path / "URL_config.ini"
@@ -492,15 +492,15 @@ class TestUpdateConfigErrors:
 
 class TestRemoveDuplicateLinesEncodingFallback:
     # utf-8-sig 严格读取撞上 UnicodeDecodeError → 须回退重读且去重结果正确。
-    # 回退轮的编码：MIN-2244③ 之前是「系统默认编码」（宿主 locale），现改为显式
+    # 回退轮的编码：之前是「系统默认编码」（宿主 locale），现改为显式
     # utf-8-sig + errors="surrogateescape"，故真实非 UTF-8 字节的用例已跨平台稳定
-    # （见 test_regression_2026_09_22_utils.py 的 MIN-2244 段）；本用例仍用 monkeypatch
+    # （见 test_regression_2026_09_22_utils.py 段）；本用例仍用 monkeypatch
     # 模拟「严格轮炸掉」，为的是单独驱动回退分支本身而不是测解码器。
     def test_fallback_on_unicode_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         real_open = builtins.open
 
         # 只拦截严格解码那一轮：回退轮（errors="surrogateescape"）与回写必须放行走真 open。
-        # MIN-2244③ 之后两轮编码同为显式 utf-8-sig（不再用宿主 locale），故拦截判据由
+        # ③ 之后两轮编码同为显式 utf-8-sig（不再用宿主 locale），故拦截判据由
         # 「encoding」换成「errors」——否则回退轮也会被拦、用例根本测不到回退路径。
         def fake_open(file: Any, mode: str = "r", **kwargs: Any) -> IO[Any]:
             if "r" in mode and kwargs.get("errors") is None:
@@ -517,7 +517,7 @@ class TestRemoveDuplicateLinesEncodingFallback:
         assert content.split() == ["alpha", "beta"]
 
 
-# ── MID-28：mask_credentials 覆盖面表 ──────────────────────────
+# ── ：mask_credentials 覆盖面表 ──────────────────────────
 # 9 条取自 2026-09-20 审查的实测样本 + 「不得误伤」的公开地址样本。
 # 键黑名单与三形态（查询串 / 请求头 / JSON 体）缺一即漏，故整表参数化。
 class TestMaskCredentialsCoverage:
@@ -553,22 +553,22 @@ class TestMaskCredentialsCoverage:
     @pytest.mark.parametrize(
         ("raw", "secret"),
         [
-            # S-07（CODE_REVIEW_2026-10-21）①：ini 行形态「键 空格 = 空格 值」，值到行尾（可含空格）
+            # 2026-10-21：①：ini 行形态「键空格 = 空格值」，值到行尾（可含空格）
             ("Authorization = Bearer abcdef123456", "abcdef123456"),
             ("token = abcdef123456", "abcdef123456"),
             # 带中文前缀的 Cookie 键（[Cookie] 节的真实写法）
             ("[Cookie]\n抖音cookie = abc123", "abc123"),
-            # S-07②：短键名 sig / jwt（原键名表只有 signature/sign）
+            # ②：短键名 sig / jwt（原键名表只有 signature/sign）
             ("sig=abcdef", "abcdef"),
             ("jwt=abcdef", "abcdef"),
-            # S-07②：小写复合键（原候选集只有 token|key）
+            # ②：小写复合键（原候选集只有 token|key）
             ("mysecret=abcdef", "abcdef"),
             ("mypassword=abcdef", "abcdef"),
-            # S-07③：JSON 数值/布尔/null 值（原只认字符串值）
+            # ③：JSON 数值/布尔/null 值（原只认字符串值）
             ('{"ms_token": 12345}', "12345"),
             ('{"token": 123}', "123"),
             ('{"sign": 1}', ": 1"),
-            # S-07④：中文凭据键
+            # ④：中文凭据键
             ("密码=abcdef", "abcdef"),
         ],
     )
@@ -626,7 +626,7 @@ class TestMaskCredentialsCoverage:
     @pytest.mark.parametrize(
         ("raw", "secret"),
         [
-            # M-01（2026-10-02）：B 站主会话凭据与 CSRF 键、抖音 Cookie 会话键——修复前四键
+            # 2026-10-02：B 站主会话凭据与 CSRF 键、抖音 Cookie 会话键——修复前四键
             # 整体逃逸（query 形态实测原样返回）。判据是「值确实消失」，不只断言调用了过码。
             ("https://api.bilibili.com/x?SESSDATA=SESSVALUE123", "SESSVALUE123"),
             ("https://api.bilibili.com/x?bili_jct=JCTVALUE456", "JCTVALUE456"),
@@ -648,7 +648,7 @@ class TestMaskCredentialsCoverage:
             assert secret not in masked
 
 
-# ── MID-57 / MIN-21：原子写的耐久、临时名唯一性与权限保留 ───────
+# ── / ：原子写的耐久、临时名唯一性与权限保留 ───────
 class TestAtomicWriteTextDurability:
     def test_fsync_happens_before_replace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # 顺序即不变量：close() 只把数据交给内核页缓存，若 fsync 晚于 replace，
@@ -674,7 +674,7 @@ class TestAtomicWriteTextDurability:
         assert target.read_text(encoding="utf-8-sig") == "new content"
 
     def test_temp_names_are_unique_within_one_process(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MIN-21：原 tmp 名只含 pid → 同进程两线程写同一目标会共用同一个 tmp 文件
+        # 原 tmp 名只含 pid → 同进程两线程写同一目标会共用同一个 tmp 文件
         # （互相截断），os.replace 可把半写内容替换进目标。现必须每线程各自独立。
         seen: list[str] = []
         contents: list[str] = []
@@ -708,8 +708,8 @@ class TestAtomicWriteTextDurability:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows 的 os.chmod 仅影响只读位，无法断言权限位")
     def test_original_file_mode_is_preserved(self, tmp_path: Path) -> None:
-        # MIN-21：mkstemp 固定 0600，不回填原 mode 时任一整文件重写都会把公读文件收紧、
-        # 或把 CR-07 收紧过的 0600 放宽回 umask 值（凭据文件权限被静默改变）。
+        # mkstemp 固定 0600，不回填原 mode 时任一整文件重写都会把公读文件收紧、
+        # 或把该收紧过的 0600 放宽回 umask 值（凭据文件权限被静默改变）。
         target = tmp_path / "cfg.ini"
         _ = target.write_text("old", encoding="utf-8")
         os.chmod(target, 0o644)
@@ -722,7 +722,7 @@ class TestAtomicWriteTextDurability:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows 的 os.chmod 仅影响只读位，无法断言权限位")
     def test_new_target_is_hardened_to_owner_only(self, tmp_path: Path) -> None:
-        # M-57 的 POSIX 侧实测判据：目标此前不存在时产物必须**确定**是 0600。
+        # POSIX 侧实测判据：目标此前不存在时产物必须**确定**是 0600。
         # 原实现只靠 mkstemp 的默认模式，而 os.replace 后目标继承临时文件的模式——
         # 多用户主机上 config.ini（含明文 Cookie / 账号密码）首次创建走的就是这条路，
         # 一旦默认模式被环境改掉（或将来有人把临时文件换成 open(...,"w")），凭据文件就同机可读。
@@ -735,7 +735,7 @@ class TestAtomicWriteTextDurability:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existed_mode: int
     ) -> None:
         # 跨平台的行为锁（本机 Windows 上 os.chmod 改不了权限位，POSIX 那两条用例只能 skip）：
-        # 直接记「传给 chmod 的第二个实参」，把 M-57 的取值规则钉死而不是钉本机可见效果。
+        # 直接记「传给 chmod 的第二个实参」，把该取值规则钉死而不是钉本机可见效果。
         # 判据两侧都要有：① 新目标 → 显式 0600（删掉这条加固即变红，变异 M-57-A）；
         # ② 既有目标 → 原 mode 原样回填（有人「顺手全量收紧」会把别人正在共享的文件打死，
         #    变异 M-57-B）。os 替身按 shim 口径只落进被测模块命名空间。
@@ -780,7 +780,7 @@ class TestAtomicWriteTextDurability:
         assert list(tmp_path.iterdir()) == [target]
 
 
-# ── MID-29 / MIN-11：URL 配置旁路写盘必须持锁 + 原子 ────────────
+# ── / ：URL 配置旁路写盘必须持锁 + 原子 ────────────
 class _LockRecorder:
     # 替身锁：记录 with 进入次数（main.file_update_lock 是 RLock，测试里换成计数器）
 
@@ -819,7 +819,7 @@ class TestUrlConfigWritePaths:
         assert f.read_text(encoding="utf-8-sig").split() == ["a", "b"]
 
     def test_replace_url_never_truncates_target(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MID-29①②：写盘必须经「同目录临时文件 + os.replace」。判据用真 open 拦截：
+        # ①②：写盘必须经「同目录临时文件 + os.replace」。判据用真 open 拦截：
         # 任何以 "w" 直开目标文件的路径都会先 truncate（读方可见空/半写；Windows 上还会
         # 让对端的 os.replace 抛 PermissionError），这里直接让它炸掉。
         real_open = builtins.open
@@ -849,10 +849,10 @@ class TestUrlConfigWritePaths:
     def test_remove_duplicate_lines_fallback_clears_first_pass(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # MIN-11：首轮按 utf-8-sig 读到一半才抛 UnicodeDecodeError 时，已读进 OrderedDict 的
+        # 首轮按 utf-8-sig 读到一半才抛 UnicodeDecodeError 时，已读进 OrderedDict 的
         # 那几行必须清空，否则两轮结果混在同一 dict、把首轮产物写回文件。
         # 用「读出一行后才炸」的假句柄模拟，直接锁定 clear() 这一步本身（真字节的非 UTF-8
-        # 往返另有跨平台稳定的用例，见 test_regression_2026_09_22_utils.py 的 MIN-2244③ 段）。
+        # 往返另有跨平台稳定的用例，见 test_regression_2026_09_22_utils.py 的段）。
         real_open = builtins.open
         # 纯 ASCII 内容：回退轮（显式 utf-8-sig + surrogateescape）也必须得到同样结果
         target = tmp_path / "dup.txt"
@@ -871,7 +871,7 @@ class TestUrlConfigWritePaths:
                 raise UnicodeDecodeError("utf-8-sig", b"\xff", 0, 1, "simulated mid-file failure")
 
         def fake_open(file: Any, mode: str = "r", **kwargs: Any) -> IO[Any]:
-            # 判据取 errors：MIN-2244③ 后两轮编码同为显式 utf-8-sig，只有严格轮不带 errors
+            # 判据取 errors：后两轮编码同为显式 utf-8-sig，只有严格轮不带 errors
             if "r" in mode and kwargs.get("errors") is None:
                 return cast("IO[Any]", _HalfThenBoom())
             return real_open(file, mode, **kwargs)
@@ -883,14 +883,14 @@ class TestUrlConfigWritePaths:
         assert first_pass_line not in written, "回退分支未清空首轮结果（MIN-11 回归）"
 
 
-# ── MID-62：run_node_script_async 校验与执行的必须是同一份内容 ──
+# ── ：run_node_script_async 校验与执行的必须是同一份内容 ──
 class TestRunNodeScriptNoToctou:
     @pytest.mark.asyncio
     async def test_verified_bytes_are_the_executed_bytes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # 旧实现「读文件算哈希 → 把**路径**交给 node」：node 会独立二次读盘，
         # 两步之间换掉文件内容即绕过钉定表（check-then-use）。
         # 现改为把校验过的那一份字节经 stdin 交给 node（argv 位置保持不变）。
-        # [L-19 2026-10-19 适配] 执行原语从 subprocess.run 换成自管 Popen + communicate(input=…)，
+        # [ 2026-10-19 适配] 执行原语从 subprocess.run 换成自管 Popen + communicate(input=…)，
         # 「把校验过的字节交给 node」这条契约因此落在 communicate 的 input 实参上（旧形态落在
         # run 的 input 关键字上），argv 与篡改时序的断言逐字保留、不改松。
         script = tmp_path / "sign.js"
@@ -952,7 +952,7 @@ class TestRunNodeScriptNoToctou:
         assert "require(" not in text
 
 
-# ── L-19（2026-10-19）：run_node_script_async 的超时预算与进程树回收 ──
+# ── （2026-10-19）：run_node_script_async 的超时预算与进程树回收 ──
 # 锁两层，缺一层就退化成「静默挂死」：
 #   ① 内层 communicate(timeout=) —— 唯一能真正回收 node 进程树的一层；超时后必须收**整棵树**
 #      （POSIX start_new_session + killpg / Windows taskkill /T /F），且**绝不再读一次管道**
@@ -1165,7 +1165,7 @@ class TestRunNodeScriptTimeoutBudget:
 
     def test_node_execution_does_not_use_subprocess_run(self) -> None:
         # 结构锁：subprocess.run 的超时分支会在 kill 后再调一次不带超时的 communicate()——
-        # 那是 L-19 的根因，不得被「顺手改回 run」的重构复活。run 只允许出现在回收 taskkill 那一处。
+        # 那是该根因，不得被「顺手改回 run」的重构复活。run 只允许出现在回收 taskkill 那一处。
         src = inspect.getsource(utils_module.run_node_script_async)
         body = "\n".join(line for line in src.splitlines() if not line.strip().startswith("#"))
         assert "subprocess.run" not in body, "run_node_script_async 本体不得再用 subprocess.run 执行 node"
@@ -1195,7 +1195,7 @@ class TestJsPinTable:
         for name in utils_module._JS_SHA256_EXPECTED:
             assert (js_dir / name).is_file(), f"钉定表引用了不存在的脚本 {name}"
 
-    # MIN-2266 ①：上面两条只锁「表 == 硬编码 5 项」与「表里的键都有文件」，
+    # ①：上面两条只锁「表 == 硬编码 5 项」与「表里的键都有文件」，
     # 缺的是**反方向**——「目录里的每个 .js 都在表里」。缺了它，新增（或被投放）第 6 个
     # 签名脚本时 _check_js_hash 会走「未登记」分支静默放行，AGENTS 第③类钉定面悄悄缩小，
     # 而 black / isort / mypy / pytest 全绿。本用例即那条缺失的锁。
@@ -1211,7 +1211,7 @@ class TestJsPinTable:
         assert on_disk == pinned, f"盘上 *.js={on_disk} 与钉定表={pinned} 不一致（未登记的脚本=不校验的脚本）"
 
     def test_unregistered_js_emits_warning_once(self, tmp_path: Path, log_capture: list[str]) -> None:
-        # 「未登记」不得再是静默分支：首见必须告警（MIN-2266 ①）。
+        # 「未登记」不得再是静默分支：首见必须告警（ ①）。
         # 把告警改回 `return`（原实现）会让本用例变红——它就是那条变异验证要抓的形态。
         name = "evil-injected.js"
         utils_module._js_unpinned_warned.discard(name)
@@ -1229,7 +1229,7 @@ class TestJsPinTable:
         assert sum(1 for line in log_capture if name in line) == 1, log_capture
 
 
-# ── M-55 / L-48 的回归锁（src/utils.py 两处 decode 站点注释引用的正是本类）──
+# ── / 该回归锁（src/utils.py 两处 decode 站点注释引用的正是本类）──
 # 立规背景：两处 `decode("utf-8")` 原本不带 errors，非 UTF-8 字节直接抛 UnicodeDecodeError——
 #   ① get_compiled_js：签名脚本被用户手工编辑存成 GBK / 编辑器插入坏字节 → 异常穿出本函数，
 #      被 76 处平台解析的 trace_error_decorator 归成「JS 执行环境异常」，把一个文件编码问题

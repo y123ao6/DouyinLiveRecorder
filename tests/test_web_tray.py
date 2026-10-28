@@ -14,7 +14,7 @@
 # （避免真建 QApplication / 真挂图标；offscreen 平台上 isSystemTrayAvailable 恒 False，
 # 真 Qt 反而测不到正常路径）。Win32 DLL 句柄用 SimpleNamespace 桩替换 _get_kernel32/
 # _get_user32 的返回值。生产侧「函数内 import」的 stdlib（ctypes / os）一律经
-# _imported_module_shim 换 sys.modules 条目，不改模块本体（MT-13 / LT-12，2026-10-18）。
+# _imported_module_shim 换 sys.modules 条目，不改模块本体（ / ，2026-10-18）。
 #
 # 分支地图：
 #   DLL 句柄缓存的三个入口：已缓存直返 / 非 win32 早返回 / WinDLL 加载失败返 None。
@@ -270,7 +270,7 @@ def fake_qt(monkeypatch: pytest.MonkeyPatch) -> dict[str, types.ModuleType]:
 
 
 def _imported_module_shim(name: str, **overrides: Any) -> types.SimpleNamespace:
-    # MT-13 / LT-12（2026-10-18）：本模块要替的两个 stdlib 符号都处在**函数内 import** 的位置
+    # 本模块要替的两个 stdlib 符号都处在**函数内 import** 的位置
     # （src/web_tray.py 的 _get_kernel32/_get_user32 里 `import ctypes`、_on_exit 里 `import os`），
     # 所以 web_tray 命名空间内根本没有可替换的模块引用：仓库常规的
     # `monkeypatch.setattr(<被测模块>, "os", shim)` 在这里打不上，写成 raising=False 更糟——
@@ -339,7 +339,7 @@ class TestDllAccessors:
             calls.append(args)
             raise OSError("kernel32 unavailable")
 
-        # MT-13（2026-10-18）：旧写法 `monkeypatch.setattr(ctypes, "WinDLL", boom)` 改的是全进程唯一的
+        # 2026-10-18：旧写法 `monkeypatch.setattr(ctypes, "WinDLL", boom)` 改的是全进程唯一的
         # ctypes 本体——替身窗口内任何其它线程/库的 WinDLL 调用都会一起炸。按 _imported_module_shim
         # 的口径走 sys.modules 条目（生产侧是函数内 import，无模块级引用可绑）。
         real_windll = ctypes.WinDLL
@@ -779,21 +779,28 @@ class TestMenuCallbacks:
         tray = web_tray.WebConsoleTray("127.0.0.1", 8000)
         tray._on_open_browser()  # 不得抛出：异常穿过 Qt 事件循环等于托盘失灵
 
-    def test_on_exit_signals_uvicorn_shutdown(self) -> None:
+    def test_on_exit_signals_uvicorn_shutdown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         server = types.SimpleNamespace(should_exit=False)
         tray = web_tray.WebConsoleTray("127.0.0.1", 8000, server=cast(Any, server))
         icon = _FakeQSystemTrayIcon()
         tray.icon = cast(Any, icon)
+        # CODE_REVIEW_2026-10-27 4.3：有 server 分支必须**只**置 should_exit。os._exit 一旦也被
+        # 触发，uvicorn 的优雅关闭（web.py finally 段的 ffmpeg / 连接池清理）会被整体跳过。
+        # 「codes 恒空」不是假绿——同一替身机制在下面的 test_on_exit_without_server_hard_exits
+        # 里断言了 codes == [0]，即函数内 `import os` 确实读到了这个 sys.modules 条目。
+        codes: list[int] = []
+        monkeypatch.setitem(sys.modules, "os", _imported_module_shim("os", _exit=lambda code: codes.append(code)))
         tray._on_exit()
         assert server.should_exit is True
         # 与 stop() 不同，_on_exit 只收图标而不把 self.icon 置 None：
         # 循环还在跑，提前置 None 会让随后到达的收尾错过停图标。
         assert icon.hidden == 1
         assert tray.icon is not None
+        assert codes == [], f"有 server 时不得走 os._exit 强制退出: {codes}"
 
     def test_on_exit_without_server_hard_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         codes: list[int] = []
-        # LT-12（2026-10-18）：旧写法 `monkeypatch.setattr(os, "_exit", ...)` 改的是全进程唯一的 os 本体，
+        # 2026-10-18：旧写法 `monkeypatch.setattr(os, "_exit", ...)` 改的是全进程唯一的 os 本体，
         # 同窗口内任何线程的删除/重命名/退出都会走进这个只记账的替身。生产侧 `_on_exit` 是函数内
         # `import os`，故按 _imported_module_shim 的口径换 sys.modules 条目：真 os 本体逐字不变，
         # 只有本用例窗口内的 import 绑定到替身。

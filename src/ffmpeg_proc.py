@@ -32,7 +32,7 @@ _CLEANUP_BUDGET_MARGIN_SECONDS = 5.0
 # 并行清理总预算的**上限**（秒），None = 按 _cleanup_wait_budget() 配平。语义是上限而非固定值，
 # 保留它作为显式收窄开关（测试 / 紧急退出用）。
 # [历史注] 旧实现固定 45.0，而清理线程「组内串行、组间并行」：最忙那组串行长度达 2（>8 个
-# 进程）时需 2×30=60s > 45s，「正在被慢速终止」的进程必然被误报成「未能终止」（MIN-2236②）。
+# 进程）时需 2×30=60s > 45s，「正在被慢速终止」的进程必然被误报成「未能终止」。
 _CLEANUP_WAIT_SECONDS: float | None = None
 # 单段等待的最小秒数，理由见 _stage_budget。
 _MIN_STAGE_WAIT_SECONDS = 1.0
@@ -114,7 +114,7 @@ def _terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = int(
                     # → kill 三级兜底；重抛只会让清理线程提前放弃该进程。
                     pass
                 finally:
-                    # MID-32：写完必须关闭 stdin（旧实现只在 write 与 flush 都成功时才 close）。
+                    # 写完必须关闭 stdin（旧实现只在 write 与 flush 都成功时才 close）。
                     # 不关闭则部分 ffmpeg 构建要读到 EOF 才处理 'q'；同时不假定有任何回音。
                     try:
                         proc.stdin.close()
@@ -156,7 +156,7 @@ def _terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = int(
             pass
 
         # 最后手段：关掉仍握着的 stdout 句柄
-        # M-58③（2026-10-21）：兜底必须覆盖三支管道，不能只关 stdout。走到这里意味着三级终止
+        # ③（2026-10-21）：兜底必须覆盖三支管道，不能只关 stdout。走到这里意味着三级终止
         # 全部没等到进程退出（ffmpeg 卡在不可中断IO / 孙进程握着管道写端），此时 stderr（ffmpeg 的
         # 进度与错误输出，7×24 多房间下每条录制都开着一支）与 stdin 若不关，只能等解释器收尾回收；
         # 反复启停会让清理线程一路攒 fd，且 Windows 上这些句柄还会让日志/媒体文件的归档改名撞
@@ -180,7 +180,7 @@ def _terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = int(
 # 清理单个 ffmpeg 进程并打印日志，供清理线程串行调用；异常内部吞掉，无返回值。
 # finished 为可选的「本进程已处理完」事件（成功、失败或未终止都要置位），由
 # cleanup_all_ffmpeg_processes 用来实现「总预算 + 未确认即放弃等待」；传 _CleanupSignal 时
-# 另置 terminated 位，使注册表复核与「未确认」告警共用同一处事实（MIN-2236②）。
+# 另置 terminated 位，使注册表复核与「未确认」告警共用同一处事实。
 def _cleanup_single_ffmpeg_process(
     proc: subprocess.Popen[bytes], finished: _CleanupSignal | threading.Event | None = None
 ) -> None:
@@ -198,7 +198,7 @@ def _cleanup_single_ffmpeg_process(
                 )
                 return
         logger.info(i18n.tr("ffmpeg 进程 (PID: {pid}) 已清理", pid=proc.pid))
-        # MIN-2236②：成功路径才登记「已确认终止」，且必须在 finally 置位 finished **之前**
+        # ②：成功路径才登记「已确认终止」，且必须在 finally 置位 finished **之前**
         # 写入——否则主线程被唤醒后可能读到尚未落定的结果位，等于又引入了两套事实。
         # isinstance 判定不可省：既有调用方与用例允许传裸 threading.Event。
         if isinstance(finished, _CleanupSignal):
@@ -222,12 +222,12 @@ def cleanup_all_ffmpeg_processes() -> None:
     # 本轮快照为空时，若清理期间另有线程 register 了进程，注册表会有残留项需要归类。
     tracked: list[tuple[subprocess.Popen[bytes], _CleanupSignal]] = []
     if processes_to_clean:
-        # MID-32 修复之一：旧写法 `for f in as_completed(futures)` 不给 as_completed 传 timeout，
+        # 之一：旧写法 `for f in as_completed(futures)` 不给 as_completed 传 timeout，
         # 它本身「直到有 future 完成才返回」，能进循环体的 future 必然已完成——循环体里的
         # f.result(timeout=10) 是**死代码**，于是单个卡死的 worker 就能永久挂住整条退出链路
         # （本函数由 atexit 与 Web「停止录制」两处调用）。现改为「总预算 + 逐个等事件」。
         #
-        # MID-32 修复之二：不再用 ThreadPoolExecutor——其 worker 是**非守护**线程，
+        # 之二：不再用 ThreadPoolExecutor——其 worker 是**非守护**线程，
         # concurrent.futures 在解释器收尾时 join 全部 worker，而本函数正跑在 atexit 链路上，一个
         # 卡在 stdin 写上的 worker 依旧能把进程永久钉住（`with` 退出即 shutdown(wait=True)，是第二个
         # 无界点）。故改用显式分组守护线程（组数 ≤ _CLEANUP_MAX_WORKERS，与旧 max_workers 同量级）：

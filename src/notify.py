@@ -213,7 +213,7 @@ def run_script(command: str) -> None:
             stdout, stderr = process.communicate(timeout=_SCRIPT_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             # 脚本挂起：先收整棵进程树（孙进程会握着管道写端，只 kill 直接子进程读不到 EOF），
-            # 再带**有限超时**地回收管道，避免读取线程残留导致调用方永久阻塞（M-5）。
+            # 再带**有限超时**地回收管道，避免读取线程残留导致调用方永久阻塞。
             _kill_process_tree(process, masked_command)
             try:
                 stdout, stderr = process.communicate(timeout=_SCRIPT_REAP_TIMEOUT_SECONDS)
@@ -292,7 +292,7 @@ def record_success(key: str | None = None) -> None:
     # 1.0，并发只能降不能升）；同时上报调度器。保持无参调用以兼容既有调用方与测试。
     with main.max_request_lock:
         main.error_window.append(0)
-    # 直接访问模块级声明属性（AGENTS.md 禁止三参 getattr：返回 Any 使类型检查静默失效）
+    # 直接访问模块级声明属性（同 record_error：AGENTS「禁止三参 getattr」条）
     scheduler = main.scheduler
     if scheduler is not None:
         scheduler.record_success(key)

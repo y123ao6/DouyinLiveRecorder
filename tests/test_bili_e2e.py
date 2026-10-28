@@ -2,7 +2,7 @@
 # 端到端验证：用真实格式的 B站打包帧喂 BilibiliDanmaku + collector，确认 SRT 产出。
 # 全程离线（自己 struct.pack 造帧），覆盖「帧协议 → 解析 → collector → SrtWriter」全链路。
 #
-# MIN-2266 ②：本文件原先 0 个 `test_` 函数，全部逻辑待在 `main()` 里、只在 `__main__` 守卫下
+# ②：本文件原先 0 个 `test_` 函数，全部逻辑待在 `main()` 里、只在 `__main__` 守卫下
 # 执行，pytest 收集到的是「空文件」——这条串联从不自动跑，断言可无限腐烂而文件继续向读者
 # advertise「e2e 已验证」。它也与允许「需活房间 + 外网、默认人工通道」的 5 个
 # `test_*_live_collector.py` 不同类，没有理由不进 pytest；主体拆成
@@ -100,7 +100,7 @@ def _run_end_to_end(out_dir: str) -> None:
         assert got[0].user_name == "测试用户"
         print(f"=== 帧解析通过: {got[0].user_name}: {got[0].message} ===")
     finally:
-        # LT-05（2026-10-18 审查）：旧形态只有顺序执行的 loop.close()——中间任一条断言转红时
+        # （2026-10-18 审查）：旧形态只有顺序执行的 loop.close()——中间任一条断言转红时
         # 循环既不关闭也不复位；即便跑到底也只 close 不 set_event_loop(None)，于是「已关闭的
         # 循环」被留在当前线程 policy 上跨用例残留，后续取当前循环的代码拿到的都是死循环，
         # 报错形态与被测逻辑无关。3.14 起 get_event_loop() 不再隐式新建循环，复位成 None 才是
@@ -109,7 +109,7 @@ def _run_end_to_end(out_dir: str) -> None:
         asyncio.set_event_loop(None)
 
     # 复位是否到位用公开 API 复核。判据刻意放在 try/finally **之外**：写在 finally 里，本条
-    # 一旦转红会顶掉用例真正的失败（与 msg_push MID-2252「finally 里的异常替换结论」同族）。
+    # 一旦转红会顶掉用例真正的失败（与 msg_push 「finally 里的异常替换结论」同族）。
     # 3.14 的语义是「当前线程无循环 → RuntimeError」（AGENTS「3.14 破坏性变更基线」）；
     # 不碰 policy 私有属性（如 _local._loop），那会让判据随 CPython 内部实现漂移。
     try:
@@ -121,7 +121,7 @@ def _run_end_to_end(out_dir: str) -> None:
 
 
 def test_bili_frame_to_srt_end_to_end(tmp_path: Path) -> None:
-    # pytest 入口（MIN-2266 ②）：与直跑共用同一个 _run_end_to_end，避免两套演化。
+    # pytest 入口（ ②）：与直跑共用同一个 _run_end_to_end，避免两套演化。
     # 只依赖 tmp_path——不触网、不读 config、不碰 tests/_out_e2e 这类会话级共享目录。
     _run_end_to_end(str(tmp_path))
 

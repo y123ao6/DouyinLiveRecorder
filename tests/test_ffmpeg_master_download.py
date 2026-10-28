@@ -5,17 +5,17 @@
 #   TOFU 记账与「失败不抛」契约由本文件直接锁住。用例按「删掉哪条判据就该变红」组织，
 #   全部离线：requests / subprocess / 落盘目录三面被打桩或收敛到 tmp_path，绝不真下 ~190MB 产物。
 #
-# 锁住的行为（编号对应本轮审查记录）：
-#   A) SEV-2218：候选源顺序即优先级——BtbN 权威上游必须排在 fyhub 镜像之前
+# 锁住的行为：
+#   A) 候选源顺序即优先级——BtbN 权威上游必须排在 fyhub 镜像之前
 #      （镜像既能替换产物就能替换它自己的元数据，权威性严格弱于上游，只配当兜底项）；
-#   B) SEV-2222：TOFU 基准存在却读不出来一律拒装（本模块 TOFU 是唯一一道完整性检查，
+#   B) TOFU 基准存在却读不出来一律拒装（本模块 TOFU 是唯一一道完整性检查，
 #      没有「降级后仍可安装」的余量）；
-#   C) 与 P-1 同口径：首次记账必须落 warning（不得降成 debug），并修剪同前缀陈旧基准
+#   C) 首次记账必须落 warning（不得降成 debug），并修剪同前缀陈旧基准
 #      （master-latest 是滚动别名，不修剪即让程序目录无界增长）；
-#   D) CR-11/P-1 同族：非压缩包产物（镜像站 200 + text/html 的人机验证页）必须先于
+#   D) 非压缩包产物（镜像站 200 + text/html 的人机验证页）必须先于
 #      哈希记账被拒，且不进入解压、不执行刚下载的二进制；
-#   E) MIN-2267：_looks_like_html 的读失败判「内容不可信」（True），不得当「不是 HTML」放行；
-#   F) MIN-2266⑤：OSError（写盘失败 / 磁盘满 / 路径失效）不得穿出「失败一律返回 False、不抛」契约。
+#   E) _looks_like_html 的读失败判「内容不可信」（True），不得当「不是 HTML」放行；
+#   F) OSError（写盘失败 / 磁盘满 / 路径失效）不得穿出「失败一律返回 False、不抛」契约。
 #
 # Mock 口径：只替换「模块自己的 requests 名字」与 subprocess 的模块全局引用
 #   （types.SimpleNamespace(**vars(...)) 浅拷贝，绝不动 stdlib 本体），
@@ -79,7 +79,7 @@ class _Bar:
 
 class _Resp:
     # requests.Response 在被测代码里用到的最小面：状态码 / 头 / 流式内容 / close / 上下文协议。
-    # iter_content 刻意可被配成「抛异常」，用来锁 MIN-2267 的读失败分支。
+    # iter_content 刻意可被配成「抛异常」，用来锁该读失败分支。
     def __init__(
         self,
         *,
@@ -160,7 +160,7 @@ def no_egress(monkeypatch: pytest.MonkeyPatch) -> _FakeHttp:
     # 兜底哨兵：先用「未登记即红」的 requests 换掉模块全局名，用例再往这个实例里登记路由。
     # 为什么必须 autouse 而不是每条用例自己记得：download_ffmpeg_master 的全部出站都走
     # md.requests（模块级名字查找），漏桩一次就是真去 github.com 拉 ~190MB
-    # （与 test_ffmpeg_install 的 SEV-2220 同一族事故）。
+    # （与 test_ffmpeg_install 同一族事故）。
     http = _FakeHttp()
     monkeypatch.setattr(md, "requests", http)
     # 安装成功分支会真改 os.environ["PATH"]（把 bin 目录前置注入）；不还原会污染同进程
@@ -205,14 +205,14 @@ def _logs(monkeypatch: pytest.MonkeyPatch, level: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# A) 候选源顺序（SEV-2218）
+# A) 候选源顺序
 # ---------------------------------------------------------------------------
 
 
 class TestCandidateSourceOrder:
     def test_authority_upstream_precedes_mirror_for_every_arch(self) -> None:
         # 断言**整张列表逐字相等**，而不是「包含两个 URL」：后者对调顺序仍然通过，
-        # 而「镜像排在权威上游之前」正是 SEV-2218 要消灭的形态。
+        # 而「镜像排在权威上游之前」正是本项要消灭的形态。
         for arch in ("win64", "winarm64"):
             base = f"ffmpeg-master-latest-{arch}-gpl.zip"
             assert md._candidate_urls(arch) == [
@@ -252,7 +252,7 @@ class TestCandidateSourceOrder:
 
 
 # ---------------------------------------------------------------------------
-# B) 基准存在但读不出来 → 一律拒装（SEV-2222）
+# B) 基准存在但读不出来 → 一律拒装
 # ---------------------------------------------------------------------------
 
 
@@ -438,14 +438,14 @@ class TestProbeClassification:
 
 
 # ---------------------------------------------------------------------------
-# E) _looks_like_html 的读失败判「不可信」（MIN-2267）
+# E) _looks_like_html 的读失败判「不可信」
 # ---------------------------------------------------------------------------
 
 
 class TestLooksLikeHtml:
     def test_stream_read_failure_is_treated_as_untrusted(self) -> None:
-        # 旧实现返回 False（=「不是 HTML，放行」），把**读失败**当成了「拿到的是文件」：
-        # 流一断就误报探针 ok，本可换源的候选被当成唯一可用源。
+        # 读失败必须判「内容不可信」：返回 False 等于「不是 HTML，放行」，流一断就误报探针 ok，
+        # 本可换源的候选被当成唯一可用源。
         resp = _Resp(
             headers={"Content-Type": "application/octet-stream"}, stream_error=requests.ConnectionError("reset")
         )
@@ -467,15 +467,15 @@ class TestLooksLikeHtml:
 
 
 # ---------------------------------------------------------------------------
-# F) 「失败一律返回 False、不抛」的契约（MIN-2266⑤）
+# F) 「失败一律返回 False、不抛」的契约
 # ---------------------------------------------------------------------------
 
 
 class TestNoRaiseContract:
     def test_open_failure_is_normalized_to_false(self, no_egress: _FakeHttp, tmp_path: Path) -> None:
         # 探针已通过、真正失败的是 open(zip_path, "wb")：落点目录不存在（路径失效/被清理）。
-        # 抛的是 FileNotFoundError（OSError 子类），既不是 FfmpegDownloadError 也不是 requests 系；
-        # 旧实现只捕 requests 系 → 一路穿出到 install_ffmpeg_windows → 启动期 check_ffmpeg()。
+        # 抛的是 FileNotFoundError（OSError 子类），既不是 FfmpegDownloadError 也不是 requests 系，
+        # 故必须由 OSError 兜底，否则一路穿出到 install_ffmpeg_windows → 启动期 check_ffmpeg()。
         _serve_file_source(no_egress, GITHUB_URL, _zip_with_bin())
         assert md.download_ffmpeg_master(str(tmp_path / "no-such-dir"), arch="win64") is False
 

@@ -1,17 +1,14 @@
 # tests/test_ffmpeg_linux_download.py —— src/ffmpeg_linux_download.py 的回归锁。
 #
-# 组织方式：按「删掉哪条判据就该变红」分组（分流 / URL 反解 / 真值表 / 失败不抛 / 两处副本一致性），
-#   另含评审 I-1/I-3/I-4 补齐的分组：载荷形态、归档形态闸门、TOFU 基准比对（含基准读不出）、
-#   归档取件布局与缺件、_download 重试与退避、安装后验证探针的三态（抛异常 / 零字节空壳）。
-# 2026-10-21 评审包追加：独占落盘（M-44）、PATH 去重前置（M-47）、解包前空间预检（M-48）、
-#   下载字节上限（M-49）——段末 TestExclusiveArchiveSink / TestPathInjectionAndSpacePrecheck /
-#   TestDownloadByteCap 三组，判据同样全部落在「现场还剩什么」。
+# 组织方式：按「删掉哪条判据就该变红」分组（分流 / URL 反解 / 真值表 / 失败不抛 / 两处副本一致性 /
+#   载荷形态 / 归档形态闸门 / TOFU 基准比对 / 取件布局与缺件 / 重试与退避 / 安装后探针三态 /
+#   独占落盘 / PATH 去重前置 / 解包前空间预检 / 下载字节上限），判据一律落在「现场还剩什么」。
 # 全部离线：requests / subprocess / 落盘目录三面被打桩或收敛到 tmp_path，
 #   绝不真下 ~110MB 产物，也不写程序目录（AGENTS.md「测试产物一律走 tmp_path」）。
 # 替身口径：stdlib 与第三方模块一律走**被测模块命名空间的 shim**
 #   （types.SimpleNamespace(**vars(真身)) 浅拷贝后只覆盖所需属性，再 monkeypatch.setattr(fld, ...)）；
 #   直接 monkeypatch.setattr(fld.platform, "machine", ...) 改的是全进程 platform 本体，
-#   窗口内其它模块（loguru / 后台线程）的 machine() 调用一并被换——AGENTS.md M-27 明令禁止该形态。
+#   窗口内其它模块（loguru / 后台线程）的 machine() 调用一并被换——AGENTS.md 该明令禁止该形态。
 
 import hashlib
 import io
@@ -89,8 +86,8 @@ class TestApiUrlDerivation:
 
 def _tar_xz(members: dict[str, bytes], *, mode: int = 0o755) -> bytes:
     # 必须是真 tar.xz：fld 走 tarfile.is_tarfile + extractall(filter="data")，多层 mock 锁不住实现换法。
-    # mode 可配（评审 I-1②/⑤）：既要造 0o755 的正常件，也要造 0o644 的件——后者才能钉住
-    # 「执行位由实现补回」这条判据（默认 0o755 与既有五格载荷保持逐字同形，不改动已绿用例）。
+    # mode 可配：既要造 0o755 的正常件，也要造 0o644 的件——后者才能钉住「执行位由实现补回」这条判据
+    # （默认 0o755 与既有载荷用例保持逐字同形，不改动已绿用例）。
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:xz") as tf:
         for name, data in members.items():
@@ -182,7 +179,7 @@ def _json_resp(status_code: int, payload: Any) -> Any:
 
 def _stub_backoff(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     # fld 的重试退避用模块级 `import time`，sleep 走的是它自己的 time 名字。桩必须落在
-    # fld.time 的 shim 上（AGENTS M-27：setattr(fld.time, "sleep", ...) 换的是全进程 time 本体，
+    # fld.time 的 shim 上（AGENTS ：setattr(fld.time, "sleep", ...) 换的是全进程 time 本体，
     # 窗口内 loguru/后台线程的 sleep 一并被换）。返回记录到的秒数列表，供「重试次数 ↔ 退避次数」判据。
     sleeps: list[float] = []
     shim = types.SimpleNamespace(**vars(time))
@@ -283,7 +280,7 @@ class TestIntegrityTruthTable:
 
 
 class TestFailureIsNeverAnException:
-    # MIN-2266⑤ 同族：顶层入口的承诺是「失败一律 False、绝不抛出」——安装器由启动期 check_ffmpeg()
+    # ⑤ 同族：顶层入口的承诺是「失败一律 False、绝不抛出」——安装器由启动期 check_ffmpeg()
     # 调用，一条穿出的异常会把整个录制进程带走，而不是只让这条兜底路径失败。
     # 两种 boom 分别代表「写盘/权限类 OSError」与「实现内部逻辑错」，都必须被归一成 False。
     # [评审 I-3 修的是这一格的成色] 此前 requests 替身是手写类、缺 HTTPError，OSError 那格实际
@@ -638,7 +635,7 @@ class TestDownloadRetryPolicy:
         assert not archive.exists()
 
     def test_write_oserror_does_not_escape_download(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MIN-2266⑤ 的原始现场就是「open(...,"wb") 的 OSError 穿出到启动期 check_ffmpeg()」。
+        # ⑤ 的原始现场就是「open(...,"wb") 的 OSError 穿出到启动期 check_ffmpeg()」。
         # 评审实测：把 _download 的 except (RequestException, OSError) 整段删掉，此前 19 条全绿
         # ——即这条回归锁对它要防的回归零敏感。本格直调 _download，钉「回 False 且不抛 + 半截归档删净」。
         archive = tmp_path / "archive.tar.xz"
@@ -657,7 +654,7 @@ class TestDownloadRetryPolicy:
 
 
 # ==========================================================================
-# 2026-10-21 评审包 M-44 / M-47 / M-48 / M-49（Linux 直下侧）。
+# 2026-10-21 评审包 / / / （Linux 直下侧）。
 # 上面 TestDownloadRetryPolicy 已经锁住「重试 / 退避 / 半截归档 / 异常不穿出」这四格；本段补的是
 # 同一批下载动作里**落盘纪律**的那一半：名字不可预测、独占创建、目录锁、PATH 去重、解包前空间预检、
 # 以及此前完全缺失的字节上限。判据一律落在「现场还剩什么」而不是「日志写了什么」。
@@ -665,7 +662,7 @@ class TestDownloadRetryPolicy:
 
 
 class TestExclusiveArchiveSink:
-    # M-44：归档名从固定 `ffmpeg_linux_native_temp.tar.xz` 改为「可识别前缀 + 随机后缀」，
+    # 归档名从固定 `ffmpeg_linux_native_temp.tar.xz` 改为「可识别前缀 + 随机后缀」，
     # 写入走 fld.open_exclusive（O_CREAT|O_EXCL|O_NOFOLLOW）。
     def test_archive_name_is_unpredictable_yet_still_findable(self, tmp_path: Path) -> None:
         first = fld.unique_path(tmp_path, fld._TEMP_ARCHIVE_PREFIX, fld._TEMP_ARCHIVE_SUFFIX)
@@ -679,7 +676,7 @@ class TestExclusiveArchiveSink:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 把命名钉回改动前的固定名，复现「本地主体/另一实例先占住那个路径」的形态：
-        # 本轮必须失败、且**不得**把对方的文件当成自己的半截归档删掉（M-44 登记的互删形态）。
+        # 本轮必须失败、且**不得**把对方的文件当成自己的半截归档删掉（该登记的互删形态）。
         victim = tmp_path / "ffmpeg_linux_native_temp.tar.xz"
         victim.write_bytes(b"NOT-OURS-DO-NOT-DELETE")
         monkeypatch.setattr(fld, "unique_path", lambda directory, prefix, suffix: Path(directory) / victim.name)
@@ -727,7 +724,7 @@ class TestPathInjectionAndSpacePrecheck:
     def test_two_installs_leave_the_same_prefix_once_in_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-47：旧形态是 `str(ffmpeg_dir) + os.pathsep + os.environ.get("PATH")`，无去重——
+        # 旧形态是 `str(ffmpeg_dir) + os.pathsep + os.environ.get("PATH")`，无去重——
         # 每次自动安装都把同一个目录再叠一层，PATH 单调变长（main.py 侧同样有这条守卫）。
         payload = _tar_xz({"pkg/bin/ffmpeg": b"#!/bin/sh\n", "pkg/bin/ffprobe": b"#!/bin/sh\n"})
         _stub_egress(monkeypatch, str(tmp_path), digest=hashlib.sha256(payload).hexdigest(), payload=payload)
@@ -739,7 +736,7 @@ class TestPathInjectionAndSpacePrecheck:
         assert parts.count(target) == 1, f"同一前缀被反复叠加：{parts[:5]}"
 
     def test_space_precheck_refuses_before_unpacking(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # M-48：本模块的解包目录一直落在应用目录内（不是 %TEMP%），所以这条预检是新增的那一半——
+        # 本模块的解包目录一直落在应用目录内（不是 %TEMP%），所以这条预检是新增的那一半——
         # 预检必须在解包**之前**拦下：不留半截 ffmpeg 目录，也把自己创建的归档收干净。
         payload = _tar_xz({"pkg/bin/ffmpeg": b"#!/bin/sh\n", "pkg/bin/ffprobe": b"#!/bin/sh\n"})
         _stub_egress(monkeypatch, str(tmp_path), digest=hashlib.sha256(payload).hexdigest(), payload=payload)
@@ -753,7 +750,7 @@ class TestDownloadByteCap:
     def test_byte_cap_stops_the_stream_and_removes_the_partial(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-49 的量这一半：本模块此前有重试、无上限。上限判定必须排在 sink.write **之前**，
+        # 量这一半：本模块此前有重试、无上限。上限判定必须排在 sink.write **之前**，
         # 否则「先写进磁盘再判超限」只是把无上限流改成了「略多一点的」无上限流。
         archive = tmp_path / "capped.tar.xz"
         monkeypatch.setattr(fld, "_MAX_ARCHIVE_BYTES", 8)

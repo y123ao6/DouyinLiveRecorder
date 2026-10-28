@@ -2,13 +2,13 @@
 # 2026-09-22 审查报告 / 组 A（src/stream.py + src/stream_select.py）修复的回归锁。
 #
 # 每条用例都对应报告里的一个编号，判据是「失效形态本身」而不是调用形状：
-#   SEV-2201  play_url_list 元素为裸 URL 串时不得抛 AttributeError，也不得被装饰器兜成
+#   play_url_list 元素为裸 URL 串时不得抛 AttributeError，也不得被装饰器兜成
 #             {"is_live": False}（8+ 平台每轮漏录）；
-#   MID-2227  抖音/TikTok 的 HLS 可用性探针必须带 UA（与 stream_select 同源）；
-#   MID-2228  虎牙无 exsphd 且请求 HD/SD/LD 时必须进档位裁决（旧实现两分支都进不去）；
-#   MID-2229  抖音真实画质键 FULL_HD1/HD1/SD1/SD2 必须能排序、能回采、能告警降级；
-#   MID-2230  B站蓝光子档位（BD30/BD20/BD8/BD4）必须先折叠再选 qn，不得落到默认原画；
-#   MID-2231  播放列表正文派生的第二跳地址：跨域剥 Cookie、内网/畸形目标不发请求。
+#   抖音/TikTok 的 HLS 可用性探针必须带 UA（与 stream_select 同源）；
+#   虎牙无 exsphd 且请求 HD/SD/LD 时必须进档位裁决（旧实现两分支都进不去）；
+#   抖音真实画质键 FULL_HD1/HD1/SD1/SD2 必须能排序、能回采、能告警降级；
+#   B站蓝光子档位（BD30/BD20/BD8/BD4）必须先折叠再选 qn，不得落到默认原画；
+#   播放列表正文派生的第二跳地址：跨域剥 Cookie、内网/畸形目标不发请求。
 #
 # 全部离线：网络探针用 AsyncMock 桩掉，HTTP 客户端用记录型假对象替换。
 
@@ -33,7 +33,7 @@ from src.stream import (
 from src.stream_select import MOBILE_UA, get_record_user_agent
 
 # ────────────────────────────────────────────────────────────
-# SEV-2201：play_url_list 元素类型契约（list[str] 与 list[dict] 并存）
+# play_url_list 元素类型契约（list[str] 与 list[dict] 并存）
 # ────────────────────────────────────────────────────────────
 
 
@@ -111,7 +111,7 @@ class TestPlayUrlListStrContract:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2227：抖音/TikTok 的 HLS 探针必须带 UA
+# 抖音/TikTok 的 HLS 探针必须带 UA
 # ────────────────────────────────────────────────────────────
 
 
@@ -168,7 +168,7 @@ class TestProbeCarriesUserAgent:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2228：虎牙「无 exsphd + 请求 HD/SD/LD」的档位裁决缺口
+# 虎牙「无 exsphd + 请求 HD/SD/LD」的档位裁决缺口
 # ────────────────────────────────────────────────────────────
 
 
@@ -229,7 +229,7 @@ class TestHuyaTierGapWithoutExsphd:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2229：抖音真实画质键 FULL_HD1/HD1/SD1/SD2
+# 抖音真实画质键 FULL_HD1/HD1/SD1/SD2
 # ────────────────────────────────────────────────────────────
 
 
@@ -289,7 +289,7 @@ class TestDouyinRealQualityKeys:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2230：B站蓝光子档位必须先折叠再选 qn
+# B站蓝光子档位必须先折叠再选 qn
 # ────────────────────────────────────────────────────────────
 
 
@@ -327,7 +327,7 @@ class TestBilibiliSubTierFolding:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2231：正文派生的第二跳地址（Cookie 外泄 / 内网 SSRF）
+# 正文派生的第二跳地址（Cookie 外泄 / 内网 SSRF）
 # ────────────────────────────────────────────────────────────
 
 
@@ -336,7 +336,7 @@ class _Resp:
         self.status_code = status_code
         self.text = text
         self.headers: dict[str, str] = {}
-        # L-11（2026-10-19）：探针读正文改走 _bounded_probe_get 的流式形态，故桩要能当流式响应用
+        # 2026-10-19：探针读正文改走 _bounded_probe_get 的流式形态，故桩要能当流式响应用
         # （上下文协议 + iter_bytes + encoding）。刻意整段一次交出、不在桩里重实现「读满上限即断」。
         self.encoding = "utf-8"
 
@@ -368,7 +368,7 @@ class _RecordingClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool = True,
     ) -> _Resp:
-        # L-11：生产的探针读取统一走 client.stream(...)，本方法把既有 get 的语义原样暴露成
+        # 生产的探针读取统一走 client.stream(...)，本方法把既有 get 的语义原样暴露成
         # 流式形态——同一份正文、同一个 calls 记录，因此「哪些地址被请求过」的断言逐字不变。
         assert method == "GET", method
         return self.get(url, headers=headers, follow_redirects=follow_redirects)
@@ -445,7 +445,7 @@ class TestDerivedHopScope:
             {_PLAYLIST: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nhttp://127.0.0.1:8080/x.m3u8\n"}
         )
         with patch("src.stream_select.logger.warning") as warn:
-            # S-04（2026-10-19）：安全拒绝改抛内部控制流异常（原先 return False）——
+            # 2026-10-19：安全拒绝改抛内部控制流异常（原先 return False）——
             # False 与「分片 404 不可达」不可区分，会被调用方的 last_resort / 同址复用翻回可达。
             with pytest.raises(ss._DerivedHopRejected):
                 _ = ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS)  # type: ignore[arg-type]
@@ -456,7 +456,7 @@ class TestDerivedHopScope:
         # 形态不合规变体（file://）：同 SR-01 判据，候选判失败而非维持可达
         client = _RecordingClient({_PLAYLIST: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nfile:///etc/passwd\n"})
         with patch("src.stream_select.logger.warning"):
-            # S-04（2026-10-19）：同 test_internal_target_is_not_requested，改判内部控制流异常
+            # 2026-10-19：同 test_internal_target_is_not_requested，改判内部控制流异常
             with pytest.raises(ss._DerivedHopRejected):
                 _ = ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS)  # type: ignore[arg-type]
         assert [url for url, _ in client.calls] == [_PLAYLIST]
@@ -467,7 +467,7 @@ class TestDerivedHopScope:
         # 对照：修复前该形态维持可达，逐跳钩子拦不住（正文请求不走客户端钩子）。
         client = _RecordingClient({_PLAYLIST: "#EXTM3U\n#EXTINF:4.0,\nhttp://127.0.0.1:6379/seg.ts\n"})
         with patch("src.stream_select.logger.warning") as warn:
-            # S-04（2026-10-19）：改判内部控制流异常（详见 tests/test_stream_select.py 的同名锁）
+            # 2026-10-19：改判内部控制流异常（详见 tests/test_stream_select.py 的同名锁）
             with pytest.raises(ss._DerivedHopRejected):
                 _ = ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS)  # type: ignore[arg-type]
         assert [url for url, _ in client.calls] == [_PLAYLIST]
@@ -481,7 +481,7 @@ class TestDerivedHopScope:
 
 def test_str_branch_is_present_in_get_url_source() -> None:
     # 判据（可复核）：src/stream.py 的 get_url 内必须有 `isinstance(play_url, str)` 分支。
-    # 变异验证：临时删掉该分支 → SEV-2201 的 6 条用例整体变红（AttributeError 被装饰器吞）。
+    # 变异验证：临时删掉该分支 → 6 条用例整体变红（AttributeError 被装饰器吞）。
     import inspect
 
     source = inspect.getsource(stream_mod.get_stream_url)

@@ -30,11 +30,11 @@
 #     python scripts/report_bundle_size.py --json size.json    # 落 JSON 供下次 --compare 比对
 #     python scripts/report_bundle_size.py --compare size.json # 与上次报告逐项比对
 #
-# 退出码（2026-10-21 M-92 起在本文件显式登记）：
+# 退出码：
 #   0  报告已产出，且（--strict 时）没有工具链泄漏
 #   1  --strict 命中开发/测试工具链泄漏（产物不合格）
 #   2  度量面缺输入：发布目录不存在，或 --compare 指定的基线不存在/读不出/不是合法报告
-#      ——后者过去只往报告里追加一行 [warn] 就退 0，是「比对没跑」冒充「比对没问题」
+#      ——后者若只往报告里追加一行 [warn] 就退 0，就是「比对没跑」冒充「比对没问题」
 #
 import argparse
 import json
@@ -45,8 +45,8 @@ from pathlib import Path
 from typing import TypedDict
 
 # 发布目录里**绝不该出现**的开发 / 测试工具链。它们都不在 requirements.txt 里、运行期不会被
-# 导入，但只要在 venv 里装了、又被人误加一个顶层 import，就会被静默打进对外分发的 zip
-# （2026-09-24 实测：mypy 经 pydantic.v1.mypy 的顶层 import 进了产物，0.71MB / 69 文件）。
+# 导入，但只要在 venv 里装了、又被人误加一个顶层 import，就会被静默打进对外分发的 zip。
+# [历史注] 实测 mypy 曾经 pydantic.v1.mypy 的顶层 import 进产物（0.71MB / 69 文件）。
 # 判定按「相对路径的任一成分等于该名字」（大小写无关），故 mypy/ 与 _internal/mypy 都算命中。
 LEAK_PATTERNS: tuple[str, ...] = (
     "pytest",
@@ -210,10 +210,10 @@ def main() -> int:
 
     report = collect(release)
     text = render(report, int(args.top))
-    # 比对通道自己没能判定 → rc=2（M-92，2026-10-21）。旧形态只往报告里追加一行 [warn]
-    # 就以 0 结束：CI 把「--compare 指定的基线根本不存在 / 读不出 / 不是合法报告」读成
-    # 「与上次比没查出问题」，而真相是这一项从没比过。与「发布目录不存在 → 2」同一档：
-    # 本脚本的度量面缺输入时不判代码不合格（1，那是 --strict 命中泄漏那一档），也不判通过（0）。
+    # 比对通道自己没能判定 → rc=2。只追加一行 [warn] 就以 0 结束，会让 CI 把「--compare 指定
+    # 的基线根本不存在 / 读不出 / 不是合法报告」读成「与上次比没查出问题」，而真相是这一项
+    # 从没比过。与「发布目录不存在 → 2」同一档：度量面缺输入时既不判代码不合格
+    # （1，那是 --strict 命中泄漏那一档），也不判通过（0）。
     compare_unusable: str | None = None
     if str(args.baseline_path):
         baseline_path = Path(str(args.baseline_path))

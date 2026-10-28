@@ -26,23 +26,23 @@ _httpx_limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
 
 # AsyncClient 与其连接池绑定创建它的循环，进程退出时 aclose() 释放，故缓存按循环分桶。
 #
-# 缓存键含「事件循环」维度（MID-21）：本仓是「每房间一个独立线程 + 每轮 asyncio.run() 一个新循环」，
-# 旧键只有 (proxy, verify, http2)，于是 B 房间发现条目属于 A 房间的循环时会**把 A 正在使用的条目
-# pop 掉**再自建，A 下一请求又把 B 逐出——承诺的 keepalive 完全不成立（每请求重做 TCP+TLS）；被逐出
-# 的实例仍持活连接，却又脱离缓存、不在 close_all_clients_sync 覆盖范围内，只能等 socket finalizer。
-# 现按循环分桶：只可能逐出「属于当前循环」的条目，其余按 loop.is_closed() 惰性清扫（只丢引用，
-# 绝不创建跨循环协程）。注意这不等于跨 asyncio.run() 复用连接（每轮必然重建客户端）。
+# 缓存键含「事件循环」维度：本仓是「每房间一个独立线程 + 每轮 asyncio.run() 一个新循环」，
+# 若键只有 (proxy, verify, http2)，B 房间发现条目属于 A 房间的循环时会**把 A 正在使用的条目
+# pop 掉**再自建，A 下一请求又把 B 逐出——keepalive 完全不成立；被逐出的实例仍持活连接、脱离
+# 缓存、不在 close_all_clients_sync 覆盖范围内。按循环分桶后只可能逐出「属于当前循环」的条目，
+# 其余按 loop.is_closed() 惰性清扫（只丢引用，绝不创建跨循环协程）。这不等于跨 asyncio.run()
+# 复用连接（每轮必然重建客户端）。
 _CacheKey = tuple[str, bool, bool, asyncio.AbstractEventLoop]
-# MIN-2217：值第三元是创建线程。atexit/信号钩子跑在某个具体线程上，只能安全关闭
-# 「本线程 + 本循环」创建的那份连接池；其余既不能跨循环 await，也不能 schedule 到他的循环。
+# 值第三元是创建线程。atexit/信号钩子只能安全关闭「本线程 + 本循环」创建的那份连接池；
+# 其余既不能跨循环 await，也不能 schedule 到他的循环。
 _CacheValue = tuple[httpx.AsyncClient, asyncio.AbstractEventLoop, threading.Thread]
 _client_cache: dict[_CacheKey, _CacheValue] = {}
 # 保护 _client_cache 的跨线程锁：多房间「独立线程 + 独立事件循环」并发取客户端时序列化
 # check-then-act 竞态。临界区只做同步 dict 操作、绝不含 await。
-# 必须是 **RLock**（MIN-2221）：主线程 asyncio.run() 驱动 async_req（warmup_ttwid、启动期探测）时
-# 已持有本锁，同一线程的 safe_exit（SIGINT/SIGTERM 处理器）还会调 close_all_clients_sync() 取本锁；
-# 信号恰好落在临界区两行 dict 操作之间时，非重入锁让信号处理器自死锁（症状：「Ctrl+C 后既不退出
-# 也不报错」）。临界区内零 await，故 RLock 不引入跨循环风险；改回 Lock 即重新引入该死锁。
+# 必须是 **RLock**：主线程 asyncio.run() 驱动 async_req 时已持有本锁，同一线程的 safe_exit
+# （SIGINT/SIGTERM 处理器）还会调 close_all_clients_sync() 取本锁；信号恰好落在临界区两行 dict
+# 操作之间时，非重入锁让信号处理器自死锁（症状：「Ctrl+C 后既不退出也不报错」）。临界区内零
+# await，故 RLock 不引入跨循环风险；改回 Lock 即重新引入该死锁。
 _client_cache_lock = threading.RLock()
 # 惰性清扫阈值：每轮 asyncio.run() 都留下一个「循环已关闭」的条目，不清则随房间数×轮数
 # 无界增长。全表扫描需持锁，故仅在缓存规模超过阈值时才扫（正常规模远小于此）。
@@ -72,7 +72,7 @@ def _build_client(
     # 逐跳复检钩子只在**这里**、也是唯一一处随客户端挂上：缓存里每支客户端都出自本函数，于是 async_req
     # 的 GET + 三条 POST 分支、get_response_status 的 HEAD + Range-GET 全部自动被覆盖，判定不必在
     # 调用点复制第二份（见 _redirect_hop_rejection_reason）。闭包只多带一个信息：本次出站是否经代理
-    # （决定要不要按本机 DNS 结果定罪）；客户端缓存键、复用作用域、keepalive 形态均未动（M-1）。
+    # （决定要不要按本机 DNS 结果定罪）；客户端缓存键、复用作用域、keepalive 形态均未动。
     return httpx.AsyncClient(
         proxy=proxy_addr,
         timeout=timeout,
@@ -94,7 +94,7 @@ async def _get_client(
     current_loop = asyncio.get_running_loop()
     current_thread = threading.current_thread()
     key: _CacheKey = (proxy_addr or "", verify, http2, current_loop)
-    # 2026-09-12 审查 6.3：不能「锁外创建 + 锁内无条件覆盖写」——两个协程并发首建同一 key 时后写者
+    # 2026-09-12 审查：不能「锁外创建 + 锁内无条件覆盖写」——两个协程并发首建同一 key 时后写者
     # 覆盖先写者，被覆盖的 AsyncClient 从此无引用、连接池无人 aclose，随房间数累积泄漏。故改为
     # 「探查 → 按需创建 → 写前二次检查 → 落败者主动关闭自建实例」。
     with _client_cache_lock:
@@ -102,7 +102,7 @@ async def _get_client(
         cached = _client_cache.get(key)
     if cached is not None:
         # 第三元 owner 不参与这里的判定——复用只取决于循环归属；它在 _close_all_clients
-        # 里才起作用（那里必须知道「这份连接池是哪个线程建的」），见 MIN-2217。
+        # 里才起作用（那里必须知道「这份连接池是哪个线程建的」），见上文。
         client, client_loop, _owner = cached
         # key 已含当前循环，故命中必然同循环：client 未关闭即可直接复用
         if not client.is_closed and client_loop is current_loop:
@@ -119,14 +119,11 @@ async def _get_client(
                 await client.aclose()
             except Exception as e:
                 logger.debug(i18n.tr("关闭失效 AsyncClient 失败: {e}", e=e))
-            # 跨循环的旧循环（运行中/已停/已关）一律不创建 aclose 协程。三条备选均已被证伪：
-            # ① run_coroutine_threadsafe 只调度不等待，旧循环已停时回调永不执行 →"coroutine ...
-            #    aclose was never awaited"（数量随机，逸出到任意后续用例）；② is_running() 门控 +
-            #    fut.result(timeout) 也治不了根：asyncio.run 收尾窗口内循环随时停止，future 永不完成；
-            # ③ 在当前循环 await 旧 client.aclose() 会操作绑定旧循环的 transport（直接 RuntimeError）。
-            # 故唯一可靠做法是不创建协程、丢引用交 GC（AsyncClient 析构会尝试关底层传输），进程级收尾
-            # 仍由 atexit 的 close_all_clients_sync 负责。MID-21 后本分支在 _get_client 内已不可达，
-            # 跨循环条目改由 _sweep_closed_loop_entries 回收（同样只丢引用、不创建协程）。
+            # 跨循环的旧循环一律不创建 aclose 协程。三条备选均已被证伪：run_coroutine_threadsafe
+            # 只调度不等待（旧循环已停时回调永不执行）；is_running() + fut.result(timeout) 治不了
+            # asyncio.run 收尾窗口内循环随时停止；在当前循环 await 旧 client.aclose() 会操作绑定旧
+            # 循环的 transport（RuntimeError）。故只丢引用交 GC，进程级收尾仍由 atexit 的
+            # close_all_clients_sync 负责；跨循环条目由 _sweep_closed_loop_entries 回收。
 
     new_client = _build_client(proxy_addr, timeout, verify, http2)
     reused: httpx.AsyncClient | None = None
@@ -176,12 +173,10 @@ async def _release_client(client: httpx.AsyncClient) -> None:
 async def _close_all_clients() -> None:
     # 进程退出时释放**本线程本循环**创建的 AsyncClient，避免连接池泄漏。
     #
-    # 旧实现无条件 `await client.aclose()` 遍历全表，正是 2026-09-04 定稿禁止的形态——缓存里绝大多数
-    # 条目属于**其它房间线程**的循环，在 atexit（跑在主线程 + 主线程自己那个 asyncio.run 循环）里
-    # await 它们，等于用当前循环去操作绑定旧循环的 httpcore 传输（旧循环已关时直接 RuntimeError，
-    # 被下面的 except 吞成一条 debug）。现按 (owner 线程, 创建循环) 双条件过滤，其余一律只丢引用交
-    # GC（MIN-2217）。两个条件缺一不可：只判线程会漏掉「同线程但循环已换」，此时 await 依旧是在
-    # **新**循环上操作**旧**循环的 transport。
+    # 不能无条件 `await client.aclose()` 遍历全表：缓存里绝大多数条目属于其它房间线程的循环，在
+    # atexit（跑在主线程 + 主线程自己的循环）里 await 它们，等于用当前循环操作绑定旧循环的
+    # httpcore 传输。现按 (owner 线程, 创建循环) 双条件过滤，其余只丢引用交 GC。两个条件缺一不可：
+    # 只判线程会漏掉「同线程但循环已换」，此时 await 依旧是在新循环上操作旧循环的 transport。
     current_loop = asyncio.get_running_loop()
     current_thread = threading.current_thread()
     with _client_cache_lock:
@@ -206,9 +201,9 @@ async def _close_all_clients() -> None:
 
 
 def close_all_clients_sync() -> None:
-    # 同步安全清理（供 atexit / 信号处理器调用）。本函数**从不**「在当前线程的可用循环上
-    # 驱动全部客户端的 aclose」——_close_all_clients 内部只关「本线程 + 本循环」创建的条目
-    # （见其注释）。实际落点只有三种：
+    # 同步安全清理（供 atexit / 信号处理器调用）。**从不**「在当前线程的可用循环上驱动全部
+    # 客户端的 aclose」——_close_all_clients 内部只关「本线程 + 本循环」创建的条目（见其注释）。
+    # 实际落点只有三种：
     #   ① 当前线程有可用且**未运行**的循环 → 用它跑一次 _close_all_clients()；
     #   ② 循环正在运行（信号在事件循环线程中触发）→ 无法再 run_until_complete，只清引用；
     #   ③ 当前线程没有循环 / 循环已关闭 / 上面任何一步抛错 → 同样只清引用。
@@ -255,12 +250,11 @@ def _failure_result(
 
 
 # ── 可选依赖缺失不得伪装成「空响应 = 疑似风控」────────────────────────────
-# httpx 在**构造** AsyncClient 时就为缺依赖抛异常（实测 0.28.1）：http2=True 缺 h2 / proxy=socks*://
-# 缺 socksio 均为 ImportError（旧版本 h2 检查抛 RuntimeError）。该异常原先落进 async_req 的通用
-# except → debug + 返回 ""，而调用方把「HTTP 200 + 空响应体」判成风控，于是触发无意义的 HTML
-# 兜底与整轮重试风暴（实测：摘掉 h2 后抖音解析返回空串，日志里只有一条 debug）。这类「缺包」是
-# **配置/环境级**故障，必须 warning 级 + 给出安装命令，且按模块名去重（80+ 房间 × 每轮一条会
-# 把真线索淹掉）。
+# httpx 在**构造** AsyncClient 时就为缺依赖抛异常：http2=True 缺 h2 / proxy=socks*:// 缺 socksio
+# 均为 ImportError（旧版本 h2 检查抛 RuntimeError）。若不单独处理，异常落进 async_req 的通用
+# except → debug + 返回 ""，而调用方把「HTTP 200 + 空响应体」判成风控，触发无意义的 HTML 兜底与
+# 整轮重试风暴。这类「缺包」是**配置/环境级**故障，必须 warning 级 + 给出安装命令，且按模块名
+# 去重（80+ 房间 × 每轮一条会把真线索淹掉）。
 _MISSING_PACKAGE_PATTERN = re.compile(r"the '([\w.\-]+)' package")
 # warn-once 登记表：set.add 在 GIL 下原子，跨线程竞态最坏是同一模块多打一条 warning，
 # 不值得为它加锁（加锁反而把这条热路径挂到 _client_cache_lock 之外的另一把跨线程锁上）。
@@ -332,12 +326,12 @@ async def async_req(
     # 异步 HTTP 请求：支持 GET/POST、代理、Cookie。
     # `abroad` 是同步侧才有的语义（「海外请求」要不要走 CERT_NONE 分支）——异步侧一律用
     # httpx 的 verify 参数表达，故此处仅为签名兼容而接收，并在下面显式丢弃。
-    # `content_encoding` **不是**空转参数：它在响应解码处兜底生效（L-25）。
+    # `content_encoding` **不是**空转参数：它在响应解码处兜底生效。
     _ = abroad
     if headers is None:
         headers = {}
-    # 请求入口接入 scheme 白名单（SSRF 防线接线）：is_safe_http_url 原先定义在 spider.py 时因循环
-    # 依赖无法在此引用，导致这条防线零生产调用；上移到 utils 后在入口统一拦截 file:// / gopher:// 等协议。
+    # 请求入口接入 scheme 白名单（SSRF 防线接线）：判定上移到 utils 后，可在入口统一拦截
+    # file:// / gopher:// 等协议（原先定义在 spider.py 时因循环依赖无法在此引用，防线零生产调用）。
     if not utils.is_safe_http_url(url):
         logger.warning(
             i18n.tr(
@@ -346,10 +340,9 @@ async def async_req(
             )
         )
         return _failure_result(redirect_url, return_cookies, include_cookies)
-    # data= 与 json= 同传在 httpx 0.28.1 下**不报错**——content 优先、json 被静默丢弃（实测 body ==
-    # 传入的 bytes，json 完全没参与）。调用方以为发了 JSON、服务端收到的是裸体，只会看到「返回空/
-    # 解析失败」，与本仓反复强调的「静默降级更难排查」同型。现显式拒绝：这是编程错误而非网络故障，
-    # 故**故意不进** except 的「返回空串」契约，让它冒到调用方（当前全仓无同传调用点，属 latent 防线）。
+    # data= 与 json= 同传在 httpx 下**不报错**——content 优先、json 被静默丢弃，调用方以为发了
+    # JSON、服务端收到裸体，只会看到「返回空/解析失败」。现显式拒绝：这是编程错误而非网络故障，
+    # 故**故意不进** except 的「返回空串」契约，让它冒到调用方（当前无同传调用点，属 latent 防线）。
     if data is not None and json_data is not None:
         raise ValueError(
             i18n.tr(
@@ -362,21 +355,19 @@ async def async_req(
         verify = config.ssl_verify
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        # return_cookies=True 的调用点全部是「登录 / 取 Cookie / 刷新 token」（cookie_cache 与 spider
-        # 的 4 处），而共享缓存客户端带持久 cookie jar——httpx 会把响应的 Set-Cookie 存进客户端并在后续
-        # 同域请求自动附上。该缓存按 (proxy, verify, http2, loop) 共享，意味着 A 账号登录拿到的 session
-        # cookie 会被 B 账号/其它房间的请求自动带上（登录串号 + 风控指纹异常）。故此类调用**不走缓存**：
-        # 每次自建一支一次性客户端、用完即在当前循环内关闭（循环归属明确，aclose 安全）。普通文本请求仍
-        # 复用缓存客户端，其 cookie 由调用方经 headers 逐请求显式下发（MID-22）。
-        # 代价：登录类请求每轮多一次 TCP+TLS 握手——低频路径（cookie 缓存命中即跳过），换取账号隔离。
+        # return_cookies=True 的调用点全部是「登录 / 取 Cookie / 刷新 token」，而共享缓存客户端带
+        # 持久 cookie jar——httpx 会把响应的 Set-Cookie 存进客户端并在后续同域请求自动附上，导致
+        # A 账号登录拿到的 session cookie 被 B 账号/其它房间的请求带上（登录串号 + 风控指纹异常）。
+        # 故此类调用**不走缓存**：每次自建一次性客户端、用完即在当前循环内关闭。普通文本请求仍复用
+        # 缓存客户端，cookie 由调用方经 headers 逐请求显式下发。代价是登录类每轮多一次 TCP+TLS
+        # 握手——低频路径（cookie 缓存命中即跳过），换取账号隔离。
         client, owned_client = await _acquire_client(proxy_addr, timeout, verify, http2, bool(return_cookies))
         # 用 is not None 判定而非真值判定：json_data={} / data="" / b"" 表示「显式传了空体」，
         # 真值判断会让它们静默退化成 GET——服务端收到空 GET，调用方只看到空响应。
         try:
-            # 三条 POST 分支一律 follow_redirects=True，与下方 GET 分支对齐。旧写法三条都不带该参数，
-            # 而异步 POST 的调用点（Twitch GQL / popkontv / acfun 签名等）拿到的是 **301/302 的重定向
-            # 页**而不是业务响应，且本函数不判状态码就返回 response.text → 上层解出 {} → 归因成
-            # 「空响应 / 疑似风控」，真实成因（站点把接口挪到 https 或加了斜杠）被完全掩盖。
+            # 三条 POST 分支一律 follow_redirects=True，与 GET 分支对齐。不带该参数时，异步 POST
+            # 调用点拿到的是 301/302 的重定向页而非业务响应，本函数不判状态码就返回 response.text
+            # → 上层解出 {} → 归因成「空响应 / 疑似风控」，真实成因（接口迁到 https 或加了斜杠）被掩盖。
             # 选「跟随」而非「3xx 返回空串 + 告警」：这些是同源业务 API，重定向是运维侧的 URL 迁移。
             # 语义边界：301/302/303 会把 POST 改成 GET 并丢请求体，只有 307/308 保方法保体。
             if data is not None or json_data is not None:
@@ -414,7 +405,7 @@ async def async_req(
                 response = await client.get(url, headers=headers, follow_redirects=True, timeout=timeout)
 
             # 结果分支必须在 try 块内访问 response——异常时 response 尚未定义。
-            # L-25：`content_encoding` 不再被忽略。response.text 走 charset 头优先、`response.encoding`
+            # `content_encoding` 不再被忽略。response.text 走 charset 头优先、`response.encoding`
             # 兜底的解码链；同步侧 sync_req 用的是 `decode(content_encoding)`。两处默认值同为 utf-8，
             # 但调用方显式传非 utf-8（GBK 页面等）时，旧实现会静默用错编码解出乱码。
             # 用 getattr 取 charset_encoding：真实 Response 恒有该属性，但本仓多处探针用例用最小替身
@@ -514,37 +505,36 @@ def _internal_stream_target_reason(url: str, proxy_addr: OptionalStr) -> str | N
         return "流地址缺少主机名"
     if proxy_addr and web_config._parse_ip_literal(host) is None:
         # 经代理出站时不做 DNS 判定（理由见上方），但**不能整条放行**——`http://metadata.google.internal/`
-        # / `http://redis.internal/` 在开代理时全部通过，构成稳定的内网服务观测口（M-21）。此处补一条
+        # `http://redis.internal/` 在开代理时全部通过，构成稳定的内网服务观测口。此处补一条
         # 不依赖解析的离线判定：IP 字面量与「内部用途域名」与 DNS 结果无关，经代理照样可达。
         return web_config.offline_internal_reason(host)
     return web_config._host_internal_reason(host)
 
 
-# ── async 出站响应体读取上限（M-04）───────────────────────────────────
-# 为什么必须有：async_req 的四条分支都是非流式全量读取，而 httpx 自动解压 gzip/brotli/zstd **没有任何
-# 上限**——中间人/被劫持的平台只需下发一小份高压缩比响应，就能让房间线程在解压时申请数 GB 内存；本进程
-# OOM 不是「这一房间失败」而是整个录制进程被带走（80+ 房间与 Web 面板同进程）。同步侧 SEV-2226 已收口
-# 同款风险，而异步侧才是平台解析的实际在用路径。取值与同步侧逐字同值（「平台页面/JSON/m3u8 真实量级
-# 比上限低至少一个数量级、宁可放宽不误杀」的论证两侧一致）。**不 import sync_http 的两个常量**而同值
-# 各存一份：该模块头明示「当前无生产 importer」，async_http 一旦 import 它，requests/urllib 会顺着异步
-# 主链进入每个冻结产物与每个房间线程，改变一条与被修问题无关的实现决策。
+# ── async 出站响应体读取上限 ──────────────────────────────────────────
+# 必须有：async_req 的四条分支都是非流式全量读取，而 httpx 自动解压 gzip/brotli/zstd **没有任何上限**
+# ——中间人只需下发一小份高压缩比响应，就能让房间线程在解压时申请数 GB 内存；本进程 OOM 不是
+# 「这一房间失败」而是整个录制进程被带走（80+ 房间与 Web 面板同进程）。取值与同步侧逐字同值
+# （「平台页面/JSON/m3u8 真实量级比上限低至少一个数量级、宁可放宽不误杀」的论证两侧一致）。
+# **不 import sync_http 的两个常量**而同值各存一份：该模块头明示「当前无生产 importer」，async_http
+# 一旦 import 它，requests/urllib 会顺着异步主链进入每个冻结产物与每个房间线程。
 # 硬约束：改任一侧取值必须同批改另一侧，并同步本注释。
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024  # 未压缩响应体读入上限（与 sync_http 同值）
 _MAX_DECOMPRESSED_BYTES = 32 * 1024 * 1024  # 解压后产出上限（解压炸弹形态，与 sync_http 同值）
-# 单块解码产出的上限（M-17）：httpx 的 aiter_bytes(chunk_size=None) 会把**一个原始数据块的全部解码
-# 输出**整段交出——实测 64KB 原始块可解出 64.3MB 单块，于是「先物化整块、再判累计上限」的名义 32MB
-# 上限实际被打到 146.9MB（约 4.6 倍）。给出 64KB 后 ByteChunker 按**产出**切块，超限检查因此作用在
-# 「已切好的小块」上，峰值 = 上限 + 一个块。
+# 单块解码产出的上限：httpx 的 aiter_bytes(chunk_size=None) 会把**一个原始数据块的全部解码输出**
+# 整段交出（实测 64KB 原始块可解出 64.3MB），于是「先物化整块、再判累计上限」的名义 32MB 上限
+# 实际被打到 146.9MB。给出 64KB 后 ByteChunker 按**产出**切块，超限检查作用在已切好的小块上，
+# 峰值 = 上限 + 一个块。
 _RESPONSE_CHUNK_SIZE = 64 * 1024
 
 
 async def _bounded_response_read(response: httpx.Response) -> None:
     # response 事件钩子的第二职责：在 httpx 内部 aread() 之前把本跳响应体全量物化、带上限，并把结果
     # 回填进 Response——随后 send() 收尾的 aread() 见「已装载」即短路。
-    # 为何落点在钩子：httpx 对 response 钩子的调用发生在 _send_handling_redirects 每一跳「响应头已收到、
-    # 响应体尚未读取」之际，这是**不改 client.get/post 调用面**就能限定「读进多少字节」的唯一公开接缝。
-    # 改成 client.send(stream=True) 自建请求会把「跟随重定向/逐请求头合并」等既有调用面形态迁出既有
-    # 回归锁（RecordingClient 按 get/post 关键字实参断言 follow_redirects），属改契约的大动作，未取。
+    # 落点必须是钩子：httpx 对 response 钩子的调用发生在每一跳「响应头已收到、响应体尚未读取」之际，
+    # 这是**不改 client.get/post 调用面**就能限定「读进多少字节」的唯一公开接缝。改用
+    # client.send(stream=True) 自建请求会把「跟随重定向 / 逐请求头合并」等既有形态迁出既有回归锁
+    # （RecordingClient 按 get/post 关键字实参断言 follow_redirects），属改契约的大动作，未取。
     # 上限选择：未压缩时 decoded == raw，沿用 _MAX_RESPONSE_BYTES；带任意 Content-Encoding 时按
     # _MAX_DECOMPRESSED_BYTES（防解压炸弹）。aiter_bytes 走 httpx 自带解码管线，本函数**不**重写解压规则。
     # 超限时抛 ValueError → send() 先 aclose 本响应再原样上抛 → async_req 既有通用 except /
@@ -553,11 +543,10 @@ async def _bounded_response_read(response: httpx.Response) -> None:
     if hasattr(response, "_content"):
         # _content 已在 = 构造期即全量装载的替身/MockTransport 形态响应，无流可限，原样放行。
         return
-    # M-16：**不再对 3xx 中间跳跳过读取**。原实现里 `has_redirect_location` 直接 return，理由是「httpx
-    # 从来不会物化中间跳响应体」——实测相反：钩子返回后、跟随重定向前，httpx 仍会对该跳执行一次
-    # **无上限且自动解压**的 aread()，并把带完整正文的 Response 存进 history。于是「302 + Location +
-    # 超大 gzip 正文」（实测压缩 203KB → 解压 200MB、峰值 405MB）可以完全绕过本函数。现在 3xx 跳与其
-    # 它跳走同一条有界读取，读满即判失败；代价是跟随重定向前会真读一次跳转页正文（通常几十字节）。
+    # **不得**对 3xx 中间跳跳过读取：httpx 在钩子返回后、跟随重定向前仍会对该跳执行一次**无上限且
+    # 自动解压**的 aread()，并把带完整正文的 Response 存进 history，「302 + Location + 超大 gzip 正文」
+    # （实测压缩 203KB → 解压 200MB、峰值 405MB）可完全绕过本函数。3xx 跳与其它跳走同一条有界读取，
+    # 读满即判失败；代价是跟随重定向前会真读一次跳转页正文（通常几十字节）。
     content_encoding = (response.headers.get("Content-Encoding") or "").strip().lower()
     limit = _MAX_DECOMPRESSED_BYTES if content_encoding else _MAX_RESPONSE_BYTES
     kind = "解压后响应体" if content_encoding else "响应体"
@@ -587,7 +576,7 @@ async def _bounded_response_read(response: httpx.Response) -> None:
 class _RedirectHopRejected(httpx.HTTPError):
     # 逐跳复检命中时抛出的**内部控制流异常**，唯一用途是中止 httpx 的 3xx 跟随链，绝不穿透给调用方
     # ——它总落在 async_req / get_response_status 既有的失败分支里（前者返回空值、后者 return False），
-    # 与「网络异常」同一条出口，不新增返回契约（M-1）。
+    # 与「网络异常」同一条出口，不新增返回契约。
     # 继承 httpx.HTTPError 而**不是** RuntimeError：async_req 的第一条 except 分支是
     # `except (ImportError, ModuleNotFoundError, RuntimeError)`（缺包分支），继承 RuntimeError 会被它
     # 截走、把一次安全拒绝误报成「缺少可选依赖，请执行 pip install」。
@@ -612,36 +601,34 @@ def _redirect_hop_rejection_reason(url: str, proxy_addr: OptionalStr) -> str | N
 
 
 def _build_hop_guard(proxy_addr: OptionalStr) -> Callable[[httpx.Response], Awaitable[None]]:
-    # 构造挂到 AsyncClient 上的 response 事件钩子（M-1 的接线点，见 _build_client）。
-    # 为什么必须写成 async def：httpx 0.28.1 的 AsyncClient._send_handling_redirects 里是
-    # `await hook(response)`（同步 Client 才是裸 hook(response)），同步钩子返回 None 会当场
-    # TypeError——别顺手把它改回普通函数。
+    # 构造挂到 AsyncClient 上的 response 事件钩子（接线点见 _build_client）。
+    # 必须写成 async def：AsyncClient._send_handling_redirects 里是 `await hook(response)`
+    # （同步 Client 才是裸 hook(response)），同步钩子返回 None 会当场 TypeError——别改回普通函数。
     # 触发时机与作用域（每跳一次，含最终落地跳）：
     #   ① 命中即抛 → httpx 在该跳的 except BaseException 里 `await response.aclose()` 后原样上抛，
     #      于是**不再发下一跳**、跟随链就地终止；
     #   ② 该跳的 status_code / content-type / 响应体一律不回流入探针结论或 debug 日志——关掉的正是
     #      「公网 URL 过了校验 → 302 到 http://127.0.0.1:6379/ 或 http://169.254.169.254/」。
     # 残余风险（登记，不假装已闭合）：
-    #   · response 钩子在**该跳响应头已收到之后**触发，所以「跳转后的那一跳」出站连接已经发生；
-    #     本层保证的是结论/日志/响应体不外流且不再继续跟随。要在建连前拦断只能改用 request 钩子，
-    #     代价是每跳两次判定（含两次 getaddrinfo），未取。
+    #   · response 钩子在该跳**响应头已收到之后**触发，跳转那一跳的出站连接已经发生；本层保证的是
+    #     结论/日志/响应体不外流且不再继续跟随。要在建连前拦断只能改用 request 钩子，代价是每跳两次
+    #     判定（含两次 getaddrinfo），未取。
     #   · DNS 重绑定窗口（判定用的解析与实际建连的解析不是同一次）无法在本层消除；这里**故意不给
-    #     判定结果加缓存**——缓存会把「一次解析」供给后续所有跳与请求，等于把这个窗口主动拉长。
-    #   · 本钩子只覆盖**经本模块**出站的链路。src/stream_select.py 的同步探针自建两支 httpx.Client
-    #     （同样 follow_redirects=True）、不经 _build_client，由 build_sync_hop_guard 挂上同一判定的同步
-    #     形态；但「探针已全栈收口」仍不成立：DNS 重绑定窗口、跳转那一跳已发生的连接、以及
-    #     stream_select 内 _is_derived_hop_allowed 那份只认字面量的派生地址闸门都不在本层。
-    # 第二职责（M-04）：判定放行后、在该跳响应体被 httpx 物化之前，由 _bounded_response_read 带上限
-    # 读完并回填。为何并进本钩子而不新挂一支：response 钩子的挂载点只有 _build_client 一处，而既有结构锁
-    # test_guard_is_installed_on_every_built_client 断言「每支客户端恰好一支 response 钩子」——拆成两支
-    # 会让那条锁当场变红；顺序也因此固定为「先定罪、后读体」，被拒的一跳连响应体都不会被读。
-    # 附带效果（如实登记）：get_response_status 的 HEAD 与 m3u8 Range-GET 探针同样经这支钩子，其响应体
-    # 读取自此也带上限——服务器无视 Range 整文件回传 >8MB 时探针按既有口径判不可达。同步侧
-    # build_sync_hop_guard **不**跟进该职责：同步钩子无法 await 分块读，且同步探针的读取上限属另一
-    # 工作包（L-11）的范围，勿在此顺手扩面。
+    #     判定结果加缓存**——缓存会把一次解析供给后续所有跳与请求，等于主动拉长这个窗口。
+    #   · 本钩子只覆盖**经本模块**出站的链路。src/stream_select.py 的同步探针自建两支 httpx.Client、
+    #     不经 _build_client，由 build_sync_hop_guard 挂上同一判定的同步形态；但「探针已全栈收口」
+    #     仍不成立：DNS 重绑定窗口、跳转那一跳已发生的连接、以及 stream_select 内
+    #     _is_derived_hop_allowed 那份只认字面量的派生地址闸门都不在本层。
+    # 第二职责：判定放行后、该跳响应体被 httpx 物化之前，由 _bounded_response_read 带上限读完并回填。
+    # 并进本钩子而不新挂一支：response 钩子的挂载点只有 _build_client 一处，而既有结构锁
+    # test_guard_is_installed_on_every_built_client 断言「每支客户端恰好一支 response 钩子」；顺序
+    # 因此固定为「先定罪、后读体」，被拒的一跳连响应体都不会被读。附带效果：get_response_status 的
+    # HEAD 与 m3u8 Range-GET 探针同样经这支钩子，其响应体读取自此带上限——服务器无视 Range 整文件回传
+    # >8MB 时探针按既有口径判不可达。同步侧 build_sync_hop_guard
+    # **不**跟进该职责：同步钩子无法 await 分块读，同步探针的读取上限属另一工作包，勿在此顺手扩面。
     # [历史注 2026-09-30] 本节早期版本断言「同步探针的钩子留待后续工作包、本次不接线」——该断言已失效：
-    # build_sync_hop_guard 现挂同一判定，同步探针与异步侧同源。口径已改正为「已接线 + 残余缺口逐条登记」，
-    # 保留本注只为让后来者不再按旧结论去别处找第二份实现（判据族只允许一份）。
+    # build_sync_hop_guard 现挂同一判定，同步探针与异步侧同源。保留本注只为让后来者不再按旧结论去
+    # 别处找第二份实现（判据族只允许一份）。
     async def _guard(response: httpx.Response) -> None:
         hop_url = str(response.url)
         reason = _redirect_hop_rejection_reason(hop_url, proxy_addr)
@@ -653,29 +640,26 @@ def _build_hop_guard(proxy_addr: OptionalStr) -> Callable[[httpx.Response], Awai
     return _guard
 
 
-# WP-J（方案 1-A）：以下三个公开别名 + 一个同步钩子工厂，供 src/stream_select.py 的同步探针复用
-# **同一份**判定与**同一个**内部控制流异常。判定绝不允许在调用点复制第二套 urlparse/内网名单
+# 以下三个公开别名 + 一个同步钩子工厂，供 src/stream_select.py 的同步探针复用**同一份**判定与
+# **同一个**内部控制流异常。判定绝不允许在调用点复制第二套 urlparse/内网名单
 # （AGENTS「判定只有一份事实源」）。私有名一律保留：本模块既有用法不改，
-# test_reuse_of_the_shared_criterion_is_static 还按 `_internal_stream_target_reason` 字面量切分
-# 本文件源码做「判据来自 web_config、本模块不另立网段常量」的机检。别名与本体是同一对象、不构成
-# 第二份口径（同仓既有手法：src/stream_select.py 的 mark_ffmpeg_reject = _mark_probe_reject）。
+# test_reuse_of_the_shared_criterion_is_static 还按 `_internal_stream_target_reason` 字面量切分本文件
+# 源码，机检「判据来自 web_config、本模块不另立网段常量」。别名与本体是同一对象，不构成第二份口径。
 RedirectHopRejected = _RedirectHopRejected
 internal_stream_target_reason = _internal_stream_target_reason
 redirect_hop_rejection_reason = _redirect_hop_rejection_reason
 
 
 def build_sync_hop_guard(proxy_addr: OptionalStr) -> Callable[[httpx.Response], None]:
-    # 同步 Client 的 response 事件钩子工厂（WP-J）：判定、命中时抛出的异常、触发时机与作用域与
+    # 同步 Client 的 response 事件钩子工厂：判定、命中时抛出的异常、触发时机与作用域与
     # _build_hop_guard **逐字相同**（每跳一次、含最终落地跳；命中即停止跟随；该跳的 status_code /
     # content-type / 响应体一律不回流入探针结论或日志）。改动本函数前先读 _build_hop_guard 的「残余
-    # 风险登记」——跳转那一跳的连接已经发生、DNS 重绑定窗口本层不闭合、刻意不给判定加缓存。
-    # 为什么必须是**两个工厂**而不是一个：httpx 0.28.1 里 AsyncClient._send_handling_redirects 是
-    # `await hook(response)`，同步 Client 里是裸 `hook(response)`，两种调用形态互斥：① async def 交给同步
-    # Client → 钩子返回的协程**从未被 await**，判定静默失效（比报错更糟），GC 时还甩出 "coroutine ... was
-    # never awaited" RuntimeWarning；② 普通函数交给 AsyncClient → `await None` 当场 TypeError。
-    # 共用的是判定函数与异常（RedirectHopRejected），两个工厂各自只薄封装一层「取 response.url →
-    # 调判定 → 命中即抛」。命中抛 _RedirectHopRejected（继承 httpx.HTTPError）：同步探针一侧由
-    # src/stream_select.py 的 _validate_stream_url 显式 except 收敛成「本候选校验失败」。
+    # 风险登记」。
+    # 为什么必须是**两个工厂**而不是一个：AsyncClient._send_handling_redirects 里是
+    # `await hook(response)`，同步 Client 里是裸 `hook(response)`，两种形态互斥：① async def 交给同步
+    # Client → 钩子返回的协程**从未被 await**，判定静默失效（比报错更糟），GC 时还甩出 RuntimeWarning；
+    # ② 普通函数交给 AsyncClient → `await None` 当场 TypeError。共用的是判定函数与异常，两个工厂各自
+    # 只薄封装一层「取 response.url → 调判定 → 命中即抛」。
     def _guard(response: httpx.Response) -> None:
         hop_url = str(response.url)
         reason = redirect_hop_rejection_reason(hop_url, proxy_addr)
@@ -699,7 +683,7 @@ async def get_response_status(
     platform: str = "",
 ) -> bool:
     # 流地址可达性校验（HEAD，失败再 Range-GET 复核）。未显式指定 verify 时用**拉流侧按平台的** SSL
-    # 策略（见 MID-26）。proxy_addr 是迁移期兼容别名（src/stream.py 的旧调用名），两者等价、同传时
+    # 策略（见上文）。proxy_addr 是迁移期兼容别名（src/stream.py 的旧调用名），两者等价、同传时
     # proxy 优先；headers / http2 / abroad 保留原有形态。
     # UA 由调用方经 headers 下发（AGENTS：同步/异步校验器的 proxy / verify / UA 三者一致），本函数不
     # 另立一份 UA——唯一事实源为 src/stream_select.py 的 get_record_user_agent(platform) or MOBILE_UA。
@@ -709,7 +693,7 @@ async def get_response_status(
     if not utils.is_safe_http_url(url):
         logger.warning(i18n.tr("get_response_status 拒绝非白名单协议的请求: {url}", url=utils.mask_credentials(url)))
         return False
-    # MIN-2219：代理地址先归一再判目标——_internal_stream_target_reason 需要知道「这次探测到底是不是
+    # 代理地址先归一再判目标——_internal_stream_target_reason 需要知道「这次探测到底是不是
     # 经代理出站」，才能决定要不要按本机 DNS 结果定罪（见其注释）。
     proxy_addr = utils.handle_proxy_addr(effective_proxy)
     internal_reason = _internal_stream_target_reason(url, proxy_addr)
@@ -725,7 +709,7 @@ async def get_response_status(
         )
         return False
     if verify is None:
-        # MID-26 修复：本函数的入参是**流地址**（src/stream.py 的 HLS 候选校验），原先回落到控制面
+        # 本函数的入参是**流地址**（src/stream.py 的 HLS 候选校验），原先回落到控制面
         # config.ssl_verify（生产恒 True、严格校验），而 ffmpeg 的 -tls_verify 与 stream_select 的同步
         # 校验器都按 get_effective_ssl_verify(platform) 取值。于是「https 录制模式（拉流侧已全局豁免）」或
         # 「平台命中禁用 SSL 验证名单（虎牙 TX CDN 主机名不匹配正是该名单的立论）」时，探针必然 SSL 报错
@@ -736,14 +720,10 @@ async def get_response_status(
         response = await client.head(url, headers=headers, follow_redirects=True, timeout=timeout)
         if response.status_code == 200:
             return True
-        # 部分 CDN（如抖音 m3u8）对 HEAD 返回 403/404，但 GET 可正常拉流，故对 m3u8 源再做一次
-        # Range-GET 轻量探测，避免误判不可达而降级画质。只覆盖 400/401/403/405 会漏掉 404（部分 CDN 对
-        # HEAD 一律回 404），因此 HEAD 非 2xx 的 m3u8 源一律进入探测；扩展名按小写判定（大写 .M3U8 的源
-        # 会漏掉该探测，被 HEAD 的 4xx 直接判成不可达）。
-        # M-32（2026-10-21）：405/501（方法不允许 / 未实现）同样纳入 Range-GET 复核。旧判据只认
-        # `.m3u8` 扩展名，于是 flv/直链遇「CDN 拒绝 HEAD 但 GET 可拉流」直接被判不可达并降档——
-        # 注释里自陈的这条理由对 flv 一样成立。此处**不放宽** 404/403：真死链必须继续判不可达，
-        # 故只补「方法不允许类」这一个语义明确的状态码集合，避免把「明确不可达」一并放行。
+        # 部分 CDN（如抖音 m3u8）对 HEAD 返回 403/404，但 GET 可正常拉流，故再做一次 Range-GET
+        # 轻量探测避免误判降档。判据覆盖 405/501（方法不允许/未实现）而非只认 `.m3u8` 扩展名：
+        # flv/直链遇「CDN 拒绝 HEAD 但 GET 可拉流」同样该复核。**不放宽** 404/403——真死链必须
+        # 继续判不可达。扩展名按小写判定（大写 .M3U8 否则会漏掉该探测）。
         if response.status_code != 200 and (".m3u8" in url.lower() or response.status_code in (405, 501)):
             probe = await client.get(
                 url, headers={**(headers or {}), "Range": "bytes=0-0"}, follow_redirects=True, timeout=timeout

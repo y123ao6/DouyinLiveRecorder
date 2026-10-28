@@ -68,7 +68,7 @@ class TestValidateTargets:
 
 
 class TestFormatUrlLineCarriesValidation:
-    # SEV-02：房间校验已**下沉**到 format_url_line（URL_config.ini 唯一写入口）。
+    # 房间校验已**下沉**到 format_url_line（URL_config.ini 唯一写入口）。
     # 判据：把 web_api 里那些显式的 validate_room_target 调用全删掉，下面三条仍须抛错。
 
     def test_internal_target_rejected_by_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,7 +94,7 @@ class TestFormatUrlLineCarriesValidation:
 
 
 def _stub_offline_dns(monkeypatch: pytest.MonkeyPatch, table: dict[str, list[str] | OSError] | None = None) -> None:
-    # SEV-03 之后房间地址要过 socket.getaddrinfo。这里只替换「解析」这一步（网络层桩），
+    # 之后房间地址要过 socket.getaddrinfo。这里只替换「解析」这一步（网络层桩），
     # 回环/私网/保留/CGNAT 的分类与「任一结果内部即拒绝」的裁决全部走真实代码。
     # 表外域名默认解析到一个公网地址；需要构造「解析失败」的用例把值写成 OSError 实例。
     from src import web_config as wc
@@ -112,7 +112,7 @@ def _stub_offline_dns(monkeypatch: pytest.MonkeyPatch, table: dict[str, list[str
 
 
 class TestRoomTargetInternalBlocklist:
-    # SEV-03：内网拦截旧实现是「字符串前缀黑名单」，报告实测 7 条载荷中 5 条放行
+    # 内网拦截旧实现是「字符串前缀黑名单」，报告实测 7 条载荷中 5 条放行
     # （十进制 2130706433、八进制 0177.0.0.1、带端口 IPv6 [fe80::1]:8080、
     # CGNAT 100.64.0.1、阿里云元数据 100.100.100.200）。
     # 现改为 ipaddress 语义 + DNS 解析双道判定。载荷均带 ?x=.m3u8 / ?a=.flv 尾巴，
@@ -223,7 +223,7 @@ class TestRoomTargetInternalBlocklist:
 
 
 class TestDnsRebindingBoundary:
-    # SEV-03 的边界：本层只能校验「写入那一刻」的解析结果。
+    # 边界：本层只能校验「写入那一刻」的解析结果。
     # 该用例锁住这个事实（而不是假装能挡重绑定），提醒后续改动不要把它当完整防线。
 
     def test_ttl_zero_rebinding_passes_write_time_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,7 +240,7 @@ class TestDnsRebindingBoundary:
 
 
 class TestHostAndLoopbackPolicy:
-    # MID-36 / SEV-04 的服务端名单口径（Host 头不再自证可信）。
+    # 该服务端名单口径（Host 头不再自证可信）。
 
     def test_loopback_forms(self) -> None:
         for host in ("127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.53", "localhost:8000"):
@@ -270,7 +270,7 @@ class TestOriginAllowedPolicy:
     # MID-N42 修复（2026-09-21，CODE_REVIEW_2026-09-21）纯函数侧：Origin 与 Host 从此是两套名单。
     # HTTP 侧（谁被 403）见 tests/test_web_api.py::TestOriginSameHostAndPort；本类锁的是
     # 「期望集合如何由服务端状态推导」，并反向锁住 Host 那套规则没被顺带改掉
-    # （合并成一套必然有一侧退化：Host 松了就丢 MID-36 的重绑定防线，Origin 紧了就砍掉反代入口）。
+    # （合并成一套必然有一侧退化：Host 松了就丢该重绑定防线，Origin 紧了就砍掉反代入口）。
 
     # 显式注解：dict[str, object] 与判定函数的 Mapping[str, str | int | bool] 不兼容（mypy arg-type）
     _WILD: dict[str, str | int | bool] = {"web_host": "0.0.0.0", "web_port": 8000, "web_allowed_hosts": ""}
@@ -337,7 +337,7 @@ class TestOriginAllowedPolicy:
         assert not is_origin_allowed("http://192.168.1.47", self._LOCAL, bind_host="127.0.0.1", bind_port=8000)
 
     def test_testserver_exemption_requires_pytest_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # M-66（2026-10-21）：哨兵豁免此前在**生产判定**里无条件生效（测试后门进生产——生产
+        # 2026-10-21：哨兵豁免此前在**生产判定**里无条件生效（测试后门进生产——生产
         # 进程收到 Origin: http://testserver 即免端口放行）。现加 _running_under_pytest() 环境门：
         # 本用例把门桩成 False 模拟生产进程，豁免必须整体失效；而真实回环 + 正确端口的常规
         # 判定不受该门影响（防止把环境门做成「一切都不放行」）
@@ -431,7 +431,7 @@ class TestOutboundTargetConfigKeys:
 
     def test_key_matching_is_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # configparser 的 option 本就 casefold（AGENTS.md「配置键审计须先归一化大小写」）：
-        # 只认规范写法等于给拉丁前缀的键留一条绕过路径（SEV-04 的同一形态）。
+        # 只认规范写法等于给拉丁前缀的键留一条绕过路径（该同一形态）。
         _stub_offline_dns(monkeypatch)
         for key, value in (
             ("NTFY推送地址", "http://127.0.0.1:6379/"),
@@ -462,7 +462,7 @@ class TestOutboundTargetConfigKeys:
 
 
 class TestPbkdf2IterationsClamp:
-    # MID-35：迭代次数取自 config.ini（用户可编辑的存储串），旧实现原值喂给
+    # 迭代次数取自 config.ini（用户可编辑的存储串），旧实现原值喂给
     # hashlib.pbkdf2_hmac → 把 200k 改成 2e7 即让每次登录烧掉十几秒 CPU。
 
     def test_upper_bound(self) -> None:
@@ -521,7 +521,7 @@ class TestUpdateConfigLine:
         assert update_config_line(tmp_path / "nope.ini", "Web", "web_host", "x") is False
 
     def test_duplicate_key_in_section_refuses_write(self, tmp_path: Path) -> None:
-        # M-68（2026-10-21）：手工编辑产生的重复键，旧实现只替换节内**首个**匹配行并返回 True，
+        # 2026-10-21：手工编辑产生的重复键，旧实现只替换节内**首个**匹配行并返回 True，
         # 生效值却来自另一行（「面板提示已保存、行为未变」）。现匹配数 >1 → 拒绝写入：
         # 返回 False 且文件逐字不变——复用既有失败出口（web_api 转 404、write_quality_options
         # 报写失败），不新增第三种返回形态。反向半边：同名键在**其他节**出现不得算重复
@@ -537,7 +537,7 @@ class TestUpdateConfigLine:
         assert "web_port = 8100" in text2 and "web_port = 9000" in text2
 
     def test_commented_duplicate_is_not_counted(self, tmp_path: Path) -> None:
-        # M-68 计数口径的边界：注释行（`#key = ...`）在真实替换判定里从不命中（行首 # 不匹配
+        # 计数口径的边界：注释行（`#key = ...`）在真实替换判定里从不命中（行首 # 不匹配
         # 键模式），计数同样不得把它算进「重复」——否则「一实一注释」这份完全合法的存量配置
         # 会被整体拒绝写入
         cfg = tmp_path / "config.ini"
@@ -546,7 +546,7 @@ class TestUpdateConfigLine:
         assert "web_port = 8100" in cfg.read_text(encoding="utf-8-sig")
 
     def test_hash_in_value_reads_back_as_new_value(self, tmp_path: Path) -> None:
-        # M-07（2026-09-30）：读侧 configparser 未开启 inline_comment_prefixes，旧值里的
+        # 2026-09-30：读侧 configparser 未开启 inline_comment_prefixes，旧值里的
         # " #" 本就是值的一部分——二次更新后读回值必须**等于新值**，不得被旧尾注污染
         # （旧实现把 " #" 之后当注释拼回新值，平台 Cookie/含井号 token 因此静默失效）。
         parser = configparser.ConfigParser()
@@ -555,14 +555,14 @@ class TestUpdateConfigLine:
         assert update_config_line(cfg, "Sec", "key", "new") is True
         parser.read(cfg, encoding="utf-8-sig")
         assert parser.get("Sec", "key") == "new", "无引号值含 ' #' 时尾串被当注释拼回新值"
-        # 带引号且值含 " #"、无尾注的同型：闭合引号之前的一切都属值本身（F-23 回落分支残留）
+        # 带引号且值含 " #"、无尾注的同型：闭合引号之前的一切都属值本身（该回落分支残留）
         cfg2 = tmp_path / "config2.ini"
         cfg2.write_text('[Sec]\nkey = "a #b"\n', encoding="utf-8-sig")
         assert update_config_line(cfg2, "Sec", "key", "new") is True
         parser2 = configparser.ConfigParser()
         parser2.read(cfg2, encoding="utf-8-sig")
         assert parser2.get("Sec", "key") == "new", "带引号值的 ' #' 被回落启发式二次污染"
-        # F-23 既有语义保持：引号值后的真注释仍原样保留
+        # 既有语义保持：引号值后的真注释仍原样保留
         cfg3 = tmp_path / "config3.ini"
         cfg3.write_text('[Sec]\nkey = "v" # 备注\n', encoding="utf-8-sig")
         assert update_config_line(cfg3, "Sec", "key", "new") is True
@@ -571,8 +571,8 @@ class TestUpdateConfigLine:
 
 
 class TestAppendConfigLineReturn:
-    # M-62（2026-10-21）：append_config_line 此前丢弃 _atomic_write_text 的布尔值、无条件
-    # return True，而 update_config_line 已按 M-29 修正——补建分支（config.ini 缺 language 键、
+    # 2026-10-21：append_config_line 此前丢弃 _atomic_write_text 的布尔值、无条件
+    # return True，而 update_config_line 已按该修正——补建分支（config.ini 缺 language 键、
     # 画质选项首次落盘）磁盘写失败仍报成功，set_language 的回滚与 write_quality_options 的
     # 失败回报全部失明。判据走「替换失败→补建」这条真实组合路径，不重新实现任何写入逻辑。
 
@@ -760,7 +760,7 @@ class TestFindRoomUrlByAnchorName:
 
 
 class TestSensitiveItemCaseInsensitive:
-    # L-21（2026-10-18）：「节白名单 + 键名正则」两道判定的强度必须同档——键名侧带
+    # 2026-10-18：「节白名单 + 键名正则」两道判定的强度必须同档——键名侧带
     # re.IGNORECASE，节名侧此前是大小写敏感的精确比较，于是把 [Cookie] 写成 [cookie]
     # 就整节跳出白名单（节内键名又不含凭据关键词、值也不是 URL 形态，两道兜底同时落空），
     # 凭据以明文回显给面板并进备份副本。判据取行为（值确实被掩码），不钉源码字面量。
@@ -794,7 +794,7 @@ class TestSensitiveItemCaseInsensitive:
 
 
 class TestRoomUrlCommaRejectedOnWrite:
-    # L-22（2026-10-18）：写侧拒绝 URL 段含逗号（半角或全角）。两个读取侧（本模块 parse_url_config
+    # 2026-10-18：写侧拒绝 URL 段含逗号（半角或全角）。两个读取侧（本模块 parse_url_config
     # 与 main.py 的房间行解析）都是 `re.split("[,，]")` **先切段再判形**，含逗号的地址一律在首个逗号
     # 处被截断后才进录制链——写侧放行等于「录入一条、生效另一条」，且 DELETE / PUT quality 按规范化
     # URL 精确匹配行，用户既看不出截断也改不动那一行。判据取 ValueError（与既有换行注入同形态）。
@@ -810,7 +810,7 @@ class TestRoomUrlCommaRejectedOnWrite:
             validate_room_target("https://live.example.com/1?a=1，2")
 
     def test_comma_in_url_rejected_by_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 唯一写入口的第二道：调用方漏调 validate_room_target 也写不出被截断的行（SEV-02 同一理由）
+        # 唯一写入口的第二道：调用方漏调 validate_room_target 也写不出被截断的行（该同一理由）
         _stub_offline_dns(monkeypatch)
         with pytest.raises(ValueError):
             format_url_line("https://live.example.com/1?a=1,2")

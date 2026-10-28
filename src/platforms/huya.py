@@ -29,7 +29,7 @@ URI_ONLINE = 8006
 
 # 虎牙弹幕客户端：Tars 编码进房数据、心跳与推送消息解析。
 class HuyaDanmaku(DanmakuBase):
-    heartbeat_interval = 60.0  # 60s
+    heartbeat_interval = 60.0
 
     # 初始化：调用父类并重置内部状态（参数、WS 连接）。
     def __init__(self, *args: Any, **kwargs: Any) -> None:

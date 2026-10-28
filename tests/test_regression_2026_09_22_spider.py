@@ -2,17 +2,17 @@
 # 2026-09-22 审查报告 / 组 E（src/spider.py + src/platforms/bilibili.py）修复的回归锁。
 #
 # 判据一律落在「失效形态本身」而不是「调用了某个函数」：
-#   SEV-2204  快手 playUrls 只含 h265 / "h264": null 时必须仍判开播并给出 h265 候选；
-#   SEV-2205  畅聊/音播 liveID 为 int 必须拼出正确地址、缺失必须判无源且留线索；
-#   SEV-2214  小红书 xhslink 跳转到外部 host 时不得携带 Cookie / xy-common-params；
-#   SEV-2215  getDanmuInfo 返回 evil.example.com 时不得建连、且不发 Cookie；
-#   MID-2212  微博 / Look 只给 HLS 或只给 FLV 时必须判开播且 record_url 为该路；
-#   MID-2214  斗鱼 betard 告警必须是 i18n.tr 模板（拼接形态提取器看不见，判据见用例内注释）；
-#   MID-2215  斗鱼签名：enc_time="2" 解析为 2；上界一律夹到 32（用例取 1000 让「漏夹」可判定而不挂死）；
+#   快手 playUrls 只含 h265 / "h264": null 时必须仍判开播并给出 h265 候选；
+#   畅聊/音播 liveID 为 int 必须拼出正确地址、缺失必须判无源且留线索；
+#   小红书 xhslink 跳转到外部 host 时不得携带 Cookie / xy-common-params；
+#   getDanmuInfo 返回 evil.example.com 时不得建连、且不发 Cookie；
+#   微博 / Look 只给 HLS 或只给 FLV 时必须判开播且 record_url 为该路；
+#   斗鱼 betard 告警必须是 i18n.tr 模板（拼接形态提取器看不见，判据见用例内注释）；
+#   斗鱼签名：enc_time="2" 解析为 2；上界一律夹到 32（用例取 1000 让「漏夹」可判定而不挂死）；
 #             缺 rand_str / key 时返回 {} 并留 warning；
-#   MIN-2202  抖音 HTML 兜底成功后不得对同一 url 二次抓取；
-#   MIN-2203  buvid spi 空结果重试前必须有一次 await sleep（零间隔连击被判红）；
-#   MIN-2222  百度 data 取稳定键名 room_id 而非首个键。
+#   抖音 HTML 兜底成功后不得对同一 url 二次抓取；
+#   buvid spi 空结果重试前必须有一次 await sleep（零间隔连击被判红）；
+#   百度 data 取稳定键名 room_id 而非首个键。
 #
 # 原则：只打桩传输层（spider.async_req / WsClient），_loads_dict、_dig 系列、_warn_api_abnormal
 # 与各平台解析逻辑一律走真实代码。
@@ -31,7 +31,7 @@ WAF_HTML = "<html><head><title>Access Protected</title></head><body>cf-browser-v
 
 
 def _asyncio_shim(**overrides: Any) -> types.SimpleNamespace:
-    # MT-09（CODE_REVIEW_2026-10-18）：旧写法 patch.object(sp.asyncio, "sleep", …) 的容器是全进程唯一
+    # 2026-10-18：旧写法 patch.object(sp.asyncio, "sleep", …) 的容器是全进程唯一
     # 的 asyncio **模块本体**，替身窗口内 loguru 边车、pytest-asyncio 循环与其它协程的 sleep 一并被换掉。
     # 按仓库口径改为浅拷贝命名空间 + 只覆盖所需属性，再绑到**被测模块自己的 asyncio 引用**上。
     shim = types.SimpleNamespace(**vars(asyncio))
@@ -75,7 +75,7 @@ def _fake_req(payloads: dict[str, Any], default: str = WAF_HTML) -> AsyncMock:
 
 
 # ────────────────────────────────────────────────────────────
-# SEV-2204：快手 playUrls 的 codec 键遍历
+# 快手 playUrls 的 codec 键遍历
 # ────────────────────────────────────────────────────────────
 
 
@@ -139,7 +139,7 @@ class TestKuaishouPlayUrlsCodec:
 
 
 # ────────────────────────────────────────────────────────────
-# SEV-2205：畅聊 / 音播 liveID 判空与 str() 拼接
+# 畅聊 / 音播 liveID 判空与 str() 拼接
 # ────────────────────────────────────────────────────────────
 
 
@@ -219,7 +219,7 @@ class TestChangliaoYinboLiveId:
 
 
 # ────────────────────────────────────────────────────────────
-# SEV-2214：小红书 xhslink 跳转后的凭据收口
+# 小红书 xhslink 跳转后的凭据收口
 # ────────────────────────────────────────────────────────────
 
 
@@ -290,7 +290,7 @@ class TestXhsRedirectCredentialContainment:
 
 
 # ────────────────────────────────────────────────────────────
-# SEV-2215：B站弹幕 WS host 白名单
+# B站弹幕 WS host 白名单
 # ────────────────────────────────────────────────────────────
 
 
@@ -371,7 +371,7 @@ class TestBiliDanmakuHostAllowlist:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2212：微博 / Look 单路源判开播
+# 微博 / Look 单路源判开播
 # ────────────────────────────────────────────────────────────
 
 
@@ -427,7 +427,7 @@ class TestSingleStreamSource:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2214：斗鱼 betard 告警的 i18n 形态（AST 判据）
+# 斗鱼 betard 告警的 i18n 形态（AST 判据）
 # ────────────────────────────────────────────────────────────
 
 
@@ -464,7 +464,7 @@ class TestDouyuBetardLogI18n:
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2215：斗鱼签名参数容错与 enc_time 上界
+# 斗鱼签名参数容错与 enc_time 上界
 # ────────────────────────────────────────────────────────────
 
 
@@ -520,7 +520,7 @@ class TestDouyuSignHardening:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2202：抖音 HTML 兜底成功后不重复抓取
+# 抖音 HTML 兜底成功后不重复抓取
 # ────────────────────────────────────────────────────────────
 
 
@@ -559,7 +559,7 @@ class TestDouyinNoDuplicateFetch:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2203：buvid spi 重试前有抖动退避
+# buvid spi 重试前有抖动退避
 # ────────────────────────────────────────────────────────────
 
 
@@ -582,7 +582,7 @@ class TestBiliSpiRetryBackoff:
             # 不真的睡，避免拖慢用例；记录参数即可判定「有退避」
             return None
 
-        # [MT-09 2026-10-18] 落点由 sp.asyncio 改成 sp 命名空间里的 asyncio 引用位（shim 见文件头）：
+        # [ 2026-10-18] 落点由 sp.asyncio 改成 sp 命名空间里的 asyncio 引用位（shim 见文件头）：
         # 旧形态的宿主是全进程唯一的 asyncio 本体，窗口内 loguru 边车与任何其它协程的 sleep 一并被换桩。
         with (
             patch.object(sp, "async_req", new=_fake_req(payloads)),
@@ -599,7 +599,7 @@ class TestBiliSpiRetryBackoff:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2222：百度 data 取稳定键名
+# 百度 data 取稳定键名
 # ────────────────────────────────────────────────────────────
 
 
@@ -636,15 +636,15 @@ class TestBaiduStableKey:
 # ────────────────────────────────────────────────────────────
 # 2026-09-23 追加：CODE_REVIEW_2026-09-22.md §5.1「平台解析与网络层」轻微项（与上文同号条目
 # 来自不同分组，故每条在类注释里写明报告出处与失效形态）：
-#   MIN-2201  虎牙字母房间号反查须剥引号 + 判 isdigit，非数字一律早抛「请用数字房间号」；
-#   MIN-2202  虎牙候选：HLS 地址不得由 FLV 票据裁决（只下发 HLS 票据的房间须给出 HLS 候选）；
-#   MIN-2204  斗鱼 websec：enc_time 缺失/非数值须与 rand_str/key 同走 warning + return {}；
-#   MIN-2210  SOOP bj_id 三处共用 _soop_bj_id_from_url（/play/<bj> 形态不得取到 "play"）；
-#   MIN-2211  Shopee 无 session 时不得请求 /session/None，更不得每轮刷 ERROR；
-#   MIN-2212  连接直播 videoUrl 不带查询串时归因 + 按未开播返回；
-#   MIN-2213  Faceit 缺 /stream 段须抛可读 ValueError 而非 IndexError；
-#   MIN-2214  淘宝 SUCCESS 改判前缀 + data 走 _dig；
-#   MIN-2215  ShowRoom 命中 hls_all 但 url 为空不得返回 {is_live: True, m3u8_url: ""}。
+#   虎牙字母房间号反查须剥引号 + 判 isdigit，非数字一律早抛「请用数字房间号」；
+#   虎牙候选：HLS 地址不得由 FLV 票据裁决（只下发 HLS 票据的房间须给出 HLS 候选）；
+#   斗鱼 websec：enc_time 缺失/非数值须与 rand_str/key 同走 warning + return {}；
+#   SOOP bj_id 三处共用 _soop_bj_id_from_url（/play/<bj> 形态不得取到 "play"）；
+#   Shopee 无 session 时不得请求 /session/None，更不得每轮刷 ERROR；
+#   连接直播 videoUrl 不带查询串时归因 + 按未开播返回；
+#   Faceit 缺 /stream 段须抛可读 ValueError 而非 IndexError；
+#   淘宝 SUCCESS 改判前缀 + data 走 _dig；
+#   ShowRoom 命中 hls_all 但 url 为空不得返回 {is_live: True, m3u8_url: ""}。
 # ────────────────────────────────────────────────────────────
 
 
@@ -655,7 +655,7 @@ def _raw(func: object) -> Any:
 
 
 def _recording_req(bodies: dict[str, str], seen: list[str], default: str = "") -> AsyncMock:
-    # 与 _fake_req 同一路由口径，但**记录每次请求的完整 URL**：MIN-2201/2210/2211 的判据都在
+    # 与 _fake_req 同一路由口径，但**记录每次请求的完整 URL**：/2210/2211 的判据都在
     # 「发出去的 URL/表单取值」上，只看返回值无法区分 roomid=6030242 与 %226030242%22。
     async def _req(*args: object, **kwargs: object) -> str:
         url = str(kwargs.get("url") or (args[0] if args else ""))
@@ -680,7 +680,7 @@ def _huya_req(page_body: str, api_body: str, seen: list[str]) -> AsyncMock:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2201 / MIN-2202：虎牙小程序接口
+# 虎牙小程序接口
 # ────────────────────────────────────────────────────────────
 
 _HUYA_OFF = '{"data": {"profileInfo": {"nick": "虎牙主播"}, "realLiveStatus": "OFF"}}'
@@ -805,7 +805,7 @@ class TestHuyaHlsOnlyCandidate:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2204 后半：斗鱼 websec 的 enc_time 缺失/非数值
+# 后半：斗鱼 websec 的 enc_time 缺失/非数值
 # ────────────────────────────────────────────────────────────
 
 
@@ -848,7 +848,7 @@ class TestDouyuWebsecEncTime:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2210：SOOP bj_id 的取段
+# SOOP bj_id 的取段
 # ────────────────────────────────────────────────────────────
 
 
@@ -902,7 +902,7 @@ class TestSoopBjIdFromUrl:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2211：Shopee 无 session
+# Shopee 无 session
 # ────────────────────────────────────────────────────────────
 
 
@@ -950,7 +950,7 @@ class TestShopeeMissingSession:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2212：连接直播 videoUrl 无查询串
+# 连接直播 videoUrl 无查询串
 # ────────────────────────────────────────────────────────────
 
 
@@ -992,7 +992,7 @@ class TestLianjieQuerylessVideoUrl:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2213：Faceit 昵称提取
+# Faceit 昵称提取
 # ────────────────────────────────────────────────────────────
 
 
@@ -1017,7 +1017,7 @@ class TestFaceitNicknameExtraction:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2214：淘宝 SUCCESS 分支
+# 淘宝 SUCCESS 分支
 # ────────────────────────────────────────────────────────────
 
 
@@ -1063,7 +1063,7 @@ class TestTaobaoSuccessParsing:
 
     @pytest.mark.asyncio
     async def test_success_without_data_warns_and_returns_offline(self) -> None:
-        # 失效形态：`json_data["data"]` 裸索引（MID-48 口径在本文件的最后一处残留）抛 KeyError
+        # 失效形态：`json_data["data"]` 裸索引（该口径在本文件的最后一处残留）抛 KeyError
         # 被装饰器吞成「未开播」，既无归因也丢掉了 anchor_name 字段。
         logger = _fake_logger()
         result = await self._call(self._jsonp("SUCCESS::调用成功", None), logger)
@@ -1079,7 +1079,7 @@ class TestTaobaoSuccessParsing:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2215：ShowRoom 的 hls_all 空 url
+# ShowRoom 的 hls_all 空 url
 # ────────────────────────────────────────────────────────────
 
 

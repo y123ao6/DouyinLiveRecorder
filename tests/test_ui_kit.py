@@ -10,8 +10,9 @@
 
 import ast
 import tkinter as tk
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -175,7 +176,7 @@ class TestSyncIncremental:
         assert tree.calls and all(kind == "delete" for kind, _ in tree.calls)
 
     def test_missing_values_key_does_not_abort_sync(self) -> None:
-        # M-83 行为锁①：keys 是展示集合、values/tags 是两个独立字典，三者脱节在热更新
+        # 行为锁①：keys 是展示集合、values/tags 是两个独立字典，三者脱节在热更新
         # 竞态里是真实可发生的形态。旧实现 values[key] 直索引抛 KeyError——**整轮 sync
         # 半途而废**：异常点之后的行不插入、删除与顺序收敛都不执行，表格静默停在旧数据
         # 上且日志一条没有（比缺一格难看的数据严重得多）。定稿 values.get(key, ())：
@@ -190,7 +191,7 @@ class TestSyncIncremental:
         assert tree.rows["B"][0] == _ROWS["B"]
 
     def test_row_with_both_value_and_tag_change_counts_once(self) -> None:
-        # M-83 行为锁②：changed 的语义是「这一行变了」，不是「变了几个字段」。旧实现值
+        # 行为锁②：changed 的语义是「这一行变了」，不是「变了几个字段」。旧实现值
         # 分支与标记分支各自 append(key)，两者同变的行在返回值里出现两遍——调用方的
         # 「变化行高亮衰减」会对同一行叠两轮动画。行级增量语义不得回退（未变化行零触碰
         # 由 test_unchanged_rows_are_never_touched 守着）。
@@ -218,7 +219,7 @@ class TestRealWindowWidgets:
     # 真窗用例（无显示环境 skip，与本文件唯一 skip 面）：浮层编辑器与派生样式依赖真实
     # Tcl 事件循环，无头环境无法等价驱动；tk_root fixture 形态取
     # tests/test_ui_theme.py::TestApplyTtk.tk_root。
-    # [历史注 MT-12 2026-10-18] 此前「无显示即 skip」是空头承诺：三条用例裸 tk.Tk()，
+    # [历史注 2026-10-18] 此前「无显示即 skip」是空头承诺：三条用例裸 tk.Tk()，
     # 无显示器时抛 TclError 以 ERROR 形态进门禁、把「没显示设备」伪装成「代码回归」，故补 fixture。
     # 与 AGENTS「平台专属分支的测试不得靠 skipif 让 CI 跳过」不冲突：那条禁的是按
     # sys.platform 跳过**代码分支**（Windows/POSIX 两侧逻辑都得在 CI 真跑），本处缺的是
@@ -326,3 +327,298 @@ class TestRealWindowWidgets:
         plain = uk.Label(tk_root, text="DouyinLiveRecorder")
         assert ui_i18n.retranslate_all() >= 2
         assert plain.cget("text") == "DouyinLiveRecorder"
+
+
+# ─── 纯几何 / 动画辅助（无 Tk 依赖的部分） ──────────────────────────────────
+#
+# 本组用例刻意不建任何 Tk 对象：_capture_geometry / _restore_geometry / slide_in /
+# scale_in_window 只把 widget 当作「几何管理器协议 + place/geometry 调用面」使用，
+# 最小替身即可无头驱动。真窗用例（TestRealWindowWidgets）仍保留给浮层编辑器这类
+# 必须依赖 Tcl 事件循环的路径——两者的边界是「是否真的需要 Tcl」，不是「难不难写」。
+#
+# 覆盖面动机：ui_kit.py 原缺口恰好集中在这批从未被任何用例触及的纯函数上（GLOBAL_FLOOR
+# 提到 60% 后 57% 会立刻判红）。补测优先于往 COVERAGE_DEBT 里塞一条「UI 模块可测性差」
+# 的债——后者正是白名单退化成记账本的形态。
+
+
+class _FakeFont:
+    # _font_key 的非元组分支：真实 tk.font.Font 只在有 Tk 解释器时存在，替身只复刻
+    # actual() 这一条读取面；boom=True 复刻「字体已随解释器销毁」的取值失败。
+    def __init__(self, *, family: str = "Arial", size: int = 12, weight: str = "normal", boom: bool = False) -> None:
+        self._values: dict[str, object] = {"family": family, "size": size, "weight": weight}
+        self._boom = boom
+
+    def actual(self, key: str) -> object:
+        if self._boom:
+            raise ValueError("字体已失效")
+        return self._values[key]
+
+
+class _FakeGeometryWidget:
+    # 只复刻几何管理器协议切片；errors 里点名的方法一律抛 tk.TclError，
+    # 用于驱动 _capture_geometry / _restore_geometry / slide_in 的降级分支。
+    def __init__(
+        self,
+        *,
+        grid_info: dict[str, object] | None = None,
+        pack_info: dict[str, object] | None = None,
+        errors: frozenset[str] = frozenset(),
+    ) -> None:
+        self._grid_info = grid_info or {}
+        self._pack_info = pack_info or {}
+        self._errors = errors
+        self.place_calls: list[dict[str, object]] = []
+        self.place_forget_calls = 0
+        self.grid_configure_calls: list[dict[str, object]] = []
+        self.pack_configure_calls: list[dict[str, object]] = []
+
+    def grid_info(self) -> dict[str, object]:
+        if "grid_info" in self._errors:
+            raise tk.TclError("grid_info 不可读")
+        return dict(self._grid_info)
+
+    def pack_info(self) -> dict[str, object]:
+        if "pack_info" in self._errors:
+            raise tk.TclError("pack_info 不可读")
+        return dict(self._pack_info)
+
+    def place(self, **kwargs: object) -> None:
+        if "place" in self._errors:
+            raise tk.TclError("控件已销毁")
+        self.place_calls.append(kwargs)
+
+    def place_forget(self) -> None:
+        self.place_forget_calls += 1
+
+    def grid_configure(self, **kwargs: object) -> None:
+        if "restore" in self._errors:
+            raise tk.TclError("控件已销毁")
+        self.grid_configure_calls.append(kwargs)
+
+    def pack_configure(self, **kwargs: object) -> None:
+        if "restore" in self._errors:
+            raise tk.TclError("控件已销毁")
+        self.pack_configure_calls.append(kwargs)
+
+
+class _FakeMotion:
+    # 复刻 MotionController.run_frames 的调用面：按 0.0 / 1.0 采两帧后落终态。
+    # 不排 after、不读 Tk——动效的**几何算术**本来就与帧调度无关，这正是本组用例
+    # 能无头断言「起点偏移 / 终点精确归位」的原因。
+    def __init__(self) -> None:
+        self.jobs: list[tuple[str, int, int]] = []
+
+    def run_frames(
+        self,
+        _widget: object,
+        job_key: str,
+        on_frame: Callable[[float], None],
+        *,
+        duration_ms: int,
+        frames: int,
+        on_done: Callable[[], None] | None = None,
+    ) -> None:
+        self.jobs.append((job_key, duration_ms, frames))
+        on_frame(0.0)
+        on_frame(1.0)
+        if on_done is not None:
+            on_done()
+
+
+class _FakeWindow:
+    # 复刻 scale_in_window 用到的 Toplevel 协议切片：尺寸读数 + geometry 写入。
+    def __init__(self, *, width: int = 320, height: int = 240, errors: frozenset[str] = frozenset()) -> None:
+        self._width = width
+        self._height = height
+        self._errors = errors
+        self.geometry_calls: list[str] = []
+
+    def update_idletasks(self) -> None:
+        if "update" in self._errors:
+            raise tk.TclError("窗口已销毁")
+
+    def winfo_width(self) -> int:
+        return self._width
+
+    def winfo_height(self) -> int:
+        return self._height
+
+    def winfo_rootx(self) -> int:
+        return 10
+
+    def winfo_rooty(self) -> int:
+        return 20
+
+    def geometry(self, spec: str) -> None:
+        if "geometry" in self._errors:
+            raise tk.TclError("窗口已销毁")
+        self.geometry_calls.append(spec)
+
+
+class TestFontKeyAndScaleRegistration:
+    def test_font_key_prefers_actual_triple_for_font_objects(self) -> None:
+        # 非元组分支：tk.font.Font 的缓存键必须取 actual() 三元组，而不是 str(font)
+        # （后者带对象地址，同一字体每次建新键 = 派生样式缓存永不命中）。
+        import src.ui_kit as uk
+
+        assert uk._font_key(_FakeFont(family="Arial", size=20, weight="bold")) == "Arial|20|bold"
+
+    def test_font_key_falls_back_to_str_when_actual_fails(self) -> None:
+        # 字体随解释器销毁后 actual() 会抛异常：此时回退 str(font)，而不是把异常抛给
+        # 调用方——font_style 位于控件构建路径，抛出去等于整个页面建不出来。
+        import src.ui_kit as uk
+
+        font = _FakeFont(boom=True)
+        assert uk._font_key(font) == str(font)
+
+    def test_set_scale_percent_registers_and_clears_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 换档必须同时清空派生样式缓存：否则新档位会命中按旧 padding 派生的样式名，
+        # 表现为「字号变大了、按钮内边距还是老样子」。
+        import src.ui_kit as uk
+
+        monkeypatch.setattr(uk, "_SCALE_PERCENT", 100)
+        monkeypatch.setattr(uk, "_FONT_STYLE_CACHE", {("Prov.TButton", "Arial|20", 100): "DLRF0.Prov.TButton"})
+        uk.set_scale_percent(125)
+        assert uk.current_scale_percent() == 125
+        assert uk._FONT_STYLE_CACHE == {}, "换档后派生样式缓存必须清空"
+
+    def test_clear_font_style_cache_empties_registry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import src.ui_kit as uk
+
+        monkeypatch.setattr(uk, "_FONT_STYLE_CACHE", {("x", "y", 100): "DLRF0.x"})
+        uk.clear_font_style_cache()
+        assert uk._FONT_STYLE_CACHE == {}
+
+
+class TestGeometryManagerCapture:
+    # _capture_geometry / _restore_geometry 是滑入动效「终帧精确归位」的地基：
+    # 抓错管理器（把 grid 页面当 place 处理）会让页面在过渡后被 place 永久接管，
+    # 原本 grid 的布局直接失效——本组逐分支锁死。
+
+    def test_grid_managed_widget_is_captured_as_grid(self) -> None:
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget(grid_info={"column": 1})
+        assert uk._capture_geometry(cast("Any", widget)) == ("grid", {"column": 1})
+
+    def test_pack_managed_widget_is_captured_as_pack(self) -> None:
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget(pack_info={"side": "top"})
+        assert uk._capture_geometry(cast("Any", widget)) == ("pack", {"side": "top"})
+
+    def test_unmanaged_widget_reports_none(self) -> None:
+        import src.ui_kit as uk
+
+        assert uk._capture_geometry(cast("Any", _FakeGeometryWidget())) == ("none", {})
+
+    def test_tclerror_falls_through_to_none(self) -> None:
+        # 控件已销毁时 grid_info/pack_info 双抛 TclError：必须收敛成 ("none", {})，
+        # 而不是把异常冒给动效回调（回调在 after 队列里，抛出去整条链就断了）。
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget(errors=frozenset({"grid_info", "pack_info"}))
+        assert uk._capture_geometry(cast("Any", widget)) == ("none", {})
+
+    def test_restore_skips_unmanaged_widget(self) -> None:
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget()
+        uk._restore_geometry(cast("Any", widget), ("none", {}))
+        assert widget.place_forget_calls == 0
+
+    def test_restore_grid_manager_rewrites_grid_info(self) -> None:
+        # 顺序判据：必须「先 place_forget 再 grid_configure」——反过来的话 place 会
+        # 压住 grid，页面永久停在过渡期的偏移位置。
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget()
+        uk._restore_geometry(cast("Any", widget), ("grid", {"column": 2}))
+        assert widget.place_forget_calls == 1
+        assert widget.grid_configure_calls == [{"column": 2}]
+
+    def test_restore_pack_manager_rewrites_pack_info(self) -> None:
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget()
+        uk._restore_geometry(cast("Any", widget), ("pack", {"side": "left"}))
+        assert widget.pack_configure_calls == [{"side": "left"}]
+
+    def test_restore_swallows_tclerror_after_widget_destroyed(self) -> None:
+        # 窗口关闭后迟到的 after 回调：还原失败只能吞掉，不得回头炸整条事件链。
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget(errors=frozenset({"restore"}))
+        uk._restore_geometry(cast("Any", widget), ("grid", {"column": 1}))
+        assert widget.place_forget_calls == 1
+        assert widget.grid_configure_calls == []
+
+
+class TestSlideInGeometry:
+    # 页面滑入的几何算术：起点偏移 = distance、终帧归位到原布局器。
+    # 真窗用例只能证明「能跑」，这里锁的是「偏移量与归位动作」本身。
+
+    def test_slide_in_offsets_then_restores_grid_manager(self) -> None:
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget(grid_info={"column": 0})
+        motion = _FakeMotion()
+        uk.slide_in(cast("Any", widget), motion, distance=120, duration_ms=180, job_key="page")
+        # 帧序列：progress=0 → x=120，progress=1 → x=0
+        assert [call["x"] for call in widget.place_calls] == [120, 0]
+        assert widget.place_calls[0]["relx"] == 0.0 and widget.place_calls[0]["relwidth"] == 1.0
+        # 终帧必须把原 grid 配置写回（否则页面被 place 永久接管）
+        assert widget.place_forget_calls == 1
+        assert widget.grid_configure_calls == [{"column": 0}]
+        assert motion.jobs == [("page", 180, 10)]
+
+    def test_slide_in_survives_destroyed_widget_during_frames(self) -> None:
+        # 过渡途中控件被销毁：每帧 place 都会抛 TclError，必须逐帧吞掉并走完终态，
+        # 不得让异常从 after 回调里逃出去。
+        import src.ui_kit as uk
+
+        widget = _FakeGeometryWidget(errors=frozenset({"place"}))
+        motion = _FakeMotion()
+        uk.slide_in(cast("Any", widget), motion, distance=10, duration_ms=100, job_key="k")
+        assert motion.jobs and widget.place_calls == []
+
+
+class TestScaleInWindow:
+    def test_scales_from_start_ratio_and_settles_to_base_size(self) -> None:
+        import src.ui_kit as uk
+
+        window = _FakeWindow(width=320, height=240)
+        motion = _FakeMotion()
+        uk.scale_in_window(cast("Any", window), motion, start_scale=0.8, duration_ms=150, job_key="dlg")
+        # progress=0 → 0.8 倍（256x192），progress=1 → 1.0 倍（320x240）；两帧都带居中偏移
+        assert window.geometry_calls[0] == "256x192-10-20"
+        assert window.geometry_calls[1] == "320x240-10-20"
+        # 终帧无条件回到基尺寸（不带偏移），避免残留缩放
+        assert window.geometry_calls[2] == "320x240"
+        assert motion.jobs == [("dlg", 150, 8)]
+
+    def test_bails_out_when_window_geometry_is_not_realised(self) -> None:
+        # 窗口刚建时 winfo_width 还是 1：拿它当基准会把弹窗缩成一条线，
+        # 故 <=1 一律直接返回、不动效。
+        import src.ui_kit as uk
+
+        window = _FakeWindow(width=1, height=240)
+        motion = _FakeMotion()
+        uk.scale_in_window(cast("Any", window), motion, start_scale=0.5, duration_ms=100, job_key="k")
+        assert window.geometry_calls == [] and motion.jobs == []
+
+    def test_bails_out_when_toplevel_already_destroyed(self) -> None:
+        import src.ui_kit as uk
+
+        window = _FakeWindow(errors=frozenset({"update"}))
+        motion = _FakeMotion()
+        uk.scale_in_window(cast("Any", window), motion, start_scale=0.5, duration_ms=100, job_key="k")
+        assert motion.jobs == []
+
+    def test_swallows_geometry_errors_during_frames_and_settle(self) -> None:
+        import src.ui_kit as uk
+
+        window = _FakeWindow(errors=frozenset({"geometry"}))
+        motion = _FakeMotion()
+        uk.scale_in_window(cast("Any", window), motion, start_scale=0.5, duration_ms=100, job_key="k")
+        assert window.geometry_calls == []

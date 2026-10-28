@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import TextIO
 
 import i18n
-from src.config_bool import parse_config_bool  # M-50 唯一布尔入口；config_bool 零依赖，不会与本模块的依赖链成环
+from src.config_bool import parse_config_bool  # 唯一布尔入口；config_bool 零依赖，不会与本模块的依赖链成环
 from src.danmaku_monitor import close_monitor_file, resume_monitor_writes, suspend_monitor_writes
 from src.logger import (
     GUI_PARENT_ENV,
@@ -38,7 +38,7 @@ from src.logger import (
 # PermissionError；web_console 改名后重开失败时回退 os.devnull 并置 pending 标记；web_console
 # 改名前先由 _ConsoleBridge 接管 sys.stdout/sys.stderr，关旧句柄与改名全程标准流都指向可写对象。
 #
-# 归档之后还有一步裁剪（M-46，2026-10-21）：见 _prune_archives 的保留策略与三条硬约束——
+# 归档之后还有一步裁剪（2026-10-21）：见 _prune_archives 的保留策略与三条硬约束——
 # 每个基名只留最新若干份、且删除文件名时间戳已超龄的份，排序取文件名里的 %Y%m%d_%H%M%S 而非 mtime。
 
 
@@ -277,7 +277,7 @@ def _rename_one(path: str, ts: str, archived: list[str]) -> None:
         )
 
 
-# 归档保留策略（M-46，2026-10-21）。
+# 归档保留策略（2026-10-21）。
 # 为什么必须清理：本模块此前**只改名、从不删除**，而「停止录制」在 7×24 循环监测下每天会发生
 # 数十次（面板停止、GUI 停止、atexit 退出各触发一轮），logs/ 里每个基名下的 _YYYYMMDD_HHMMSS
 # 归档只增不减——全仓 grep 无任何 retention/prune 代码，磁盘占用完全由「启停次数」决定。
@@ -311,7 +311,7 @@ def _archive_cutoff_ts(now: datetime) -> str:
 # · 不给 web_console.log 加**写入侧**轮转——该文件被 web.py 与本模块当作一只普通文件流消费
 #   （_streams_bound_to() 按 sys.stdout/sys.stderr 的 .name 认句柄，换流对象即认不出；loguru 的
 #   rotation= 又不支持流对象 sink，换成路径型 sink 会让 print 与 loguru 各持一只句柄、改名必抛），
-#   详见 web.py 的 L-01 注释；它的单轮体量由 web.py 的启动侧上限 _WEB_CONSOLE_MAX_BYTES 兜住，
+#   详见 web.py 注释；它的单轮体量由 web.py 的启动侧上限 _WEB_CONSOLE_MAX_BYTES 兜住，
 #   本函数只负责它归档之后的历史份数。
 def _prune_archives(logs_dir: str, cutoff_ts: str) -> None:
     try:
@@ -367,7 +367,7 @@ def archive_runtime_logs(*, reopen_streams: bool = True) -> list[str]:
         with _archive_lock:
             # 测试进程禁用（见 _DISABLE_ENV 注释）；GUI 父进程不持有录制日志句柄，
             # 也绝不能改名录制子进程正在写的日志文件
-            # M-50（2026-10-21）：两处手写布尔判定改走 parse_config_bool（口径同 src/logger.py）。
+            # 2026-10-21：两处手写布尔判定改走 parse_config_bool（口径同 src/logger.py）。
             # 原形态 `in ("1","true","yes")` 认不出 on/y/t/是，`== "1"` 只认字符 1：
             # 开发者用 DOUYIN_DISABLE_LOG_ARCHIVE=on 关闭归档时，pytest 退出仍会改名工作副本里
             # 的真实日志；DLR_GUI_PARENT=TRUE 时 GUI 进程照样参与归档。缺省（env 未设）仍为
@@ -401,7 +401,7 @@ def archive_runtime_logs(*, reopen_streams: bool = True) -> list[str]:
                 # 留在抑制态会让 GUI 监控页与 Web 弹幕面板永久停更。
                 resume_monitor_writes()
 
-            # M-46：超量历史归档的裁剪。接线位置是硬约束——必须在上面**全部**关句柄步骤
+            # 超量历史归档的裁剪。接线位置是硬约束——必须在上面**全部**关句柄步骤
             # （remove_file_sinks / 边车 close_monitor_file / web_console 的 flush+close）之后、
             # 且早于 add_file_sinks() 重新开句柄之前：此刻 logs/ 内本进程一个句柄都不持有，
             # os.remove 才不会因为 WinError 32 失败。清理失败只留痕，不影响本轮归档结果。

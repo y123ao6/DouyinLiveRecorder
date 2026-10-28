@@ -13,7 +13,7 @@ import traceback
 from types import TracebackType
 from typing import Any
 
-# M-80（2026-10-21）：崩溃弹窗代理。QMessageBox 只能在 Qt 主线程构造/执行（Qt 线程亲和性），
+# 2026-10-21：崩溃弹窗代理。QMessageBox 只能在 Qt 主线程构造/执行（Qt 线程亲和性），
 # 而 _crash_sink 会被任意线程调起（四个守护线程 + 主线程槽异常）；旧实现直接在出事线程上
 # 构造弹窗，轻则弹不出来、重则二次崩溃——兜底自己变成新故障源。代理在 main() 装配期（应用
 # 已建、主线程）实例化并接管弹窗：worker 线程经信号跨线程投递（Queued）回主事件循环弹窗，
@@ -52,7 +52,7 @@ def _crash_sink(exc_type: type[BaseException], exc: BaseException, tb: Traceback
 
 
 def _threading_crash_sink(args: threading.ExceptHookArgs) -> None:
-    # M-80：threading.excepthook 是**另一条钩子**，sys.excepthook 管不到线程。默认形态把
+    # threading.excepthook 是**另一条钩子**，sys.excepthook 管不到线程。默认形态把
     # 线程未捕获异常打到 stderr——pythonw / 冻结 console=False 下 stderr 为 None，等于静默
     # 吞掉；recorder-output / gui-stop / gui-quit / danmaku tail 四个守护线程此前正处在这个
     # 裸奔面里。归并进与主线程同一出口（落盘 + 弹窗），语义为「异常至少留下痕」。

@@ -3,15 +3,15 @@
 #
 # 被测对象是按设计**不 import src/** 的单文件副本（src/scheduler.py 并发实现与部分录制链的
 # 物理孪生），因此主线用例抓不到它的语义漂移，必须自带一份：
-#   M-90  --selftest 的离线契约：自检只准驱动假实现。旧形态只换绑 http_probe 与
+#   --selftest 的离线契约：自检只准驱动假实现。旧形态只换绑 http_probe 与
 #           _throttle_probe，而 HLS 分支最终调用的是**真实** http_request —— 自检确实对
 #           cdn.example 发包，异常又被 `except Exception: return True` 吞成 PASS（假绿）。
 #           本文件把「建立 socket 的唯一接缝」换成拒绝器，用自检**必须全绿且一次都没碰到
 #           该接缝**来钉住契约；
-#   M-89  terminate_all_ffmpeg 必须在「写 q」与 terminate() 之间留出有界等待：Windows 下
+#   terminate_all_ffmpeg 必须在「写 q」与 terminate() 之间留出有界等待：Windows 下
 #           terminate() 即 TerminateProcess 硬杀，不等就等于优雅收尾那一级从未生效，
 #           停止录制后的 mp4/mov 缺 moov、不可播放；
-#   M-42 / M-36a  主线 PlatformBreaker/Scheduler 的两处修复回灌后，副本侧的同名不变量
+#   该主线 PlatformBreaker/Scheduler 的两处修复回灌后，副本侧的同名不变量
 #           （min_samples 钳到窗口内、fail_rate=0 不得在满成功窗口熔断、熔断表 LRU 上限且
 #           不逐出仍在熔断中的键）。
 #
@@ -107,7 +107,7 @@ class TestStandaloneSelftestOfflineContract:
     def test_selftest_never_reaches_the_socket_seam(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # M-90：http_request / http_probe / _confirm_get_ok 三条出站路径都经 _build_opener 建立
+        # http_request / http_probe / _confirm_get_ok 三条出站路径都经 _build_opener 建立
         # 连接——那是本副本**唯一**造出 socket 的接缝。把它换成拒绝器后自检仍须 0 失败，
         # 且拒绝器一次都没被调用（后半句才是「没发真实请求」的直接证据，光看 rc 会被
         # 「异常被保守吞成 True」的旧形态掩盖）。
@@ -134,7 +134,7 @@ class TestStandaloneSelftestOfflineContract:
     ) -> None:
         # 换绑必须随 finally 还原：自检结束后 http_request / http_probe / _throttle_probe
         # 仍指向真实实现，且 _SELFTEST_ACTIVE 归位为 False——否则「自检模式下的保守放行改判失败」
-        # 会泄漏到正常录制链路，把「列表 GET 失败交由 ffmpeg」的真实语义改掉（M-90 的另一半）。
+        # 会泄漏到正常录制链路，把「列表 GET 失败交由 ffmpeg」的真实语义改掉（该另一半）。
         saved = (SA.http_request, SA.http_probe, SA._throttle_probe)
         monkeypatch.setattr(SA, "_build_opener", lambda proxy: (_ for _ in ()).throw(AssertionError("离线守卫")))
         SA.selftest()
@@ -155,7 +155,7 @@ class TestStandaloneSelftestOfflineContract:
 
 class TestStandaloneTerminateStages:
     def test_graceful_stage_is_allowed_to_finish_before_terminate(self, _restore_ffmpeg_registry: None) -> None:
-        # M-89：写 q + close 之后必须先进入有界等待。旧实现紧接着无条件 terminate()，
+        # 写 q + close 之后必须先进入有界等待。旧实现紧接着无条件 terminate()，
         # Windows 下即 TerminateProcess 硬杀——「优雅收尾补写 moov」那一级从未生效。
         proc = _GracefulExitPopen()
         SA._ACTIVE_FFMPEG.add(proc)
@@ -196,7 +196,7 @@ class TestStandaloneTerminateStages:
 
 class TestStandaloneBreakerClamps:
     def test_min_samples_is_clamped_to_window(self) -> None:
-        # M-42 回灌：MIN_SAMPLES(8) > window(3) 时旧写法永不开熔断，坏 host 拿满全部流量。
+        # 回灌：MIN_SAMPLES(8) > window(3) 时旧写法永不开熔断，坏 host 拿满全部流量。
         breaker = SA.PlatformBreaker("t", window=3, fail_rate=0.5, cooldown=60.0)
         assert breaker._min_samples == 3
         for _ in range(3):
@@ -205,7 +205,7 @@ class TestStandaloneBreakerClamps:
         assert breaker.allow() is False
 
     def test_zero_fail_rate_does_not_open_on_all_success(self) -> None:
-        # M-42 回灌：fail_rate=0 时 0 >= 0 恒真，全成功窗口不得被判熔断。
+        # 回灌：fail_rate=0 时 0 >= 0 恒真，全成功窗口不得被判熔断。
         breaker = SA.PlatformBreaker("t", window=10, fail_rate=0.0, cooldown=60.0)
         for _ in range(10):
             breaker.record(True)
@@ -220,7 +220,7 @@ class TestStandaloneBreakerClamps:
 
 class TestStandaloneBreakerTableBound:
     def test_breaker_table_is_bounded_by_lru(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # M-36a 回灌：key 来自 host_of(record_url)，属外部可控输入，旧写法只增不减。
+        # 回灌：key 来自 host_of(record_url)，属外部可控输入，旧写法只增不减。
         monkeypatch.setattr(SA.Scheduler, "MAX_BREAKERS", 4)
         scheduler = SA.Scheduler()
         for i in range(30):

@@ -188,7 +188,7 @@ class FakeProcess:
 
 
 def _popen_class_returning(proc: FakeProcess) -> type[Any]:
-    # SEV-2225 迁移：Popen 替身必须是**类**且定义 __class_getitem__——本仓 main.check_subprocess
+    # 迁移：Popen 替身必须是**类**且定义 __class_getitem__——本仓 main.check_subprocess
     # 的内层函数注解 subprocess.Popen[bytes] 在 def 时即求值，lambda / 缺该钩子的普通类分别报
     # 'function' object is not subscriptable / type 'X' is not subscriptable（AGENTS.md 硬约定）。
     # __new__ 直接返回预置实例（with subprocess.Popen(...) 拿到的就是它）；每次调用的实参记进

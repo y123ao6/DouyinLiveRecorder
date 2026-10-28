@@ -2,21 +2,20 @@
 # src/ui_fonts.py — GUI 字体自选：偏好持久化、可用字体枚举与私有字体装载。
 #
 # 与 ui_theme / ui_scale 同一套约定：偏好落在 config.ini [GUI] 段、读写经
-# src/web_config.update_or_append_config_line（行级替换 + 缺节补建 + 原子写），
-# 刻意不用 configparser 覆写整文件（会把用户手写注释连带冲掉）。
+# src/web_config.update_or_append_config_line（行级替换 + 缺节补建 + 原子写），刻意不用
+# configparser 覆写整文件（会把用户手写注释连带冲掉）。
 #
-# [为什么禁 woff2] Tk 在 Windows 上经 GDI 取字体，只认 SFNT 容器（.ttf/.otf/.ttc）；woff2
-# 需先解压才能交给 GDI，为收尾一个下拉框引入解压依赖不划算，故导入环节直接把 woff2 挡在
-# 门外并给出明确原因——比「选了没反应」好。系统字体表里已装好的字体（含 woff2 转 ttf 后的
-# 成品）仍可从下拉框选中。
+# [为什么禁 woff2] Tk 在 Windows 上经 GDI 取字体，只认 SFNT 容器（.ttf/.otf/.ttc）；woff2 需先解压
+# 才能交给 GDI，为收尾一个下拉框引入解压依赖不划算，故导入环节直接把 woff2 挡在门外并给出明确原因
+# ——比「选了没反应」好。系统字体表里已装好的字体（含 woff2 转 ttf 后的成品）仍可从下拉框选中。
 #
-# [为什么写「family 名」而不是文件路径给 Tk] Tk 的字体标识是 family 名（-font 字符串的三
-# 元组首项）。文件注册成进程私有字体后 GDI 会把它并入字体枚举，Tk 就能按 family 名取到；
-# 此后 Fonts 侧切换只做一次 configure(family=...)，不涉及路径解析。
+# [为什么写「family 名」而不是文件路径给 Tk] Tk 的字体标识是 family 名（-font 字符串的三元组首项）。
+# 文件注册成进程私有字体后 GDI 会把它并入字体枚举，Tk 就能按 family 名取到；此后 Fonts 侧切换只做
+# 一次 configure(family=...)，不涉及路径解析。
 #
-# [回退策略] Tk 的 family 名不被识别时静默回退到默认字体族（不报错不弹窗；GDI 注册是同步的，
-# 没有 font-display 那样的异步加载期）。优点是不会 FOIT/FOUT 闪烁，坑是选错了看不出来——
-# 故调用方必须先确认「注册后 family 真能被 Tk 解析」（family_resolves）才允许选中。
+# [回退策略] Tk 的 family 名不被识别时静默回退到默认字体族（不报错不弹窗；GDI 注册是同步的，没有
+# font-display 那样的异步加载期）。优点是不会 FOIT/FOUT 闪烁，坑是选错了看不出来——故调用方必须先
+# 确认「注册后 family 真能被 Tk 解析」（family_resolves）才允许选中。
 
 import os
 import shutil
@@ -142,11 +141,11 @@ def is_family_available(family: str, root: Any = None) -> bool:
 
 # Tk 能否真的用这个族名取到一款**独立**字体。
 #
-# [为什么需要这第二个判据] AddFontResourceExW(FR_PRIVATE) 成功后 Tk 能按该名字排出字形，
-# 但 tkfont.families() 永远列不到它（Tk 只枚举注册表里已安装的字体）；而缺字体时 Tk 又
-# 静默回退到兜底字体、同样不在列表里且不报错——所以「族名在 families() 里」既非必要也不
-# 充分。唯一能区分「真加载」与「静默回退」的办法：让 Tk 自己解析一次，与必然不存在的族名
-# 所得的兜底族名比对，两者不同即说明该名字确实指向了某个特定字体。
+# [为什么需要这第二个判据] AddFontResourceExW(FR_PRIVATE) 成功后 Tk 能按该名字排出字形，但
+# tkfont.families() 永远列不到它（Tk 只枚举注册表里已安装的字体）；而缺字体时 Tk 又静默回退到兜底
+# 字体、同样不在列表里且不报错——所以「族名在 families() 里」既非必要也不充分。唯一能区分「真加载」
+# 与「静默回退」的办法：让 Tk 自己解析一次，与必然不存在的族名所得的兜底族名比对，两者不同即说明该
+# 名字确实指向了某个特定字体。
 def family_resolves(family: str, root: Any = None) -> bool:
     if not family:
         return False
@@ -162,9 +161,9 @@ def family_resolves(family: str, root: Any = None) -> bool:
 
 # ─── SFNT 解析：从字体文件里读出 family 名 ─────────────────────────────────
 #
-# 不引入 fontTools 这类依赖：只需要 name 表里的一条记录，而手上已经有字节流。
-# 布局：sfnt 版本(4B) + numTables(2B) + ...，随后每张表 16B 目录项（tag/checksum/offset/length）。
-# 'ttc' 容器是 ttcf 头 + 各字体表目录偏移数组，这里取第一个字体（无多路标可选）。
+# 不引入 fontTools 这类依赖：只需要 name 表里的一条记录，而手上已经有字节流。布局：sfnt 版本(4B) +
+# numTables(2B) + ...，随后每张表 16B 目录项（tag/checksum/offset/length）。'ttc' 容器是 ttcf 头 +
+# 各字体表目录偏移数组，这里取第一个字体（无多路标可选）。
 
 
 def _iter_table_dirs(data: bytes) -> tuple[int, int] | None:
@@ -207,11 +206,10 @@ def sfnt_family_name(path: str | Path) -> str | None:
         data = Path(path).read_bytes()
     except Exception:
         return None
-    # M-83（2026-10-21）：解析段必须整体在 try 内。旧实现只把 read_bytes 圈住，而
-    # _iter_table_dirs 的 ttc 分支会对攻击者可控的 offset 直接 struct.unpack_from
-    # （offset+4 越界即抛 struct.error），_find_table 与下方 name 记录遍历同理——
-    # 一个损坏/恶意的 .ttf/.ttc 会让 struct.error 一路穿透「导入字体…」回调
-    # （register_private_font 与 main_window 的对话框都不接这个异常），窗口层直接炸。
+    # 2026-10-21：解析段必须整体在 try 内：_iter_table_dirs 的 ttc 分支会对文件内 offset 直接 struct.unpack_from
+    # （offset+4 越界即抛 struct.error），_find_table 与下方 name 记录遍历同理——一个损坏/恶意的
+    # .ttf/.ttc 会让 struct.error 一路穿透「导入字体…」回调（register_private_font 与 main_window 的
+    # 对话框都不接这个异常），窗口层直接炸。
     # 契约不变量：本函数的失败出口恒为 None，坏字节一律归入「坏文件由调用方提示」。
     try:
         located = _iter_table_dirs(data)
@@ -256,7 +254,7 @@ def sfnt_family_name(path: str | Path) -> str | None:
             best = best or candidate
         return best
     except Exception:
-        # struct.error（未校验偏移越界的 unpack_from）与一切解析期异常都收敛成 None：
+        # 与上段同一契约：解析期异常（含 struct.error）一律收敛成 None，
         # 调用链上没有任何一处准备处理「字体文件解析炸出来」的异常形态。
         return None
 
@@ -272,8 +270,8 @@ _GDI32: Any | None = None
 
 
 # 加载并声明 gdi32。返回 None 表示拿不到（非 Windows / 被策略限制），调用方必须显式判空。
-# 平台专属符号（WinDLL 只存在于 Windows typeshed）必须先按 sys.platform 字面量早返回，
-# 否则 mypy --platform linux 报 attr-defined。
+# 平台专属符号（WinDLL 只存在于 Windows typeshed）必须先按 sys.platform 字面量早返回，否则
+# mypy --platform linux 报 attr-defined。
 def _get_gdi32() -> Any | None:
     global _GDI32
     if _GDI32 is not None:
@@ -318,11 +316,10 @@ def install_font_file(source: str | Path, app_root: str | Path) -> Path | None:
     try:
         shutil.copy2(src, target)
     except Exception as e:
-        # [为什么必须留这一行日志] 调用方拿到 None 只会打「导入字体失败」的泛化提示
-        # （main_window 的对话框文案是分类级的，不含 OSError 细节）。异常若在此静默收敛，
-        # 现场就只剩「用户复述点了一次没反应」——文件被占用 / 目录只读 / 磁盘满 / 源文件
-        # 在复制瞬间被移走（实测到的 FileNotFoundError [WinError 2]）在 UI 上完全同形，
-        # 只有日志能把它们分开。
+        # 调用方拿到 None 只会打「导入字体失败」的泛化提示（main_window 的对话框文案是分类级的，
+        # 不含 OSError 细节）。异常若在此静默收敛，现场就只剩「用户复述点了一次没反应」——文件被占用 /
+        # 目录只读 / 磁盘满 / 源文件在复制瞬间被移走（实测到的 FileNotFoundError [WinError 2]）在 UI 上
+        # 完全同形，只有日志能把它们分开。
         logger.warning(
             i18n.tr(
                 "复制字体文件失败: {name} -> {target} - {type_name}: {err}",
@@ -336,20 +333,19 @@ def install_font_file(source: str | Path, app_root: str | Path) -> Path | None:
     return target
 
 
-# Windows 保留设备名。挡它的理由不是「本机写不进去」——新构建的 Win32 名称解析已放宽，
-# CON.ttf/AUX.ttf 经 open() 也能落成普通文件；真正原因是**可移植性**：同一份
-# config/fonts/CON.ttf 在更早的 Windows 构建、资源管理器改名/复制、以及未走 \\?\ 前缀的
-# 第三方 API 下会被当设备或直接拒名，而这个文件名还会被写进 gui_font_file 持久化并在下次
-# 启动读回，等于把一台机器上「看着没事」的路径分发到所有机器。COM10/LPT10 刻意不扩——
-# MSDN 保留段只到 1..9，扩到两位数会误改合法文件名。
+# Windows 保留设备名。挡它的理由不是「本机写不进去」——新构建的 Win32 名称解析已放宽，CON.ttf/AUX.ttf
+# 经 open() 也能落成普通文件；真正原因是**可移植性**：同一份 config/fonts/CON.ttf 在更早的 Windows
+# 构建、资源管理器改名/复制、以及未走 \\?\ 前缀的第三方 API 下会被当设备或直接拒名，而这个文件名还会
+# 被写进 gui_font_file 持久化并在下次启动读回，等于把一台机器上「看着没事」的路径分发到所有机器。
+# COM10/LPT10 刻意不扩——MSDN 保留段只到 1..9，扩到两位数会误改合法文件名。
 _WIN_RESERVED_NAMES: Final[frozenset[str]] = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 )
 
 
-# 公开名（原为 _safe_filename）：图标导入（src/ui_icons.py）与字体导入共用同一套清洗口径——
-# 两处各写一份就会出现「字体挡得住的保留名、图标挡不住」，而这种失败只在特定文件名上发生、
-# 排查成本极高。旧私有名保留为别名：既有调用点与 tests/test_ui_fonts.py 直接按它取用。
+# 公开名（原为 _safe_filename）：图标导入（src/ui_icons.py）与字体导入共用同一套清洗口径——两处
+# 各写一份就会出现「字体挡得住的保留名、图标挡不住」，而这种失败只在特定文件名上发生、排查成本极高。
+# 旧私有名保留为别名：既有调用点与 tests/test_ui_fonts.py 直接按它取用。
 def safe_filename(name: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "._- " else "_" for ch in name).strip(" .")
     cleaned = cleaned.replace(" ", "_")

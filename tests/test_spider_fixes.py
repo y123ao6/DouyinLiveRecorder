@@ -25,12 +25,12 @@ def _unwrap(func: object) -> Any:
 
 
 def _subprocess_shim(run: Any = None, popen: Any = None) -> types.SimpleNamespace:
-    # SEV-2225 迁移：把 subprocess 替身装进 **src/utils** 的命名空间，不再改写 stdlib 模块本体。
+    # 迁移：把 subprocess 替身装进 **src/utils** 的命名空间，不再改写 stdlib 模块本体。
     # 旧写法 patch("subprocess.run") 的容器是全进程唯一的 stdlib 模块对象，with 窗口内同进程的
     # harness safe-delete 守卫线程（其 subprocess.run 依赖真 Popen 的上下文管理协议，否则报
     # SAFE_DELETE_BULK_GUARD_ERROR）、loguru enqueue 线程、coverage 全部拿到假实现。
     # vars(subprocess) 浅拷贝保留 PIPE / STDOUT / TimeoutExpired / CalledProcessError 等常量，仅换 run。
-    # [2026-10-19 补] L-19 把 run_node_script_async 的执行原语从 subprocess.run 换成自管
+    # [2026-10-19 补] 该把 run_node_script_async 的执行原语从 subprocess.run 换成自管
     # Popen + communicate(input=…, timeout=…)（外层再包 asyncio.wait_for，超时回收整棵进程树），
     # 于是本 shim 的「需要换掉的那一位」从 run 变成 Popen；run 位保留给超时回收支路
     # （_kill_node_process_tree 在 Windows 上仍调 subprocess.run 起 taskkill），两者都可选。
@@ -73,7 +73,7 @@ def _fake_popen_class(
             if calls is not None:
                 calls.append("communicate")
             if captured is not None:
-                # L-19 后「脚本字节经 stdin 交给 node」与「内层超时预算」都落在这两个关键字实参上
+                # 后「脚本字节经 stdin 交给 node」与「内层超时预算」都落在这两个关键字实参上
                 captured["input"] = kwargs.get("input")
                 captured["timeout"] = kwargs.get("timeout")
             return stdout, b""
@@ -141,7 +141,7 @@ class TestMigu:
     async def test_subprocess_failure_converts_to_program_error(self) -> None:
         captured: dict[str, Any] = {}
 
-        # [L-19] run_node_script_async 现走自管 Popen+communicate，非零退出码由**被测实现**自己转成
+        #  run_node_script_async 现走自管 Popen+communicate，非零退出码由**被测实现**自己转成
         # CalledProcessError（复刻旧 check=True 契约，见 src/utils.py 的 `if proc.returncode != 0`），故替身只置 returncode。
         raw = _unwrap(sp.get_migu_stream_url)
         with (
@@ -164,8 +164,8 @@ class TestMigu:
             return self._basic_json()
 
         # 反向见证：is_live/record_url 只依赖 fake_req，不记 hits 则 Popen 替身没被走到也照样绿
-        # （L-19 换执行原语后曾长期起真实 node 进程），hits 必须记到 spawn+communicate。
-        # migu.js（2026-08 重写版）输出契约：带 ddCalcu/sv 参数的完整地址，按字节捕获（MID-62，无 text=True）。
+        # （该换执行原语后曾长期起真实 node 进程），hits 必须记到 spawn+communicate。
+        # migu.js（2026-08 重写版）输出契约：带 ddCalcu/sv 参数的完整地址，按字节捕获（无 text=True）。
         hits: list[str] = []
         raw = _unwrap(sp.get_migu_stream_url)
         # 替身装在 src/utils 上（见 _subprocess_shim），理由同 TestMigu 首条用例
@@ -228,7 +228,7 @@ class TestFaceit:
 
 class TestShopee:
     # shopee 解析：重定向拼接须用完整 TLD 后缀，畸形/重定向失败 URL 须判未直播
-    # SEV-06 修复（2026-09-20）：本用例旧版传 https://shopee.co.id/live——该形态不含
+    # 本用例旧版传 https://shopee.co.id/live——该形态不含
     # "live.shopee" 路由键（main.py 永不把这类地址分发到本函数），恰好绕开真实 bug：
     # 剥 live. 前缀那一步曾缺失，可路由形态拼出 https://live.shopee.shopee.co.id
     # （不存在的 host → 永远「未开播」）。断言改用真实会被路由的直链形态。
@@ -251,7 +251,7 @@ class TestShopee:
         # 钉死完整 host：旧缺陷形态是 https://live.shopee.shopee.co.id/...（双 shopee）
         assert session_url == "https://live.shopee.co.id/api/v1/session/802458"
 
-    # 以下三个纯函数用例覆盖全部真实 TLD 形态（SEV-06 报告要求的 sg / co.id / com.my）。
+    # 以下三个纯函数用例覆盖全部真实 TLD 形态（该报告要求的 sg / co.id / com.my）。
     # split(".", 1) 保留「首段之后全部」才能正确得到 co.id / com.my 这类两段式后缀。
     def test_host_suffix_sg(self) -> None:
         assert sp._shopee_host_suffix("https://live.shopee.sg/share?from=live&session=802458") == "sg"

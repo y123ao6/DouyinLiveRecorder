@@ -50,9 +50,9 @@ def _opener_https_context(opener: urllib.request.OpenerDirector) -> ssl.SSLConte
 
 
 class TestGetOpener:
-    # MID-2266 附带核对：两条用例原先只 `assert opener is not None`——把 _get_opener 的
+    # 附带核对：两条用例原先只 `assert opener is not None`——把 _get_opener 的
     # 两个分支合并成「恒返回 insecure opener」也会同时全绿，等于没锁「按 ssl_verify 分流」
-    # 这条安全不变量（F-12 的惰性降级面）。现按**对象同一性**断言命中的是哪一支 opener，
+    # 这条安全不变量（该惰性降级面）。现按**对象同一性**断言命中的是哪一支 opener，
     # 并直接查各支 HTTPSHandler 实际挂上的 SSLContext.verify_mode。
 
     @patch("src.sync_http.config")
@@ -75,7 +75,7 @@ class TestGetOpener:
 
     @patch("src.sync_http.config")
     def test_explicit_override_beats_global_switch(self, mock_config: MagicMock) -> None:
-        # F-12 的单次覆盖语义：显式传值以该次调用为准，不被全局开关拖下水
+        # 单次覆盖语义：显式传值以该次调用为准，不被全局开关拖下水
         # （凭据类调用点可强制校验）。判据同样是对象同一性，不是「非 None」。
         mock_config.ssl_verify = False
         assert _get_opener(True) is _opener_secure
@@ -149,7 +149,7 @@ class TestSyncReq:
         mock_session = MagicMock()
         mock_session_fn.return_value = mock_session
         mock_response = MagicMock()
-        # M-18（2026-10-19）：代理分支改为 stream=True + iter_content 分块计数，响应体不再取
+        # 2026-10-19：代理分支改为 stream=True + iter_content 分块计数，响应体不再取
         # .text（requests 会先无上限地全量解码）。替身因此要给 iter_content 供块、并给出
         # headers（上限选择依赖 Content-Encoding）。
         mock_response.headers = {}
@@ -169,7 +169,7 @@ class TestSyncReq:
         mock_session = MagicMock()
         mock_session_fn.return_value = mock_session
         mock_response = MagicMock()
-        # M-18（同 test_proxy_get_request）：体走 iter_content 分块交付
+        # （同 test_proxy_get_request）：体走 iter_content 分块交付
         mock_response.headers = {}
         mock_response.iter_content.return_value = [b"post response"]
         mock_response.url = "http://example.com"
@@ -201,7 +201,7 @@ class TestSyncReq:
         mock_session = MagicMock()
         mock_session_fn.return_value = mock_session
         mock_response = MagicMock()
-        # M-18（同 test_proxy_get_request）：体走 iter_content 分块交付
+        # （同 test_proxy_get_request）：体走 iter_content 分块交付
         mock_response.headers = {}
         mock_response.iter_content.return_value = [b"json response"]
         mock_response.url = "http://example.com"
@@ -289,7 +289,7 @@ class TestSyncReq:
     def test_http_error_400_oversized_body_hits_read_cap(
         self, mock_opener_fn: MagicMock, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # M-03（2026-10-18 审查）回归锁：400 分支必须与成功路径同走 _read_capped——
+        # （2026-10-18 审查）回归锁：400 分支必须与成功路径同走 _read_capped——
         # 原实现 `e.read()` 无参全量读，超大 400 错误体直接威胁进程内存（对端给多少申请多少）。
         # 超限后的失败语义按既有契约收敛为空串 + 脱敏 error 日志（不得抛穿、不得截断放行）。
         # 上限经 monkeypatch 压低（不构造 8MB 真体）；变异验证（把 _read_capped 退回 e.read()）
@@ -325,7 +325,7 @@ class TestSyncReq:
 
         with patch("src.sync_http.logger") as mock_logger:
             result = sync_req("http://example.com")
-            # L-27（2026-10-19）：同一次失败现在只落**一条** error（最外层统一失败分支）。
+            # 2026-10-19：同一次失败现在只落**一条** error（最外层统一失败分支）。
             # 原实现在内层还有两条「记一条 + 原样上抛」，于是同一次请求固定产生
             # warning + error + error 三条日志；三条都只描述同一件事，纯属浪费轮转容量。
             mock_logger.warning.assert_not_called()
@@ -335,7 +335,7 @@ class TestSyncReq:
 
     @patch("src.sync_http.config")
     @patch("src.sync_http._get_opener")
-    # S-09 residual（2026-10-21）：落地复核现在也走 DNS 判定链（_redirect_hop_rejection_reason 内含
+    # residual（2026-10-21）：落地复核现在也走 DNS 判定链（_redirect_hop_rejection_reason 内含
     # internal_stream_target_reason），故这两条用例统一挂 _public_dns seam，不再依赖本机真实解析——
     # 「redirected.com」这类名字在无外网环境解析失败会被判「主机名无法解析」而拒绝，属判定生效而非回归。
     def test_abroad_request(self, mock_opener_fn: MagicMock, mock_config: MagicMock, _public_dns: None) -> None:
@@ -380,7 +380,7 @@ class TestSyncReq:
         assert "unexpected" not in result
 
 
-# F-12：CERT_NONE 上下文 / opener 惰性化 + 单次请求 ssl_verify 覆盖。
+# CERT_NONE 上下文 / opener 惰性化 + 单次请求 ssl_verify 覆盖。
 # 契约：①不校验证书的对象只在真正需要时创建；②显式覆盖优先于控制面全局开关；
 # ③覆盖值必须透传到 urllib 与 requests（代理）两条实现路径。
 class TestSslVerifyScoping:
@@ -398,7 +398,7 @@ class TestSslVerifyScoping:
         assert _resolve_ssl_verify(False) is False
 
     def test_insecure_context_is_built_lazily_and_cached(self) -> None:
-        # 惰性：未走到降级分支前不构造 CERT_NONE 上下文（import 期常驻是 F-12 的根因）
+        # 惰性：未走到降级分支前不构造 CERT_NONE 上下文（import 期常驻是该根因）
         import importlib
 
         import src.sync_http as sync_http_mod
@@ -452,7 +452,7 @@ class TestSslVerifyScoping:
         assert kwargs["verify"] is False
 
 
-# MID-27（2026-09-20）：代理地址归一必须与异步侧同址同语义。
+# 2026-09-20：代理地址归一必须与异步侧同址同语义。
 # 配置项「代理地址」由 read_config_value 原样读入，用户普遍写裸 127.0.0.1:7890；
 # 归一缺失时 requests 抛 InvalidSchema/InvalidURL，被外层 except 吞成空串
 # ——本仓列为最难归因的失败形态（「开代理后 sync 解析全失败、async 正常」）。
@@ -502,7 +502,7 @@ class TestProxyAddrNormalization:
         mock_session_fn.assert_not_called()
 
 
-# MIN-08 的配套出口：需要状态码的调用点（Weverse 等凭据端点）经 session() 复用同一
+# 配套出口：需要状态码的调用点（Weverse 等凭据端点）经 session() 复用同一
 # 线程级 Session，而不是绕过本模块直接 requests.post。
 class TestSharedSessionAccessor:
     @patch("src.sync_http._session")
@@ -514,7 +514,7 @@ class TestSharedSessionAccessor:
 
 
 # ─────────────────────────────────────────────────────────────
-# S-09（CODE_REVIEW 2026-10-21）：同步通道的内网闸门
+# （CODE_REVIEW 2026-10-21）：同步通道的内网闸门
 # ─────────────────────────────────────────────────────────────
 # 判据复用 async_http.internal_stream_target_reason（唯一事实源），本组只锁「有没有接上」与
 # 「接在哪条路径上」，不复刻内网名单。打桩边界与 wp_b_netguard 同口径：只钉 DNS seam
@@ -654,7 +654,7 @@ class TestSyncReqInternalTargetGate:
         session_spy.post.assert_not_called()
 
     def test_public_host_still_works(self, _public_dns: None, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 反向锁：闸门不得把正常公网请求一起挡掉（否则 S-09 就成了新的漏录根因）。
+        # 反向锁：闸门不得把正常公网请求一起挡掉（否则该就成了新的漏录根因）。
         fake_resp = MagicMock()
         fake_resp.headers = {"Content-Encoding": ""}
         fake_resp.read.return_value = b"body"
@@ -667,7 +667,7 @@ class TestSyncReqInternalTargetGate:
 
     def test_rejection_log_masks_credentials(self, _public_dns: None) -> None:
         # 用项目 logger（src/logger.py）而非 `from loguru import logger as X`：全仓钉了
-        # 「不得给 logger 起别名」的形态锁（MID-2247），别名会同时绕过 i18n 门禁。
+        # 「不得给 logger 起别名」的形态锁，别名会同时绕过 i18n 门禁。
         from src.logger import logger
 
         lines: list[str] = []
@@ -764,7 +764,7 @@ class TestSyncReqRedirectHopGate:
 
 
 # ─────────────────────────────────────────────────────────────
-# M-28（CODE_REVIEW 2026-10-21）：代理分支 stream=True 的响应必须关闭
+# （CODE_REVIEW 2026-10-21）：代理分支 stream=True 的响应必须关闭
 # ─────────────────────────────────────────────────────────────
 # 原先 redirect_url 提前 return / 读体抛错两条出口都不 close()，连接只能等 urllib3 的 GC 收尸。
 # 判据只有一条：无论走哪条出口，响应对象的 close() 都必须被调用一次。
@@ -805,7 +805,7 @@ class TestProxyStreamResponseIsClosed:
 
 
 # ─────────────────────────────────────────────────────────────
-# M-33（CODE_REVIEW 2026-10-21）：json_data 静默退化成 GET
+# （CODE_REVIEW 2026-10-21）：json_data 静默退化成 GET
 # ─────────────────────────────────────────────────────────────
 # 原实现只对 dict/list 生效，传 str/int/bool 时请求体被静默丢弃、请求退化成 GET；与 async 侧
 # 「data/json_data 同传显式拒绝」同口径后，编程错误一律在发请求前冒出来（不伪装成网络失败）。
@@ -860,7 +860,7 @@ class TestJsonDataShapeIsRejected:
 
 
 # ─────────────────────────────────────────────────────────────
-# S-09 残余（CODE_REVIEW 2026-10-21）：abroad 分支落地复核升级为与入口/逐跳同一份判据
+# 残余（CODE_REVIEW 2026-10-21）：abroad 分支落地复核升级为与入口/逐跳同一份判据
 # ─────────────────────────────────────────────────────────────
 # _HopGuardRedirectHandler 只挂在本模块自建的两支 opener 上；abroad 分支经进程全局默认 opener，
 # 原判据只有 _reject_unsafe_scheme（协议形态白名单）——公网 URL 302 到 http://169.254.169.254/
@@ -906,7 +906,7 @@ class TestAbroadLandingInternalGate:
 
 
 # ─────────────────────────────────────────────────────────────
-# M-33 残余（CODE_REVIEW 2026-10-21）：直连分支的 JSON 请求体必须带 Content-Type
+# 残余（CODE_REVIEW 2026-10-21）：直连分支的 JSON 请求体必须带 Content-Type
 # ─────────────────────────────────────────────────────────────
 # 代理分支交给 requests 的 json= 序列化并自动补 application/json；直连分支自行 json.dumps，
 # 而 urllib.Request 从不补头——修复前服务端按 form/text 解析 JSON body，与代理分支行为分叉。
@@ -956,7 +956,7 @@ class TestJsonDataContentTypeHeader:
 
 
 # ─────────────────────────────────────────────────────────────
-# M-28 残余（CODE_REVIEW 2026-10-21）：线程级 Session 的有界确定性回收
+# 残余（CODE_REVIEW 2026-10-21）：线程级 Session 的有界确定性回收
 # ─────────────────────────────────────────────────────────────
 # 修复前 Session 只在 atexit 关闭，已结束房间线程的连接池要等 GC（非确定性）；现在 _session()
 # 每次进入先关闭+摘除「所属线程已不再存活」的登记条目，登记表另有硬上限（达上限时新 Session

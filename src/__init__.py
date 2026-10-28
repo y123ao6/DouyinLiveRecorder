@@ -74,7 +74,7 @@ def get_danmaku_collector(
     danmaku_args: Any,
     base_filename: str,
     segment_seconds: Optional[float] = 1800.0,
-    # CR-04：默认 None 而非 True——True 会顶掉平台类自己刻意设的默认值（斗鱼为 False），
+    # 默认 None 而非 True——True 会顶掉平台类自己刻意设的默认值（斗鱼为 False），
     # 让该平台的普通弹幕被静默丢弃且无日志；None 表示调用方未指定、不覆盖平台默认。
     only_fans: Optional[bool] = None,
     room_name: Optional[str] = None,

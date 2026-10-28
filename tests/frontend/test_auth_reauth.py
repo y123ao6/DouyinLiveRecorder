@@ -1,12 +1,12 @@
 # tests/frontend/test_auth_reauth.mjs 的 pytest 驱动入口（与 test_frontend_regression_gates.py 同构）。
 #
-# 被驱动的 .mjs 是 CODE_REVIEW_2026-09-29_2 的 M-22/M-26 前端行为锁：node:vm 沙箱驱动真实
+# 被驱动的 .mjs 是前端行为锁：node:vm 沙箱驱动真实
 # web/app.js，走真实事件链路（tab → GET /api/config → 改 input → 保存 → confirm → 口令窗 → PUT），
 # 断言真实请求体与 toast 文案，零 npm 依赖。包装把它接进 pytest / CI 回路（AGENTS「.mjs 真用例
 # + .py 包装」双文件结构），否则只在手跑 node 时执行、CI 静默漏跑。
 #
 # 子进程驱动复用 tests/test_frontend_quality_ui.py 的 _run_node / _parse_node_summary
-# （MID-64 的管道挂死与 GBK 解码坑已在那侧沉淀），不复制第二份。Node 缺失时整体 skip
+# （管道挂死与 GBK 解码坑已在那侧沉淀），不复制第二份。Node 缺失时整体 skip
 # （环境限制，不是失败），CI 侧由 ci.yml「Gate frontend tests not skipped」按 node-id 点名兜住。
 # 新增前端入口须同步补进那条列表。
 from pathlib import Path

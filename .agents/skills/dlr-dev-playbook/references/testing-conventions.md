@@ -186,6 +186,59 @@ proc = subprocess.run(cmd, capture_output=True, text=True)  # 绝不
 5. 安全不变量类测试补做**变异验证**：改坏生产代码确认转红。
 6. 按 SKILL.md 铁律 1 清理临时文件与 `__pycache__` / `.pytest_cache`。
 
+## 11. 修复后受影响测试验证（relevant-check）
+
+审查驱动修复工作流中，代码变更后必须**额外**运行与变更文件直接相关的测试子集，并保留 `[reviewed-relevant-check]` 证据。这是对全量门禁的补充——全量门禁证明「整体没坏」，relevant-check 证明「本次改动点有对应测试真跑过」。
+
+### 步骤
+
+1. **识别受影响测试文件**：`src/x.py` ↔ `tests/test_x.py` 同名映射是起点；若改动涉及跨模块调用链（如 `stream_select.py` 调用 `spider.py`），把调用链上的模块测试一并纳入，不确定时宁多勿漏。
+2. **运行受影响测试**：`pytest tests/test_x.py tests/test_y.py -v`，只列与本次变更直接相关的测试文件，不展开成全量。
+3. **保留证据块**：回复内以 `## [reviewed-relevant-check]` 为标题，包含：
+   - 受影响文件清单（源文件 → 测试文件映射）
+   - 实际执行命令
+   - 退出码
+   - 结果摘要（`N passed / 0 failed / 0 warnings`）
+4. **无对应测试时显式声明**：变更文件无对应测试文件时，必须在证据块内写明「`<文件>` 无对应测试文件，需补」——沉默不算覆盖，下一轮审查判红。
+
+### 证据格式示例
+
+```markdown
+## [reviewed-relevant-check]
+
+受影响文件：
+- `src/config_io.py` → `tests/test_config_io.py`
+- `src/utils.py` → `tests/test_utils.py`
+
+命令：`pytest tests/test_config_io.py tests/test_utils.py -v`
+退出码：0
+结果：12 passed / 0 failed / 0 warnings
+```
+
+### 多模块改动
+
+按模块分段列出，每段独立给退出码与读数：
+
+```markdown
+## [reviewed-relevant-check]
+
+模块 1：`src/config_io.py` → `tests/test_config_io.py`
+命令：`pytest tests/test_config_io.py -v`
+退出码：0
+结果：5 passed / 0 failed / 0 warnings
+
+模块 2：`src/spider.py` → `tests/test_spider.py`
+命令：`pytest tests/test_spider.py -v`
+退出码：0
+结果：8 passed / 0 failed / 0 warnings
+```
+
+### 与全量门禁的关系
+
+- relevant-check 是完成定义第 1 步「门禁全绿」的**补充**而非替代。
+- 全量门禁仍按 `python scripts/run_gates.py` 跑；relevant-check 额外证明「本次改动有对应测试真跑过且通过」。
+- 两者缺一不可：只跑 relevant-check 不跑全量门禁 = 没查整体回归；只跑全量门禁不做 relevant-check = 没有变更与测试的关联性证据。
+
 ## 反模式速查表
 
 | 反模式 | 正确做法 |

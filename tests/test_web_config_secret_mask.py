@@ -1,8 +1,8 @@
-# CR-08/09/10 面板配置脱敏与房间地址校验的回归锁（src/web_config.py，2026-09-21 补）。
+# 09/10 面板配置脱敏与房间地址校验的回归锁（src/web_config.py，2026-09-21 补）。
 #
 # 本文件只补「零引用」的那三个点，不重复 tests/test_web_config.py 已经覆盖的
 # validate_room_target 内网/换行/画质白名单表：
-#   ① _looks_like_secret_value —— CR-10 的**值形态**第二道防线（键名不含凭据关键词、
+#   ① _looks_like_secret_value —— **值形态**第二道防线（键名不含凭据关键词、
 #      但值本身就是凭据：钉钉/企业微信 webhook、带账密的代理地址）。
 #   ② read_config_safe —— 脱敏真正落地处（节白名单 + 键名正则 + 值形态三重，
 #      并把 '***' 回显给面板；掩码跳过是前端写入侧唯一防线，见 AGENTS.md）。
@@ -64,7 +64,7 @@ def _stub_dns(monkeypatch: pytest.MonkeyPatch, table: dict[str, list[str] | OSEr
         ("", False),
         ("   ", False),
         ("ftp://host/path?key=1", True),  # scheme 不限 http/https，只要是 URL 形态
-        # M-61（2026-10-21）：摘掉「必须以 scheme 开头」门后，裸写 user:pass@host 的 userinfo
+        # 2026-10-21：摘掉「必须以 scheme 开头」门后，裸写 user:pass@host 的 userinfo
         # （代理地址的常见形态）不再逃逸兜底；同侧反向：无 @ 无凭据参数的裸串仍不得误伤
         ("user:pass@127.0.0.1:7890", True),
         ("u:p@socks.example", True),
@@ -98,7 +98,7 @@ def test_is_sensitive_key_table(key: str, expected: bool) -> None:
 def test_is_sensitive_item_covers_non_whitelisted_sections() -> None:
     # 节白名单只有 Cookie/账号密码/Authorization；[推送配置] 不在其中，
     # 全靠键名正则把 tgapi令牌 等凭据捞出来——两处判定是「或」关系，缺一不可。
-    # [历史注] M-61（2026-10-21）起 推送配置 **已并入**节白名单，下面第一条因此是双命中；
+    # [历史注] （2026-10-21）起推送配置 **已并入**节白名单，下面第一条因此是双命中；
     # 「仅键名侧命中且节不在白名单」的半边改由 录制设置/代理地址 锁定，两侧各有一条腿在跑
     assert is_sensitive_item("推送配置", "tgapi令牌") is True
     assert is_sensitive_item("Cookie", "dy_cookie") is True  # 仅节名命中
@@ -107,7 +107,7 @@ def test_is_sensitive_item_covers_non_whitelisted_sections() -> None:
 
 
 def test_push_section_is_sensitive_by_name_now() -> None:
-    # M-61（2026-10-21）：[推送配置] 节内存在键名不含凭据关键词、值形态也不像凭据的独立
+    # 2026-10-21：[推送配置] 节内存在键名不含凭据关键词、值形态也不像凭据的独立
     # 敏感项（钉钉@手机号是纯数字、邮箱登录账号可能为空态占位）——键名正则与值形态两道
     # 同时落空，只有节白名单能覆盖。取一个键名/值都不命中另两道的样本，单独钉节名这一道
     assert is_sensitive_item("推送配置", "钉钉@手机号") is True
@@ -140,11 +140,11 @@ def test_read_config_safe_masks_by_section_key_and_value(tmp_path: Path) -> None
     assert result["Cookie"]["dy_cookie"] == SENSITIVE_MASK
     assert result["推送配置"]["tgapi令牌"] == SENSITIVE_MASK
     assert result["推送配置"]["钉钉推送接口链接"] == SENSITIVE_MASK
-    # M-61（2026-10-21）：推送配置 进节白名单后，键名/值形态两都不命中的 钉钉@手机号 也必须掩掉
+    # 2026-10-21：推送配置进节白名单后，键名/值形态两都不命中的钉钉@手机号也必须掩掉
     assert result["推送配置"]["钉钉@手机号"] == SENSITIVE_MASK
     assert result["Web"]["web_password"] == SENSITIVE_MASK
     # 值形态防线不得误伤无凭据 URL；例外表不得掩掉数值型运维参数；非敏感键保持明文。
-    # [历史注] webhook无凭据 原挂在 [推送配置] 下——M-61 该节整节掩码后这半边判据在此节
+    # [历史注] webhook无凭据原挂在 [推送配置] 下——该节整节掩码后这半边判据在此节
     # 不再可表达（节名白名单命中等义于「该节任何非空值都掩」），故挪到非白名单节，
     # 「值形态不误伤」的判据本身逐字保留
     assert result["录制设置"]["webhook无凭据"] == "https://ntfy.sh/topic"

@@ -26,7 +26,7 @@ _GUI_PARENT_ENV = "DLR_GUI_PARENT"
 
 @pytest.fixture(scope="session", autouse=True)
 def gui() -> Iterator[ModuleType]:
-    # MT-05（2026-10-18 审查）：模块顶层 `import gui` 会让 gui.py 的 os.environ["DLR_GUI_PARENT"]="1"
+    # （2026-10-18 审查）：模块顶层 `import gui` 会让 gui.py 的 os.environ["DLR_GUI_PARENT"]="1"
     # 发生在 pytest **收集期**且永不还原——子集运行时，凡在本文件之后才首次导入 src.logger 的文件都会
     # 整会话进入 GUI 父进程模式（不再创建 streamget.log / PlayURL.log），并随 env 泄入本会话拉起的
     # 每一个子进程（同 tests/test_gui_monitor.py 文件头的定性）。故导入挪进夹具 + 导入完立刻还原标记；
@@ -125,7 +125,7 @@ def test_retranslate_failure_does_not_block_language_writeback(
 
 
 def test_gui_is_not_imported_at_module_level() -> None:
-    # MT-05 的自锁：本文件一旦把 `import gui` 放回模块顶层，那条 os.environ["DLR_GUI_PARENT"]="1"
+    # 自锁：本文件一旦把 `import gui` 放回模块顶层，那条 os.environ["DLR_GUI_PARENT"]="1"
     # 就又回到 **收集期**（会话级夹具记录的「进入前形态」届时已被写脏，行为面判据反而看不出来），
     # 而三条行为用例对此完全无感——只能由这条 AST 锁当场点名。判据只问「顶层有没有 gui 的 import
     # 语句」这一不变量，不钉任何变量名或文案，改写法（as / from）仍在判据内。

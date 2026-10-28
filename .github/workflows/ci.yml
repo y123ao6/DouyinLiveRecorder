@@ -23,7 +23,7 @@
 #           ├── concurrency-test   线程安全 / 跨事件循环锁 / 速率限制专项
 #           ├── integration-verify ffmpeg / node 真实环境探测验证
 #           └── build-verify       PyInstaller lite 打包 + CLI/Web/GUI 三入口冒烟
-#   StopRecording.vbs ──── vbs-behavior-test  Windows runner，仅 VBS 变更时触发
+#   StopRecording.vbs ──── vbs-behavior-test  Windows runner，每次 PR / 手动触发均执行
 #                            └────► ci-summary（唯一 required check，汇总上游结果）
 #
 #   职责边界：**本工作流止于验证，不含部署 / 发布**——Release 产出由
@@ -80,12 +80,15 @@
 name: CI
 
 on:
-  # [2026-10-17 修订] 改为**仅手动触发**：push 与 pull_request 两类自动触发已移除，
-  # 现在只有人在 Actions 页面点 Run workflow（或 gh workflow run / REST API）才会执行。
-  # [历史注] 原口径「触发范围固定 main，push 与 PR 都收敛到主干」随本次改动作废（2026-10-17）。
-  # 连带副作用（改完必须同步处理，否则合并会被卡死）：ci-summary 若在分支保护里被勾为
-  # required check，而 CI 不再由 PR 触发，它就永远拿不到本次 PR 的新结果 → 状态停在
-  # pending 或沿用旧结论。请到 Settings → Branches 摘掉该 required check，或改回 PR 触发。
+  # [2026-10-24 修订] 恢复 pull_request 自动触发：ci-summary 是分支保护的唯一 required
+  # check，必须随 PR 自动运行并产出新结果，否则 PR 永远被卡死。仅恢复 pull_request（不恢复
+  # push）：每个 PR 跑一次全量门禁（~20 min），feature branch 上的多次 push 不额外消耗 runner
+  # 额度。workflow_dispatch 保留为补充入口（合并后想再跑一轮 / 手动重跑失败 PR）。
+  # [历史注] 2026-10-17 曾改为仅 workflow_dispatch，同时摘除分支保护的 ci-summary required
+  # check——该窗口期内门禁退化为「维护者手动触发 + 手动确认全绿」的约定层面，与项目自动化
+  # 防线哲学（MID-2264 反 skip、R7/R8/R9 机检锁）不一致，故恢复。
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 # 最小权限：CI 只读仓库内容即可（发布权限在 build-release.yml 中单独授予）
@@ -94,8 +97,9 @@ permissions:
 
 # 同一分支/PR 的新推送会取消尚未完成的旧运行，节省额度并加快反馈
 # （与 build-release.yml 的 cancel-in-progress: false 有意区分：发布流不可半途取消）
-# [2026-10-17 补] 改为仅手动触发后，同一 ref 上重复点 Run workflow 仍会取消上一次未完成
-# 运行——保留该语义是有意的：全量门禁一轮约 20+ 分钟，并发跑两份没有意义。
+# [2026-10-24 补] 恢复 pull_request 触发后，PR 上的新 push 会取消该 PR 尚未完成的旧运行
+# ——这是期望行为：PR 迭代期间只需看最新一次 CI 结果。workflow_dispatch 手动触发也走同一
+# concurrency group（ref = refs/heads/main），会取消同分支上尚未完成的另一次手动运行。
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -123,7 +127,9 @@ jobs:
       mypy_version: ${{ steps.consts.outputs.mypy_version }}
       pytest_version: ${{ steps.consts.outputs.pytest_version }}
       # [2026-10-17] 原「—— 路径过滤结果 —— filters: ${{ steps.filter.outputs.changes }}」
-      # 输出随 dorny/paths-filter 一并移除：手动触发场景下该过滤只会制造假绿，理由见下方历史注。
+      # 输出随 dorny/paths-filter 一并移除：该过滤在 ci-summary 里制造假绿（skipped 视为通过），
+      # 理由见下方 setup job 内的历史注。[2026-10-24] 恢复 pull_request 触发后仍未恢复路径过滤，
+      # 因为 ci-summary 无法区分 skipped 与 passed 这一形态缺陷没有解决。
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -551,7 +557,7 @@ jobs:
         run: python -c "from PySide6.QtWidgets import QApplication; app = QApplication([]); print('Qt offscreen OK', app.platformName())"
 
       # pytest 全程跑在 xvfb 下：非 Tk 用例不受影响（不读 DISPLAY），真窗用例因此真实执行。
-      # 全局覆盖率下限 fail_under = 50 由 pyproject [tool.coverage.report] 强制
+      # 全局覆盖率下限 fail_under = 60 由 pyproject [tool.coverage.report] 强制
       - name: Run pytest with coverage
         run: xvfb-run -a pytest --cov=src --cov-report=term-missing --cov-report=xml
 
@@ -901,7 +907,9 @@ jobs:
   # 避免每次 PR 付出 Windows 分钟额度（该脚本变更频率极低，通常只在功能迭代时改动）。
   # 静态/AST 类断言（编码、映像名清单、杀进程顺序等）已在 ubuntu test job 覆盖。
   # [2026-10-17 补] 原「用 paths 过滤只在 VBS 文件变更时启动 Windows runner」的节流手段随
-  # 仅手动触发一并取消：现在每次手动触发都起 windows-latest（约 10 分钟）。该节流的前提是
+  # 路径过滤整体移除一并取消。[2026-10-24] 恢复 pull_request 触发后仍未恢复该过滤：ci-summary
+  # 把 skipped 视为通过，若 VBS job 被 paths 跳过则 4 条 cscript 行为锁在 CI 中静默消失。
+  # 每次 PR 付出 ~10 分钟 Windows runner 额度，代价可接受。
   # [2026-10-18 补] 本 job 原先只装 pytest（`pip install pytest`），2026-10-18 手动触发实测
   #   11 条用例在 setup 阶段全数 ERROR：`ModuleNotFoundError: No module named 'distro'`。
   #   被测文件 tests/test_stop_recording_vbs.py 本身只 import 标准库 + pytest，但
@@ -913,8 +921,8 @@ jobs:
   #   即「跑仓库里任何一条 pytest」的门槛是**整份运行时依赖**，而不是被测文件自己的 import。
   #   两条可选修法里选「装齐依赖」而非「给 fixture 加 skip 通道」：后者正是 MIN-2264 反复
   #   拦过的形态（fixture 静默不生效，污染类用例退化成「单独跑通过、整包跑失败」）。
-  #   体积代价可接受：本工作流已改为仅手动触发，且 build-release.yml 的 Windows 构建 job
-  #   本来就在同一个 runner 镜像上装同一份 requirements.txt。
+  #   体积代价可接受：本工作流每次 PR / 手动触发都起 windows-latest，且 build-release.yml
+  #   的 Windows 构建 job 本来就在同一个 runner 镜像上装同一份 requirements.txt。
   vbs-behavior-test:
     name: VBS Behavior Test (Windows cscript)
     needs: setup
@@ -923,8 +931,8 @@ jobs:
     # 超时太紧会把「依赖装到一半」伪装成本 job 的失败。
     timeout-minutes: 20
     # [2026-10-17 修订] 原条件为「github.event_name == 'workflow_dispatch' || vbs 路径命中」。
-    # 改为仅手动触发后前半式恒真、后半式引用的 filters 输出已不存在，故整条 if 删除：
-    # 现在每次手动触发都会执行这 4 条 cscript 行为锁。
+    # 路径过滤整体移除后前半式恒真、后半式引用的 filters 输出已不存在，故整条 if 删除：
+    # 现在每次触发（pull_request / workflow_dispatch）都会执行这 4 条 cscript 行为锁。
     steps:
       - name: Checkout
         uses: actions/checkout@v7

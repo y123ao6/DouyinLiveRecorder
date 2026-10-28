@@ -5,7 +5,7 @@
 # 代理:默认跟随系统代理(getproxies),可选第三个参数显式指定,如 http://127.0.0.1:7890
 #
 # 本文件是「双模式」脚本：`python 本文件.py <频道> <秒数>` 手动跑真机验证，同时文件名匹配
-# pyproject 的 python_files=["test_*.py"]，因此**也会被 pytest 收集**。S-2(CODE_REVIEW_2026-09-29_2)
+# pyproject 的 python_files=["test_*.py"]，因此**也会被 pytest 收集**。(CODE_REVIEW_2026-09-29_2)
 # 的事故形态正是「执行体全部落在模块级」：收集期即连真实 Twitch IRC、time.sleep(SECONDS)、
 # 清空 tests/_out_live，并在失败路径 sys.exit(1) 直接终止整个收集会话
 # （实测 `pytest 本文件 --collect-only -q` 耗时 20.55 秒、no tests collected、退出码 5）。
@@ -59,7 +59,7 @@ def main() -> None:
 
     # tests/_out_live 是 5 个 live_collector 手跑真机时的产物目录（由 tests/conftest.py 在会话
     # 退出时统一清理），只在**真机运行**时清空重建——不得移回导入期 makedirs，否则又变成
-    # 收集期副作用（S-2）。
+    # 收集期副作用。
     base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_out_live")
     os.makedirs(base_dir, exist_ok=True)
     # R7④（2026-09-30）：清理收窄到本脚本自己的产物前缀，并先判是文件再删。
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     main()
 
 
-# ---- S-2 回归锁（2026-09-29，CODE_REVIEW_2026-09-29_2）----
+# ---- 该回归锁（2026-09-29，CODE_REVIEW_2026-09-29_2）----
 # 结构锁而非运行时锁：本用例全程离线（只读自身源码 + ast.parse），因此能在 CI（ubuntu、无外网
 # 无活房间）常驻；而「收集期不得连真机」这件事只能靠**结构**来证明——运行时 reload 判据反而要
 # 先把真机依赖打进桩，等于在用例里重新实现一遍被测流程。
@@ -126,7 +126,7 @@ if __name__ == "__main__":
 # [历史注] 起初只锁本文件、称跨 5 个 live_collector 的统一门禁「尚未获批准」；该说法已于
 # 2026-09-30 证伪——统一门禁已获批并落地为 tests/test_test_hygiene.py 的 R7（①守卫 ②模块级零副作用
 # ③argv 数值守卫 ④清理带前缀过滤与类型判定，逐文件参数化覆盖全部 5 个脚本，新增第 6 个自动纳入）。
-# 本文件的文件内结构锁保留作 S-2 的原始见证，与 R7 口径一致（②的「只看最外层节点」判据即由本锁
+# 本文件的文件内结构锁保留作该原始见证，与 R7 口径一致（②的「只看最外层节点」判据即由本锁
 # 先立、R7 逐字沿用），不属重复实现需要清理的那一类。
 _ALLOWED_MODULE_NODES = (
     ast.Import,
@@ -186,7 +186,7 @@ def _module_level_offenders(tree: ast.Module) -> list[str]:
 
 
 def test_twitch_script_keeps_main_guard() -> None:
-    # 变异见证（S-2）：把执行体摊回模块级、或删掉 __main__ 守卫，本用例必须变红。
+    # 变异见证：把执行体摊回模块级、或删掉 __main__ 守卫，本用例必须变红。
     tree = ast.parse(Path(__file__).resolve().read_text(encoding="utf-8"), filename=str(__file__))
     offenders = _module_level_offenders(tree)
     assert not offenders, f"模块级存在收集期会执行的语句（S-2 事故形态），须移入 main(): {offenders}"

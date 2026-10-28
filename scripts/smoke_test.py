@@ -159,13 +159,13 @@ def load_config(path: str) -> tuple[list[CheckConfig], str | None]:
         return [_validate_check_item(item, i, path) for i, item in enumerate(items)], None
     if isinstance(cfg, dict):
         # 允许顶层写成 {"base_url": "...", "checks": [...]}
-        # MIN-2260：原写法 typed.get("checks", []) 把「键名拼错」（check / targets / 少引号）
+        # 原写法 typed.get("checks", []) 把「键名拼错」（check / targets / 少引号）
         # 与「checks 被清空」都变成合法的 0 检查，配合 main() 的「0 失败即退 0」，CI 会在
         # **一条断言都没执行**时报成功。故此处要求键必须存在（缺键即 ValueError → 退 2）。
         typed = cast(dict[str, object], cfg)
         if "checks" not in typed:
             raise ValueError(f'冒烟配置缺少 "checks" 键（拼错或漏写都会被当成 0 检查）: {path}')
-        # M-32②：checks 写成 object/string 时，`for c in checks` 迭代的是键名或字符，
+        # ②：checks 写成 object/string 时，`for c in checks` 迭代的是键名或字符，
         # 每条都是 str → run_check 立刻 AttributeError（rc=1）。这里按期望形态收紧。
         raw_checks = typed["checks"]
         if not isinstance(raw_checks, list):
@@ -212,7 +212,7 @@ def run_check(check: CheckConfig, base_url: str | None, default_timeout: float) 
     # 期望状态码非 3xx 时保持 urlopen 默认自动跟随；期望 3xx 才换不跟随的 opener。
     # timeout 原样透传给 urlopen，配置应保证为数字（cast 仅为类型检查，不改运行时值）。
     timeout = cast(float, check.get("timeout", default_timeout))
-    # M-32② 配套：load_config 已保证 headers 存在时必为 object，且刻意放行显式 null（与不写等价）。
+    # ② 配套：load_config 已保证 headers 存在时必为 object，且刻意放行显式 null（与不写等价）。
     # 此处必须用 `or {}` 而不是只靠默认值 —— dict.get 的默认值只在**键缺失**时生效，键在而值为
     # null 时返回 None，`None.items()` 又是 AttributeError（rc=1），等于放行后再开一个同族崩口。
     headers_raw = cast(dict[str, object], check.get("headers") or {})
@@ -362,7 +362,7 @@ def write_json_report(results: list[CheckResult], summary: CheckResult, path: st
 
 
 # 生成自包含 HTML 报告：逐行拼接表格行（含命中文本与错误），通过/失败行用 ok/bad 样式区分。
-# M-97（2026-10-21 审查）：动态片段**一律** html.escape 后再拼。旧注释「依赖配置可信」只对
+# （2026-10-21 审查）：动态片段**一律** html.escape 后再拼。旧注释「依赖配置可信」只对
 # name/url 成立（测试目标由使用者提供），对 errors/detail 不成立：errors 装的是异常文本与
 # **HTTP 响应派生内容**（未命中的 expect_contains token 原文、`响应不是合法 JSON: {e}`、
 # JSON 字段的实际值 actual!r），全部来自被探测服务的返回；而本产物是 CI 附件、由浏览器打开，
@@ -453,13 +453,13 @@ def main() -> None:
         checks, cfg_base = load_config(config_path)
     except (OSError, ValueError) as e:
         # 配置读取/格式错误退出码 2，与「检查失败(1)」区分，便于 CI 分辨是脚本/配置问题还是接口问题
-        # M-32②：load_config 现在对**任意**形态畸形都抛 ValueError（不再留 AttributeError 给
+        # ②：load_config 现在对**任意**形态畸形都抛 ValueError（不再留 AttributeError 给
         # run_check 崩栈），故这里的 2 是「配置问题」的唯一出口，本 except 元组不得缩窄。
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(2)
     base_url = base_url_arg or cfg_base
 
-    # MIN-2260：合法但空的 checks 列表同样是「查了个空气」，必须与「配置损坏」同码退出。
+    # 合法但空的 checks 列表同样是「查了个空气」，必须与「配置损坏」同码退出。
     # 放在 main 而非 load_config，是因为顶层直接写成 [] 的合法形态也要覆盖。
     if not checks:
         print(f"ERROR: 冒烟配置的 checks 为空（0 条断言不构成通过）: {config_path}", file=sys.stderr)

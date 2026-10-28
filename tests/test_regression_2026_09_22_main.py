@@ -2,17 +2,17 @@
 # 2026-09-22 审查报告 / 组 B2（main.py 剩余条目）修复的回归锁。
 #
 # 判据是「失效形态本身」而不是调用形状：
-#   MIN-2232  推给用户 IM 的正文若为裸字面量，extract_i18n_strings.py 的 print/logger/tr 三条提取
+#   推给用户 IM 的正文若为裸字面量，extract_i18n_strings.py 的 print/logger/tr 三条提取
 #             规则全部扫不到 → 非 zh_CN 语言下推送仍是简体中文。这里直接复用提取器的 scan_file 断言。
-#   MIN-2233  自然语言被提到变量再 print、或 f-string 直传 print_colored 时同样扫不到（「双重盲区」）。
-#   MIN-2235  FLV + 「停止录制 / URL 被注释」时 _convert_after_record 必须在 comment_end 早退**之前**
+#   自然语言被提到变量再 print、或 f-string 直传 print_colored 时同样扫不到（「双重盲区」）。
+#   FLV + 「停止录制 / URL 被注释」时 _convert_after_record 必须在 comment_end 早退**之前**
 #             被调用，否则已录内容永久留在 .flv；MKV/MP4 保持不调用。
 #
-# 全部离线：MIN-2235 用真实 start_record 线程体 + 桩掉网络层与 ffmpeg 执行层。
+# 全部离线：该用真实 start_record 线程体 + 桩掉网络层与 ffmpeg 执行层。
 #
 # 2026-09-23 追加：补齐本文件上方曾点名、但当时**并不存在**的 9 条回归锁（grep 对 9 个用例名全部 0
 # 命中），见文件末尾 TestSegmentTemplate* 起各节；另追加 test_watchdog_elapsed_ignores_wall_clock_jump /
-# test_segment_observation_failure_is_not_stall（对应 MID-2208 / MID-2207 的整改）。
+# test_segment_observation_failure_is_not_stall（对应 / 该整改）。
 
 import ast
 import importlib.util
@@ -51,7 +51,7 @@ def _load_extractor() -> Any:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2232 / MIN-2233：可翻译文案必须进入提取集合
+# 可翻译文案必须进入提取集合
 # ────────────────────────────────────────────────────────────
 
 
@@ -60,10 +60,10 @@ class TestI18nStringsExtractable:
     # f-string 直传 print_colored），因此非 zh_CN 语言下这几处始终是简体中文。
 
     MSGIDS = [
-        # MIN-2232 推送正文（占位符是方括号字面量，走 .replace 链而非 tr kwargs）
+        # 推送正文（占位符是方括号字面量，走 .replace 链而非 tr kwargs）
         "直播间状态更新：[直播间名称] 直播已结束！时间：[时间]",
         "直播间状态更新：[直播间名称] 正在直播中，时间：[时间]",
-        # MIN-2233 自然语言
+        # 自然语言
         "\r{record_name} 正在直播中...",
         "\r{anchor_name} 准备开始录制视频: {full_path}/{filename}",
         "\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n",
@@ -186,7 +186,7 @@ class TestPendingCatalogEntries:
 
 
 # ────────────────────────────────────────────────────────────
-# MIN-2235：FLV 分支的 _convert_after_record 必须在 comment_end 早退之前
+# FLV 分支的 _convert_after_record 必须在 comment_end 早退之前
 # ────────────────────────────────────────────────────────────
 
 
@@ -233,7 +233,7 @@ class TestFlvConvertBeforeCommentEnd:
         mod = ast.Module(body=[fn], type_ignores=[])
         src = ast.unparse(ast.fix_missing_locations(mod))
         calls: list[str] = []
-        # L-01（2026-10-19）：分支判据现在含 `started`（ffmpeg 是否真的起来了）。本用例执行的是生产
+        # 2026-10-19：分支判据现在含 `started`（ffmpeg 是否真的起来了）。本用例执行的是生产
         # 源码的**真实语句块**，故必须把它一并注入命名空间——默认真值保持原断言语义不变。
         namespace: dict[str, Any] = {
             "started": started,
@@ -259,14 +259,14 @@ class TestFlvConvertBeforeCommentEnd:
 
     @pytest.mark.parametrize("save_type", ["FLV", "MKV", "MP4"])
     def test_not_started_never_converts(self, save_type: str) -> None:
-        # L-01（2026-10-19）：ffmpeg 起不来时（Popen 抛 OSError / 二进制缺失）断言里既无产物也没有
+        # 2026-10-19：ffmpeg 起不来时（Popen 抛 OSError / 二进制缺失）断言里既无产物也没有
         # 可转的文件，任何容器类型都不得提交转码——旧判据只看容器类型仍会转一次，把「本来就已失败」
         # 的一轮再包装成一条转码错误，真正原因被后一条日志盖住。
         assert self._drive(save_type, started=False) == []
 
 
 # ────────────────────────────────────────────────────────────
-# MID-2207 / MIN-2227 残留：分段枚举不得再走 glob
+# 该残留：分段枚举不得再走 glob
 # ────────────────────────────────────────────────────────────
 
 
@@ -409,7 +409,7 @@ def _prime_check_subprocess(
 
 
 class TestSegmentTemplateSinglePercent:
-    # SEV-2202：ffmpeg 的 segment muxer 把输出路径当 printf 模板解释——除末位序号占位符外再出现裸 `%`
+    # ffmpeg 的 segment muxer 把输出路径当 printf 模板解释——除末位序号占位符外再出现裸 `%`
     # （主播名/标题里带的）就以 -22(EINVAL) 秒退，且失败码会被误归因成「容器不匹配」，进而落进
     # 「CDN 快速失败」把健康线路拉进探针退避。
 
@@ -464,7 +464,7 @@ class TestSegmentTemplateSinglePercent:
 
 
 class TestPlatformHostSchemeAgnostic:
-    # SEV-2203：准入按 `url_host in PLATFORM_HOST`（与协议无关），分派却按子串匹配表项片段。
+    # 准入按 `url_host in PLATFORM_HOST`（与协议无关），分派却按子串匹配表项片段。
     # 表项一旦钉死 `https://`，`http://` 形态就是「准入通过 + 无解析器命中」→ _resolve_unrecognized
     # → sleep + continue 无限空转（永不录制、不记 record_error、白占监控位）。
 
@@ -484,7 +484,7 @@ class TestPlatformHostSchemeAgnostic:
         assert unmatched == [], f"以下准入地址无任何解析器命中（会无限空转）: {unmatched}"
 
     def test_xiaohongshu_http_and_https_hit_the_same_resolver(self) -> None:
-        # 本轮修掉的第 8 条（SEV-2203 残留）：单点复现，避免上面的遍历将来因新增条目而漂移
+        # 本轮修掉的第 8 条（该残留）：单点复现，避免上面的遍历将来因新增条目而漂移
         hit = {
             handler.__name__
             for matcher, handler in main._PLATFORM_RESOLVERS
@@ -508,7 +508,7 @@ class TestPlatformHostSchemeAgnostic:
 
 
 class TestDiskLimitedRecoverable:
-    # SEV-2206：磁盘限制必须是**可逆**的。exit_recording 是单向棘轮（全文件此前无处复位），用户清出
+    # 磁盘限制必须是**可逆**的。exit_recording 是单向棘轮（全文件此前无处复位），用户清出
     # 空间后引擎仍活着但零录制、零提示。上一轮引入 disk_limited 时又把进入条件整条删了 → 首轮即置
     # 退出标志、recording 为空时 sys.exit(-1)，表现为「任何磁盘状态下启动即自行退出」。
 
@@ -534,7 +534,7 @@ class TestDiskLimitedRecoverable:
 
     @classmethod
     def _drive(cls, **state: Any) -> tuple[bool, bool] | None:
-        # M-05（CODE_REVIEW_2026-10-21）：判定块新增 `_disk_measure_failed`（本轮测量是否失败），
+        # 2026-10-21：判定块新增 `_disk_measure_failed`（本轮测量是否失败），
         # 它是 main() 循环体内的局部量、不在被抽取的 if/elif 块内赋值，故必须作为形参注入；
         # 取值由调用方显式给出，不在此补默认（「本轮没测到」与「测到且充足」是相反结论）。
         src = (
@@ -599,7 +599,7 @@ class TestDiskLimitedRecoverable:
 
     def test_disk_limit_exit_paths_split_by_mode(self) -> None:
         # 空间不足 + 无在录房间：Web（non_interactive）走 return 让线程干净退出、面板继续服务；
-        # CLI/GUI 保留 sys.exit(-1)。两条路径都必须先排空录后线程池（SEV-2007 同族）。
+        # CLI/GUI 保留 sys.exit(-1)。两条路径都必须先排空录后线程池（该同族）。
         shutdown: list[int] = []
         web = self._drive(
             disk_free_gb=1.0,
@@ -643,10 +643,10 @@ class TestDiskLimitedRecoverable:
 
 
 class TestDiskFullPauseCleanupStillRuns:
-    # M-01（2026-09-30）：磁盘满暂停置位 exit_recording 后退出的房间线程也必须清 running_list。
+    # 2026-09-30：磁盘满暂停置位 exit_recording 后退出的房间线程也必须清 running_list。
     # 旧实现把 exit_recording=True 一律当「进程整体退出」跳过清理 → 暂停期退出的房间永久残留，
     # 空间恢复后主循环的「not in running_list」拉起条件恒假，全部房间不再被拉起。
-    # 本类只锁「清理不再被 exit_recording 拦下」这半个不变量（reset 语义属于 SEV-2206 那侧）。
+    # 本类只锁「清理不再被 exit_recording 拦下」这半个不变量（reset 语义属于该那侧）。
     def test_room_thread_cleanup_survives_disk_full_pause(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import src.notify as notify_module
 
@@ -679,7 +679,7 @@ class _SysStub:
 
 
 class TestClockJudgements:
-    # MID-2208：时长判定（快速失败窗口 / 停滞窗口 / 单次时长上限）不得吃挂钟的跳变量——挂钟可被 NTP
+    # 时长判定（快速失败窗口 / 停滞窗口 / 单次时长上限）不得吃挂钟的跳变量——挂钟可被 NTP
     # 校时、手动改表、虚拟机挂起恢复拨动到任意值。
 
     @pytest.mark.parametrize(
@@ -783,7 +783,7 @@ class TestClockJudgements:
 
 
 class TestSubprocessUnwind:
-    # SEV-2208：守护段抛错时的两条收尾不变量——弹幕采集器必被停止；进程已自然退出时 unregister /
+    # 守护段抛错时的两条收尾不变量——弹幕采集器必被停止；进程已自然退出时 unregister /
     # clear_record_info 仍须执行（terminate 才需要存活判定）。
 
     def test_danmaku_collector_stopped_when_guard_section_raises(
@@ -854,7 +854,7 @@ class TestSubprocessUnwind:
 
 
 class TestSegmentObservationTriState:
-    # MID-2207 后半：「观测失败」与「无匹配文件」不得同返 []，否则健康分段录制满 10 分钟被误杀。
+    # 后半：「观测失败」与「无匹配文件」不得同返 []，否则健康分段录制满 10 分钟被误杀。
 
     def test_segment_files_tri_state(self, tmp_path: Path) -> None:
         (tmp_path / "主播_000.ts").write_bytes(b"\x00" * 10)
@@ -901,7 +901,7 @@ class TestSegmentObservationTriState:
 
 
 class TestCredentialWritebackResilience:
-    # MID-2213 / MIN-2229：凭据回写的两个方向——「在播时必须落盘」与「落盘失败不得丢流」。
+    # 凭据回写的两个方向——「在播时必须落盘」与「落盘失败不得丢流」。
 
     @staticmethod
     def _patch_async(
@@ -915,7 +915,7 @@ class TestCredentialWritebackResilience:
 
         async def _stream(json_data: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
             # 与生产一致：stream.get_stream_url 取到流时**新建** dict，不带 new_cookies
-            # ——MID-2213 的失效形态正是「回写源错读到 port_info」
+            # ——该失效形态正是「回写源错读到 port_info」
             return {"is_live": True, "anchor_name": "主播名", "durl": [{"url": "http://cdn/x.flv"}]}
 
         spider_shim.get_twitcasting_stream_url = cast(Any, _spider)
@@ -955,7 +955,7 @@ class TestCredentialWritebackResilience:
         assert writes == []
 
     def test_flextv_cookie_writeback_failure_keeps_stream_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MIN-2229 漏包的那一条：写盘抛 OSError 只许告警，不得把已拿到的流地址整轮丢弃
+        # 漏包的那一条：写盘抛 OSError 只许告警，不得把已拿到的流地址整轮丢弃
         writes: list[tuple[str, str, str]] = []
         self._patch_async(
             monkeypatch,
@@ -976,7 +976,7 @@ class TestCredentialWritebackResilience:
 
 
 class TestShopeeUrlSanitized:
-    # MID-2226：Shopee 接口响应的 uid 段是半可信输入，拼出的 URL 会经 need_update_line_list 写进
+    # Shopee 接口响应的 uid 段是半可信输入，拼出的 URL 会经 need_update_line_list 写进
     # URL_config.ini，而主循环用 `|` 分行、`,`/`，` 分字段、换行分行——含这些字符就等于把接口返回值
     # 升级成配置注入面；host 被改写则是第二道（同源）断言。
 
@@ -1064,7 +1064,7 @@ class TestShopeeUrlSanitized:
 
 
 class TestDirectDownloadUserAgent:
-    # MID-2209：强制直下的平台（shopee / 花椒）拿不到平台专属 UA 时必须回落 MOBILE_UA，否则 httpx
+    # 强制直下的平台（shopee / 花椒）拿不到平台专属 UA 时必须回落 MOBILE_UA，否则 httpx
     # 以 `python-httpx/<版本>` 直发 → CDN 按 UA 风控拒（403），且函数头「与 ffmpeg 录制路径一致」是假的。
 
     @staticmethod
@@ -1095,7 +1095,7 @@ class TestDirectDownloadUserAgent:
                 captured.update(kwargs.get("headers") or {})
                 return _Resp()
 
-        # httpx 是全进程共享的三方模块本体 → 按 MID-66 口径改走浅拷贝替身
+        # httpx 是全进程共享的三方模块本体 → 按该口径改走浅拷贝替身
         httpx_shim = types.SimpleNamespace(**vars(httpx))
         httpx_shim.Client = cast(Any, _Client)
         monkeypatch.setattr(main, "httpx", httpx_shim)
@@ -1136,7 +1136,7 @@ class TestDirectDownloadUserAgent:
 
 
 class TestCredentialMasking:
-    # MIN-2231：房间线程日志、熔断退避日志、直下日志三处曾原样入日志；
+    # 房间线程日志、熔断退避日志、直下日志三处曾原样入日志；
     # 且 scheduler.host_of 不剥 `user:pass@`，自定义流地址会把凭据带进熔断 key 与日志。
 
     def test_host_of_strips_userinfo(self) -> None:

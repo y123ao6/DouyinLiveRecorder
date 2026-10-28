@@ -1,19 +1,19 @@
-# WsClient 断连后悬挂引用与后台发送任务回归（CODE_REVIEW_2026-09-20 的 MIN-12 / MIN-13）。
+# WsClient 断连后悬挂引用与后台发送任务回归（CODE_REVIEW_2026-09-20 的 / ）。
 #
 # 全部离线：websockets.connect 被替换为假上下文管理器，不发任何真实网络请求。
 #
-#   ① MIN-12：connect() 末尾的 `self._ws` 清理块是不可达死代码（四条出口全是
+#   ① ：connect() 末尾的 `self._ws` 清理块是不可达死代码（四条出口全是
 #      break/continue），导致重连退避期间 `_ws` 仍指向**已关闭**连接，而 send()/
 #      send_nowait() 只判 `is None` → 进房包与心跳全打在死连接上，异常被吞成一条 debug，
 #      表现为「重连成功却再也不推弹幕」且无线索。现由 try/finally 摘引用 + 发送前判活。
-#   ② MIN-13：send_nowait 原为裸 asyncio.ensure_future —— 无强引用（asyncio 只弱引用
+#   ② ：send_nowait 原为裸 asyncio.ensure_future —— 无强引用（asyncio 只弱引用
 #      任务）、异常无人取走、_send_lock 被占时无界堆积。现走 base.spawn_danmaku_task
 #      + _pending 集合 + 上限。
 #
 # 2026-09-22 追加（CODE_REVIEW_2026-09-22）：
-#   ③ SEV-2217：on_close / on_reconnect 的文案必须已脱敏——websockets 的 InvalidProxy
+#   ③ ：on_close / on_reconnect 的文案必须已脱敏——websockets 的 InvalidProxy
 #      文本自带代理原串（含 user:pass@host），而 reason 会一路进轮转日志与监控枢纽。
-#   ④ MID-2232：重连计数不得「连上即重置」，否则「握手成功即被断开」的形态让
+#   ④ ：重连计数不得「连上即重置」，否则「握手成功即被断开」的形态让
 #      max_reconnect 永不耗尽、on_close 永不上报，且每 ~5s 连击平台。
 
 import asyncio
@@ -79,7 +79,7 @@ def _install_fake_connect(monkeypatch: pytest.MonkeyPatch, raise_on_iter: bool) 
     def _fake_connect(*args: Any, **kwargs: Any) -> _FakeCtx:
         return _FakeCtx(ws)
 
-    # MID-66：setattr 到 websockets 模块本体等于全进程换掉 connect（同会话其它用例的真实
+    # setattr 到 websockets 模块本体等于全进程换掉 connect（同会话其它用例的真实
     # 连接会吃到假实现），须走浅拷贝替身只替换 ws_client 命名空间里的全局名。
     _ws_shim = types.SimpleNamespace(**vars(ws_client_module.websockets))
     _ws_shim.connect = _fake_connect
@@ -133,7 +133,7 @@ async def test_ws_reference_cleared_before_reconnect_backoff(
 
 
 async def test_send_nowait_keeps_strong_task_reference(monkeypatch: pytest.MonkeyPatch) -> None:
-    # MIN-13：任务必须被 self._pending 强引用持有，并在完成后自动回收
+    # 任务必须被 self._pending 强引用持有，并在完成后自动回收
     _install_fake_connect(monkeypatch, raise_on_iter=False)
     client = _make_client()
     ws = _FakeWs(raise_on_iter=False)
@@ -171,7 +171,7 @@ async def test_send_nowait_bounded_when_backlog_full(monkeypatch: pytest.MonkeyP
 
 
 async def test_send_skips_connection_that_is_not_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    # MIN-12 第二道防线：state 非 OPEN 时不得写入（send / send_nowait 两条口）
+    # 第二道防线：state 非 OPEN 时不得写入（send / send_nowait 两条口）
     _install_fake_connect(monkeypatch, raise_on_iter=False)
     client = _make_client()
     ws = _FakeWs(raise_on_iter=False)
@@ -207,7 +207,7 @@ async def test_send_still_works_without_state_attribute(monkeypatch: pytest.Monk
 
 
 # ---------------------------------------------------------------------------
-# 2026-09-22 追加：SEV-2217（回调文案脱敏）与 MID-2232（重连计数「连上即重置」）
+# 2026-09-22 追加：（回调文案脱敏）与（重连计数「连上即重置」）
 # ---------------------------------------------------------------------------
 
 
@@ -236,7 +236,7 @@ class _FlappingWs:
 
 class _FrameThenDropWs(_FlappingWs):
     # 每轮先投 frames 个应用层帧再断开：代表「这条连接真在推弹幕」的健康会话，
-    # 是 MID-2232 判据 ①（收到应用层帧即算健康）的唯一触发方式。
+    # 是该判据 ①（收到应用层帧即算健康）的唯一触发方式。
     def __init__(self, frames: int = 1, exc: BaseException | None = None) -> None:
         super().__init__(exc)
         self._frames = frames
@@ -249,7 +249,7 @@ class _FrameThenDropWs(_FlappingWs):
 
 
 def _install_connect_factory(monkeypatch: pytest.MonkeyPatch, make_ws: Any) -> None:
-    # 与 _install_fake_connect 同一 MID-66 口径（浅拷贝替身只换 ws_client 命名空间里的
+    # 与 _install_fake_connect 同一该口径（浅拷贝替身只换 ws_client 命名空间里的
     # 全局名，不 patch websockets 模块本体），区别是**每次重连新建一支**假连接：
     # 断连类用例必须让每一轮都拿到全新的帧计数，复用同一支会让第二轮失去帧。
     shim = types.SimpleNamespace(**vars(ws_client_module.websockets))
@@ -258,7 +258,7 @@ def _install_connect_factory(monkeypatch: pytest.MonkeyPatch, make_ws: Any) -> N
 
 
 async def test_flapping_handshake_exhausts_reconnect_and_reports_close_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    # MID-2232 主锁：连上即断时 max_reconnect 必须真的被耗尽，并**只**回调一次 on_close。
+    # 主锁：连上即断时 max_reconnect 必须真的被耗尽，并**只**回调一次 on_close。
     # 旧实现 `self._reconnect_count = 0  # 连上即重置` 让计数每轮从 1 加起、下一轮又归零，
     # 于是本用例的 connect() 永不返回（wait_for 超时），监控页停留在「已连接 / 0 条」。
     reconnects: list[str] = []
@@ -283,7 +283,7 @@ async def test_flapping_handshake_exhausts_reconnect_and_reports_close_once(monk
 
 
 async def test_application_frame_resets_reconnect_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    # MID-2232 的反向锁（防止矫枉过正成「永不重置」）：本轮收到过应用层帧即算健康会话，
+    # 反向锁（防止矫枉过正成「永不重置」）：本轮收到过应用层帧即算健康会话，
     # 计数须归零——否则一条跑了一整天的长连接最后只要抖两下就会被历史累计误判成耗尽。
     reconnects: list[str] = []
     closes: list[str] = []
@@ -313,7 +313,7 @@ async def test_application_frame_resets_reconnect_count(monkeypatch: pytest.Monk
 
 
 async def test_reconnect_and_close_reasons_have_no_proxy_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    # SEV-2217 锁：websockets 的 InvalidProxy 文本自带代理原串（含 user:pass@host），
+    # websockets 的 InvalidProxy 文本自带代理原串（含 user:pass@host），
     # 而 reason 会进 collector 的 debug 日志与监控枢纽 → 交出前必须过 mask_credentials。
     # 断言的是「凭据值消失」，不是「调用了掩码函数」。
     password = "DanmakuProxyPw9"

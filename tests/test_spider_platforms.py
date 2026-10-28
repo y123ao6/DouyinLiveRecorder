@@ -1,5 +1,4 @@
-# src/spider.py 2026-09-20 批次修复（SEV-07、MID-33 spider 半边、MID-40..50）的离线回归用例。
-# 2026-09-21 追加 SEV-N02（popkontv token 双 "Bearer " 前缀）回归锁，见文件末尾同名小节。
+# src/spider.py 平台解析修复的离线回归用例（含文件末尾 popkontv token 双 "Bearer " 前缀小节）。
 # 原则（AGENTS「测试不得自实现被测逻辑」）：只打桩 HTTP 层（src.spider.async_req / httpx /
 # get_token_js 等边界），解析逻辑一律走真实代码；断言以「删掉生产修复就会变红」为判据。
 
@@ -67,7 +66,7 @@ def _fake_logger() -> types.SimpleNamespace:
     )
 
 
-# ── SEV-07：两个 login_* 的兜底装饰器与返回契约错配 ──────────────────────────────
+# ── ：两个 login_* 的兜底装饰器与返回契约错配 ──────────────────────────────
 
 
 class TestSev07LoginContracts:
@@ -103,7 +102,7 @@ class TestSev07LoginContracts:
         assert result is None
 
     async def test_popkontv_caller_guards_none_before_unpack(self) -> None:
-        # 调用点契约（CR-12）：login 返回 None 时须抛可动作 RuntimeError，
+        # 调用点契约：login 返回 None 时须抛可动作 RuntimeError，
         # 而不是对 None/dict 解包抛 TypeError/ValueError 后被外层装饰器二次吞掉。
         raw = _unwrap(get_popkontv_stream_url)
         room_info = ["2026", "P-00001", "sign1", 1, 0]
@@ -120,8 +119,8 @@ class TestSev07LoginContracts:
                 )
 
     async def test_twitcasting_caller_rejects_non_str_cookie(self) -> None:
-        # isinstance str 断言：旧 dict 兜底形态（{"is_live": False}）绝不能写进 Cookie 头；
-        # 现在应在写入前抛 RuntimeError（旧实现：真值判断放行 → get_data 抛 ValueError）。
+        # dict 兜底形态绝不能写进 Cookie 头：类型检查须在写入前抛 RuntimeError。
+        # [历史注] 旧实现用真值判断放行，直到 get_data 才抛 ValueError。
         raw = _unwrap(get_twitcasting_stream_url)
         with (
             patch.object(sp, "login_twitcasting", new=AsyncMock(return_value={"is_live": False})),
@@ -151,7 +150,7 @@ class TestSev07LoginContracts:
         assert any(h.get("Cookie") == "tc_ss=abc" for h in seen_headers)
 
 
-# ── MID-40：buvid 失效须同时清通用 singleflight 缓存 ─────────────────────────────
+# ── ：buvid 失效须同时清通用 singleflight 缓存 ─────────────────────────────
 
 
 class TestMid40BuvidInvalidation:
@@ -206,7 +205,7 @@ class TestMid40BuvidInvalidation:
         assert self._refetch_count("bili_buvid3|http://q:3128") == 1
 
 
-# ── MID-41：抖音 APP 路径 ORIGIN 候选取 pull_datas 刚解析结果 ─────────────────────
+# ── ：抖音 APP 路径 ORIGIN 候选取 pull_datas 刚解析结果 ─────────────────────
 
 
 class TestMid41DouyinAppOrigin:
@@ -259,7 +258,7 @@ class TestMid41DouyinAppOrigin:
         assert hls_map["ORIGIN"] == "https://p/orig.m3u8&codec=h265"
 
 
-# ── MID-42：花椒 encode 与消费字段自洽 + 判空 ────────────────────────────────────
+# ── ：花椒 encode 与消费字段自洽 + 判空 ────────────────────────────────────
 
 
 class TestMid42Huajiao:
@@ -316,7 +315,7 @@ class TestMid42Huajiao:
         assert any("h264_url" in m for m in fake.msgs)
 
 
-# ── MID-43：淘宝 broadCaster 是对象，anchor_name 必须是 str ───────────────────────
+# ── ：淘宝 broadCaster 是对象，anchor_name 必须是 str ───────────────────────
 
 
 class TestMid43Taobao:
@@ -362,21 +361,20 @@ class TestMid43Taobao:
             assert await self._anchor(weird) == ""
 
 
-# ── MID-44：winktv bj_info 判空后再解包 ───────────────────────────────────────────
+# ── ：winktv bj_info 判空后再解包 ───────────────────────────────────────────
 
 
 class TestMid44Winktv:
-    # _or_none 被调方的判空属于调用点责任（CR-12）；断言同时区分新旧形态：
+    # _or_none 被调方的判空属于调用点责任；断言同时区分新旧形态：
     # 旧实现抛 TypeError → 装饰器兜底 {"is_live": False}（缺 anchor_name 键）。
     async def test_none_bj_info_returns_not_live(self) -> None:
         raw = _unwrap(sp.get_winktv_stream_data)
         with patch.object(sp, "get_winktv_bj_info", new=AsyncMock(return_value=None)):
             result = await raw("https://www.winktv.co.kr/testuser")
-        # 旧实现直接解包 None → TypeError → 被自身装饰器吞成 {"is_live": False}（无 anchor_name 键）
         assert result == {"anchor_name": "", "is_live": False}
 
 
-# ── MID-45：查询参数位于串尾的正则形态 ────────────────────────────────────────────
+# ── ：查询参数位于串尾的正则形态 ────────────────────────────────────────────
 
 
 class TestMid45TailParams:
@@ -402,7 +400,7 @@ class TestMid45TailParams:
         assert room_info is None
 
 
-# ── MID-46：TikTok 内置游客 cookie 失效须给可动作告警 ─────────────────────────────
+# ── ：TikTok 内置游客 cookie 失效须给可动作告警 ─────────────────────────────
 
 
 class TestMid46TiktokGuestCookie:
@@ -432,7 +430,7 @@ class TestMid46TiktokGuestCookie:
         assert not any("tiktok_guest_cookie" in m for m in fake.msgs)
 
 
-# ── MID-47：SOOP 全球版相对清单行须 urljoin（原拼出缺斜杠非法地址并进 record_url）──
+# ── ：SOOP 全球版相对清单行须 urljoin（原拼出缺斜杠非法地址并进 record_url）──
 
 
 class TestMid47SoopGlobal:
@@ -452,7 +450,7 @@ class TestMid47SoopGlobal:
         assert play_list == ["https://global-media.sooplive.com/live/abc/1080/index.m3u8"]
 
 
-# ── MID-48（定向批次）：betard / bilibili playUrl / twitch GQL ────────────────────
+# ── （定向批次）：betard / bilibili playUrl / twitch GQL ────────────────────
 
 
 class TestMid48JsonHardening:
@@ -476,7 +474,7 @@ class TestMid48JsonHardening:
         ):
             result = await get_douyu_info_data("https://www.douyu.com/12345?rid=12345")
         assert result == {"is_live": False}
-        # MID-2214：空响应必须与「缺 room 字段」区分（文案经 i18n.tr，故断言其中的区分性短语）
+        # 空响应必须与「缺 room 字段」区分（文案经 i18n.tr，故断言其中的区分性短语）
         assert any("空响应" in m for m in fake.msgs)
 
     async def test_bilibili_waf_response_reaches_v2_fallback(self) -> None:
@@ -510,7 +508,7 @@ class TestMid48JsonHardening:
         assert mock.await_count == 0
 
 
-# ── MID-49：斗鱼取流 POST 体不得手工拼接 ──────────────────────────────────────────
+# ── ：斗鱼取流 POST 体不得手工拼接 ──────────────────────────────────────────
 
 
 class TestMid49DouyuPostBody:
@@ -544,11 +542,11 @@ class TestMid49DouyuPostBody:
         assert mock.await_count == 0
 
 
-# ── MID-50：写死会话/参数的覆盖入口与 UA 同源 ─────────────────────────────────────
+# ── ：写死会话/参数的覆盖入口与 UA 同源 ─────────────────────────────────────
 
 
 class TestMid50OverridesAndUa:
-    # 覆盖入口三级优先（env > config > 内置）与 F-10/CR-12 模式逐字对齐；usher 参数断言
+    # 覆盖入口三级优先（env > config > 内置）与 /该模式逐字对齐；usher 参数断言
     # 直接查最终 URL，避免有人改 params dict 后又在拼接处重新引入双重编码。
     async def test_xhs_sid_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("XHS_SESSION_SID", "session.custom123")
@@ -571,7 +569,7 @@ class TestMid50OverridesAndUa:
         assert sp._read_xhs_sid() == sp._XHS_BUILTIN_SESSION_SID
 
     async def test_xhs_sid_config_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 三级覆盖：env > config.ini [Cookie] xhs_session_sid > 内置缺省（与 F-10/CR-12 同模式）
+        # 三级覆盖：env > config.ini [Cookie] xhs_session_sid > 内置缺省（与 /该同模式）
         monkeypatch.delenv("XHS_SESSION_SID", raising=False)
         monkeypatch.setattr(sp.utils, "read_ini_value", lambda *a, **k: " session.cfg ")
         assert sp._read_xhs_sid() == "session.cfg"
@@ -598,7 +596,7 @@ class TestMid50OverridesAndUa:
         assert "%2520" not in m3u8
 
 
-# ── MID-33（spider 半边）：模块级凭据全局补 TTL 与失效钩子 ────────────────────────
+# ── （spider 半边）：模块级凭据全局补 TTL 与失效钩子 ────────────────────────
 
 
 class TestMid33CredentialTtl:
@@ -676,8 +674,7 @@ class TestSevN02PopkonBearerPrefix:
     #   - 落盘侧未改成裸值 → test_refreshed_token_is_stored_bare 的第一条断言变红；
     #   - 读取侧未剥前缀 → 后两条（以落盘原值 / 已被旧版本写坏的存量值再进入时，
     #     Authorization 恰含一个前缀）变红。
-    # 只打桩传输层（async_req / login_popkontv / get_popkontv_stream_data），
-    # 前缀归一、长度 640 校验、statusCd 分支与 new_token 回传全部走真实代码。
+    # 只打桩传输层；前缀归一、长度 640 校验、statusCd 分支与 new_token 回传走真实代码。
     _TOKEN = "K" * 640  # 登录接口真实返回的 token 固定 640 字符（spider 的长度校验即以此为准）
     _E5000 = '{"statusCd":"E5000","statusMsg":"token expired"}'
     _OK = '{"statusCd":"L0000","statusMsg":"ok","data":{"castHlsUrl":"https://p/h.m3u8"}}'
@@ -733,17 +730,16 @@ class TestSevN02PopkonBearerPrefix:
         assert sent_auth[0].count("Bearer ") == 1
 
 
-# ── M-05：popkontv mc_isPrivate 的形态判定（CODE_REVIEW_2026-10-02）────────────────
+# ── ：popkontv mc_isPrivate 的形态判定（CODE_REVIEW_2026-10-02）────────────────
 
 
 class TestPopkontvIsPrivateParsing:
     # 开播判定链上 mc_isPrivate 有三种现实下发形态：JSON 数字 0/1、JSON 布尔 false/true、
-    # 字符串 "0"/"1"。旧实现 `int(cast(str, is_private))` 只对第一种成立——布尔经 str() 成
-    # "True" 后 int() 抛 ValueError，被兜底装饰器吞成 {"is_live": False}，开播房间恒判未开播。
+    # 字符串 "0"/"1"。不能用 int(cast(str, ...))：布尔经 str() 成 "True" 后 int() 抛
+    # ValueError，被装饰器吞成未开播。
     # 变异判据：判定改成裸真值 `if is_private` → 字符串 "0" 的用例变红（bool("0") 是 True，
     # 公开房间被误判私有而整轮报错）；判定改回 int(str(...)) → 布尔与 "true"/"false" 变红。
-    # 只打桩传输层（async_req / login_popkontv / get_popkontv_stream_data），
-    # parse_config_bool 归一、statusCd 分支与结果组装一律走真实代码。
+    # 只打桩传输层；parse_config_bool 归一、statusCd 分支与结果组装走真实代码。
     _TOKEN = "K" * 640
     _OK = '{"statusCd":"L0000","statusMsg":"ok","data":{"castHlsUrl":"https://p/h.m3u8"}}'
     _URL = "https://www.popkontv.com/live/view?castId=cast1&partnerCode=P-00001"

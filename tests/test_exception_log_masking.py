@@ -2,7 +2,7 @@
 #
 # 立规理由：异常文本里常内嵌**带签名/凭据的完整 URL**（httpx 的 ConnectError/HTTPError 会把请求 URL
 # 打进 str(e)），而 logs/ 按大小轮转保留多份 ⇒ 凭据等于长期落盘。AGENTS.md 的凭据红线写的是「写入
-# 日志前必须脱敏」，但只靠人眼 grep 时同族缺陷在一轮里就报了 3 处（M-05 / L-08 / L-21）。
+# 日志前必须脱敏」，但只靠人眼 grep 时同族缺陷在一轮里就报了 3 处。
 #
 # 为什么不做成「全仓一律必须脱敏」：实测同口径扫描在**出站函数**里就命中 23 个函数 / 34 个实参，
 # 全仓 except 分支的异常文本实参更多（数百）。零容忍会把门禁写成一张永久红榜，红榜没人看，
@@ -120,7 +120,7 @@ def _collect_sites(files: list[Path]) -> tuple[dict[tuple[str, str], int], int]:
                     if getattr(base, "id", getattr(base, "attr", "")) not in ("logger", "log"):
                         continue
                     # 本仓日志一律写成 logger.warning(i18n.tr(模板, **kw))——kwarg 挂在**内层** tr 调用上，
-                    # 只查 logger 自己的 keywords 会一条也看不见（M-05 排查期实测踩到的第一版假绿）。
+                    # 只查 logger 自己的 keywords 会一条也看不见（该排查期实测踩到的第一版假绿）。
                     for sub in ast.walk(call):
                         if not isinstance(sub, ast.Call):
                             continue

@@ -1,12 +1,12 @@
-# scripts/check_coverage.py 的回归锁（该门禁此前全库零回归锁，MID-2261）。
+# scripts/check_coverage.py 的回归锁（该门禁此前全库零回归锁）。
 #
 # 口径：按「删掉某条 fail-closed 判据必须变红」组织用例，全部离线——只喂构造好的
 # coverage 报告 dict / 临时目录树，不跑 pytest 自身、不调用真实 .coverage。
 #
 # 锁住的行为：
-#   A) MIN-19：拿不到数据（文件缺失 / files 为空 / 报告不可解析 / src 枚举为空 /
+#   A) ：拿不到数据（文件缺失 / files 为空 / 报告不可解析 / src 枚举为空 /
 #      登记表腐烂）一律 rc=2 并打印**下一步命令**，绝不退回 WARN 或「全部通过」；
-#   B) MID-2259：判定面 = src/ 下**全部**模块，未登记阈值者按 GLOBAL_FLOOR 判定，
+#   B) ：判定面 = src/ 下**全部**模块，未登记阈值者按 GLOBAL_FLOOR 判定，
 #      新增 src/*.py 不再自动豁免；
 #   C) 数据文件比 src/、tests/ 最新 .py 陈旧 → rc=2（旧数据评门禁＝假绿）；
 #   D) 报告键匹配必须整段模块路径（含 src/）落在尾部，只含 tests/utils.py 的报告
@@ -14,7 +14,7 @@
 #   E) 白名单（GATE_EXEMPT_MODULES）每条必须写理由，且指向真实存在的模块；
 #   F) CLI 出口必须把 0/1/2 三种 rc 原样 sys.exit（改成 `return` 就让门禁在 CI 里
 #      退化成一行装饰性输出）；
-#   G) MID-2259 分层：登记阈值 > 债务基线 > 全局下限；债务条目须有 tracker 出处与复核日期，
+#   G) 该分层：登记阈值 > 债务基线 > 全局下限；债务条目须有 tracker 出处与复核日期，
 #      豁免理由写「生成物」必须能在文件里找到生成器标记（DEBT_CEILING 是条目数闸门）。
 #
 # **组织口径：一个用例只做一次门禁判定**（机检见 test_each_case_performs_a_single_gate_judgment）。
@@ -108,7 +108,7 @@ def test_registered_threshold_table_is_nonempty_and_points_at_real_modules() -> 
 
 
 def test_exempt_whitelist_entries_are_justified_and_real() -> None:
-    # 白名单是 MID-2259 之后的「第三条路」，条目必须写明理由且指向真实模块，
+    # 白名单是此后的「第三条路」，条目必须写明理由且指向真实模块，
     # 否则它会重新变成「自动豁免」的旁门（正是本门禁要消灭的形态）。
     assert isinstance(check_coverage.GATE_EXEMPT_MODULES, dict)
     for module, reason in check_coverage.GATE_EXEMPT_MODULES.items():
@@ -173,7 +173,7 @@ def test_subprocess_probes_compare_bytes_not_decoded_text() -> None:
 
 
 # ---------------------------------------------------------------------------
-# B) MID-2259：未登记模块不再自动豁免
+# B) ：未登记模块不再自动豁免
 # ---------------------------------------------------------------------------
 
 
@@ -203,7 +203,7 @@ def test_unregistered_module_at_global_floor_passes(tmp_path: Path) -> None:
 
 
 def test_registered_module_still_uses_its_own_higher_threshold(tmp_path: Path) -> None:
-    # 反向锁：登记了 85% 的模块不得被 50% 的下限放水（否则「登记」这层毫无意义）。
+    # 反向锁：登记了 85% 的模块不得被 60% 的下限放水（否则「登记」这层毫无意义）。
     root = _make_root(tmp_path)
     ttwid_threshold = check_coverage.MODULE_THRESHOLDS["src/ttwid.py"]
     assert ttwid_threshold > check_coverage.GLOBAL_FLOOR, "用例前提失效：ttwid 阈值须高于全局下限"
@@ -221,7 +221,7 @@ def test_exempt_module_does_not_block_the_gate(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# A) MIN-19 / fail-closed：拿不到输入一律 rc=2 + 下一步命令
+# A) / fail-closed：拿不到输入一律 rc=2 + 下一步命令
 # ---------------------------------------------------------------------------
 
 
@@ -283,7 +283,7 @@ def test_stale_table_entry_exits_2_then_clean_table_passes(tmp_path: Path, capsy
 def test_unparseable_report_exits_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # 「数据文件在、coverage json 生成失败」这一类必须走 rc=2（MIN-19 明列的第三形态）。
+    # 「数据文件在、coverage json 生成失败」这一类必须走 rc=2（该明列的第三形态）。
     # 只桩 coverage 子进程这一层（返回非 0、且不落 JSON），判定逻辑仍走真实实现。
     root = _make_root(tmp_path)
     data = root / ".coverage"
@@ -311,7 +311,7 @@ def test_missing_summary_counts_as_zero(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# C) MID-2261 补：新鲜度
+# C) 该补：新鲜度
 # ---------------------------------------------------------------------------
 
 
@@ -455,7 +455,7 @@ def test_real_src_tree_enumeration_is_populated_and_classified() -> None:
 def test_cli_main_exits_with_the_gate_rc(gate_rc: int, monkeypatch: pytest.MonkeyPatch) -> None:
     # 上面几条直调判定函数，这组锁 **CLI 出口**：main() 必须把 rc 原样 sys.exit 出去。
     # 若有人把 `sys.exit(check_coverage(...))` 改成 `return`，脚本会恒以 0 结束——
-    # 门禁在 CI 里就变成一行装饰性输出（MIN-19 想消灭的正是这一族）。
+    # 门禁在 CI 里就变成一行装饰性输出（该想消灭的正是这一族）。
     # 这里只桩「取数据 + 判定」这一层（真实判定逻辑由上面各条分别锁），每个参数化实例只调一次
     # main()，因此不触发文件头的单次判定口径。
     seen: dict[str, Any] = {}
@@ -489,7 +489,7 @@ def test_cli_entrypoint_propagates_rc2_for_unusable_data(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# G) MID-2259 白名单分层（登记阈值 > 债务基线 > 全局下限；豁免另设机检）
+# G) 该白名单分层（登记阈值 > 债务基线 > 全局下限；豁免另设机检）
 #    组织口径沿用本文件：一个用例只做一次门禁判定；纯校验器逻辑直接调
 #    _validate_debt_and_exempt(today=…) 注入固定日期，不依赖真实时钟。
 # ---------------------------------------------------------------------------

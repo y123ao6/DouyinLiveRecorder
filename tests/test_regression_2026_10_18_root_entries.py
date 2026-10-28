@@ -2,9 +2,9 @@
 # 回归锁（生产实现由别的包落地，本文件只锁行为）。
 #
 # 覆盖两条：
-#   L-01  web.py::_cap_web_console_log —— 后台模式启动侧把超限的 logs/web_console.log 就地截断为
+#   web.py:_cap_web_console_log —— 后台模式启动侧把超限的 logs/web_console.log 就地截断为
 #         末尾若干 KB（起点强制对齐整行首），失败只留痕不阻断后台化；
-#   L-02  gui.py 的 PID 复用防线 —— 退出链在 `taskkill /F /T` 之前先确认「这个号码现在还是我们启动
+#   gui.py 的 PID 复用防线 —— 退出链在 `taskkill /F /T` 之前先确认「这个号码现在还是我们启动
 #         的那个映像」，只在**确证不同**时收手，取不到判据一律退回原无条件形态。
 #
 # 全部离线：不起 Web 服务、不建真窗、不联网；产物一律 tmp_path。打桩边界：web 侧只替换两个体积
@@ -38,7 +38,7 @@ _GUI_PARENT_ENV = "DLR_GUI_PARENT"
 def gui() -> Iterator[ModuleType]:
     # gui.py 的模块级副作用有两条：os.environ["DLR_GUI_PARENT"]="1" 与 _fix_encoding() 的 stdio
     # 重配置。逐例导入会让后者被 conftest 的函数级 stdio 守卫判成「用例改动了宿主编码策略」，收集期
-    # 导入又把前者永久留给整个会话——故会话级导入 + 导入完立刻还原标记（同 MT-05 手法）。
+    # 导入又把前者永久留给整个会话——故会话级导入 + 导入完立刻还原标记（同上文手法）。
     with pytest.MonkeyPatch.context() as patcher:
         patcher.setenv(_GUI_PARENT_ENV, "")
         module = importlib.import_module("gui")
@@ -46,7 +46,7 @@ def gui() -> Iterator[ModuleType]:
 
 
 # ---------------------------------------------------------------------------
-# L-01：web_console.log 的启动侧大小上限
+# web_console.log 的启动侧大小上限
 # ---------------------------------------------------------------------------
 
 
@@ -118,7 +118,7 @@ def test_cap_web_console_log_failure_is_reported_and_returns_zero(
 ) -> None:
     # 截断失败绝不阻断后台化（日志继续追加也远好过面板起不来），但必须留下一条可见告警，
     # 且返回 0 让调用方不去打「已丢弃 N KB」那句结论。
-    # 判据只问「有没有留痕 + 文件是否原样 + 返回值」，不钉告警文案（M-26：文案会漂，字面锁会空转）。
+    # 判据只问「有没有留痕 + 文件是否原样 + 返回值」，不钉告警文案（文案会漂，字面锁会空转）。
     original = b"y" * 50
     path = tmp_path / "web_console.log"
     path.write_bytes(original)
@@ -170,7 +170,7 @@ def test_console_log_cap_is_called_before_the_append_stream_opens() -> None:
 
 
 # ---------------------------------------------------------------------------
-# L-02：GUI 退出链的 PID 复用防线
+# GUI 退出链的 PID 复用防线
 # ---------------------------------------------------------------------------
 
 # 超出任何真实 PID 上限的号码：替身按「OpenProcess 对已消失进程回 NULL」的形态处理
@@ -220,7 +220,7 @@ def _use_win32_kernel32(gui: ModuleType, monkeypatch: pytest.MonkeyPatch, k32: _
 
 
 def _kill_runs(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    # 进程级 stdlib 替身一律走被测模块命名空间的 shim（AGENTS/MID-66）：
+    # 进程级 stdlib 替身一律走被测模块命名空间的 shim（AGENTS/）：
     # 直接 setattr(subprocess, "run", ...) 会把全进程唯一的 subprocess 本体换掉。
     runs: list[list[str]] = []
 
@@ -261,7 +261,7 @@ def test_pid_guard_detects_reuse_and_reports_both_names(
 
 def test_pid_guard_passes_for_dead_pid(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     # 格③：PID 已不存在（OpenProcess 回 NULL）→ 取不到判据 → 退回原无条件形态
-    # （本来就没有活对象可误杀，而 taskkill 会自己返回 128、由 MIN-2249 如实记「未能清理」）
+    # （本来就没有活对象可误杀，而 taskkill 会自己返回 128、由该如实记「未能清理」）
     k32 = _FakeKernel32({os.getpid(): sys.executable})
     _use_win32_kernel32(gui, monkeypatch, k32)
     assert gui._reused_pid_image_pair(_own_image_name(), _DEAD_PID) is None

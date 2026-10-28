@@ -1,4 +1,4 @@
-# tests/test_gui_status_pattern_i18n.py — 画质监控状态行的跨语言回归锁（M-14）。
+# tests/test_gui_status_pattern_i18n.py — 画质监控状态行的跨语言回归锁。
 #
 # 故障形态：gui.py 曾用硬编码简中正则/子串解析录制子进程 stdout 的三类行（录制中、
 # 画质降级、空态），而这些行生产侧全部经 i18n.tr 翻译（src/recorder_status.py::display_info、
@@ -6,7 +6,7 @@
 # AGENTS「关键约定 #13」禁止拿自然语言子串当跨模块契约，比较对象必须取 i18n.tr(...) 后形态。
 #
 # 锁：① 四种受支持语言下三类行都能解析（行为锁）；② 语言热切换后匹配器重算；
-# ③ 2026-09-12 审查 F-06 的解析语义（贪婪 name 段 + [^\]]+ 画质段）不回退；
+# ③ 2026-09-12 审查该解析语义（贪婪 name 段 + [^\]]+ 画质段）不回退；
 # ④ gui.py 不得再出现裸简中匹配字面量（AST 静态锁）。
 # 修复形态是「消费侧由同 msgid 的 tr() 结果派生匹配串」；#DLRQ| 结构化键值协议属
 # 「待批准长期方案」，要同时改 src/recorder_status.py 与 main.py，不在本包授权范围。
@@ -150,7 +150,7 @@ sys.stdout.write("\n@@WP_E_I18N@@ " + json.dumps(out, ensure_ascii=False))
 
 
 def _child_env() -> dict[str, str]:
-    # M-31① 同口径：显式钉 UTF-8，不依赖宿主 shell 恰好带该环境变量。
+    # ① 同口径：显式钉 UTF-8，不依赖宿主 shell 恰好带该环境变量。
     env = dict(os.environ)
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
@@ -289,7 +289,7 @@ def test_idle_line_clears_recording_flag_in_every_language(language: str) -> Non
 
 @pytest.mark.parametrize("language", _LANGUAGES)
 def test_untranslated_empty_line_still_clears_in_every_language(language: str) -> None:
-    # M-14② 的不对称：src/recorder_status.py 的 print("\r没有正在监测和录制的直播")
+    # ② 的不对称：src/recorder_status.py 的 print("\r没有正在监测和录制的直播")
     # 生产侧**没有** tr() 调用，能否被翻译取决于 main.py 的 builtins.print 补丁（冻结环境
     # 尚待实测）。所以消费侧必须连原文形态也认得——改成「只匹配 tr() 结果」即在
     # en_US/en_GB/zh_TW 下变红。
@@ -300,7 +300,7 @@ def test_untranslated_empty_line_still_clears_in_every_language(language: str) -
 
 
 def test_bracketed_anchor_name_keeps_f06_semantics() -> None:
-    # 2026-09-12 审查 F-06：主播名里的 "[...]" 不得被当成画质段边界。
+    # 2026-09-12 审查：主播名里的 "[...]" 不得被当成画质段边界。
     # 派生实现必须逐字保持「贪婪 name 段 + [^\]]+ 画质段」，两种语言都验。
     case = {
         "language": "zh_CN",
@@ -319,7 +319,7 @@ def test_bracketed_anchor_name_keeps_f06_semantics() -> None:
 
 
 def test_language_hot_switch_recomputes_patterns() -> None:
-    # M-14 要求的失效时机：GUI 语言菜单经 i18n.set_language 热切换，匹配器必须跟着重算。
+    # 要求的失效时机：GUI 语言菜单经 i18n.set_language 热切换，匹配器必须跟着重算。
     # 一个子进程里连跑 zh_CN → en_US → zh_CN：退回「模块级一次编译」时中间英文行必然失配。
     zh = _recording_case("zh_CN")
     en = _recording_case("en_US")
@@ -354,7 +354,7 @@ def test_mid_build_language_switch_is_not_cached() -> None:
 
 # ─── 静态锁：不得再出现裸简中匹配字面量 ──────────────────────
 
-# 三类行的特征串：出现在**匹配代码**里即为 M-14 回归，只允许作为 tr() 的 msgid 常量存在。
+# 三类行的特征串：出现在**匹配代码**里即为该回归，只允许作为 tr() 的 msgid 常量存在。
 _MATCHING_MARKERS = ("画质降级：设置", "正在录制中", "没有正在录制", "没有正在监测和录制的直播")
 
 
@@ -399,7 +399,7 @@ def test_no_bare_chinese_literals_outside_tr_templates() -> None:
 
 def test_patterns_are_derived_from_tr_and_cached_per_language() -> None:
     # 结构锁：匹配器必须由 i18n 的公开翻译入口派生、且**按语言惰性重算**。
-    # 「模块级 re.compile(...) 一次钉死简中」正是 M-14 的原始形态，故这里反向钉死它。
+    # 「模块级 re.compile(...) 一次钉死简中」正是该原始形态，故这里反向钉死它。
     tree = ast.parse(GUI_SOURCE)
     compiled_literals: list[str] = []
     for node in ast.walk(tree):

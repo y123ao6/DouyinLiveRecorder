@@ -345,7 +345,6 @@ function requestSign(signParams, cryptoJSPath) {
   }).join('');
 
   sKey += signParams.lm_s_id + signParams.lm_s_ts + lm_s_key;
-  console.log(`sKey: ${sKey}`);
   CryptoJS = require(cryptoJSPath);
   return CryptoJS.MD5(sKey).toString();
 }
@@ -371,8 +370,10 @@ function sign(videoid, cryptoJSPath, platform='web'){
         h5: 1
     };
     */
-    console.log("data_e:",data_e);
-
+    // L-24（2026-10-28，CODE_REVIEW_2026-10-27 4.2）：本文件原有 6 处调试打印（sKey / data_e /
+    // data_i / fake lm_s_sign / signParams / final lm_s_sign），已全部删除——签名脚本经 node 子进程
+    // 执行、stdout 会被父进程捕获，sKey 是签名素材、signParams 含完整请求参数，扩散进日志即泄面。
+    // 需要调试时请临时加回并自行承担脱敏责任，勿回填真实会话素材（同上 L-24 口径）。
     data_i = {
         ...data_e,
         _time: new Date().valueOf(),
@@ -381,11 +382,9 @@ function sign(videoid, cryptoJSPath, platform='web'){
         area: 'zh',
         vali: vali
       }
-    console.log("data_i:",data_i);
 
     // fake lm_s_sign param value
     let lm_s_sign = pC(data_i);
-    console.log(`fake lm_s_sign: ${lm_s_sign}`);
 
     //finnal request params
     /*
@@ -416,9 +415,7 @@ function sign(videoid, cryptoJSPath, platform='web'){
         "os": platform,
         ...data_i
     }
-    console.log("signParams: ", signParams);
     lm_s_sign = requestSign(signParams, cryptoJSPath);
-    console.log(`\x1b[32mfinal lm_s_sign: \x1b[0m${lm_s_sign}\n`);
     data = {
         ...signParams,
         lm_s_sign

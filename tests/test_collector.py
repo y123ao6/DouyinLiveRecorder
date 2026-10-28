@@ -1,24 +1,24 @@
-# DanmakuCollector 生命周期回归（CODE_REVIEW_2026-09-20 的 MID-23 / MID-24 / MIN-23，及 MID-2242）。
+# DanmakuCollector 生命周期回归（CODE_REVIEW_2026-09-20 的 / / ，及）。
 #
 # 全部离线：平台弹幕客户端用桩替代，不触网、不起真实 WS。
 #
 # 覆盖的不变量：
-#   ① MID-23：stop() 不得在「_loop 已发布、尚未 run_until_complete」的窗口丢停止信号；
-#   ② MID-24：SRT sentinel 一律非阻塞投递，队列满时由写线程自检退出，
+#   ① ：stop() 不得在「_loop 已发布、尚未 run_until_complete」的窗口丢停止信号；
+#   ② ：SRT sentinel 一律非阻塞投递，队列满时由写线程自检退出，
 #      且 sentinel 失败绝不阻断 srt.close()（否则录制并发槽在 try 内路径上永久泄漏）；
-#   ③ MIN-23：停 loop 前先 cancel danmaku.start() 任务并让取消传播，
+#   ③ ：停 loop 前先 cancel danmaku.start() 任务并让取消传播，
 #      使平台 start() 的 finally 清理链真的跑完；
-#   ④ MID-2242：start() 非原子——任一步抛错（实测可达形态 RuntimeError: can't start new thread）
+#   ④ ：start() 非原子——任一步抛错（实测可达形态 RuntimeError: can't start new thread）
 #      后不得留在「半启动」状态；stop() 里两处 join 绝不能因为「线程从未成功 start()」就抛错、
 #      跳过末尾的 self._srt.close()（SRT 句柄泄漏，Windows 上该 .srt 在 GC 前无法改名，会打挂改名逻辑）。
 #
-# 另附 MID-24 的写线程侧：get() 带超时 + _srt_stop 自检，队列空时能自行退出。
+# 另附该写线程侧：get() 带超时 + _srt_stop 自检，队列空时能自行退出。
 #
 # 2026-10-21 CODE_REVIEW_2026-10-21 追加两条不变量（改回旧形态即应转红）：
-#   ⑤ M-38  采集线程 join 超时后必须复查 is_alive() 并留 warning——join(timeout) 超时是静默返回，
+#   ⑤ 该采集线程 join 超时后必须复查 is_alive() 并留 warning——join(timeout) 超时是静默返回，
 #           旧写法不复查，卡死的线程（连同事件循环与监控房间条目）在日志里完全隐形；
-#           同时钉住「新增判定不得改变 srt.close() 的调用顺序」（MID-24 的槽位泄漏契约）。
-#   ⑥ M-40  平台类**构造期**与回调注入阶段的异常不得逃出守护线程：必须落一条脱敏 warning
+#           同时钉住「新增判定不得改变 srt.close() 的调用顺序」（该槽位泄漏契约）。
+#   ⑥ 该平台类**构造期**与回调注入阶段的异常不得逃出守护线程：必须落一条脱敏 warning
 #           并把房间上报为已关闭，否则面板停在「采集中」、监控条目永不上报关闭。
 
 import asyncio
@@ -65,7 +65,7 @@ class _SlowConstructDanmaku:
         return None
 
 
-# start() 内含 finally 清理链、且常驻不自行退出的弹幕客户端替身（MIN-23 用）。
+# start() 内含 finally 清理链、且常驻不自行退出的弹幕客户端替身（该用）。
 class _FinallyChainDanmaku:
     finally_ran = threading.Event()
 
@@ -104,7 +104,7 @@ def _monitor_only(tmp_path: Path, danmaku_cls: Any, monitor: DanmakuMonitorHub) 
 
 
 def test_stop_signal_not_dropped_during_client_construction(tmp_path: Path) -> None:
-    # MID-23 主用例：复现「loop 已发布但未 running」的丢信号窗口。
+    # 主用例：复现「loop 已发布但未 running」的丢信号窗口。
     # 旧实现在此刻 is_running() 为 False → 整段 call_soon_threadsafe 被跳过 → 信号永久丢失
     # → join(8) 超时、采集线程与监控房间条目全部滞留。
     _SlowConstructDanmaku.start_called = False
@@ -152,7 +152,7 @@ class _LateRunningLoop:
 
 
 def test_stop_waits_bounded_for_loop_before_scheduling(tmp_path: Path) -> None:
-    # MID-23 的投递侧：loop 稍后才 running 时，stop() 必须等到那一刻再投递，
+    # 投递侧：loop 稍后才 running 时，stop() 必须等到那一刻再投递，
     # 而不是「此刻不在跑就永久放弃」。
     collector = _monitor_only(tmp_path, _FinallyChainDanmaku, DanmakuMonitorHub(log_path=None))
     loop = _LateRunningLoop(0.15)
@@ -166,7 +166,7 @@ def test_stop_waits_bounded_for_loop_before_scheduling(tmp_path: Path) -> None:
 
 
 def test_monitor_hub_and_writer_thread_survive_full_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # MID-24：队列满 + 写线程卡在 flush 时，stop() 必须**照常返回**并把 srt.close() 走到，
+    # 队列满 + 写线程卡在 flush 时，stop() 必须**照常返回**并把 srt.close() 走到，
     # 否则录制线程挂死在 try 内路径上、_rec_sem 的槽位永不归还。
     monkeypatch.setattr(collector_module, "_SRT_QUEUE_MAXSIZE", 1)
     collector = DanmakuCollector(
@@ -191,7 +191,7 @@ def test_monitor_hub_and_writer_thread_survive_full_queue(tmp_path: Path, monkey
     # 队列被填满，此时 sentinel 无处可去——旧实现的阻塞 put 就挂死在这里。
     class _NeverExit:
         # 写线程替身：join 到期仍「存活」。
-        # ident 必须给出非 None（MID-2242 的 stop() 侧改用 `ident is None` 判定
+        # ident 必须给出非 None（ stop() 侧改用 `ident is None` 判定
         # 「该线程可 join」，替身不实现它就会 AttributeError；真实形态里写线程已 start 成功，
         # 只是卡在阻塞 flush() 上，故 ident 早已就绪）。
         ident = 1
@@ -217,7 +217,7 @@ def test_monitor_hub_and_writer_thread_survive_full_queue(tmp_path: Path, monkey
 
 
 def test_srt_writer_loop_self_exits_on_stop_event(tmp_path: Path) -> None:
-    # MID-24 的写线程侧：sentinel 没投进来时，队列为空 + _srt_stop 置位即自行退出。
+    # 写线程侧：sentinel 没投进来时，队列为空 + _srt_stop 置位即自行退出。
     # 旧实现的 get() 无超时、也不看任何事件，此场景下永不返回（线程与句柄双泄漏）。
     collector = DanmakuCollector(
         danmaku_cls=cast(Any, _FinallyChainDanmaku),
@@ -265,7 +265,7 @@ def test_srt_writer_drains_pending_items_before_exit(tmp_path: Path) -> None:
 
 
 def test_shutdown_cancels_start_task_and_runs_finally_chain(tmp_path: Path) -> None:
-    # MIN-23：_shutdown 直接 loop.stop() 会让 danmaku.start() 的任务以 pending 态被
+    # _shutdown 直接 loop.stop() 会让 danmaku.start() 的任务以 pending 态被
     # 销毁（stderr 刷「Task was destroyed but it is pending」），且平台 start() 的
     # finally 清理链永不执行。现在必须先 cancel + 让出一轮，再停 loop。
     _FinallyChainDanmaku.finally_ran.clear()
@@ -319,7 +319,7 @@ def test_stop_is_idempotent(tmp_path: Path, as_stop_arg: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# MID-2242：start() 半启动回滚 + stop() 的 join 不得阻断 srt.close()
+# start() 半启动回滚 + stop() 的 join 不得阻断 srt.close()
 # ---------------------------------------------------------------------------
 
 
@@ -438,7 +438,7 @@ class _AliveForeverThread:
 
 
 def test_stop_warns_when_capture_thread_outlives_join(tmp_path: Path, log_capture: io.StringIO) -> None:
-    # M-38：join(timeout) 超时是**静默返回**，旧写法不复查存活就继续收尾，卡死的采集线程
+    # join(timeout) 超时是**静默返回**，旧写法不复查存活就继续收尾，卡死的采集线程
     # （事件循环 + WS 连接 + 监控房间条目全部滞留）在日志里一条线索都不留。
     collector = _srt_collector(tmp_path)
     srt = collector._srt
@@ -456,14 +456,14 @@ def test_stop_warns_when_capture_thread_outlives_join(tmp_path: Path, log_captur
     text = log_capture.getvalue()
     assert "停止流程收尾异常" in text, text
     assert "still alive after join(timeout=1.0s)" in text, text
-    # MID-24 契约的另一半：新增的存活判定**不得**改变 srt.close() 的到达（录制并发槽泄漏防线）
+    # 契约的另一半：新增的存活判定**不得**改变 srt.close() 的到达（录制并发槽泄漏防线）
     assert fp.closed is True, "采集线程未退出时跳过了 srt.close()：录制并发槽会永久泄漏"
 
 
 class _RaisingConstructDanmaku:
     # 平台 SDK 在构造期即抛（缺依赖 / 参数校验失败 / 风控页解析异常都是这种形态）。
-    # 异常文本内嵌带 token 的地址——既是 M-40 的「异常不得逃出守护线程」触发器，
-    # 也是 M-41 的脱敏判据样本（断言口径是「密钥字符串确实从日志里消失」）。
+    # 异常文本内嵌带 token 的地址——既是该「异常不得逃出守护线程」触发器，
+    # 也是该脱敏判据样本（断言口径是「密钥字符串确实从日志里消失」）。
     def __init__(self, **kwargs: Any) -> None:
         raise RuntimeError("connect failed https://ws.example/live?token=SECRETTOKEN40")
 
@@ -481,7 +481,7 @@ class _RaisingConstructDanmaku:
 
 
 def test_run_reports_closed_and_masks_when_construction_raises(tmp_path: Path, log_capture: io.StringIO) -> None:
-    # M-40：构造期异常此前裸奔在 _run 的 finally 之外——线程带 traceback 消失（无控制台进程里
+    # 构造期异常此前裸奔在 _run 的 finally 之外——线程带 traceback 消失（无控制台进程里
     # 连 traceback 都没有），而监控枢纽条目仍停在 started，面板显示「采集中」直到录制结束。
     hub = DanmakuMonitorHub(log_path=str(tmp_path / "dm.jsonl"))
     collector = DanmakuCollector(

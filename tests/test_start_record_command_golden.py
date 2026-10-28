@@ -1,4 +1,4 @@
-# 黄金样本测试：在 F-01（start_record 五条 ffmpeg 命令构造路径统一）重构之前，
+# 黄金样本测试：在（start_record 五条 ffmpeg 命令构造路径统一）重构之前，
 # 先把当前「逐分支内联构造」产出的 ffmpeg 命令行逐字节冻结成基准快照。
 #
 # 设计要点：
@@ -19,7 +19,7 @@
 #   GOLDEN_REGEN=1 python -m pytest tests/test_start_record_command_golden.py -q   # 重新生成基准
 #   python -m pytest tests/test_start_record_command_golden.py -q                  # 比对基准（重构后回归）
 #
-# 重构 F-01 后，重跑普通模式，若任一命令与基准不符即说明行为被改动——必须回到「等价重构」。
+# 重构该后，重跑普通模式，若任一命令与基准不符即说明行为被改动——必须回到「等价重构」。
 
 import copy
 import datetime
@@ -43,7 +43,7 @@ _GOLDEN_PATH = Path(__file__).resolve().parent / "golden" / "start_record_comman
 
 
 def _regen_enabled(raw: str | None) -> bool:
-    # MIN-2265（2026-09-23）：原写法 `bool(os.environ.get("GOLDEN_REGEN"))` 把**非空字符串**
+    # 2026-09-23：原写法 `bool(os.environ.get("GOLDEN_REGEN"))` 把**非空字符串**
     # 一律当真——环境里留着 `GOLDEN_REGEN=0` / `=false` 时，20 条比对全部走 `return` 判通过，
     # 并在 session 结束时**用当前实现覆盖基准 JSON**。此后任何命令行错位（例如 `-segment_format`
     # 两值再被互换，正是 09-04 的 P0 形态）都会被固化成「新基准」，黄金快照从此自证。
@@ -105,7 +105,7 @@ def main_mod() -> ModuleType:
 #   （scripts/check_annotations.py 判违规），改为行注释、语义不变。
 class _Cap:
     def __init__(self) -> None:
-        # SEV-2224：命令快照必须连带记录 check_subprocess 收到的 platform / danmaku_args。
+        # 命令快照必须连带记录 check_subprocess 收到的 platform / danmaku_args。
         # 原先只 append 命令列表，于是「保存类型分支漏传弹幕参数」不改变任何快照内容，
         # 弹幕链路（get_danmaku_collector(platform, args, ...)）的接线断一条都没人能拦。
         self.commands: list[dict[str, Any]] = []
@@ -116,7 +116,7 @@ class _Cap:
 
 
 def _module_shim(module: ModuleType) -> types.SimpleNamespace:
-    # MID-66：把 stdlib 模块浅拷贝成替身，只替换 main 命名空间里的全局名。
+    # 把 stdlib 模块浅拷贝成替身，只替换 main 命名空间里的全局名。
     # 直接 setattr(main.time, ...) / setattr(main.os, ...) 改的是全进程唯一的模块本体：
     # 同进程的 loguru 线程、harness 守护线程、coverage 会一起吃到假 time.time/假 makedirs。
     # 同 tests/test_record_failure_feedback.py 里 subprocess 替身（_make_subprocess_shim）的
@@ -129,7 +129,7 @@ def _module_shim(module: ModuleType) -> types.SimpleNamespace:
 # 新增用例只需列出与默认值不同的字段；默认值本身不得随意改动——改动等于改动基准语义。
 #
 # danmaku_args 刻意取**非空**且与真实抖音分支同形（room_id/user_id/cookie 三键，见 main.py
-# 的抖音解析）：SEV-2224 要求快照记录 check_subprocess 收到的 platform / danmaku_args，
+# 抖音解析）：该要求快照记录 check_subprocess 收到的 platform / danmaku_args，
 # 而「所有用例都传 None」会把这条锁变成空锁——漏传关键字参数的分支只会把一个 None
 # 换成另一个 None，快照毫无变化。无弹幕的平台（TikTok / 猫耳FM / shopee 直下）显式覆盖为 None。
 _DOUYIN_DANMAKU_ARGS = {
@@ -294,7 +294,7 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
     # （看着能跑只是因为反复覆盖同一函数的同一属性），且一旦 _COOKIE_GLOBALS 变空（新增平台忘了
     # 补 cookie 全局量）裁决就静默消失，ts_overseas_https 会以「没有 -tls_verify 0」的形态与基准
     # 不符而看不出成因。
-    #   [历史注] 2026-09-23 SEV-2224 附带修正前正是那种循环内写法。
+    #   [历史注] 2026-09-23 该附带修正前正是那种循环内写法。
     monkeypatch.setattr(
         main._http_config,
         "get_effective_ssl_verify",
@@ -310,7 +310,7 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
 
     _orig_strftime = _time.strftime  # 必须在 Patch 之前捕获原始实现
     _fixed_tt = _FIXED.timetuple()
-    # MID-66：以下四项全部经浅拷贝替身挂到 main 命名空间，不再触碰 stdlib time 本体
+    # 以下四项全部经浅拷贝替身挂到 main 命名空间，不再触碰 stdlib time 本体
     _time_shim = _module_shim(_time)
     _time_shim.strftime = lambda fmt, t=None: _orig_strftime(fmt, _fixed_tt)
     _time_shim.localtime = lambda t=None: _fixed_tt
@@ -330,14 +330,14 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
             return _FIXED
 
     # datetime.datetime 是 C 类型，不能 setattr 类方法；替换 main 命名空间里的 datetime 模块引用。
-    # MID-66：原写法 setattr(main.datetime, "datetime", ...) 会把**真** datetime 模块的类换掉，
+    # 原写法 setattr(main.datetime, "datetime", ...) 会把**真** datetime 模块的类换掉，
     # 同进程任何线程（loguru 记录时间戳、coverage）此刻都在用冻结子类。
     _datetime_shim = _module_shim(datetime)
     _datetime_shim.datetime = _FrozenDateTime
     monkeypatch.setattr(main, "datetime", _datetime_shim)
 
     # 所有文件系统副作用：makedirs 变 no-op，full_path 仅为确定字符串
-    # MID-66：同上，os 走替身（其余 os.* 属性全部转发真实实现）
+    # 同上，os 走替身（其余 os.* 属性全部转发真实实现）
     _os_shim = _module_shim(os)
     _os_shim.makedirs = lambda *a, **k: None
     monkeypatch.setattr(main, "os", _os_shim)
@@ -353,7 +353,7 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
     }
 
     # 返回四元组 (platform, port_info, record_danmaku_args, new_record_url)（见 main.py 的
-    # _resolve_platform_stream）。第 3 项以前恒为 None，SEV-2224 之后改为按用例取值，
+    # _resolve_platform_stream）。第 3 项以前恒为 None，此后改为按用例取值，
     # 这样「保存类型分支漏传 danmaku_args」才会体现在快照里。
     monkeypatch.setattr(
         main,
@@ -432,7 +432,7 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
 
     # start_record 的 except 会吞掉真实异常、loguru 队列在测试进程里又会卡死，故把
     # logger.error/warning 改为收进 _Cap.errors，断言失败时随消息一并输出。
-    #   [历史注] 2026-09-21 MID-66 之前落盘到 tests/_exc.log：路径写死盘符、CI/Linux 失效，
+    #   [历史注] 2026-09-21 此前落盘到 tests/_exc.log：路径写死盘符、CI/Linux 失效，
     #   且在仓库里留一次性产物（现由 tests/test_test_hygiene.py 的 R4 规则拦住 *.log 残留）。
     def _capture(level: str, msg: object) -> None:
         cap.errors.append(f"[{level}] {msg}\n{traceback.format_exc()}")
@@ -456,10 +456,10 @@ def _actual_of(case: dict[str, Any], cap: _Cap) -> dict[str, Any]:
     return dict(cap.commands[0])
 
 
-# LT-13（2026-10-18 审查）：GOLDEN_REGEN=1 与 `-k` / 单条 node id / `--lf` 组合时只跑部分用例，
+# （2026-10-18 审查）：GOLDEN_REGEN=1 与 `-k` / 单条 node id / `--lf` 组合时只跑部分用例，
 # 而 _REGEN_DICT 装的正是「本轮跑到的那几条」——旧实现无条件整份覆写基准 JSON，于是 20 条的黄金
 # 基准当场退化成「一条命令的快照」：此后其余 19 条比对全绿却什么都不证明（黄金快照自证失效，
-# 与 MIN-2265 的「基准被当前实现覆盖后一切错位都成新基准」同一失效面）。
+# 与该「基准被当前实现覆盖后一切错位都成新基准」同一失效面）。
 # 判据抽成纯函数是为了让「拒绝部分覆盖」本身有用例可跑（见 test_regen_coverage_guard_*），
 # 而不是只在人工变异验证里有效。
 def _regen_write_block(recorded: dict[str, Any], cases: list[dict[str, Any]]) -> str | None:
@@ -487,7 +487,7 @@ def _regen_write_block(recorded: dict[str, Any], cases: list[dict[str, Any]]) ->
 def _write_golden(request: pytest.FixtureRequest) -> Generator[None]:
     yield
     if _REGEN:
-        # 写盘前唯一的一道闸：覆盖度不足即拒绝（见 _regen_write_block 的 LT-13 说明）
+        # 写盘前唯一的一道闸：覆盖度不足即拒绝（见 _regen_write_block 说明）
         reason = _regen_write_block(_REGEN_DICT, _CASES)
         if reason is not None:
             pytest.fail(reason)
@@ -499,7 +499,7 @@ _REGEN_DICT: dict = {}
 
 
 def test_regen_coverage_guard_refuses_partial_and_accepts_full() -> None:
-    # LT-13 的行为锁（三条各判一个方向，缺任一条都留下盲区）：少一条必拒、全量放行、清单外 id 必拒
+    # 行为锁（三条各判一个方向，缺任一条都留下盲区）：少一条必拒、全量放行、清单外 id 必拒
     partial: dict[str, Any] = {str(case["id"]): {} for case in _CASES[:-1]}
     reason = _regen_write_block(partial, _CASES)
     assert reason is not None, "少一条用例仍允许写盘 = 黄金基准会被部分快照覆写（LT-13 复现）"
@@ -542,8 +542,8 @@ def test_start_record_command_golden(
     if case["platform"] in ("shopee", "花椒直播"):
         assert set(expected) == {"download"}, f"直下条目键形状异常（用例 {case['id']}）: {sorted(expected)}"
     else:
-        # SEV-2224：基准条目必须真的带 platform / danmaku_args。缺键说明这份 JSON 是
-        # 旧格式（手改过、或用被 MIN-2265 污染的 _REGEN 语义重生成过），那时弹幕接线
+        # 基准条目必须真的带 platform / danmaku_args。缺键说明这份 JSON 是
+        # 旧格式（手改过、或用被该污染的 _REGEN 语义重生成过），那时弹幕接线
         # 不在比对范围内——快照会「全绿但什么都没看」。
         assert {"command", "platform", "danmaku_args"} <= set(
             expected
@@ -559,7 +559,7 @@ def test_start_record_command_golden(
 
 
 # ---------------------------------------------------------------------------
-# 快照自身的质量锁（MIN-2265 / SEV-2224）
+# 快照自身的质量锁
 #
 # 黄金比对有个天然失效面：基准 JSON 一旦被「当前实现」覆盖，之后所有错位都成为新基准，
 # 20 条用例会全绿地什么都不证明。下面两条把「基准是否还是一份有意义的快照」变成断言。
@@ -582,7 +582,7 @@ def test_start_record_command_golden(
     ],
 )
 def test_golden_regen_switch_uses_the_shared_boolean_vocabulary(raw: str | None, expected: bool) -> None:
-    # MIN-2265 的直判锁：`GOLDEN_REGEN=0` / `=false` 绝不能再被当成「开启重生成」。
+    # 直判锁：`GOLDEN_REGEN=0` / `=false` 绝不能再被当成「开启重生成」。
     # 口径复用 src/config_bool.parse_config_bool（AGENTS.md 关键约定第 9 条），
     # 本用例同时证明「没有第二套真值集合」——改回 bool(str) 时 "0"/"false" 两格立刻变红。
     assert _regen_enabled(raw) is expected

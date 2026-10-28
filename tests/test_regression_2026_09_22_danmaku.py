@@ -1,15 +1,15 @@
-# 2026-09-22 弹幕链路评审整改的回归锁（CODE_REVIEW_2026-09-22 的 SEV-2217 / MID-2245 / MID-2247）。
+# 2026-09-22 弹幕链路评审整改的回归锁（CODE_REVIEW_2026-09-22 的 / / ）。
 #
 # 全部离线：websockets.connect 换成假上下文管理器（不触网），日志经临时 sink 捕获，监控枢纽的
 # JSONL 边车写在 tmp_path 下，绝不碰仓库真实的 logs/ 目录。
-#   ① SEV-2217：on_close / on_reconnect 的文案会同时进 loguru 文件 sink（logs/ 按 300KB 轮转保留
+#   ① ：on_close / on_reconnect 的文案会同时进 loguru 文件 sink（logs/ 按 300KB 轮转保留
 #      多份 = 长期落盘）与监控边车 JSONL（→ Web/GUI 面板）。InvalidProxy 文本自带代理原串（含
 #      user:pass@host），故断言「凭据值在两处都消失」而非「调用了掩码函数」。on_reconnect 侧只记
 #      一条 debug、自己不过码，只能由 ws_client 侧脱敏保住，故本用例走真实接线。
-#   ② MID-2245：B站 _reject_auth 原先复用 WsClient.close()，而 close 置 _stopped 后 connect() 的两条
+#   ② ：B站 _reject_auth 原先复用 WsClient.close()，而 close 置 _stopped 后 connect() 的两条
 #      `if self._stopped: break` 出口都不回调 on_close → hub.room_closed() 永不发出，Web 弹幕页把
 #      房间永久停在「已连接 / 0 条」。本用例从**真实解码路径**驱动它，不 stub _reject_auth。
-#   ③ MID-2247：i18n 门禁（tests/test_i18n_migration.py）判据是 `node.func.value.id == "logger"`，
+#   ③ ：i18n 门禁（tests/test_i18n_migration.py）判据是 `node.func.value.id == "logger"`，
 #      「别名 logger + f-string」对它完全隐形；这里补一条反向 AST 锁把该形态钉死为非法。
 
 import ast
@@ -67,7 +67,7 @@ class _FailingCtx:
 
 
 def _install_always_failing_connect(monkeypatch: pytest.MonkeyPatch, exc: BaseException) -> None:
-    # MID-66 口径：不 patch websockets 模块本体（会波及同进程其它用例的真实连接），
+    # 不 patch websockets 模块本体（会波及同进程其它用例的真实连接），
     # 只把 ws_client 命名空间里的全局名换成浅拷贝替身。
     shim = types.SimpleNamespace(**vars(ws_client_module.websockets))
     shim.connect = lambda *args, **kwargs: _FailingCtx(exc)
@@ -75,7 +75,7 @@ def _install_always_failing_connect(monkeypatch: pytest.MonkeyPatch, exc: BaseEx
 
 
 # ---------------------------------------------------------------------------
-# ① SEV-2217：真实接线下凭据不得进日志 / 监控边车
+# ① ：真实接线下凭据不得进日志 / 监控边车
 # ---------------------------------------------------------------------------
 
 
@@ -142,7 +142,7 @@ async def test_proxy_credentials_absent_from_logs_and_monitor_sidecar(
     assert any("***@" in text for text in lines), f"日志里看不到脱敏后的代理串: {lines}"
     assert any("isn't a valid proxy" in text for text in lines)
     assert "***@" in sidecar_text
-    # 配对信号仍在：collector._on_close 必须把房间标记为已断开（否则 MID-2245 的观感回归）
+    # 配对信号仍在：collector._on_close 必须把房间标记为已断开（否则该观感回归）
     assert _room_connected(hub, "房间A") is False, "on_close 未把房间从「已连接」翻回断开"
 
 
@@ -177,7 +177,7 @@ def test_collector_on_close_masks_unmasked_reason(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ② MID-2245：认证被拒必须经 on_close 上报（真实解码路径驱动）
+# ② ：认证被拒必须经 on_close 上报（真实解码路径驱动）
 # ---------------------------------------------------------------------------
 
 
@@ -226,7 +226,7 @@ async def test_ws_client_fail_is_idempotent_and_masks_reason() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ③ MID-2247：反向 AST 锁——禁止「别名 logger」，禁止任何 logger 绑定收 f-string 文案
+# ③ ：反向 AST 锁——禁止「别名 logger」，禁止任何 logger 绑定收 f-string 文案
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -313,7 +313,7 @@ def _callee_name(func: ast.expr) -> str:
 
 
 def _message_is_interpolated(node: ast.AST) -> bool:
-    # 判据与 MID-68 收紧后的不变量①一致：首参**子树**中存在含 FormattedValue 的 JoinedStr。
+    # 判据与该收紧后的不变量①一致：首参**子树**中存在含 FormattedValue 的 JoinedStr。
     # 唯一收敛处仍是 tr() 的模板位——约定②（格式说明符由调用方预先求值后作实参传入）本就允许
     # tr(...) 实参位写 f-string，一并判违规会把本仓推荐写法打成回归。形参取 ast.AST 而非
     # ast.expr：本函数按子树递归，iter_child_nodes 会产出 ast.arguments/keyword 等非 expr 节点。
@@ -353,7 +353,7 @@ def test_repo_python_file_scan_is_not_silently_empty() -> None:
 
 
 def test_no_aliased_loguru_logger_binding_anywhere() -> None:
-    # MID-2247 的形态锁：全仓不得给 logger 起别名（`from loguru import logger as _log`）。
+    # 形态锁：全仓不得给 logger 起别名（`from loguru import logger as _log`）。
     # 别名会同时绕过 i18n 门禁与这条锁要防的 f-string 组合，是「门禁绿但没查」的入口。
     offenders: list[str] = []
     for path in _scanned_python_files():

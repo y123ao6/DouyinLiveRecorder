@@ -23,7 +23,7 @@ from src.ws_client import _MAX_DECOMPRESSED_BYTES, WsClient, decompress_brotli_l
 
 HEADER_LEN = 16
 
-# SEV-2215：弹幕 WS 的主机完全取自 getDanmuInfo 响应，而连接会带上登录 Cookie
+# 弹幕 WS 的主机完全取自 getDanmuInfo 响应，而连接会带上登录 Cookie
 # （SESSDATA/DedeUserID）→ 响应可把凭据引向任意主机（凭据外泄 + SSRF）。真实 host 形如
 # broadcastlv.chat.bilibili.com / broadcastlv2.chat.bilibili.com；白名单按「精确等于或 . 后缀」
 # 判定，覆盖 B站官方域名族实际会出现的域。
@@ -39,8 +39,8 @@ def _bili_danmaku_host_allowed(host: str) -> bool:
     # 判定弹幕服务器 host 是否落在 B站官方域名族内。用「精确等于或 . 后缀」而非裸 endswith，
     # 防 evil-bilibili.com / notbilibili.com 这类后缀伪装被放行。空/带端口/带 path 一律拒绝。
     name = (host or "").strip().lower()
-    # S-06：`?`/`#` 也必须排除。`evil.com?.bilibili.com` 能通过下方后缀判定，而 urlsplit 会把 `?`
-    # 之后整段当 query、真实连接目标是 evil.com（`#` 形态同理）——判据必须与解析器同口径。
+    # `?`/`#` 也必须排除：`evil.com?.bilibili.com` 能通过下方后缀判定，而 urlsplit 会把 `?` 之后
+    # 整段当 query、真实连接目标是 evil.com（`#` 形态同理）——判据必须与解析器同口径。
     if not name or "/" in name or ":" in name or "?" in name or "#" in name or "@" in name or "\\" in name:
         return False
     return any(name == suffix or name.endswith("." + suffix) for suffix in _BILI_DANMAKU_ALLOWED_HOST_SUFFIXES)
@@ -56,21 +56,21 @@ class BilibiliDanmaku(DanmakuBase):
         self._ws: WsClient | None = None
         self._session_ok = False
         self._auth_ok = False
-        # M-13：host 轮换关闭闸门的状态。_hosts_left 是当前 host 之后还有几个候选未尝试；
+        # host 轮换关闭闸门的状态。_hosts_left 是当前 host 之后还有几个候选未尝试；
         # _close_reported 是跨 WsClient 实例的一次性上报保护——各实例自带的 _close_reported
         # 只在本实例内生效，挡不住轮换中第二、三个实例各投一次「房间关闭」。
         self._hosts_left = 0
         self._close_reported = False
 
-    # M-13：on_close 的唯一出口（轮换闸门 + 一次性保护），命名与 src/ws_client.py::_report_close 对齐。
+    # on_close 的唯一出口（轮换闸门 + 一次性保护），命名与 src/ws_client.py:_report_close 对齐。
     # 闸门存在的理由：消费端（src/collector.py::_on_close → hub.room_closed）把 on_close 当作
     # 「该房间弹幕已结束」的配对信号，而 start() 在当前 host 重连耗尽后**还会继续试下一个候选**。
     # 直挂裸回调会在 host[0] 失败时先投一次房间关闭、host[1] 连上再投一次连接，监控页出现
     # 「假关闭→重连」闪烁；两个候选都失败时还会把同一房间的关闭事件投两次。两条口径：
     #   ① 仍有候选未尝试且未整体停止 → 轮换中间态，不上报；
-    #   ② 候选已排空，或已置 _stopped（_reject_auth 的认证被拒是终态，MID-2245 要求必须上报，
+    #   ② 候选已排空，或已置 _stopped（_reject_auth 的认证被拒是终态，该要求必须上报，
     #      否则监控页永久停在「已连接 / 0 条」）→ 上报，且本会话内只上报一次。
-    # 本闸门不改 WsClient 的重连计数，也不改 AUTH 看门狗（H-4）的处置语义。
+    # 本闸门不改 WsClient 的重连计数，也不改 AUTH 看门狗的处置语义。
     def _report_close(self, reason: str) -> None:
         if self._hosts_left > 0 and not self._stopped:
             # 留痕不静默：复用 DanmakuBase._on_reconnect 这条既有 debug 通道（语义正合适，且文案
@@ -86,7 +86,7 @@ class BilibiliDanmaku(DanmakuBase):
     # 启动：解析房间/服务器参数，逐个尝试 host 建立 WebSocket 连接，失败则回调 on_close。
     async def start(self, args: Any) -> None:
         self._args = args if isinstance(args, dict) else {}
-        # M-13：一次 start() = 一个会话，去重域随会话重新起算——重启同一实例时不得被上一轮的
+        # 一次 start() = 一个会话，去重域随会话重新起算——重启同一实例时不得被上一轮的
         # 标记永久消音。
         self._close_reported = False
         server_host = self._args.get("server_host", "")
@@ -98,7 +98,7 @@ class BilibiliDanmaku(DanmakuBase):
         hosts = [str(h) for h in (self._args.get("host_list") or []) if h]
         if server_host and server_host not in hosts:
             hosts.insert(0, server_host)
-        # SEV-2215：必须在建立连接（携带登录 Cookie）**之前**过滤——不在白名单内的 host 一律
+        # 必须在建立连接（携带登录 Cookie）**之前**过滤——不在白名单内的 host 一律
         # 跳过并 WARNING，绝不向它发凭据；全部被过滤时降级为「只录视频不录弹幕」（on_close
         # 通知、不建连），而不是退回去连不可信 host。
         _allowed: list[str] = []
@@ -123,7 +123,7 @@ class BilibiliDanmaku(DanmakuBase):
         for idx, host in enumerate(hosts):
             if self._stopped:
                 return
-            # M-13：进入本 host 前登记「其后还有几个候选未尝试」，供 _report_close 判定当前失败
+            # 进入本 host 前登记「其后还有几个候选未尝试」，供 _report_close 判定当前失败
             # 是轮换中间态还是终态（最后一个候选为 0）。
             self._hosts_left = len(hosts) - idx - 1
             backup = hosts[idx + 1] if idx + 1 < len(hosts) else None
@@ -134,7 +134,7 @@ class BilibiliDanmaku(DanmakuBase):
                 on_message=self.decode_message,
                 on_ready=self._on_ws_ready,
                 on_heartbeat=self.heartbeat,
-                # M-13：这里挂闸门而非裸回调——本 host 失败后循环还会试下一个候选，此刻的
+                # 这里挂闸门而非裸回调——本 host 失败后循环还会试下一个候选，此刻的
                 # on_close 不是「房间关闭」。backup_url 那条主备切换仍由 WsClient 内部处理
                 # （两套轮换并存属既有形态，本闸门只收口上报语义，不合并成第三套）。
                 on_close=self._report_close,
@@ -147,16 +147,16 @@ class BilibiliDanmaku(DanmakuBase):
             await self._ws.connect()
             if self._session_ok or self._stopped:
                 break
-        # M-13：轮换结束（建成 break 或候选试完）后不再有「未尝试的候选」，此后重连耗尽即终态，
+        # 轮换结束（建成 break 或候选试完）后不再有「未尝试的候选」，此后重连耗尽即终态，
         # 必须照常上报。这里不清零的话，成功那轮留下的 _hosts_left 会把后来的真实断连一并吞掉，
-        # 正是 MID-2245 要消灭的「已连接 / 0 条」观感回归。
+        # 正是该要消灭的「已连接 / 0 条」观感回归。
         self._hosts_left = 0
 
     # WS 就绪回调：置进房成功标志、触发 on_ready 并异步发送进房包。
     def _on_ws_ready(self) -> None:
         self._session_ok = True
         # 每次新连接（含断线重连）都须重新过 AUTH：上一连接的 _auth_ok 若不清零，重连后的看门狗
-        # 会误判「已认证」而永不兜底（H-4）。
+        # 会误判「已认证」而永不兜底。
         self._auth_ok = False
         if self._on_ready:
             self._on_ready()
@@ -187,7 +187,7 @@ class BilibiliDanmaku(DanmakuBase):
             separators=(",", ":"),
         )
         await self._ws.send(self._encode(join_body, action=7))
-        # H-4：进房包发出即挂看门狗。软拒绝（服务器不回 AUTH_REPLY、连接保持、心跳照发、0 弹幕
+        # 进房包发出即挂看门狗。软拒绝（服务器不回 AUTH_REPLY、连接保持、心跳照发、0 弹幕
         # 且无日志）没有其他兜底，超时未认证一律按被拒处理。
         spawn_danmaku_task(self._auth_watchdog(self._ws))
 
@@ -213,15 +213,14 @@ class BilibiliDanmaku(DanmakuBase):
 
     # 认证被拒统一处理：置停止标志、关闭连接，并使 spider 侧 buvid 缓存失效（被拒的 buvid 不可
     # 复用，失效后下一轮重走真实获取链 cookie/spi/首页 Set-Cookie；真实 buvid 被拒时重取无副作用）。
-    # MID-2245：必须走 WsClient.fail() 而不是 close()——close() 语义是「调用方主动停止」，
+    # 必须走 WsClient.fail() 而不是 close()——close() 语义是「调用方主动停止」，
     # connect() 的两条 `if self._stopped: break` 出口都不回调 on_close，collector 侧与
     # room_connected 配对的 hub.room_closed() 就永不发出，监控页会把房间永久停在「已连接 / 0 条」。
-    # L-26：投递关停协程一律走 spawn_danmaku_task，不用裸 asyncio.ensure_future——后者异常只在
+    # 投递关停协程一律走 spawn_danmaku_task，不用裸 asyncio.ensure_future——后者异常只在
     # GC 时以 'Task exception was never retrieved' 打到 stderr；fail() 里的 _on_close
     # （hub.room_closed / 边车落盘）抛错时无人回收，房间既没重连也没有关闭事件，同样是
-    # 「已连接 / 0 条」的观感。spawn_danmaku_task 的完成回调会落一条
-    # 「[弹幕]后台协程异常: {type_name}: {exc}」warning（既有键，四语目录已登记）。
-    # 回归锁：tests/test_bilibili_danmaku.py::test_reject_auth_dispatches_through_spawned_task。
+    # 「已连接 / 0 条」的观感。spawn_danmaku_task 的完成回调会落一条「[弹幕]后台协程异常: {type_name}: {exc}」
+    # warning（既有键，四语目录已登记）。回归锁：tests/test_bilibili_danmaku.py::test_reject_auth_dispatches_through_spawned_task。
     def _reject_auth(self) -> None:
         self._stopped = True
         if self._ws is not None:

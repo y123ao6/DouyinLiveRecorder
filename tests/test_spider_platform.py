@@ -5,8 +5,8 @@
 # 流地址契约。
 # 大量用例守护「离线/出错路径」：平台函数多经装饰器捕获异常，须返回 {is_live:False} 而非抛错
 # （保证主循环不因单房间解析失败而中断）。部分函数（get_xxx_tk / login_xxx / get_winktv_bj_info）
-# 返回非 dict（str / tuple / None），其出错兜底为 None 而非 {is_live:False} —— 这类「类型匹配兜底」
-# 契约被多用例显式锁定，因为旧 dict 兜底会被 `if token/cookie` 误判为登录/解析成功。
+# 返回非 dict（str / tuple / None），其出错兜底为 None 而非 {is_live:False} —— 旧 dict 兜底会被
+# `if token/cookie` 误判为登录/解析成功。两类兜底口径以本段为唯一事实源，各用例只标分支不复述理由。
 # 在线路径用例普遍固化完整 URL 契约（host/路径/扩展名/候选顺序），弱子串断言会漏检拼接回归。
 
 import json
@@ -98,10 +98,10 @@ class TestEnsureTwitchClientId:
 
     @pytest.mark.asyncio
     async def test_fetches_from_html(self) -> None:
-        # Client-ID 无公开 API，只能对 https://www.twitch.tv/ 的 HTML 跑正则
-        # "Client-ID" 后接 [a-z0-9]{20,}（不是 JSON 解析；桩载荷写成 <script> 内嵌形态只为复刻页面）；
-        # 锁住「抠到的串原样回传」——桩值 28 位，真实约束是长度下限 20 而非固定位数。
-        # 缓存非空时函数直接早退，故这里必须先把 _cached_twitch_client_id 置空并在 finally 还原。
+        # Client-ID 无公开 API，只能对 https://www.twitch.tv/ 的 HTML 跑正则 "Client-ID" 后接
+        # [a-z0-9]{20,}（不是 JSON 解析；桩载荷写成 <script> 内嵌形态只为复刻页面），抠到的串原样回传——
+        # 桩值 28 位，真实约束是长度下限 20 而非固定位数。缓存非空时函数直接早退，故须先置空
+        # _cached_twitch_client_id 并在 finally 还原。
         html = '<script>var config = {"Client-ID": "abcdef12345678901234567890ab"};</script>'
         with (
             patch("src.spider.async_req", new_callable=AsyncMock, return_value=html),
@@ -174,8 +174,7 @@ class TestTiktokStreamData:
 
     @pytest.mark.asyncio
     async def test_retry_exhaustion(self) -> None:
-        # 响应体为截断/异常 EOF 时解析失败须走 {is_live:False} 兜底而非抛错；
-        # 此异常响应体正是触发重试耗尽的现实形态，验证离线兜底路径。
+        # 截断/异常 EOF 响应体触发重试耗尽后，仍须走 {is_live:False} 兜底而非抛错（离线兜底路径）。
         with (
             patch("src.spider.async_req", new_callable=AsyncMock, return_value="UNEXPECTED_EOF_WHILE_READING"),
             patch("src.spider.asyncio.sleep", new_callable=AsyncMock),
@@ -221,12 +220,10 @@ class TestPandatvStreamData:
 
     @pytest.mark.asyncio
     async def test_no_bj_info_raises(self) -> None:
-        # User not found 时装饰器捕获 RuntimeError 转离线兜底；
-        # 验证异常不向上抛、中断主循环。
+        # User not found 时装饰器捕获 RuntimeError 转离线兜底（不向上抛、不中断主循环）。
         response = json.dumps({"message": "User not found"})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=response):
             result = await get_pandatv_stream_data("https://www.pandalive.co.kr/unknown")
-            # decorator catches RuntimeError → returns {is_live: False}
             assert result == {"is_live": False}
 
 
@@ -235,8 +232,7 @@ class TestBaiduStreamData:
 
     @pytest.mark.asyncio
     async def test_empty_data_returns_not_live(self) -> None:
-        # data 为空仍可解析出空主播名+离线，不抛 KeyError；
-        # 字段缺失是常态，须兜底而非崩溃。
+        # data 为空仍可解析出空主播名+离线，不抛 KeyError（字段缺失是常态，须兜底而非崩溃）。
         api_response = json.dumps({"data": {}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_baidu_stream_data("https://live.baidu.com?room_id=12345&other=x")
@@ -245,8 +241,7 @@ class TestBaiduStreamData:
 
     @pytest.mark.asyncio
     async def test_no_room_id_raises(self) -> None:
-        # 无 room_id 无法拼请求 → 装饰器兜底 {is_live:False}；
-        # 锁住缺参离线契约，防 KeyError 中断主循环。
+        # 无 room_id 无法拼请求 → 装饰器兜底 {is_live:False}，锁住缺参离线契约（防 KeyError 中断主循环）。
         with patch("src.spider.async_req", new_callable=AsyncMock):
             result = await get_baidu_stream_data("https://live.baidu.com/no_room_id")
             assert result == {"is_live": False}
@@ -258,8 +253,7 @@ class TestWeiboStreamData:
 
     @pytest.mark.asyncio
     async def test_show_url_not_live(self) -> None:
-        # show 页 status=0（未开播）→ 离线但仍解析出主播名；
-        # 锁住离线字段契约，防误判在线。
+        # 分支：show 页 status=0 → 离线仍取 user_info.name。
         live_response = json.dumps(
             {
                 "data": {
@@ -275,8 +269,7 @@ class TestWeiboStreamData:
 
     @pytest.mark.asyncio
     async def test_uid_url_finds_room(self) -> None:
-        # uid 页先走 feed 列表定位直播间 object_id 再拉详情；
-        # status=1 且含 pull 地址 → 在线并解析主播名。
+        # 分支：feed 列表定位 object_id → 详情 status=1 且含 pull 地址。
         feed_response = json.dumps(
             {
                 "data": {
@@ -354,8 +347,6 @@ class TestPpliveStreamUrl:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # living=False 离线但仍解析主播名；
-        # 锁住 living 字段分支，防误判在线。
         api_response = json.dumps({"data": {"name": "飘飘主播", "living": False, "pullUrl": ""}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_pplive_stream_url("https://m.pp.weimipopo.com/?anchorUid=abc123")
@@ -364,8 +355,7 @@ class TestPpliveStreamUrl:
 
     @pytest.mark.asyncio
     async def test_live(self) -> None:
-        # living=True 在线且 pullUrl 即流地址；锁住「在线状态分支 + 流地址契约」，
-        # 与 test_not_live 对称覆盖飘飘直播两种状态码。
+        # living=True 在线且 pullUrl 即 m3u8_url（与 test_not_live 对称覆盖两种状态码）。
         api_response = json.dumps(
             {"data": {"name": "主播", "living": True, "pullUrl": "https://pull.example.com/live.m3u8"}}
         )
@@ -399,8 +389,7 @@ class Test6roomStreamUrl:
 
     @pytest.mark.asyncio
     async def test_no_room_id_raises(self) -> None:
-        # 页面无 rid 则无法拼房间号 → 装饰器兜底 {is_live:False}；
-        # 锁住缺参离线契约。
+        # 页面无 rid 则无法拼房间号 → 装饰器兜底 {is_live:False}，锁住缺参离线契约。
         html = "<html>no rid here</html>"
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=html):
             result = await get_6room_stream_url("https://v.6.cn/12345")
@@ -412,16 +401,14 @@ class TestYoutubeStreamUrl:
 
     @pytest.mark.asyncio
     async def test_no_player_response_raises(self) -> None:
-        # 页面无 ytInitialPlayerResponse 时无法定位播放元数据 → 装饰器兜底 {is_live:False}；
-        # 锁住缺数据离线契约，防 KeyError 中断主循环。
+        # 页面无 ytInitialPlayerResponse 时无法定位播放元数据 → 装饰器兜底 {is_live:False}（防 KeyError 中断主循环）。
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value="<html>no data</html>"):
             result = await get_youtube_stream_url("https://www.youtube.com/watch?v=abc")
             assert result == {"is_live": False}
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # isLive=False 离线但仍解析 author；
-        # 锁住离线字段契约。
+        # isLive=False 离线但仍解析 author（离线字段契约）。
         player_response = json.dumps(
             {
                 "videoDetails": {"author": "YT主播", "isLive": False, "title": "test"},
@@ -440,7 +427,7 @@ class TestShowroomStreamData:
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
         # live_status=1 在该平台语义为离线（与常规相反）→ is_live=False 但仍解析 room_name；
-        # 锁住反直觉状态映射，防误判在线。
+        # 锁住这条反直觉状态映射，防误判在线。
         info_response = json.dumps({"room_name": "ShowRoom主播", "live_status": 1})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=info_response):
             result = await get_showroom_stream_data("https://www.showroom-live.com/room/profile?room_id=123")
@@ -454,9 +441,8 @@ class TestLookliveSecretData:
     # 返回 (密文, RSA 加密后的随机 sec_key) 元组，sec_key 每请求独立生成故输出不重复，供上层拼凭据。
 
     def test_returns_tuple_of_strings(self) -> None:
-        # 加密函数须返回 (密文, 加密 sec_key) 两元组且均为 str；sec_key 经模幂后
-        # format(..., "x").zfill(256) → 恒 256 个十六进制字符（weapi 模数即 1024 位/256 hex 宽度），
-        # 锁住加密封装契约供上层登录拼装。
+        # 加密函数须返回 (密文, 加密 sec_key) 两元组且均为 str；sec_key 经模幂后 format(..., "x").zfill(256)
+        # → 恒 256 个十六进制字符（weapi 模数 1024 位 = 256 hex 宽度），供上层登录拼装。
         result = get_looklive_secret_data({"key": "value"})
         assert isinstance(result, tuple)
         assert len(result) == 2
@@ -466,12 +452,10 @@ class TestLookliveSecretData:
         assert len(enc_sec_key) == 256  # weapi 1024-bit 模数 → zfill(256) 十六进制
 
     def test_different_inputs_different_outputs(self) -> None:
-        # 不同明文须产生不同密文（AES 密钥每次重新随机生成）；锁住加密非确定性输出，
-        # 防实现退化为确定性编码导致登录凭据可被重放。
+        # 不同明文须产生不同密文（AES 密钥每次重新随机生成）：防实现退化为确定性编码导致登录凭据可被重放。
         r1 = get_looklive_secret_data({"a": "1"})
         r2 = get_looklive_secret_data({"b": "2"})
-        # 只比 enc_text（r1[0] != r2[0]）：enc_sec_key 本就随随机 sec_key 变化，
-        # 断它「必不相等」会把正常的随机波动写成自红用例。
+        # 只比 enc_text（r1[0] != r2[0]）：enc_sec_key 本就随随机 sec_key 变化，断它「必不相等」会写成自红用例。
         assert r1[0] != r2[0]
 
 
@@ -501,7 +485,7 @@ class TestJdStreamUrl:
 
     @pytest.mark.asyncio
     async def test_no_author_id_no_live_id(self) -> None:
-        # 无 authorId 且无 live_id 时返回空.
+        # 分支：URL 既无 authorId 也无 live_id → 空主播名 + 离线。
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value="https://lives.jd.com/"):
             result = await get_jd_stream_url("https://lives.jd.com/")
             assert result["anchor_name"] == ""
@@ -514,8 +498,7 @@ class TestFaceitStreamData:
 
     @pytest.mark.asyncio
     async def test_non_twitch_platform(self) -> None:
-        # platform 非 twitch 时 Faceit 不视为直播；锁住「非目标平台 → is_live=False」契约，
-        # 防把 YouTube 等外部平台的资料误判为在播。
+        # 分支：platform=youtube（非 twitch）→ 不视为在播，防误判 YouTube 资料为直播。
         user_response = json.dumps({"payload": {"id": "user123"}})
         stream_response = json.dumps(
             {"payload": [{"userNickname": "Faceit主播", "platformId": "id123", "platform": "youtube"}]}
@@ -558,8 +541,7 @@ class TestLiuxingStreamUrl:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # live_stat=0 离线但仍解析 nickname；
-        # 锁住 live_stat 字段分支。
+        # 分支：live_stat=0 → 离线仍解析 nickname。
         api_response = json.dumps({"data": {"roomInfo": {"nickname": "流星主播", "live_stat": 0}}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_liuxing_stream_url("https://wap.7u66.com/12345")
@@ -572,8 +554,7 @@ class TestLangliveStreamUrl:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # live_status=0 离线但仍解析 nickname；
-        # 锁住 live_status 字段分支（与 test_live 对称）。
+        # 分支：live_status=0 → 离线仍解析 nickname（与 test_live 对称）。
         api_response = json.dumps({"data": {"live_info": {"nickname": "浪Live主播", "live_status": 0}}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_langlive_stream_url("https://www.lang.live/room/12345")
@@ -619,8 +600,7 @@ class TestVvxqiuStreamUrl:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # 房间信息接口返回「Not Found」→ 离线但仍解析 anchorName；
-        # 验证多响应分支均走离线兜底。
+        # 房间信息接口返回「Not Found」→ 离线但仍解析 anchorName（多响应分支均走离线兜底）。
         api_response = json.dumps({"data": {"anchorName": "VV主播"}})
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=[api_response, "Not Found"]):
             result = await get_vvxqiu_stream_url("https://h5.vvxqiu.com/?roomId=12345")
@@ -653,8 +633,7 @@ class TestChangliaoStreamUrl:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # live_stat=0 离线但仍解析 nickname；
-        # 与流星/音播同字段语义，锁住分支。
+        # live_stat=0 离线但仍解析 nickname（与流星/音播同字段语义，锁住分支）。
         api_response = json.dumps({"data": {"roomInfo": {"nickname": "畅聊主播", "live_stat": 0}}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_changliao_stream_url("https://wap.tlclw.com/12345")
@@ -667,8 +646,7 @@ class TestYinboStreamUrl:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # live_stat=0 离线但仍解析 nickname；
-        # 锁住 live_stat 字段分支。
+        # live_stat=0 离线但仍解析 nickname（与流星/畅聊同字段语义，锁住分支）。
         api_response = json.dumps({"data": {"roomInfo": {"nickname": "音播主播", "live_stat": 0}}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_yinbo_stream_url("https://live.ybw1666.com/800005143")
@@ -678,12 +656,10 @@ class TestYinboStreamUrl:
 
 class TestZhihuStreamUrl:
     # get_zhihu_stream_url：知乎直播流地址解析。
-    # 守护知乎直播：页面无初始数据无法定位直播信息 → 装饰器兜底 {is_live:False}；锁住缺数据离线契约。
 
     @pytest.mark.asyncio
     async def test_no_initial_data_returns_empty(self) -> None:
-        # 页面无 __INITIAL_STATE__ 初始数据 → 无法定位直播信息，装饰器兜底 {is_live:False}；
-        # 锁住缺数据离线契约。
+        # 页面无 __INITIAL_STATE__ 初始数据 → 无法定位直播信息，装饰器兜底 {is_live:False}（缺数据离线契约）。
         html = "<html><body>no data</body></html>"
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=html):
             result = await get_zhihu_stream_url("https://www.zhihu.com/theater/12345")
@@ -722,8 +698,7 @@ class TestHuajiaoStreamUrlApp:
 
     @pytest.mark.asyncio
     async def test_error_returns_none(self) -> None:
-        # errmsg 错误响应须返回 None（app 接口返回非 dict，调用方以 None 判失败）；
-        # 验证类型匹配兜底而非 {is_live:False}。
+        # errmsg 错误响应须返回 None（app 接口返回非 dict，调用方以 None 判失败）：类型匹配兜底，口径见文件头。
         api_response = json.dumps({"errmsg": "error", "data": {}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_huajiao_stream_url_app("https://www.huajiao.com/l/12345")
@@ -736,8 +711,7 @@ class TestHuajiaoUserInfo:
 
     @pytest.mark.asyncio
     async def test_no_user_in_url_returns_none(self) -> None:
-        # 非 user/ 路径无需发请求直接返回 None，省一次无谓拉取；
-        # 锁住路径前缀短路契约。
+        # 非 user/ 路径无需发请求直接返回 None，省一次无谓拉取（路径前缀短路契约）。
         result = await get_huajiao_user_info("https://www.huajiao.com/other/12345")
         assert result is None
 
@@ -757,12 +731,10 @@ class TestHuajiaoUserInfo:
 
 class TestAcfunStreamData:
     # get_acfun_stream_data：AcFun（A 站）直播数据解析。
-    # 守护 A 站直播：无 live 状态字段时离线但仍解析 profile.name；锁住字段契约。
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # 无 live 状态字段时离线但仍解析 profile.name；
-        # 锁住字段契约。
+        # 无 live 状态字段时离线但仍解析 profile.name（字段契约）。
         api_response = json.dumps({"profile": {"name": "A站主播"}})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=api_response):
             result = await get_acfun_stream_data("https://live.acfun.cn/live/12345")
@@ -775,8 +747,7 @@ class TestMaoerfmStreamUrl:
 
     @pytest.mark.asyncio
     async def test_error_returns_empty(self) -> None:
-        # 网络异常（音频直播接口不稳定）→ 装饰器兜底 {is_live:False}；
-        # 验证异常不向上抛。
+        # 分支：async_req 抛异常 → 装饰器兜底，异常不向上抛。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("network error")):
             result = await get_maoerfm_stream_url("https://www.missevan.com/live/12345")
             assert result == {"is_live": False}
@@ -822,8 +793,7 @@ class TestHuajiaoStreamUrl:
 
     @pytest.mark.asyncio
     async def test_no_cookies_user_url_returns_empty(self) -> None:
-        # user/ 路径无 cookie 时无法拉流 → 返回空主播名+离线；
-        # 验证鉴权前置短路。
+        # 分支：user/ 路径 + 无 cookie → 鉴权前置短路，不发拉流请求。
         result = await get_huajiao_stream_url("https://www.huajiao.com/user/12345")
         assert result["anchor_name"] == ""
         assert result["is_live"] is False
@@ -835,7 +805,7 @@ class TestWinktvBjInfo:
 
     @pytest.mark.asyncio
     async def test_error_returns_empty(self) -> None:
-        # 出错返回 None（类型匹配兜底）：返回 tuple 的函数不能再拿到 dict 兜底值
+        # 出错回 None（类型匹配兜底：tuple 返回值不容 dict 兜底），口径见文件头。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("network")):
             result = await get_winktv_bj_info("https://www.winktv.co.kr/test")
             assert result is None
@@ -891,8 +861,7 @@ class TestBigoStreamUrl:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
-        # 网络异常 → 装饰器兜底 {is_live:False}；
-        # 验证异常不向上抛中断主循环。
+        # 网络异常 → 装饰器兜底 {is_live:False}（不向上抛中断主循环）。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_bigo_stream_url("https://www.bigo.tv/test/12345")
             assert result == {"is_live": False}
@@ -915,8 +884,7 @@ class TestBluedStreamUrl:
 
     @pytest.mark.asyncio
     async def test_live(self) -> None:
-        # onLive=True 在线且 liveUrl 即 m3u8_url；
-        # 锁住解码后 liveInfo 字段契约。
+        # onLive=True 在线且 liveUrl 即 m3u8_url（解码后 liveInfo 字段契约）。
         inner_json = json.dumps(
             {"userInfo": {"name": "anchor", "onLive": True}, "liveInfo": {"liveUrl": "https://example.com/live.m3u8"}}
         )
@@ -938,8 +906,7 @@ class TestSoopHeaders:
     # get_soop_headers：构造 SoopLive 请求头。
 
     def test_without_cookies(self) -> None:
-        # 无 cookie 时仅下发 client-id/user-agent，不得带 cookie 字段；
-        # 避免空 cookie 被服务端拒绝。
+        # 无 cookie 时仅下发 client-id/user-agent，不得带 cookie 字段（空 cookie 会被服务端拒绝）。
         headers = get_soop_headers()
         assert "client-id" in headers
         assert "user-agent" in headers
@@ -956,8 +923,7 @@ class TestSoopliveCdnUrl:
 
     @pytest.mark.asyncio
     async def test_returns_json(self) -> None:
-        # CDN 接口返回 view_url 即直推地址；锁住「原始 JSON 透传」契约，
-        # 供上层拼接最终流地址。
+        # view_url 即直推地址：锁住「原始 JSON 透传」契约，供上层拼接最终流地址。
         resp = json.dumps({"view_url": "http://cdn.example.com/live"})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=resp):
             result = await get_sooplive_cdn_url("12345")
@@ -990,7 +956,7 @@ class TestSoopliveTk:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
-        # 出错返回 None（类型匹配兜底）：返回 str/tuple 的函数不能再拿到 dict 兜底值
+        # 出错回 None（类型匹配兜底：str/tuple 返回值不容 dict 兜底），口径见文件头。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_sooplive_tk("https://play.sooplive.co.kr/testbj/123", rtype="live")
             assert result is None
@@ -1003,8 +969,7 @@ class TestHuyaAppStreamUrl:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # realLiveStatus=OFF 离线但仍解析 nick；
-        # 锁住离线字段契约。
+        # realLiveStatus=OFF 离线但仍解析 nick（离线字段契约）。
         resp = json.dumps(
             {"data": {"profileInfo": {"nick": "anchor"}, "realLiveStatus": "OFF", "liveData": {}, "stream": {}}}
         )
@@ -1046,8 +1011,7 @@ class TestHuyaAppStreamUrl:
     @pytest.mark.asyncio
     async def test_priority_prefers_tx_over_al_at_index0(self) -> None:
         # AL 抢占 index 0 时, 候选仍应按 HS-first 优先级排序, TX 排在 AL 前,
-        # 而非固定取 play_url_list[0](AL)。所有候选注入 m3u8_url_list/flv_url_list,
-        # 由 select_source_url 按可达性校验选用。URL 统一为 http（https 实测 403）。
+        # 而非固定取 play_url_list[0](AL)；全部候选仍注入 m3u8_url_list/flv_url_list。
         resp = json.dumps(
             {
                 "data": {
@@ -1186,8 +1150,7 @@ class TestHuyaAppStreamUrl:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
-        # 网络异常 → 兜底 {is_live:False}；
-        # 验证异常不向上抛。
+        # 网络异常 → 兜底 {is_live:False}（不向上抛）。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_huya_app_stream_url("https://www.huya.com/12345")
             assert result == {"is_live": False}
@@ -1207,8 +1170,7 @@ class TestXhsStreamUrl:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
-        # 网络异常 → 兜底 {is_live:False}；
-        # 验证异常不向上抛。
+        # 网络异常 → 兜底 {is_live:False}（不向上抛）。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_xhs_stream_url("https://www.xiaohongshu.com/user/profile/test123")
             assert result == {"is_live": False}
@@ -1219,8 +1181,7 @@ class TestTokenJs:
 
     @pytest.mark.asyncio
     async def test_success(self) -> None:
-        # 密钥接口成功须带回 enc_data/did/auth；
-        # 锁住登录签名字段契约。
+        # 密钥接口成功须带回 enc_data/did/auth（登录签名字段契约）。
         key_resp = json.dumps(
             {"error": 0, "data": {"rand_str": "abc", "key": "k", "enc_time": 1, "enc_data": "enc123", "is_special": 0}}
         )
@@ -1232,16 +1193,14 @@ class TestTokenJs:
 
     @pytest.mark.asyncio
     async def test_error_returns_empty(self) -> None:
-        # 拉取密钥异常 → 返回空 dict（调用方据空 dict 判失败）；
-        # 验证类型匹配兜底。
+        # 拉取密钥异常 → 空 dict（调用方据此判失败）：类型匹配兜底，口径见文件头。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_token_js("12345", "did123")
             assert result == {}
 
     @pytest.mark.asyncio
     async def test_api_error_returns_empty(self) -> None:
-        # 密钥接口返回 error!=0（业务失败）须返回空 dict 而非抛错；
-        # 与网络异常同走类型匹配兜底，调用方据空 dict 判失败。
+        # 密钥接口 error!=0（业务失败）同样回空 dict 而非抛错：与网络异常走同一条兜底。
         key_resp = json.dumps({"error": 1})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=key_resp):
             result = await get_token_js("12345", "did123")
@@ -1255,8 +1214,7 @@ class TestDouyuInfoData:
 
     @pytest.mark.asyncio
     async def test_not_live(self) -> None:
-        # show_status=0 离线但仍解析 nickname/room_id；锁住斗鱼 show_status 字段分支，
-        # 防离线误判在线。
+        # show_status=0 离线但仍解析 nickname/room_id（锁住斗鱼 show_status 分支，防离线误判在线）。
         resp = json.dumps(
             {"room": {"nickname": "anchor", "videoLoop": 0, "show_status": 0, "room_name": "test", "room_id": 1}}
         )
@@ -1267,8 +1225,7 @@ class TestDouyuInfoData:
 
     @pytest.mark.asyncio
     async def test_live(self) -> None:
-        # show_status=1 在线且 title 去 HTML 实体；
-        # 锁住在线与字段清洗契约。
+        # show_status=1 在线且 title 须去 HTML 实体（在线 + 字段清洗契约）。
         resp = json.dumps(
             {
                 "room": {
@@ -1296,12 +1253,11 @@ class TestDouyuInfoData:
 
 class TestAcfunSignParams:
     # get_acfun_sign_params：AcFun 签名参数获取。
-    # 守护 A 站访问凭据获取：返回 (userId, ..., visitor_st) 元组；拉取异常兜底 {is_live:False}。
+    # 守护 A 站访问凭据获取：返回 (userId, ..., visitor_st) 元组；拉取失败回 None 而非 {is_live:False}。
 
     @pytest.mark.asyncio
     async def test_returns_params(self) -> None:
-        # 访客接口返回 (userId, ..., visitor_st) 元组；锁住下标契约（0=userId、2=visitor_st），
-        # 供后续签名流程取用访问凭据。
+        # 锁住下标契约（0=userId、2=visitor_st），供后续签名流程取用访问凭据。
         resp = json.dumps({"userId": 12345, "acfun.api.visitor_st": "st123"})
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=resp):
             result = await get_acfun_sign_params()
@@ -1310,9 +1266,8 @@ class TestAcfunSignParams:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
-        # CR-12 修复后语义：返回三元组的函数失败时回 None，而不是 {"is_live": False}。
-        # 旧断言锁定的 dict 兜底会让调用方元组解包抛 ValueError，二次吞没后 AcFun
-        # 整条链路静默失效；此处对齐正确设计语义（None = 取不到签名三件套）。
+        # 现状语义：返回三元组的函数失败时回 None，而不是 {"is_live": False}（None = 取不到签名三件套）。
+        # [历史注] 旧断言锁定 dict 兜底 → 调用方元组解包抛 ValueError、二次吞没后 AcFun 整链静默失效。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_acfun_sign_params()
             assert result is None
@@ -1323,8 +1278,7 @@ class TestDouyuStreamData:
 
     @pytest.mark.asyncio
     async def test_success(self) -> None:
-        # 桩掉 get_token_js 注入签名参数后，整体须返回 dict（含流地址）；锁住「签名→拉流」编排契约，
-        # 防签名缺失导致 KeyError。
+        # 桩掉 get_token_js 注入签名参数后整体须返回 dict（含流地址）：锁「签名→拉流」编排契约，防 KeyError。
         sign_params = {"enc_data": "enc", "did": "did123", "ts": 1000, "auth": "auth123"}
         stream_resp = json.dumps({"error": 0, "data": {"url": "http://stream.example.com"}})
         with (
@@ -1346,6 +1300,7 @@ class TestSoopliveStreamData:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
+        # 分支：async_req 抛异常 → 装饰器兜底 {is_live:False}，异常不向上抛。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_sooplive_stream_data("https://play.sooplive.co.kr/testbj/123")
             assert result == {"is_live": False}
@@ -1356,15 +1311,14 @@ class TestLoginSooplive:
 
     @pytest.mark.asyncio
     async def test_short_username_raises(self) -> None:
-        # 出错返回 None（类型匹配兜底）：返回 cookie 字符串的函数不能再拿到 dict 兜底值
+        # 用户名过短直接判失败：回 None（类型匹配兜底，口径见文件头）。
         with patch("src.spider.async_req", new_callable=AsyncMock):
             result = await login_sooplive("short", "longpassword1")
             assert result is None
 
     @pytest.mark.asyncio
     async def test_short_password_raises(self) -> None:
-        # 密码过短须返回 None（类型匹配兜底）；
-        # 返回 cookie 串的函数不拿 dict 兜底，避免被 if 误判登录成功。
+        # 密码过短直接判失败：回 None（类型匹配兜底，口径见文件头）。
         with patch("src.spider.async_req", new_callable=AsyncMock):
             result = await login_sooplive("validuser", "short")
             assert result is None
@@ -1536,8 +1490,8 @@ class TestBilibiliRoomInfo:
 
 class TestLoginFlexTv:
     # login_flextv：FlexTV 登录取凭据。
-    # 守护 FlexTV 登录：成功固化 cookie 串格式（"; " 分隔全条目）；无 access 字段或网络异常返回
-    # None（类型匹配兜底），旧 dict 兜底会被 if 误判登录成功。
+    # 守护 FlexTV 登录：成功固化 cookie 串格式（"; " 分隔全条目）；无 access 字段或网络异常回 None
+    # （类型匹配兜底，口径见文件头）。
 
     @pytest.mark.asyncio
     async def test_success_returns_cookie_str(self) -> None:
@@ -1552,20 +1506,19 @@ class TestLoginFlexTv:
         cookie_dict = {"flx_oauth_access": "tok", "x": "y"}
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value=("ignored", cookie_dict)):
             result = await login_flextv("user", "pass")
-            # 固化 cookie 串完整格式：分隔符 "; " + 全部条目（弱子串断言会漏检分隔符/漏项回归）。
+            # 同上：固化 cookie 串完整格式（分隔符 "; " + 全部条目）。
             assert result == "flx_oauth_access=tok; x=y"
 
     @pytest.mark.asyncio
     async def test_no_access_token_returns_none(self) -> None:
-        # 响应缺 flx_oauth_access 字段 → 登录失败返回 None（类型匹配兜底）；
-        # 返回 cookie 串的函数不拿 dict 兜底，避免被 if 误判登录成功。
+        # 响应缺 flx_oauth_access 字段 → 登录失败回 None（类型匹配兜底，口径见文件头）。
         with patch("src.spider.async_req", new_callable=AsyncMock, return_value={"other": "val"}):
             result = await login_flextv("user", "pass")
             assert result is None
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
-        # 出错返回 None（类型匹配兜底）：旧 dict 兜底会被 if new_cookies 误判为登录成功
+        # 网络出错同样回 None（类型匹配兜底，口径见文件头）。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await login_flextv("user", "pass")
             assert result is None
@@ -1591,8 +1544,7 @@ class TestGetFlexTvStreamUrl:
 
     @pytest.mark.asyncio
     async def test_error_raises(self) -> None:
-        # 网络异常须向上抛（该层不兜底），由调用方处理；
-        # 与多数平台 {is_live:False} 兜底不同。
+        # 网络异常须向上抛（该层不兜底、由调用方处理）：与多数平台 {is_live:False} 兜底不同。
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=Exception("net")):
             with pytest.raises(Exception):
                 await get_flextv_stream_url("https://www.ttinglive.com/user123/live")
@@ -1625,8 +1577,7 @@ class TestGetWinkTvStreamData:
 
     @pytest.mark.asyncio
     async def test_error_returns_false(self) -> None:
-        # bj_info 拉取异常 → {is_live:False}（桩掉 bj_info 隔离）；
-        # 验证异常不向上抛。
+        # bj_info 拉取异常 → {is_live:False}（桩掉 bj_info 隔离，异常不向上抛）。
         with patch("src.spider.get_winktv_bj_info", new_callable=AsyncMock, side_effect=Exception("net")):
             result = await get_winktv_stream_data("https://www.winktv.co.kr/testuser")
             assert result == {"is_live": False}

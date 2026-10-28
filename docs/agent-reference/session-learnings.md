@@ -442,3 +442,16 @@ Qoder CN 发行版的实际数据根（`.qoder-cn`）不一致，属外部工具
   | docs/worklog/CODE_REVIEW_2026-10-21_FIX.md / src/stream_select.py::_literal_address
 - **「注销后立即重建」类修复必须区分正常出口与异常出口**（2026-10-21，M-37 stats 线程）：把「房间表为空 → break」与「主体抛异常退出」都当成需要复活的路径，会让一次崩溃触发「崩溃→重建→再崩」的自旋（实测 1 秒内数十条 warning，既有回归用例直接红）。正确形态是用一个局部标志只标记正常出口（`revive_on_deregister`），异常出口维持「等下一次事件再拉起」的既有契约。推广口径：凡是「线程/任务退出后自愈」的改动，先枚举它有几条退出路径，再逐条决定要不要复活。
   | src/danmaku_monitor.py::_stats_loop
+
+## 2026-10-24 — better-harness 证据采集 "0/6 启用源根目录" 诊断
+
+- **better-harness 在 Qoder CN 上默认解析 `~/.qoder`（不带 `-cn` 后缀），该目录在本机无会话数据**：
+  实际数据在 `~/.qoder-cn/projects/d--DouyinLiveRecorder`（20 个会话），但 harness 报告
+  `eligibleSessions=0`、`0/6 enabled source roots`、所有行为维度 Unobserved。
+  修复方式：证据采集命令显式传 `--qoder-home ~/.qoder-cn`（`session-analysis` 用 `--home` 或
+  `--qoder-home`；`evidence-bundle` 只接受 `--qoder-home`，拒绝 `--home`）。
+- **lead 分析面不随参数变化**：同一证据包内 lead 面仍按默认非-CN 主目录取样（`sourceFingerprint`
+  不变，`eligibleCount=0`），会话规模一律以 Session Evidence 通道计数为权威口径，并将该偏差写进
+  报告证据边界。
+- **不要把 `eligibleSessions=0` 当成「项目无活动」**：先跑 `session-analysis sources --workspace <path>
+  --qoder-home ~/.qoder-cn` 验证每个根的 `exists` 状态与会话数，再下结论。

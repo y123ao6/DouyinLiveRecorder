@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 # 同步 HTTP 客户端：urllib 直连 / requests 代理两条出站路径，含 ssl_verify 单次覆盖与响应体上限
 #
-# ── 接线前必读（S-09，2026-10-21）────────────────────────────────────────────
-# 本通道此前**完全没有内网闸门**：async_http 的 internal_stream_target_reason 在 sync_req 里不存在，
-# 于是 http://127.0.0.1:6379/、http://169.254.169.254/latest/meta-data/ 会被真实发出，并把响应体原文
-# 当返回值交给调用方解析（完整 SSRF 回显）。现已按异步侧口径补齐三处，**判据只有一份**（全部来自
-# async_http / utils，本模块不另立内网名单）：
+# ── 接线前必读 ──────────────────────────────────────────────────────────────
+# 本通道的内网闸门与异步侧同口径补齐三处，**判据只有一份**（全部来自 async_http / utils，
+# 本模块不另立内网名单）：没有它们时 http://127.0.0.1:6379/、
+# http://169.254.169.254/latest/meta-data/ 会被真实发出并把响应体原文交给调用方（完整 SSRF 回显）：
 #   ① 入口：_reject_unsafe_scheme（utils.is_safe_http_url）；
 #   ② 逐跳：_HopGuardRedirectHandler.redirect_request → _redirect_hop_rejection_reason
 #      （scheme 白名单 + internal_stream_target_reason），在发起下一跳**之前**拦断；
 #   ③ abroad 分支的落地地址：_redirect_hop_rejection_reason（该分支经进程全局 opener，只能事后核对；
-#      2026-10-21 S-09 residual 前仅过 _reject_unsafe_scheme——只判协议挡不住 302 落内网/元数据）。
+#      只判协议挡不住 302 落内网/元数据）。
 # 若将来新增出站路径（例如换掉 abroad 分支的 urllib.request.urlopen），必须同批接入这三处覆盖不到的
 # 部分，否则「同步通道已具备与异步侧同等的防护」这个结论立刻失效——它正是接线者最容易默认的前提。
 import atexit
@@ -57,19 +56,17 @@ no_proxy_handler = urllib.request.ProxyHandler({})
 # 失败语义漂移。
 # 残余缺口：abroad=True 分支用 urllib.request.urlopen（进程全局默认 opener，仍带 FileHandler），
 # 换掉它会连带换掉 tests/test_sync_http.py 的 patch 目标，故该分支改为「事后核对落地 URL」——
-# 文件已被读出但绝不外流，见 _reject_unsafe_scheme 与该分支的调用点。
-# [补 2026-10-21 S-09 residual] 该「事后核对」原判据已由 _reject_unsafe_scheme（只判协议）升级为
-# _redirect_hop_rejection_reason（协议 + 内网/保留目标，复用 async_http.internal_stream_target_reason）：
-# 公网地址 302 到 http://169.254.169.254/ 时协议合法、只判形不放行，落地是重定向目标必须过完整判据。
+# 文件已被读出但绝不外流，见 _reject_unsafe_scheme 与该分支的调用点。事后核对用的是完整判据
+# （协议 + 内网/保留目标，复用 async_http.internal_stream_target_reason）而非只判协议：
+# 公网地址 302 到 http://169.254.169.254/ 时协议合法，只判形不能放行。
 class _HopGuardRedirectHandler(urllib.request.HTTPRedirectHandler):
-    # S-09（2026-10-21）：重定向逐跳复核。HTTPRedirectHandler 原先直接进白名单，于是「公网 URL 过了
-    # 入口 scheme 白名单 → 302 到 http://127.0.0.1:6379/ 或 http://169.254.169.254/」一路放行，
-    # 落地地址的唯一一道检查只在 abroad 分支上。handler 形态的对标物是
-    # scripts/douyin_live_recorder_standalone.py 的 _HopGuardRedirectHandler（那里按设计不 import src，
-    # 故在本副本内复刻同判据）。301/302/303/307/308 与 30x+Location 全部经 redirect_request() 发起
-    # 下一跳，在此复检比 response 钩子更早：**跳转目标那一跳的连接根本不发出**（异步侧 response 钩子
-    # 只能做到「不再跟随 + 响应不外流」）。判定调 _redirect_hop_rejection_reason，与 async 侧同一份
-    # 判据（scheme 白名单 + internal_stream_target_reason），不另写内网名单。
+    # 2026-10-21：重定向逐跳复核。缺它时「公网 URL 过了入口 scheme 白名单 → 302 到 http://127.0.0.1:6379/
+    # 或 http://169.254.169.254/」会一路放行，落地地址的唯一一道检查只在 abroad 分支上。
+    # handler 形态的对标物是 scripts/douyin_live_recorder_standalone.py 的 _HopGuardRedirectHandler
+    # （那里按设计不 import src，故本副本复刻同判据）。301/302/303/307/308 与 30x+Location 全部经
+    # redirect_request() 发起下一跳，在此复检比 response 钩子更早：**跳转目标那一跳的连接根本不发出**
+    # （异步侧 response 钩子只能做到「不再跟随 + 响应不外流」）。判定调
+    # _redirect_hop_rejection_reason，与 async 侧同一份判据，不另写内网名单。
     # 命中抛 _HopGuardRejected（URLError 子类）：sync_req 与 async 侧同口径按「失败一律空串」收口；
     # 继承 urllib.error.URLError 而非 ValueError，是为了让既有 `except urllib.error.HTTPError`
     # 400 分支不被误命中，也让它与「网络不可达」走同一条放弃路径。
@@ -160,9 +157,9 @@ def _get_opener(ssl_verify: bool | None = None) -> urllib.request.OpenerDirector
 
 
 def _reject_unsafe_scheme(url: str, stage: str) -> None:
-    # scheme 白名单的唯一执行点。abroad 分支的落地复核自 2026-10-21 起改用 _redirect_hop_rejection_reason
-    # （S-09 residual：落地是**重定向目标**，只判协议挡不住 302 到 http://169.254.169.254/，见该分支调用点；
-    # [历史注] 本函数原第二调用位即 abroad 落地）。现唯一调用位：sync_req 入口（最初的 URL）。
+    # scheme 白名单的唯一执行点，现唯一调用位：sync_req 入口（最初的 URL）。abroad 分支的落地复核
+    # 改用 _redirect_hop_rejection_reason——落地是**重定向目标**，只判协议挡不住 302 到
+    # http://169.254.169.254/，见该分支调用点；[历史注] 本函数原第二调用位即 abroad 落地。
     # 判定函数与 async 侧同一个 utils.is_safe_http_url，不另写一份 urlparse 规则造成两份事实源。
     # 抛 ValueError 而非 return ""：由 sync_req 外层 except 统一收口（记 error + 返回空串），
     # 异常不穿透；异常文本自带脱敏，外层再过一次 mask_credentials（与 async 侧双重脱敏同口径）。
@@ -172,8 +169,8 @@ def _reject_unsafe_scheme(url: str, stage: str) -> None:
 
 
 class _HopGuardRejected(urllib.error.URLError):
-    # 重定向逐跳复核命中时的**内部控制流异常**（S-09）：由 _HopGuardRedirectHandler 抛出，让 urllib
-    # 就地中止跳转链，绝不穿透给调用方——它总落在 sync_req 既有的「失败一律空串」出口里。
+    # 逐跳复核命中时的**内部控制流异常**：由 _HopGuardRedirectHandler 抛出，让 urllib 就地中止跳转链，
+    # 绝不穿透给调用方——它总落在 sync_req 既有的「失败一律空串」出口里。
     # 消息也先脱敏（原始地址可能自带 user:pass@host 或签名查询串），外层再过一次 mask_credentials。
     def __init__(self, hop_url: str, code: int, reason: str) -> None:
         self.hop_url = hop_url
@@ -182,7 +179,7 @@ class _HopGuardRejected(urllib.error.URLError):
 
 
 def _redirect_hop_rejection_reason(url: str) -> str | None:
-    # 逐跳复检判定的**唯一入口**（S-09）：口径必须与异步侧 _redirect_hop_rejection_reason 完全一致，
+    # 逐跳复检判定的**唯一入口**：口径必须与异步侧 _redirect_hop_rejection_reason 完全一致，
     # 故直接复用 async_http 的公开别名 internal_stream_target_reason，不在此另立第二份内网名单
     # （AGENTS「判定只有一份事实源」；同仓既有手法见 src/stream_select.py 的 _validate_stream_url）。
     #
@@ -205,10 +202,10 @@ _thread_local = threading.local()
 _all_sessions: "weakref.WeakSet[requests.Session]" = weakref.WeakSet()
 _all_sessions_lock = threading.Lock()
 
-# M-28 残余（2026-10-21）：线程级 Session 原先**只**在 atexit 统一关闭，而房间线程是「每房间一条、
-# 轮结束即退、下轮重建」的短生命周期形态——大量死线程的连接池要等 GC（非确定性）或进程退出才释放，
-# 80+ 房间长跑时 urllib3 连接池持续堆积。定稿形态：以线程 ident 为键登记 (所属线程对象, Session)，
-# 每次进入 _session() 先关闭并摘除「所属线程已不再存活」的条目（确定性回收，不依赖 GC 时机）。
+# 线程级 Session 不能**只**在 atexit 统一关闭：房间线程是「每房间一条、轮结束即退、下轮重建」的
+# 短生命周期形态，大量死线程的连接池要等 GC（非确定性）或进程退出才释放，80+ 房间长跑时 urllib3
+# 连接池持续堆积。定稿形态：以线程 ident 为键登记 (所属线程对象, Session)，每次进入 _session()
+# 先关闭并摘除「所属线程已不再存活」的条目（确定性回收，不依赖 GC 时机）。
 # _MAX_TRACKED_SESSIONS 是给登记表本身的硬上限：清理死线程后仍达上限，说明登记的都是**活线程**——
 # 此时新 Session 不登记（退化回 WeakSet+atexit 既有路径兜底），绝不回收活线程在用/在途的 Session：
 # Session.close() 会清空底层 urllib3 连接池，误关别人的会把对方在途请求打成半途失败。
@@ -251,7 +248,7 @@ def _session() -> requests.Session:
         _thread_local.session = session
         with _all_sessions_lock:
             _all_sessions.add(session)
-        # M-28 残余：登记供死线程回收；达上限时不登记（此时全部条目都是活线程，见常量上方说明），
+        # 登记供死线程回收；达上限时不登记（此时全部条目都是活线程，见常量上方说明），
         # 未登记不等于泄漏——_all_sessions 弱引用集与 atexit 关闭仍覆盖它。
         with _thread_sessions_lock:
             if len(_thread_sessions) < _MAX_TRACKED_SESSIONS:
@@ -270,7 +267,7 @@ def session() -> requests.Session:
 def close_all_sessions() -> None:
     # 进程退出时统一关闭所有线程（含主线程）的 Session 连接池，由 atexit 调用；
     # WeakSet 快照迭代受 _IterationGuard 保护，期间条目被 GC 移除也安全
-    # M-28 残余：登记表条目是**强引用**，必须与弱引用集同批清空，否则退出后台账仍持着
+    # 登记表条目是**强引用**，必须与弱引用集同批清空，否则退出后台账仍持着
     # Session/Thread 对象（解释器收尾期不该再有可回收对象挂在模块全局上）。
     with _thread_sessions_lock:
         _thread_sessions.clear()
@@ -379,14 +376,13 @@ def sync_req(
     # 同步 HTTP 请求：支持 GET/POST、代理、重定向、gzip 解压。失败一律返回空串。
     # ssl_verify：本次请求的证书校验覆盖（None = 跟随控制面全局开关）。
     # 凭据类调用点（登录 / token 刷新等）应显式传 True，避免被全局降级波及；
-    # 该覆盖必须同时透传 urllib 与 requests(代理) 两条路径（F-12，曾只改一条即出现口径分叉）。
+    # 该覆盖必须同时透传 urllib 与 requests(代理) 两条路径（曾只改一条即出现口径分叉）。
     if headers is None:
         headers = {}
-    # M-33（2026-10-21）：json_data 的形态校验必须放在 try **之外**——它是编程错误而非网络故障。
-    # 原实现在直连分支写 `if json_data is not None and isinstance(json_data, (dict, list))`，于是传
-    # str/int/bool 时请求体被**静默丢弃并退化成 GET**，调用方只看到空响应（与 async 侧
-    # 「data/json 同传显式拒绝」同一条口径：编程错误不伪装成网络失败）。代理分支把原值交给
-    # requests 的 json= 会自行序列化，两条分支行为分叉，故同样按本判据收口。
+    # 2026-10-21：json_data 的形态校验必须放在 try **之外**——它是编程错误而非网络故障。
+    # 原实现只在直连分支用 isinstance 判形态，传 str/int/bool 时请求体被**静默丢弃并退化成 GET**，
+    # 调用方只看到空响应（与 async 侧「data/json 同传显式拒绝」同一条口径：编程错误不伪装成网络失败）。
+    # 代理分支把原值交给 requests 的 json= 会自行序列化，两条分支行为分叉，故同样按本判据收口。
     if json_data is not None and not isinstance(json_data, (dict, list)):
         raise ValueError(
             i18n.tr(
@@ -414,7 +410,7 @@ def sync_req(
         # 是为了让拒绝路径走本函数既有的统一收口（记日志 + 返回空串），而不是把 ValueError
         # 抛穿给调用方——sync_req 的契约是「响应文本，失败一律空串」。
         _reject_unsafe_scheme(url, "入口")
-        # S-09：入口的内网/保留目标判定，与 async_req 同一份判据（内部复用
+        # 入口的内网/保留目标判定，与 async_req 同一份判据（内部复用
         # internal_stream_target_reason，不另写内网名单）。发出前拒绝，一个字节都不发；拒绝走的是
         # 同一条「失败一律空串」出口，不新增返回契约。逐跳复核在 _HopGuardRedirectHandler 里。
         _entry_internal_reason = _redirect_hop_rejection_reason(url)
@@ -429,9 +425,8 @@ def sync_req(
             # 自行解压，两道字节上限完全不生效——一小份高压缩比响应就能让进程申请数 GB 内存。
             # iter_content 默认已按 Content-Encoding 解码，累计的是解压后字节，一次覆盖两种形态。
             # redirect_url 分支改读 response.url（stream=True 下同样已完成重定向、不物化正文）。
-            # M-28（2026-10-21）：stream=True 的响应**必须**显式关闭——本分支此前既不在 with 里，
-            # 也只在读体成功时释放：redirect_url 提前 return 的那条路径响应体一个字节没读、连接从不
-            # close()，被逐出引用后只能等 urllib3 的 GC 收尸；读体路径抛错（超限/解码失败）同样漏。
+            # 2026-10-21：stream=True 的响应**必须**显式关闭——旧写法既不在 with 里、也只在读体成功时释放：
+            # redirect_url 提前 return 与读体抛错（超限/解码失败）都漏连接，只能等 urllib3 的 GC 收尸。
             # 包进 with 是 requests 认可的关闭协议（Response.close() 释放连接回池），三条出口一并覆盖。
             response: requests.Response
             if data is not None or json_data is not None:
@@ -469,22 +464,20 @@ def sync_req(
                     data = urllib.parse.urlencode(data).encode(content_encoding)
                 else:
                     data = str(data).encode(content_encoding)
-            # M-33：形态已在函数入口统一校验收口（非 dict/list 直接 ValueError、与 data 同传直接拒绝），
+            # 形态已在函数入口统一校验收口（非 dict/list 直接 ValueError、与 data 同传直接拒绝），
             # 此处不再用 isinstance 兜底——那正是「静默退化成 GET」的成因。代理分支与原实现一致，
             # 仍把原值交给 requests 的 json=（由它序列化并补 Content-Type: application/json）。
-            # M-33 残余（2026-10-21）：直连分支没有 requests 那层「补头」——上方注释所述只覆盖代理分支，
-            # urllib 原实现从不自动加 Content-Type，服务端按 form/text 解析 JSON body 会拒或误解析。
-            # 与 requests 同口径：json_data 生效且调用方未自供 Content-Type（大小写不敏感）时显式合并；
-            # 调用方给了（如 charset 变体）则尊重原值不覆盖。
+            # 残余：直连分支没有 requests 那层「补头」（上一条所述只覆盖代理分支），urllib 从不
+            # 自动加 Content-Type，服务端按 form/text 解析 JSON body 会拒或误解析。与 requests 同口径：
+            # json_data 生效且调用方未自供 Content-Type（大小写不敏感）时显式合并，给了则尊重原值不覆盖。
             if json_data is not None:
                 data = json.dumps(json_data).encode(content_encoding)
                 if not any(key.lower() == "content-type" for key in headers):
                     headers = {**headers, "Content-Type": "application/json"}
 
-            # ① 调用方没给时显式声明 Accept-Encoding: identity——urllib 不会自动解压，
-            #    让服务器别压是最省内存的做法。
-            # ② 编码识别按 `,` 拆分取最外层（最后一段）：原先只认 == "gzip"，`gzip, br` 或
-            #    大小写变体会落到 else 把压缩字节当明文解码，产出一串乱码交给调用方当有效响应。
+            # ① 调用方没给时显式声明 Accept-Encoding: identity——urllib 不会自动解压，让服务器别压是最省内存的做法。
+            # ② 编码识别按 `,` 拆分取最外层（最后一段）：原先只认 == "gzip"，`gzip, br` 或大小写变体会
+            #    落到 else 把压缩字节当明文解码，产出一串乱码交给调用方当有效响应。
             #    仍只解 gzip：deflate 之外的 br/zstd 在 stdlib 无解码器，显式判失败优于静默乱码。
             if not any(key.lower() == "accept-encoding" for key in headers):
                 headers = {**headers, "Accept-Encoding": "identity"}
@@ -505,19 +498,17 @@ def sync_req(
                     _resp = cast(http.client.HTTPResponse, _get_opener(ssl_verify).open(req, timeout=timeout))
                 try:
                     if abroad:
-                        # abroad 分支的重定向由进程全局默认 opener 执行（仍带 FileHandler），
-                        # 入口白名单只覆盖最初的 URL，故落地地址必须复核。写在内层 try 的第一条，
-                        # 是为了让拒绝路径照样落到 finally 的 _resp.close()。
-                        # 这是「不外流」而非「不访问」：跳转请求已发出、目标已被读出，本行让它
-                        # 在成为响应体之前随 ValueError 一起丢掉。无代理分支不需要这一步——
-                        # 其 opener 没有 file/ftp/data handler，跨 scheme 在发出之前就被
-                        # UnknownHandler 拒成 URLError（见 _HTTP_ONLY_HANDLERS 上方说明）。
-                        # S-09 residual（2026-10-21）：原判据只有 _reject_unsafe_scheme（协议形态白名单），
-                        # 但本分支经进程全局 opener，_HopGuardRedirectHandler 挂在**本模块自建的 opener** 上、
-                        # 对这里完全不生效——公网 URL 302 到 http://169.254.169.254/ 协议合法照样放行，
-                        # 元数据正文原样返回调用方（稳定 SSRF 回显）。落地改跑与入口/逐跳同一份判据
-                        # （_redirect_hop_rejection_reason：scheme 白名单 + async_http.internal_stream_target_reason，
-                        # 判据唯一事实源，不另写内网名单），非 None 即抛，走「失败一律空串」既有收口。
+                        # abroad 分支的重定向由进程全局默认 opener 执行（仍带 FileHandler），入口白名单只覆盖
+                        # 最初的 URL，故落地地址必须复核。写在内层 try 的第一条，让拒绝路径照样落到
+                        # finally 的 _resp.close()。这是「不外流」而非「不访问」：跳转已发出、目标已被读出，
+                        # 本行让它在成为响应体之前随 ValueError 一起丢掉。无代理分支不需要这一步——其 opener
+                        # 没有 file/ftp/data handler，跨 scheme 在发出之前就被 UnknownHandler 拒成 URLError
+                        # （见 _HTTP_ONLY_HANDLERS 上方说明）。
+                        # residual：原判据只有 _reject_unsafe_scheme（协议形态白名单），而本分支经进程
+                        # 全局 opener，_HopGuardRedirectHandler 挂在**本模块自建的 opener** 上、对这里完全不
+                        # 生效——公网 URL 302 到 http://169.254.169.254/ 协议合法照样放行（稳定 SSRF 回显）。
+                        # 落地改跑与入口/逐跳同一份判据（_redirect_hop_rejection_reason，判据唯一事实源，
+                        # 不另写内网名单），非 None 即抛，走「失败一律空串」既有收口。
                         _landing_reason = _redirect_hop_rejection_reason(_resp.url)
                         if _landing_reason is not None:
                             raise ValueError(
@@ -550,10 +541,9 @@ def sync_req(
                 try:
                     if e.code == 400:
                         # 400 错误体同样受读入上限约束：原先无参 e.read() 是对端给多少就申请多少，
-                        # MemoryError 连统一兜底都兜不住。只设一道上限——本分支从不解压错误体，
-                        # 没有「解压产出」暴露面；补 gzip 解压反而会改变既有透传契约。
-                        # 超限抛 ValueError → finally 照常 e.close() → 外层通用 except 记脱敏
-                        # 日志并返回空串（「失败一律空串」契约不变，异常不穿透）。
+                        # MemoryError 连统一兜底都兜不住。只设一道上限——本分支从不解压错误体，没有
+                        # 「解压产出」暴露面；补 gzip 解压反而会改变既有透传契约。超限抛 ValueError →
+                        # finally 照常 e.close() → 外层通用 except 记脱敏日志并返回空串（契约不变）。
                         resp_str = _read_capped(e, _MAX_RESPONSE_BYTES, "400 错误响应体").decode(content_encoding)
                     else:
                         raise

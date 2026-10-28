@@ -80,7 +80,7 @@ def _matrix_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(checker, "_runtime_matrix_keys", lambda: list(_MATRIX_KEYS))
 
 
-# MID-2260：上面那条 autouse fixture 把 `_runtime_matrix_keys` **整体桩掉**，于是没有任何
+# 上面那条 autouse fixture 把 `_runtime_matrix_keys` **整体桩掉**，于是没有任何
 # 用例会驱动真解析器——把真实现改成 `return []`，未钉定槽位都会落进「矩阵外 → 只告警」
 # 的桶，`--strict` 对全占位表返回 0，发布链直接放行未经校验的 ffmpeg/node。下面的用例一律
 # **先把真实现装回去**（保留模块级引用绕开 autouse），驱动真解析器 + 真分流语义。
@@ -158,7 +158,7 @@ def test_workflow_matrix_and_test_constant_stay_in_sync(monkeypatch: pytest.Monk
 
 
 def test_strict_blocks_all_placeholder_table_with_real_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
-    # MID-2260 的正主：真矩阵 + 全占位表 + --strict 必须 rc=1。
+    # 正主：真矩阵 + 全占位表 + --strict 必须 rc=1。
     # 把 `_runtime_matrix_keys` 改成 `return []`（或桩成空列表且无人见证）→ 这里必红。
     _restore_real_matrix(monkeypatch)
     assert (
@@ -237,7 +237,7 @@ def test_offmatrix_unpinned_is_warned_not_hidden(
 
 def test_source_build_marker_without_evidence_is_not_a_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     # 第 4 类的标记若比 64 位十六进制更容易填，就必须同等拦下；否则「放宽判定」变成了
-    # 一条绕闸通道（与 CR-11 的「空表 + warn 后继续」同一族失效）。
+    # 一条绕闸通道（与该「空表 + warn 后继续」同一族失效）。
     table = _pinned_table()
     table["macos-arm64"]["ffmpeg"] = build_exe.SOURCE_BUILD_PROVENANCE
     assert _run(monkeypatch, table, strict=True) == 1
@@ -309,7 +309,7 @@ def test_missing_slot_is_a_structural_failure_not_a_data_gap(monkeypatch: pytest
 def test_missing_build_exe_attribute_exits_two_instead_of_crashing(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # L-29：本门禁取的是 build_exe 的**私有**符号，改名/删除在 build_exe 侧没有任何提示。
+    # 本门禁取的是 build_exe 的**私有**符号，改名/删除在 build_exe 侧没有任何提示。
     # 旧写法直取属性 → AttributeError 崩溃栈 → rc=1，而 rc=1 在本脚本契约里专指「--strict
     # 查到未钉定项」，于是「门禁自己没跑成」会被读成「发布链有未钉定的二进制」。
     # 缺失一律 rc=2（同「空表 / 取不到表」那一档）。

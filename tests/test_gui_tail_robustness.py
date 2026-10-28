@@ -1,23 +1,22 @@
-# tests/test_gui_tail_robustness.py — tail 线程逐事件防护与 after 链无条件续期（M-15 / M-17）。
+# tests/test_gui_tail_robustness.py — tail 线程逐事件防护与 after 链无条件续期。
 #
-# 两条同族故障：M-17 tail 线程里 json.loads 有防护而 _danmaku_dispatch 的数值转换没有，
-# 一条脏事件（如 ts 为 null）冒到最外层时 offset 已推进过整个 chunk，同批后续完好事件
-# 全部丢失且零日志；M-15 弹幕刷新/状态刷新/日志 flush/UI 事件泵四条 after 自续期链把
-# 「下一次 after」写在回调尾部，回调一抛未捕获异常就整页永久停止刷新（tail 首读还会回放
-# 旧 JSONL 末尾 64KB 的历史脏记录，触发概率真实存在）。
+# [历史注] 两条故障出自审查项 / 。
+# 两条同族故障：tail 线程里 json.loads 有防护而 _danmaku_dispatch 的数值转换没有，一条脏事件
+# （如 ts 为 null）冒到最外层时 offset 已推进过整个 chunk，同批后续完好事件全部丢失且零日志；
+# 弹幕刷新/状态刷新/日志 flush/UI 事件泵四条 after 自续期链把「下一次 after」写在回调尾部，
+# 回调一抛未捕获异常就整页永久停止刷新（tail 首读还会回放旧 JSONL 末尾 64KB 的历史脏记录，
+# 触发概率真实存在）。
 #
-# 两者必须同批断言：修 M-17 的逐事件 try 会把 M-15 的 float(None) 崩溃降级成静默丢一条；
-# 加了 _as_float/_as_int 容错后逐事件防护的缺失又难以触发——单独看都能掩盖对方。
+# 两者必须同批断言：逐事件 try 会把 float(None) 崩溃降级成静默丢一条；加了 _as_float/_as_int
+# 容错后逐事件防护的缺失又难以触发——单独看都能掩盖对方。
 #
 # 判据经**子进程**驱动真实实现（同 test_gui_monitor.py：pytest 进程 import gui 会注入
-# DLR_GUI_PARENT）。桩只补状态字段与假控件，不重新实现判定逻辑。
-#
-# 桩的边界：
+# DLR_GUI_PARENT）。桩只补状态字段与假控件，不重新实现判定逻辑。桩的边界：
 #   * FakeRoot.after 只记账、不起 Tk：锁「有没有续期」，「续期后真跑到」属真窗范畴；
 #   * FakeText 的 boom 按方法名触发（一律抛会把渲染失败与取队列失败混成一个结论）；
 #   * _danmaku_dispatch 的投毒只废 room==BAD 那一条，其余事件仍进真实实现；
-#   * 桩实例走 object.__new__ 跳过 Tk 构造：被测方法读到的字段必须在 base_stub() 补齐，
-#     缺一个即 AttributeError，不会静默通过。
+#   * 桩实例走 object.__new__ 跳过 Tk 构造：字段必须在 base_stub() 补齐，缺一个即
+#     AttributeError，不会静默通过。
 
 import ast
 import json
@@ -386,7 +385,7 @@ def results() -> dict[str, Any]:
 
 
 def test_as_float_and_as_int_tolerate_dirty_values(results: dict[str, Any]) -> None:
-    # 单一容错口径（M-15/M-17 共用同一 helper，不得出现第二份）：None/垃圾串回落默认值，
+    # 单一容错口径（/该共用同一 helper，不得出现第二份）：None/垃圾串回落默认值，
     # 合法数值原样取，Infinity 不得把 int() 炸穿。两个列表按「位置即语义」写：as_float 依次
     # 是 None/垃圾串/合法小数/合法整数（须转成 float，下游格式化才不会少小数位）；as_int
     # 最后两项用 -1 哨兵证明 default 真的被透传（恒回 0 的实现能把前四项全蒙对）。
@@ -408,8 +407,8 @@ def test_dispatch_survives_null_and_typed_fields(results: dict[str, Any]) -> Non
 
 
 def test_danmaku_render_of_null_ts_still_rearms(results: dict[str, Any]) -> None:
-    # _render_danmaku_stream 里 float(ts) 的确切事故点（文件头 2026-09-12 审查 6.2）。
-    # 现在必须：① 渲染出该条（时间显示 --:--:--）② 无条件续期 ③ 不误报异常。
+    # _render_danmaku_stream 里 float(ts) 的事故点。必须：① 渲染出该条（时间显示 --:--:--）
+    # ② 无条件续期 ③ 不误报异常。
     case = results["render_after_null_ts"]
     assert "--:--:--" in case["text"], case["text"]
     assert "hi" in case["text"]
@@ -423,10 +422,10 @@ def test_danmaku_render_of_null_ts_still_rearms(results: dict[str, Any]) -> None
 
 
 def test_danmaku_chain_rearms_and_warns_when_render_raises(results: dict[str, Any]) -> None:
-    # M-15：渲染抛错时链不能断——续期在 finally，且必须留一条 warn（限频由
+    # 渲染抛错时链不能断——续期在 finally，且必须留一条 warn（限频由
     # _CHAIN_WARN_INTERVAL_SECONDS 控制，桩里压成 0）。
     # 本场景只断言「回调名」不比对延迟：抛错轮次的延迟与正常轮次同值，比了也不增判据强度，
-    # 反而会把「间隔调整」这类无关改动误报成 M-15 回归。
+    # 反而会把「间隔调整」这类无关改动误报成该回归。
     case = results["danmaku_chain_rearm"]
     assert [job[1] for job in case["jobs"]] == ["_schedule_danmaku_refresh"]
     assert case["warns"], "刷新链异常未留痕（旧形态全静默）"
@@ -446,7 +445,7 @@ def test_log_flush_chain_rearms_when_render_raises(results: dict[str, Any]) -> N
     # 这正是旧实现「整页停止刷新」的机制，续期必须落 finally。
     case = results["flush_chain_rearm"]
     assert [job[1] for job in case["jobs"]] == ["_schedule_log_flush"]
-    # 这条是 M-15 里最容易被「顺手优化」掉的语义：has_data 为真时 finally 才重排，
+    # 这条是该里最容易被「顺手优化」掉的语义：has_data 为真时 finally 才重排，
     # 渲染失败不等于队列已清空。若实现改成「抛错就把 has_data 置 False」，链会以
     # 「休眠态」形式静默停下——表面看仍是有条件的、实则永不会被人唤醒（唤醒点在 _log）。
     assert case["still_has_data"] is True, "渲染失败时不得把 has_data 误判成已清空"
@@ -454,7 +453,7 @@ def test_log_flush_chain_rearms_when_render_raises(results: dict[str, Any]) -> N
 
 
 def test_ui_pump_rearms_when_activation_raises(results: dict[str, Any]) -> None:
-    # M-15 第四支链（_pump_ui_events 本体）。旧形态把续期写在函数最后一句，前面的
+    # 第四支链（_pump_ui_events 本体）。旧形态把续期写在函数最后一句，前面的
     # 「激活日志刷新链」一抛（窗口销毁竞态里的 TclError 即此形）就跳过续期 → UI 事件泵
     # 永久停摆，post_ui 排队的 _on_recording_stopped / _finalize_quit 不再执行（关不掉窗口）。
     # jobs 只应有一项：泵自己的重排；刷新链激活那一项在抛错行之前就被打断了。
@@ -472,7 +471,7 @@ def test_ui_pump_rearms_when_activation_raises(results: dict[str, Any]) -> None:
 
 
 def test_tail_batch_keeps_good_events_after_a_bad_one(results: dict[str, Any]) -> None:
-    # M-17 本体：坏条只废自己，同 chunk 后续完好事件必须照常入库，并留一条汇总 warn。
+    # 本体：坏条只废自己，同 chunk 后续完好事件必须照常入库，并留一条汇总 warn。
     # 顺序是判据的一半：坏条排在两条好条之前、四条同一 chunk 一次读入——「整批丢失」
     # 只可能表现为 msgs 少掉后两条。thread_dead 必须显式锁：否则「异常穿透打死 tail 线程」
     # 与「防护有效」能留下相同的两帧缓冲（首轮已入库）。
@@ -488,9 +487,9 @@ def test_tail_batch_keeps_good_events_after_a_bad_one(results: dict[str, Any]) -
 
 
 def test_tail_outer_failure_is_logged_not_silent(results: dict[str, Any]) -> None:
-    # M-17：最外层 except 从「静默 sleep(1.0)」变成「限频 warning 留痕」。
-    # 注入点是 os.path.getsize（非 OSError 的 RuntimeError），刻意避开 OSError 分支——
-    # 那条是 MID-2250 认定的良性路径（日志归档改名），应当继续静默重试。
+    # 最外层 except 由「静默 sleep(1.0)」改为「限频 warning 留痕」。注入点是 os.path.getsize
+    # （非 OSError 的 RuntimeError），刻意避开 OSError 分支：那条是日志归档改名的良性路径，
+    # 应当继续静默重试。
     case = results["tail_outer_warn"]
     assert case["thread_dead"] is True
     assert any("弹幕 tail 线程本轮异常" in line[0] for line in case["lines"]), case["lines"]
@@ -558,7 +557,7 @@ def test_tail_loop_guards_every_event() -> None:
             # 必须是被 try 体**直接包住**的 dispatch 调用：前半句排除「try 体内根本没有
             # dispatch」的无关 Try（如 json.loads 那一圈）；后半句要求 try 体的每一条语句
             # 都含 dispatch。只写前半句会把「包整条 for 的外层大 try」也算成有效防护——
-            # 那正是 M-17 要消灭的形态。
+            # 那正是该要消灭的形态。
             if _dispatch_calls(try_node) and all(_dispatch_calls(stmt) for stmt in try_node.body):
                 guarded = True
     assert guarded, "_danmaku_dispatch 的逐事件防护缺失（M-17 回归形态）"

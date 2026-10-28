@@ -1,12 +1,10 @@
-# src/spider.py「MID-48 国内平台批次」（2026-09-21）的离线回归锁。
+# src/spider.py「国内平台 JSON 解析加固」批次的离线回归锁。
 #
-# 2026-09-21 追加：文件末尾的 SEV-N04（淘宝 Set-Cookie 覆盖用户 Cookie）小节，
-# 属 CODE_REVIEW_2026-09-21.md 第 6.3 表指定的回归锁位置，与本批 MID-48 判据共用桩具。
+# 文件末尾的 SEV-N04（淘宝 Set-Cookie 覆盖用户 Cookie）小节是另一批回归锁，与本批判据共用桩具。
 #
-# 被测问题（CODE_REVIEW_2026-09-20.md 第 406 行 MID-48）：平台解析函数用裸 json.loads +
-# 深层链式索引，于是「房间不存在 / 未开通」「接口改版」「风控返回 HTML 拦截页」三类成因
-# 全部塌缩成同一个 JSONDecodeError/KeyError，再被 @trace_error_decorator 吞成
-# {"is_live": False}——用户侧只见持续的「网址内容获取失败」，日志里没有任何区分线索。
+# 被测问题：平台解析函数用裸 json.loads + 深层链式索引，「房间不存在 / 未开通」「接口改版」「风控
+# 返回 HTML 拦截页」三类成因全部塌缩成同一个 JSONDecodeError/KeyError，再被 @trace_error_decorator
+# 吞成 {"is_live": False}——用户侧只见持续的「网址内容获取失败」，日志里没有任何区分线索。
 #
 # 覆盖平台：7 个平台共 8 类「四用例矩阵」行为用例（B站占两类：room_info 与 H5 标题接口），
 # 即 B站 / 网易 CC / 微博 / 百度 / AcFun / 京东 / 咪咕，另加小红书与 YY 两个「静默离线」特例，
@@ -28,15 +26,13 @@
 # _warn_api_abnormal 与各平台解析逻辑一律走真实代码。
 #
 # 离线可证 / 需真机复核的边界（本批所有桩载荷按公开接口惯例与仓内既有注释构造）：
-#   - 可离线证：「裸解析必崩 → 加固后不崩且留线索」这一条与真实取值无关，任何合法 JSON
-#     错误信封或 HTML 都能复现，故异常样本用 -404 / errorCode / 截断三类通用形态。
+#   - 可离线证：「裸解析必崩 → 加固后不崩且留线索」与真实取值无关，任何合法 JSON 错误信封或
+#     HTML 都能复现，故异常样本用 -404 / errorCode / 截断三类通用形态。
 #   - 需真机复核：各平台**正常**载荷的字段名与层级（B站 data.room_info.title、京东
-#     result.livingRoomJump.params.id、酷狗 lines[-1].streamProfiles[0].httpsFlv[0] 等）。
-#     这些取值沿用迁移前源码的索引路径逐字照抄，本批刻意不改；真机若发现字段漂移，
-#     会表现为「房间不存在」告警而不是崩溃——正是本批要的可诊断形态。
-#   - 需真机复核：错误信封的 code/msg 键名。_warn_api_abnormal 按 code / status /
-#     errorCode / resultCode 与 message / msg / errorMsg 两组别名依次试探，
-#     某平台若用第三种键名只会退化成「少一条线索」，不会崩。
+#     result.livingRoomJump.params.id、酷狗 lines[-1].streamProfiles[0].httpsFlv[0] 等）沿用迁移前
+#     源码的索引路径逐字照抄、本批刻意不改；真机若发现字段漂移会表现为「房间不存在」告警而非崩溃。
+#   - 需真机复核：错误信封的 code/msg 键名。_warn_api_abnormal 按 code / status / errorCode /
+#     resultCode 与 message / msg / errorMsg 两组别名依次试探，第三种键名只退化成「少一条线索」。
 
 import ast
 import contextlib
@@ -56,8 +52,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WAF_HTML = "<html><head><title>Access Protected</title></head><body>cf-browser-verification</body></html>"
 
 # 本批已迁移到 _loads_dict + _dig 的 21 个平台解析函数：逐函数棘轮断言其体内零裸 json.loads。
-# 名单同时是「用例与被测函数是否失配」的自检依据——函数被改名/删除时本文件先红，
-# 避免出现「扫描 0 个函数、于是 0 违规」的假绿（AGENTS「config.ini 键集审计」同族教训）。
+# 名单也是「用例与被测函数是否失配」的自检依据：函数改名/删除时本文件先红，避免「扫描 0 个函数、于是 0 违规」的假绿（AGENTS「config.ini 键集审计」同族教训）。
 MIGRATED_FUNCTIONS = (
     "get_yy_stream_data",
     "get_bilibili_room_info_h5",
@@ -83,11 +78,10 @@ MIGRATED_FUNCTIONS = (
 )
 
 # 全文件剩余裸 json.loads 调用点上限（不含唯一豁免的 _safe_loads 自身）。
-# 2026-09-21 国内批次前实测 75 处，国内批次迁移 38 处 → 37 处；
-# 2026-09-21 海外批次再迁 36 处 → **1 处**：仅剩 get_twitchtv_room_info 的 GQL 响应
-# （批量查询返回 **list**，_loads_dict 只收 dict，且禁止另造第四支 helper；该处已自带
-# try/except JSONDecodeError + 告警 + 显式 RuntimeError，等价于加固形态）。
-# 后续任何批次只允许把该数压低，任何回升即红。类名不以 Test 开头，pytest 不会把基类当用例收集。
+# [历史注] 国内批次前实测 75 处，国内批次迁移 38 处 → 37 处，海外批次再迁 36 处 → **1 处**。
+# 唯一豁免是 get_twitchtv_room_info 的 GQL 响应（批量查询返回 **list**，_loads_dict 只收 dict，
+# 且禁止另造第四支 helper；该处已自带 try/except JSONDecodeError + 告警 + 显式 RuntimeError，
+# 等价于加固形态）。后续任何批次只允许把该数压低，任何回升即红。类名不以 Test 开头，pytest 不会把基类当用例收集。
 BARE_JSON_LOADS_CEILING = 1
 
 
@@ -364,9 +358,8 @@ class TestWeiboHardening(_GuardCase):
     }
 
     async def test_flv_only_room_is_live_with_record_url(self) -> None:
-        # MID-2212 回归锁：只下发 FLV（无 HLS）的房间必须判开播，并以 record_url 承载该路
-        # （上层以 m3u8/hls 为主通道，缺 record_url 就取不到流）。旧实现要求 HLS+FLV 同时存在，
-        # 会把这类房间每轮静默判为未开播。
+        # 只下发 FLV（无 HLS）的房间必须判开播并以 record_url 承载该路：上层以 m3u8/hls 为主通道，缺
+        # record_url 就取不到流。[历史注] 旧实现要求 HLS+FLV 同时存在，把这类房间每轮静默判为未开播。
         body = json.dumps(
             {
                 "data": {
@@ -389,7 +382,7 @@ class TestWeiboHardening(_GuardCase):
         assert logger.msgs == [], f"正常单路开播不应告警: {logger.msgs}"
 
     async def test_hls_only_room_is_live(self) -> None:
-        # MID-2212 回归锁：只下发 HLS 的房间必须判开播（旧实现同样误判未开播）。
+        # 只下发 HLS 的房间必须判开播（同上一条单路形态回归锁：旧实现同样误判未开播）。
         body = json.dumps(
             {
                 "data": {
@@ -431,7 +424,7 @@ class TestWeiboHardening(_GuardCase):
 
 
 class TestBaiduHardening(_GuardCase):
-    # room_id 位于查询串末尾：同一用例顺带锁住 MID-45 已修的正则形态（不得改回 `(.*?)&`）。
+    # room_id 位于查询串末尾：同一用例顺带锁住已修的正则形态（不得改回 `(.*?)&`）。
     URL = "https://live.baidu.com/m/media/pclive/pchome/live.html?room_id=9175031377"
     _OK = json.dumps(
         {
@@ -642,9 +635,8 @@ class TestMiguHardening(_GuardCase):
 class TestXhsHardening(_GuardCase):
     # 小红书：__INITIAL_STATE__ 未命中 liveStream 是「未开播/分享页」的正常形态（函数下方还有
     # profile 兜底补昵称），故只有「命中了脚本标签但内联 JSON 被截断」才需要归因。
-    # URL 用真实直播形态 /livestream/<数字房间ID> 并带 host_id：既符合 parse_xhs_live_url 的
-    # 路径白名单，也让下方 profile 兜底仍能拿到 user_id（旧桩用的 /live/livestream/x123 是
-    # 杜撰形态，真实小红书不产出该路径，现被统一解析器按 non_live_path 拒收）。
+    # URL 用真实直播形态 /livestream/<数字房间ID> 并带 host_id：既符合 parse_xhs_live_url 的路径白名单，
+    # 也让下方 profile 兜底仍能拿到 user_id（旧桩的 /live/livestream/x123 是杜撰形态，现按 non_live_path 拒收）。
     URL = "https://www.xiaohongshu.com/livestream/123456?host_id=5f3e2a1b"
     _PROFILE_HTML = "<title>@兜底昵称 的个人主页</title>"
     _TRUNCATED = '<script>window.__INITIAL_STATE__={"liveStream": {"liveStatus": "succe</script>'
@@ -672,7 +664,7 @@ class TestXhsHardening(_GuardCase):
     )
     abnormal = [(_TRUNCATED, "小红书 __INITIAL_STATE__", None)]
     silent_body = _NO_LIVE
-    # room_id / normalized_url 是 2026-10-04 小红书链接归一化批次新增的稳定字段：
+    # room_id / normalized_url 是小红书链接归一化新增的稳定字段：
     # 前者给配置回写与日志定位，后者让短链/动态路径解析出的规范地址能落回 URL_config.ini。
     expected = {
         "anchor_name": "小红书",
@@ -731,7 +723,7 @@ class TestYyHardening(_GuardCase):
         return {
             "www.yy.com/12345": self._PAGE,
             "stream-manager": body if body is not None else self._STREAM,
-            # 标题是第二次独立请求，永远给正常桩——它的降级路径由 MI-18 的既有用例覆盖
+            # 标题是第二次独立请求，永远给正常桩——它的降级路径由既有用例覆盖
             "live/detail": '{"code":0,"data":{"roomName":"YY标题"}}',
         }
 
@@ -818,7 +810,7 @@ def test_dig_helpers_never_raise_on_missing_or_wrong_type() -> None:
 
 
 def test_warn_api_abnormal_distinguishes_empty_from_missing_field() -> None:
-    # 两种成因必须是两条不同文案——这正是 MID-48 的判定标准
+    # 两种成因必须是两条不同文案——这正是本批加固的判定标准
     # （用户侧原来只有一句「网址内容获取失败,进行重试中…」）。
     empty = _fake_logger()
     with patch.object(sp, "logger", empty):
@@ -839,10 +831,11 @@ def test_warn_api_abnormal_distinguishes_empty_from_missing_field() -> None:
 
 
 # ============================================================================
-# 第二批：海外 / 带凭据平台（MID-48 海外批次，2026-09-21）
+# 第二批：海外 / 带凭据平台
 # ============================================================================
 # 与第一批（国内平台）同口径：裸 json.loads → _loads_dict、深层链式索引 → _dig 系列、
-# 结构异常时经 _warn_api_abnormal 落「区分性告警」，成功路径逐字不变。
+# 结构异常时经 _warn_api_abnormal 落「区分性告警」，成功路径逐字不变；四类样本与
+# 「离线可证 / 需真机复核」的边界口径见文件头，此处只列本批差异。
 # 本批特有约束：popkontv / sooplive / winktv / pandatv / flextv / acfun 的响应里带
 # AID / visitor_st / hls_authentication_key 等**票据值**，加固后的日志只允许出现接口的
 # code/message——故涉及票据的用例额外断言「日志里不含桩票据串」。
@@ -851,31 +844,21 @@ def test_warn_api_abnormal_distinguishes_empty_from_missing_field() -> None:
 #   1. 返回契约更杂——本批同时存在 dict 契约（bigo/pplive/picarto/六间房/流星/映客/look）、
 #      str|None 契约（get_flextv_stream_url）、tuple 契约（get_sooplive_tk /
 #      get_winktv_bj_info / _get_soop_stream_info_global / get_popkontv_stream_data）与
-#      list 响应（twitch GQL，见下方上限注释）。每种契约的「离线」长得都不一样，
+#      list 响应（twitch GQL，见上方上限注释）。每种契约的「离线」长得都不一样，
 #      用一句 `assert result["is_live"] is False` 通吃必然对某几类假绿。
 #   2. 这些平台大多带凭据/登录态，「解析崩了」会被上层当成「未开播」反复重试，
 #      既烧代理预算又永远等不到真开播——所以区分性告警的运维价值比国内平台更高。
 #   3. 桩票据值同时用于验证「加固没有把 token 顺手写进日志」（AGENTS 凭据红线）。
 #
-# 每类的四类样本（与第一批一致）：
-#   - WAF_HTML：HTTP 200 + 合法 HTML（风控拦截页），第一批的原始崩点；
-#   - 合法 JSON 但缺期望对象：可能是「房间不存在」，信封 code/msg 必须原样落日志；
-#   - 截断 JSON：CDN 半截响应 / 页面尺寸截断的内联 JSON；
-#   - 正常载荷：断言返回结构与迁移前逐字相等，且**零告警**（成功路径刷告警等于没有日志）。
-# 另有一类「文档化离线形态」（silent_*）：未开播是每 120 秒一轮的常态，绝不能为它刷 warning，
-# 否则真线索会被淹掉——所以每个有离线形态的平台都带一条「必须保持静默」的用例。
+# 四类样本同第一批：WAF_HTML（HTTP 200 + 合法 HTML，风控拦截页）、合法 JSON 但缺期望对象（信封
+# code/msg 必须原样落日志）、截断 JSON（CDN 半截响应 / 页面尺寸截断的内联 JSON）、正常载荷（返回结构
+# 与迁移前逐字相等且**零告警**）；另各配一条 silent_*「文档化离线形态必须静默」的用例。
 #
-# 离线可证 / 需真机复核的边界：
-#   - 可离线证：「裸解析必崩 → 加固后不崩且留线索」与真实取值无关，任何合法错误信封
-#     或 HTML 都能复现，故异常样本用 -404 / result / 截断三类通用形态。
-#   - 需真机复核：各平台**正常**载荷的字段名与层级（bigo data.hls_src、
-#     SOOP data.isStream、PandaTV/WinkTV PlayList.hls[0].url、PopkonTV
-#     props.pageProps.mcData.data.*、Faceit payload[0].platform 等）。
-#     这些取值沿用迁移前源码的索引路径逐字照抄，本批刻意不改；真机若发现字段漂移，
-#     会表现为「房间不存在」告警而不是崩溃——正是本批要的可诊断形态。
-#   - 需真机复核：SOOP 的网关 code 语义（-3001/-3002/-3004/-6001 走的是既有分支，
-#     本批只保证「无 code 时不再静默」）、LiveMe 的字符串 "0" 在播语义、
-#     来秀的 playStatus==0 反向语义——三处都刻意保留原比较写法未动。
+# 需真机复核（本批**正常**载荷的字段名与层级，沿用迁移前索引路径逐字照抄、刻意不改；真机若发现字段
+# 漂移会表现为「房间不存在」告警而不是崩溃）：bigo data.hls_src、SOOP data.isStream、
+# PandaTV/WinkTV PlayList.hls[0].url、PopkonTV props.pageProps.mcData.data.*、Faceit payload[0].platform。
+# 另需真机复核：SOOP 的网关 code 语义（-3001/-3002/-3004/-6001 走既有分支，本批只保证「无 code 时不再
+# 静默」）、LiveMe 的字符串 "0" 在播语义、来秀的 playStatus==0 反向语义——三处都刻意保留原比较写法未动。
 OVERSEAS_MIGRATED_FUNCTIONS = (
     "get_bigo_stream_url",
     "get_sooplive_cdn_url",
@@ -923,8 +906,7 @@ def _assert_no_token(logger: types.SimpleNamespace, *secrets: str) -> None:
 def test_overseas_migrated_functions_have_no_bare_json_loads() -> None:
     # 逐函数棘轮（第二批）：31 个海外/带凭据函数体内零裸 json.loads。
     # 与第一批共用扫描器但名单独立——两批各自回退各自变红。
-    # get_twitchtv_room_info 刻意不在名单内：GQL 批量响应是 list，_loads_dict 不适用
-    # （见文件头 BARE_JSON_LOADS_CEILING 注释里的唯一豁免说明）。
+    # get_twitchtv_room_info 刻意不在名单内：GQL 批量响应是 list、_loads_dict 不适用（豁免说明见文件头 BARE_JSON_LOADS_CEILING）。
     src = (ROOT / "src" / "spider.py").read_text(encoding="utf-8-sig")
     tree = ast.parse(src)
     offenders: list[str] = []
@@ -1080,8 +1062,7 @@ class TestSoopStreamInfoGlobalHardening(_GuardCase):
         assert result == (False, ""), f"异常响应应回未开播二元组，实际 {result!r} ({case})"
 
     async def test_documented_offline_stays_silent(self) -> None:
-        # 本平台的离线契约是「(False, 标题)」而不是 (False, "")——标题在房间存在时总带得回，
-        # 覆盖基类口径，仍保持「正常离线形态零告警」这一硬判据。
+        # 本平台的离线契约是「(False, 标题)」而不是 (False, "")——标题在房间存在时总带得回；零告警判据同基类。
         logger = _fake_logger()
         with (
             patch.object(sp, "async_req", new=_fake_req(self.payloads(self.silent_body))),
@@ -1144,9 +1125,8 @@ class TestPandatvHardening(_GuardCase):
     silent_expected = {"anchor_name": "Panda主播-pandauser", "is_live": False}
 
     def payloads(self, body: str | None) -> dict[str, Any]:
-        # 首个失败点打在 member/bj 上；live/play 与 m3u8 保持正常桩。
-        # m3u8 也走 async_req（get_play_url_list 是真实实现、未打桩）——若有人把选档
-        # 排序改坏，expected 里的带宽降序断言会立刻变红。
+        # 首个失败点打在 member/bj 上；live/play 与 m3u8 保持正常桩。m3u8 也走 async_req
+        # （get_play_url_list 是真实实现、未打桩）——选档排序被改坏时 expected 的带宽降序断言立刻变红。
         return {
             "member/bj": body if body is not None else self._BJ,
             "live/play": self._PLAY,
@@ -1246,8 +1226,7 @@ class TestLookliveHardening(_GuardCase):
         return await sp.get_looklive_stream_url(self.URL)
 
     async def test_flv_only_room_is_live_with_record_url(self) -> None:
-        # MID-2212 回归锁：只下发 FLV（无 HLS）的房间必须判开播并带 record_url；旧实现要求两路齐备，
-        # 会把单路房间每轮静默判为未开播。
+        # 只下发 FLV（无 HLS）的房间必须判开播并带 record_url（同微博侧的单路形态回归锁）。
         body = (
             '{"code":200,"data":{"anchor":{"nickName":"Look主播"},"liveStatus":1,'
             '"roomInfo":{"liveType":2,"title":"深夜电台","liveUrl":{"httpPullUrl":"http://lookcdn/a.flv"}}}}'
@@ -1261,7 +1240,7 @@ class TestLookliveHardening(_GuardCase):
         assert logger.msgs == [], f"正常单路开播不应告警: {logger.msgs}"
 
     async def test_hls_only_room_is_live(self) -> None:
-        # MID-2212 回归锁：只下发 HLS 的房间必须判开播（旧实现误判未开播）。
+        # 只下发 HLS 的房间必须判开播（同上一条单路形态回归锁）。
         body = (
             '{"code":200,"data":{"anchor":{"nickName":"Look主播"},"liveStatus":1,'
             '"roomInfo":{"liveType":2,"title":"深夜电台","liveUrl":{"hlsPullUrl":"http://lookcdn/a.m3u8"}}}}'
@@ -1606,15 +1585,15 @@ class TestPopkontvSearchHardening(_GuardCase):
         _assert_clue(logger, "PopkonTV live/view(__NEXT_DATA__)", "popkon view")
 
 
-# ── SEV-N04（2026-09-21）：淘宝用响应 Set-Cookie 覆盖并持久化用户 Cookie ───────────
+# ── SEV-N04：淘宝用响应 Set-Cookie 覆盖并持久化用户 Cookie ───────────
 
 
 class TestSevN04TaobaoCookieMerge:
     # 归因判据（本工作区不做「改坏生产实现再跑用例」的变异验证，改用只有新逻辑能过的输入）：
     #   桩里的 new_cookie **只**含两张票据——这正是 src/async_http.py return_cookies 的真实形态
-    #   （返回 response.cookies，不含请求侧 cookie）。
-    #   - 未改成「合并」→ 第二轮请求头与写回值都不再含 unb=1，第 ① 组断言变红；
-    #   - 回写比较的仍是「响应票据串」而不是合并后的完整串 → 第 ② 条用例（票据未轮换须零重写）变红。
+    #   （返回 response.cookies，不含请求侧 cookie）。未改成「合并」→ 第二轮请求头与写回值都不再含
+    #   unb=1，第 ① 组断言变红；回写比较的仍是「响应票据串」而不是合并后的完整串 → 第 ② 条用例
+    #   （票据未轮换须零重写）变红。
     # 只打桩传输层与配置读写边界（async_req / utils.read_ini_value / utils.update_config），
     # Cookie 解析、票据合并、签名与轮次控制一律走真实代码。
     TICKETS = {"_m_h5_tk": "f7e0d3a4b5c6d7e8f9a0b1c2d3e4f5a6_1777000000000", "_m_h5_tk_enc": "enc-1"}
@@ -1676,14 +1655,14 @@ class TestSevN04TaobaoCookieMerge:
         return sent_cookies, written, logger
 
     async def test_user_cookie_survives_ticket_refresh_and_writeback(self) -> None:
-        # 第一轮 mtop 返回 token 过期（非空 ret 数组，WD-18 场景）→ 刷新票据 → 第二轮成功
+        # 第一轮 mtop 返回 token 过期（非空 ret 数组）→ 刷新票据 → 第二轮成功
         responses = [
             (self._jsonp("FAIL_SYS_TOKEN_EMPTY::令牌为空"), dict(self.TICKETS)),
             (self._jsonp("SUCCESS::调用成功"), dict(self.TICKETS)),
         ]
         sent_cookies, written, logger = await self._call(responses, self.USER_COOKIE, self.USER_COOKIE)
 
-        # ① 第二轮请求头：票据已刷新（WD-18 语义完整保留）**且**用户登录态仍在（SEV-N04）
+        # ① 第二轮请求头：票据已刷新（既有的过期重试语义完整保留）**且**用户登录态仍在（SEV-N04）
         assert len(sent_cookies) == 2, f"轮次数不符: {sent_cookies}"
         for key in ("unb", "_tb_token_", "cookie2"):
             assert f"{key}=" in sent_cookies[1], f"第二轮请求头丢了用户键 {key}: {sent_cookies[1]}"
@@ -1706,7 +1685,7 @@ class TestSevN04TaobaoCookieMerge:
 
     async def test_unchanged_tickets_do_not_rewrite_config(self) -> None:
         # 归因用例：配置现值已含同一张票据 → 合并后与现值全等，不该再重写整份 config.ini。
-        # 旧实现拿「响应票据串」与「配置里的完整 cookie」比较，形态必然不同 → 条件恒真、
+        # [历史注] 旧实现拿「响应票据串」与「配置里的完整 cookie」比较，形态必然不同 → 条件恒真、
         # 每轮都重写并触发备份线程，「仅在值确实变化时才写」从未生效。
         stored = f"unb=1; _m_h5_tk={self.TICKETS['_m_h5_tk']}; _m_h5_tk_enc={self.TICKETS['_m_h5_tk_enc']}"
         _sent, written, _logger = await self._call(
@@ -1720,3 +1699,55 @@ class TestSevN04TaobaoCookieMerge:
         parsed = sp._cookie_str_to_dict("a=1; b=x==;  ; junk; c=")
         assert parsed == {"a": "1", "b": "x==", "c": ""}
         assert sp.utils.dict_to_cookie_str(parsed) == "a=1; b=x==; c="
+
+
+# ── CODE_REVIEW_2026-10-27 4.1（M-13）：花椒写回判据 ──────────────
+class TestHuajiaoSnWriteBackCriterion:
+    # get_huajiao_sn 是零生产调用的死代码（活链路是 main.py 的 get_huajiao_stream_url →
+    # get_huajiao_user_info / get_huajiao_stream_url_app），但它携带全仓唯一的
+    # utils.replace_url(..., new="#" + url)——把用户房间加 `#` 注释掉且重启不恢复。
+    # 判据必须是「响应可解析且字段确实为空」：WAF/风控壳页同样是「HTTP 200 + 有响应体但不含
+    # var feed」，按旧判据一次风控命中即永久注释掉用户房间。
+    #
+    # 三条用例必须成对存在：只有「该写回时确实写回」的正向见证在，「不该写回时没写回」才不是
+    # 「replace_url 桩压根没接上」的假绿（AGENTS「反对假绿」）。
+    URL = "https://www.huajiao.com/l/123456"
+    # 已解析出 feed 但缺 nickname：唯一仍应写回的形态（sn/uid 在位，证明页面是真实房间页）
+    _PARSED_BUT_EMPTY = '<html>var feed = {"feed":{"sn":"sn-1"},"author":{"uid":"777"}};</html>'
+    # var feed 命中但内容畸形：`.*?});` 会截到 `...{"uid":}` 这一段，_loads_dict 恒回 {} 而不抛
+    _UNPARSABLE_FEED = '<html>var feed = {"feed":{"sn":"sn-1"},"author":{"uid":};</html>'
+
+    async def _call(self, body: str) -> tuple[list[tuple[str, str]], types.SimpleNamespace]:
+        written: list[tuple[str, str]] = []
+        logger = _fake_logger()
+        with (
+            patch.object(sp, "async_req", new=_fake_req({"www.huajiao.com/l/": body}, default=body)),
+            patch.object(sp, "logger", logger),
+            patch.object(
+                sp.utils,
+                "replace_url",
+                new=lambda *a, **k: written.append((str(k.get("old")), str(k.get("new")))),
+            ),
+        ):
+            # 三个分支都抛 RuntimeError：本用例判的是**副作用**，不是返回值
+            with pytest.raises(RuntimeError):
+                await sp.get_huajiao_sn(self.URL)
+        return written, logger
+
+    async def test_waf_shell_page_does_not_comment_out_user_url(self) -> None:
+        written, logger = await self._call(WAF_HTML)
+        assert written == [], f"风控壳页被当成地址失效并改写了用户配置: {written}"
+        assert any("未改动配置文件" in m for m in logger.msgs), f"缺少不写回的告警: {logger.msgs}"
+
+    async def test_unparsable_feed_does_not_comment_out_user_url(self) -> None:
+        # _loads_dict 恒不抛、只回 {}，漏掉「空 dict 即不可解析」这道闸时，畸形响应会顺着下面的
+        # 字段判空走进 KeyError 写回分支——与风控壳页是同一类「无法确认却当成确认失效」。
+        written, logger = await self._call(self._UNPARSABLE_FEED)
+        assert written == [], f"畸形 feed 被当成地址失效并改写了用户配置: {written}"
+        assert any("未改动配置文件" in m for m in logger.msgs), f"缺少不写回的告警: {logger.msgs}"
+
+    async def test_parsed_feed_with_missing_field_still_comments_out(self) -> None:
+        # 正向见证：确认失效的语义没被「一律不写回」连根拔掉。
+        written, logger = await self._call(self._PARSED_BUT_EMPTY)
+        assert written == [(self.URL, "#" + self.URL)], f"确认失效时未写回: {written}"
+        assert any("已注释该房间" in m for m in logger.msgs), f"缺少显式告警: {logger.msgs}"

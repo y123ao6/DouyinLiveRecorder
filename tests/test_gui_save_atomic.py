@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# M-02：GUI 两条配置保存路径共用的 _save_text_to_file 必须委托 src.utils.atomic_write_text
+# GUI 两条配置保存路径共用的 _save_text_to_file 必须委托 src.utils.atomic_write_text
 # （全仓唯一加固实现：flush+fsync + replace 前保留目标文件 mode）。
 # 旧实现是本地弱化副本（有 tmp+replace、缺 fsync、不保留 mode），POSIX 下每次保存把 0600
 # 还原成 umask 权限——含全部平台口令/Cookie 的配置变为同机任意本地用户可读。
