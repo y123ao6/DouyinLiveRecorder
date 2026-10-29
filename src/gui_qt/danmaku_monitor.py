@@ -5,8 +5,8 @@
 # 而 watcher 只在 close/rename 时给 signal，内容增长收不到事件，因此只能轮询 + 偏移。
 #
 # 并发约定：rooms / msgs 两个缓冲在 tail 线程与主线程间共享，一律在 _lock 下读写。
-# _stop_event 与线程一一绑定——共享 Event 被 clear() 会让旧线程永不退出、计数随重启翻倍，
-# 故每次 start 都**新建** Event 并随参数交给该线程。
+# _stop_event 与线程一一绑定——共享 Event 被 clear() 会让旧线程永不退出、计数随重启翻倍
+# （MID-2250），故每次 start 都**新建** Event 并随参数交给该线程。
 from __future__ import annotations
 
 import json
@@ -73,7 +73,7 @@ class DanmakuMonitor:
         self.stop()
         stale = self._thread
         if stale is not None and stale.is_alive():
-            # 上一轮 join 超时被保留下来的线程仍在收尾时不等它（不为收尾阻塞界面），
+            # MID-2250：上一轮 join 超时被保留下来的线程仍在收尾时不等它（不为收尾阻塞界面），
             # 其停止标志已 set，最多再睡完一轮即自行退出；这里留一条 warn 供排查计数虚增。
             self._log("上一条弹幕监控 tail 线程尚未退出（其停止标志已置位、会自行结束），本轮另起新线程", "warn")
         self.clear()
@@ -88,7 +88,7 @@ class DanmakuMonitor:
             stop_event.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
-            # join 超时压到 0.2s：预算再大就会在每次收尾时按超时值冻结主线程（旧 2s 形态：每次收尾卡窗约 2 秒）。
+            # WD-21：join 超时压到 0.2s。旧 tkinter 版的 2s 会让每次收尾冻结窗口约 2 秒。
             thread.join(timeout=0.2)
             if thread.is_alive():
                 # 收尾未完成：**保留**线程引用与它的停止标志，让下一轮启动前重查。
@@ -146,7 +146,7 @@ class DanmakuMonitor:
                     if not isinstance(event, dict):
                         continue
                     # 防护必须落在**每条事件**上：一条脏事件冒泡到最外层 except 时，offset 已推进
-                    # 过整个 chunk，同批后续完好事件会全部丢失且零日志。
+                    # 过整个 chunk，同批后续完好事件会全部丢失且零日志（M-17）。
                     try:
                         self._dispatch(event)
                     except Exception as e:
@@ -160,11 +160,11 @@ class DanmakuMonitor:
                         "warn",
                     )
             except OSError:
-                # 日志被归档改名 / 句柄未就绪（已知良性路径）：等一轮再试，不刷屏。
+                # 日志被归档改名 / 句柄未就绪（MID-2250 已知良性路径）：等一轮再试，不刷屏。
                 time.sleep(1.0)
             except Exception as e:
                 # 完全静默会让「弹幕监控长期不更新」查无线索；限频 30s 留痕后继续循环，
-                # 不 break（本线程的退出信号只有 stop_event）。
+                # 不 break（本线程的退出信号只有 stop_event，M-17）。
                 now = time.time()
                 if now - last_warn_at >= _WARN_INTERVAL_SECONDS:
                     last_warn_at = now

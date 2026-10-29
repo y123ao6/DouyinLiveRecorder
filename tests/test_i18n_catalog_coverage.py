@@ -13,9 +13,9 @@
 #   ⑤-C 四份目录键集合逐项相等（单侧漏登记/多登记会让某语言静默回落原文）。
 #
 # 变异验证锚点（删掉任一判据必须让某条用例变红）：把 ⑤-A 的 key_sets 收窄到只查 zh_CN.po →
-# :test_by_name_msgids_covered_by_catalogs 红；从白名单删掉 ui_i18n.py:34 →
-# :test_unresolved_by_name_calls_match_allowlist 红；把 ⑤-C 退化成「只比 po 与 en_US」→
-# :test_catalog_key_sets_are_identical 红。
+# ::test_by_name_msgids_covered_by_catalogs 红；从白名单删掉 ui_i18n.py:34 →
+# ::test_unresolved_by_name_calls_match_allowlist 红；把 ⑤-C 退化成「只比 po 与 en_US」→
+# ::test_catalog_key_sets_are_identical 红。
 
 import ast
 import functools

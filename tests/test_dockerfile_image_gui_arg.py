@@ -8,9 +8,9 @@
 # INSTALL_GUI（默认 false = 镜像侧过滤 GUI 依赖），compose 的 gui 服务显式开 true 并另用 tag。
 #
 # 四条不变量（全部静态、零 Docker 依赖，本机与 Linux CI 同一结论）：
-#   ① 每个引用 $INSTALL_GUI 的阶段都必须先声明后使用（ARG 不跨阶段，与该同族判据）；
+#   ① 每个引用 $INSTALL_GUI 的阶段都必须先声明后使用（ARG 不跨阶段，与 MIN-14 同族判据）；
 #   ② 默认值必须是 false，且过滤只发生在镜像侧——requirements.txt 与 pyproject 里 PySide6 必须仍在
-#     （清单 ↔ pyproject 的集合相等锁由 tests/test_regression_2026_09_22_gates.py 把守）；
+#     （清单 ↔ pyproject 的集合相等锁由 tests/test_regression_gates.py 把守）；
 #   ③ compose 的 gui 服务必须开 INSTALL_GUI=true 且与 recorder/web 用不同 tag（build 配置不同的
 #     服务共用 image 名时，后构建的一方会覆盖另一方正在使用的 tag）；
 #   ④ 镜像发布工作流不得传 INSTALL_GUI=true：对外发布的镜像必须是 slim 默认形态。

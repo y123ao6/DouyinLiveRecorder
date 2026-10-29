@@ -361,7 +361,7 @@
 - 随对应文件触碰面顺手收敛；建议先做 **L-44**（TOFU fail-open 与 SEV-2222 口径对齐，先确认回归锁归属）与 **L-41**（StopRecording.vbs 误杀面）两项防御纵深缺口。
 - **结构性建议**：
   1. **脱敏键型完备性测试化**：`mask_credentials` 的键黑名单是开放集合问题，建议以「平台 Cookie 全键清单 × 形态（query/header/Cookie 头）」矩阵表驱动用例替代逐案补键（M-01/L-07/L-32 同根）。
-  2. **standalone 回灌清单机检**：孪生锁目前只覆盖直接候选 URL；建议在 `tests/test_regression_2026_09_22_standalone.py` 增加「主线防线编号 → standalone 对应符号存在性」结构清单，防止本次 SR-02/M-16/17/18 类漂移再次静默发生。
+  2. **standalone 回灌清单机检**：孪生锁目前只覆盖直接候选 URL；建议在 `tests/test_regression_standalone.py` 增加「主线防线编号 → standalone 对应符号存在性」结构清单，防止本次 SR-02/M-16/17/18 类漂移再次静默发生。
   3. **「内存有界」承诺与实现对齐**：凡注释声称有界（M-08/M-09），实现须按字节上界或删承诺改述为「事后检测」。
 - **工作区卫生**：删除未跟踪杂散文件 `markdown-DX-TNHnc.js`（VSCode Markdown 语法文件，疑似误落仓库根目录）。
 

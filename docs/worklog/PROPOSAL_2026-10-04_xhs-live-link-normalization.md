@@ -94,7 +94,7 @@ Expected: URL 结构与参数归一化用例全部 PASS。
 **Files:**
 - Modify: `tests/test_xhs_live_links.py`
 - Modify: `src/spider.py:2481-2634`
-- Modify: `tests/test_regression_2026_09_22_spider.py:220-283`（仅在既有安全契约需要同步时）
+- Modify: `tests/test_regression_spider.py:220-283`（仅在既有安全契约需要同步时）
 
 **Step 1: 写失败测试**
 
@@ -106,7 +106,7 @@ Expected: URL 结构与参数归一化用例全部 PASS。
 
 **Step 2: 验证测试先红**
 
-Run: `python -m pytest tests/test_xhs_live_links.py tests/test_regression_2026_09_22_spider.py -q`
+Run: `python -m pytest tests/test_xhs_live_links.py tests/test_regression_spider.py -q`
 Expected: 新用例 FAIL，旧安全用例保持 PASS。
 
 **Step 3: 最小接入现有解析器**
@@ -120,7 +120,7 @@ Expected: 新用例 FAIL，旧安全用例保持 PASS。
 
 **Step 4: 跑测试转绿**
 
-Run: `python -m pytest tests/test_xhs_live_links.py tests/test_spider_platform.py tests/test_spider_hardening.py tests/test_regression_2026_09_22_spider.py -q`
+Run: `python -m pytest tests/test_xhs_live_links.py tests/test_spider_platform.py tests/test_spider_hardening.py tests/test_regression_spider.py -q`
 Expected: 全部 PASS、0 warnings。
 
 ## Task 3：接入分派、配置归一化与明确错误提示

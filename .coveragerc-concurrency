@@ -2,7 +2,7 @@
 # DouyinLiveRecorder 并发测试专用覆盖率配置（CI 的 concurrency-test job）
 # 用途：该 job（tests/test_concurrency*.py、test_async_http_lock.py 等）经 COVERAGE_RCFILE
 #   指向本文件。并发回归天然只触及并发路径，覆盖率远低于全局阈值（pyproject
-#   [tool.coverage.report].fail_under = 60），故此处 fail_under = 0（不设下限），仅产出报告供人工审查。
+#   [tool.coverage.report].fail_under = 50），故此处 fail_under = 0（不设下限），仅产出报告供人工审查。
 # 其余配置与 pyproject.toml [tool.coverage.*] 保持一致（source / omit）；omit 清单与
 #   pyproject [tool.coverage.run].omit、.gitignore、.dockerignore 同源维护，漏一处即出现
 #   「未跟踪目录 / 误入镜像 / 工具误扫描」。

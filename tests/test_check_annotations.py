@@ -6,7 +6,7 @@
 #      误报会让门禁天天红、反而被忽略；
 #   3) 当前仓库零悬空引用：谁删了模块级符号留下调用点，本条立刻变红（端到端回路锁）。
 #
-# 另覆盖 `_reject_dangerous_baseline`：它防的是误把家目录 / 系统目录 / 仓库根本体
+# 另覆盖 `_reject_dangerous_baseline`（M-23）：它防的是误把家目录 / 系统目录 / 仓库根本体
 # 当基线目录、被 shutil.rmtree 整棵删掉，故两个方向都必须成立——危险输入逐个拒绝，
 # 工作区子目录（如 `<仓库根>/.workbuddy/ast-baseline`）必须放行；旧判据
 # `home in resolved.parents` 在家目录检出下会把后者一起误拒，功能在常见布局下不可用。
@@ -116,7 +116,7 @@ def test_repository_has_no_dangling_symbols() -> None:
 
 
 # ---------------------------------------------------------------------------
-# --snapshot 基线目录防呆的判定表
+# --snapshot 基线目录防呆的判定表（M-23）
 #
 # 三个方向都要锁，缺一个都会让功能退化成另一种故障：
 #   ① 工作区子目录放行——不锁则功能在家目录检出下依旧不可用；
@@ -151,7 +151,7 @@ def _reject_candidate(monkeypatch: pytest.MonkeyPatch, home: Path, cwd: Path, ca
 
 @pytest.mark.parametrize("layout", ["under_home", "outside_home"], ids=lambda v: f"检出在{v}")
 def test_snapshot_guard_accepts_workspace_subdir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, layout: str) -> None:
-    # ① 工具自己提示的形态必须放行；under_home 那一格就是该缺陷面（旧判据会误拒）。
+    # ① 工具自己提示的形态必须放行；under_home 那一格就是 M-23 的缺陷面（旧判据会误拒）。
     base = tmp_path.resolve()
     home = base / "home-user"
     repo = (home / "repos" / "DouyinLiveRecorder") if layout == "under_home" else (base / "work" / "DouyinLiveRecorder")
@@ -163,7 +163,7 @@ def test_snapshot_guard_still_rejects_home_and_its_direct_levels(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # ② 家目录本体与其直接层级仍须拒绝：这两级才是「把一个人全部数据当基线目录」的入口，
-    # 只削到「直接层级」为止，不得再往下放。
+    # M-23 只削到「直接层级」为止，不得再往下放。
     base = tmp_path.resolve()
     home = base / "home-user"
     for candidate, why in ((home, "家目录本体"), (home / "ast-baseline", "家目录直接层级")):
@@ -207,7 +207,7 @@ def test_snapshot_guard_still_rejects_system_dirs(monkeypatch: pytest.MonkeyPatc
 def test_snapshot_guard_rejects_any_target_outside_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outside: str
 ) -> None:
-    # 2026-10-21：旧实现是排除式黑名单——不在任何一条拒绝规则里的路径落到函数末尾
+    # S-13（2026-10-21）：旧实现是排除式黑名单——不在任何一条拒绝规则里的路径落到函数末尾
     # 的 `return None` 被放行，于是 `--snapshot D:\OtherRepo` / `/srv/data` 会 rmtree 整棵无关
     # 目录树。本用例钉的是**白名单正向判定**：cwd 之外的任何绝对路径都必须被拒绝。
     base = tmp_path.resolve()

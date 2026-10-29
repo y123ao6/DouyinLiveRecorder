@@ -59,15 +59,6 @@ except configparser.NoSectionError, configparser.NoOptionError:
 grep -c 'except [A-Za-z_][A-Za-z0-9_.]*, [A-Za-z_]' <file>
 ```
 
-## typings/ 存根的「仅 IDE 暴露」告警处理（2026-09-24 定稿）
-
-`[tool.mypy].exclude` 含 `typings`，CLI 门禁不查；但 IDE 的 mypy 语言服务器仍实时检查单独打开的 `.pyi` 且不消费 `ignore_missing_imports = true`——「门禁全绿、IDE 单文件红」属 IDE 噪声，不得按门禁失败处理，也不得放任不管。
-
-- **唯一允许的修复方式**：文件级 `# mypy: disable-error-code="<code>"`，写在头部注释块内（先于任何 `import`），并紧跟「为什么不引入 `types-*` 依赖」的说明。
-- **不得**为此新增 `types-*` 开发依赖；**不得**在 `pyproject.toml` 加全局 `disable_error_code`；**不得**用行内 `# type: ignore[<code>]`（本项目配置下变 unused）或 `# mypy: ignore-errors` 整文件豁免。pyright/basedpyright 放宽走同目录既有的 `# pyright: ...` 指令。
-- **现存量一处**（新增第二处前先复跑枚举命令确认归因）：`typings/execjs/*` 的 `import six` 报 `[import-untyped]`。`typings/` 现只剩 `execjs/` 一个目录。
-- 改完存根后须确认：`mypy`（无参）exit 0、`black --check` 对被改文件 unchanged、`python scripts/check_annotations.py` 通过。
-
 ## 同类结论的处理提示
 
 - **平台专属符号报错**（`attr-defined` / `name-defined`）不是假阳性，要用 `sys.platform` 门控真修 → `platform-type-gating.md`。

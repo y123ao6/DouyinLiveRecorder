@@ -1,7 +1,7 @@
-# src/config_io.py 回归锁：delete_line 的行尾归一与返回值，
+# src/config_io.py 回归锁：delete_line 的行尾归一与返回值（SEV-05），
 # 以及「持锁写入 + 原子写 + URL 配置快照同步」等既有契约不被改坏。
 #
-# 存在理由：delete_line 按 MI-11 用 newline="" 读原文（行尾带 \r\n），调用方传入的
+# 存在理由（SEV-05）：delete_line 按 MI-11 用 newline="" 读原文（行尾带 \r\n），调用方传入的
 # 却是 universal newlines 归一后的 \n 结尾行，整行精确比较在 CRLF 文件上恒不成立 → 面板点
 # 「删除」静默 no-op 却回报成功。CI 跑 Linux（天然 LF）结构上发现不了，故须显式构造 CRLF 用例。
 
@@ -51,7 +51,7 @@ def _read_raw(path: Path, encoding: str = "utf-8-sig") -> list[str]:
 
 
 class TestDeleteLineLineEndings:
-    # CRLF 文件 + \n 结尾的入参（调用方的真实形态）必须真的删掉行。
+    # SEV-05：CRLF 文件 + \n 结尾的入参（调用方的真实形态）必须真的删掉行。
 
     def test_crlf_file_with_lf_argument_removes_line(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
         target = tmp_path / "URL_config.ini"

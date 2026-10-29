@@ -40,7 +40,7 @@ __all__ = [
 GUI_PARENT_ENV = "DLR_GUI_PARENT"
 
 # 当前进程是否为 GUI 父进程：本模块在导入期求值，故 GUI 入口必须先设标记再导入 src
-# 2026-10-21：判定改走全仓唯一布尔入口 parse_config_bool，不再手写 `== "1"`。
+# M-50（2026-10-21）：判定改走全仓唯一布尔入口 parse_config_bool，不再手写 `== "1"`。
 # 为什么必须换入口：本仓布尔口径（关键约定 #9）认 是/true/t/yes/y/on/1，而原形态只认字符 "1"，
 # 于是 DLR_GUI_PARENT=TRUE / on / 是 一律被判成「不是 GUI 父进程」——GUI 进程照样注册
 # streamget.log 与 PlayURL.log 两个文件 sink，回到本模块头部记录的故障面：与录制子进程双开同一
@@ -312,5 +312,5 @@ if _log_to_file:
             _log_to_file = False
     else:
         # 两个录制文件 sink 分档注册（INFO 与其余级别的口径见上方两个 _add_*_sink）
-        # 逐 sink 独立注册（原因见 _register_recording_sinks 注释）
+        # M-13：逐 sink 独立注册（原因见 _register_recording_sinks 注释）
         _register_recording_sinks()

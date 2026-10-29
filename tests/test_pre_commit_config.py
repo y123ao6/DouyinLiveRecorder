@@ -7,7 +7,7 @@
 #
 # 断言口径：不钉整行字面量——`python -m black` 由 mirror hook `id: black` 覆盖，`python scripts/x.py`
 # 由 local hook `entry:` 覆盖；锁的是「该门禁由 pre-commit 触发」这一不变量，只钉「谁被调用」，
-# 不钉参数顺序（避免该类反转：钉旧实参名 → 契约反转后静默空洞成立）。
+# 不钉参数顺序（避免 M-26 类反转：钉旧实参名 → 契约反转后静默空洞成立）。
 #
 # 未纳入断言：`mypy --platform linux` 属按需触发的条件增跑；pre-commit 不覆盖是刻意设计，
 # 否则每次提交要跑两遍 mypy（本机 + Linux 交叉），噪声大而无收益。
@@ -87,7 +87,7 @@ def _local_entries(cfg: dict[str, Any]) -> list[str]:
 
 def test_agents_gate_section_includes_repo_level_gates() -> None:
     # 前置守卫：章节必须**确实列出**这五条门禁脚本；若章节被误删，下面的覆盖用例会因
-    # 「AGENTS.md 里根本没这条」而空过，反而给出「门禁同源」的假绿（该同口径 fail-closed）。
+    # 「AGENTS.md 里根本没这条」而空过，反而给出「门禁同源」的假绿（SEV-2219 同口径 fail-closed）。
     cmds = _load_agents_gate_commands()
     assert cmds, "未能从 AGENTS.md「格式化命令」章节解析到任何门禁，同源锁失去基准"
     for script in REPO_LEVEL_GATE_SCRIPTS:

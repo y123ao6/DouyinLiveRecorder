@@ -3,7 +3,7 @@
 #
 # 表格选 QTableView + QStandardItemModel 而不是 QTableWidget：后者每格一个 item 控件，
 # 画质页每轮可能同步几十行；model/view 下「未变化行不碰、只改内容」更容易做到零重建。
-# 降级整行着色走逐 item 的 setForeground；
+# 降级整行着色走逐 item 的 setForeground（等价于旧 tkinter 版 Treeview 的行级 tag 语义）；
 # 「状态」列另用文字承载语义，不依赖颜色——深色主题与色弱场景下颜色不足以为凭。
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ class QualityPage(QWidget):
         super().__init__(parent)
         self._monitor = monitor
         # None 表示「尚未同步过」而不是「同步过且为空」：refresh() 的首轮若把空表
-        # 当成「未变化」提前返回，表格与空状态会同时可见（截图里表头与空态叠在一起），
-        # 所以首轮必须无条件走一次 _sync_model + 可见性切换。
+        # 当成「未变化」提前返回，表格与空状态会同时可见（2026-10-17 截图里表头
+        # 与空态叠在一起），所以首轮必须无条件走一次 _sync_model + 可见性切换。
         self._last_rows: dict[str, tuple[str, ...]] | None = None
         self._palette: Palette | None = None
 
@@ -44,8 +44,8 @@ class QualityPage(QWidget):
         stats_row = QHBoxLayout(stats_card)
         stats_row.setContentsMargins(8, 8, 8, 8)
         # 三块统计标题是构建期定型的静态标签，必须走 set_text + T() 登记（构造标签与登记键
-        # 同一 msgid），retranslate_all() 才按当前语言回填（同族理由见弹幕页统计条注释）；
-        # 数值面（set_value）是运行态、不进登记。
+        # 同一 msgid），retranslate_all() 才按当前语言回填；数值面（set_value）是运行态、不进登记。
+        # [历史注] 原只在建时 tr() 一次，切语言后停在旧语言（M-14，2026-10-18）。
         self.stat_total = StatTile(i18n.tr("录制直播间"))
         set_text(self.stat_total.title, T("录制直播间"))
         self.stat_ok = StatTile(i18n.tr("画质正常"))
@@ -82,7 +82,7 @@ class QualityPage(QWidget):
             i18n.tr("暂无录制中的直播间"),
             i18n.tr("启动录制后，将自动检测各直播间的实际画质是否与设置一致"),
         )
-        # 空态标题/描述同样是构建期定型的静态标签：登记进重译表，切语言后回填。
+        # 空态标题/描述同样是构建期定型的静态标签（M-14）：登记进重译表，切语言后回填。
         set_text(self.empty.title, T("暂无录制中的直播间"))
         set_text(self.empty.description, T("启动录制后，将自动检测各直播间的实际画质是否与设置一致"))
         # 与表格互斥且各自吃满剩余高度：空状态无 stretch 时只拿到 sizeHint 高度，
@@ -90,7 +90,7 @@ class QualityPage(QWidget):
         body.addWidget(self.empty, 1)
 
         self.refresh_btn = action_button(i18n.tr("立即刷新"))
-        # 按钮文案是静态标签：登记重译，构造标签与登记键同一 msgid。
+        # 按钮文案是静态标签：登记重译（M-14），构造标签与登记键同一 msgid。
         set_text(self.refresh_btn, T("立即刷新"))
         action_row = QHBoxLayout()
         action_row.addStretch(1)
@@ -106,7 +106,7 @@ class QualityPage(QWidget):
         connect_click(self.refresh_btn, on_refresh)
 
     def retranslate_runtime(self) -> None:
-        # 语言切换后的运行态重刷：表头与「同等/降级/正常」单元格在产生点 tr()，
+        # 语言切换后的运行态重刷（M-14）：表头与「同等/降级/正常」单元格在产生点 tr()，
         # 但 refresh() 等值短路会让旧语言原地常驻——清掉缓存强制全量重建（统计数值与语言无关）。
         self._last_rows = None
         self.refresh()

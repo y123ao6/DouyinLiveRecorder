@@ -2,7 +2,7 @@
 # 系统托盘（QSystemTrayIcon）。
 #
 # 用 Qt 自带托盘而非 pystray：QSystemTrayIcon 天然跑在主线程，不受 macOS NSApp 线程模型
-# 限制，也不必额外引 pystray + Pillow 两条依赖（两入口托盘同为 Qt 实现）。
+# 限制，也不必额外引 pystray + Pillow 两条依赖（两入口托盘现已同为 Qt 实现）。
 #
 # 菜单四条动作项（显示 / 隐藏 / 设置 / 退出）覆盖「显示主界面 / 最小化到托盘 / 退出程序」
 # 并补上托盘直达的「设置」；中间的状态项只作展示（禁用）。
@@ -25,8 +25,8 @@ _ICON_SIZE: int = 64
 class TrayIcon:
     def __init__(self, parent: QObject | None, palette_tokens: dict[str, str], icon_file: str = "") -> None:
         self._tokens = palette_tokens
-        # 2026-10-21：托盘图标随运行态变色，但 apply_palette 必须知道「现在在不在录」才能选对色——
-        # 色值由外部注入、运行态由 set_running 记账，两个通道缺一不可。
+        # M-81（2026-10-21）：托盘图标随运行态变色，但 apply_palette 必须知道「现在在不在录」
+        # 才能选对色——色值由外部注入、运行态由 set_running 记账，两个通道缺一不可。
         self._running = False
         # 用户导入的图标（ICO）：非空时**恒**压过自绘图标，运行态与主题切换都不再改它——
         # 自绘图标承担「状态 = 颜色」的语义，而导入图标是用户的品牌标识，被状态色覆盖等于
@@ -56,7 +56,7 @@ class TrayIcon:
 
     # 四个回调顺序即菜单自上而下的动作项顺序（显示 / 隐藏 / 设置 / 退出）。
     # 「设置」不必先恢复主窗口：AdvancedSettingsDialog 是顶层 QDialog，父窗 hide() 后仍能
-    # 独立 show()（offscreen 实测）。
+    # 独立 show()（2026-10-20 offscreen 实测）。
     def bind_actions(
         self,
         on_show: Callable[[], None],
@@ -103,10 +103,11 @@ class TrayIcon:
         self.status_action.setText(i18n.tr("录制中") if running else i18n.tr("未运行"))
 
     def apply_palette(self, tokens: dict[str, str]) -> None:
-        # 主题切换唯一出口（MainWindow.apply_palette）：须接收新色表并按**当前运行态**立即
-        # 重绘——图标色是构造时拿的 palette tokens 副本；只存不绘等于把旧图标焊死，只绘不存
-        # 则下次 set_running 回到旧色，两者都会让托盘圆点与侧栏状态点换肤后分色（打断
-        # 「一个状态 = 一种颜色」的一致性）。色值来自 src/gui_qt/theme.py 令牌，托盘层不自带配色常量。
+        # M-81（2026-10-21）：主题切换的唯一出口（MainWindow.apply_palette）此前不触托盘——
+        # 图标颜色是构造时烧进去的一份 palette tokens 副本，换主题后托盘圆点与侧栏状态点
+        # 从此分色（「一个状态 = 一种颜色」的一致性被打断）。定稿 = 接收新色表并按**当前
+        # 运行态**立即重绘；只存字典不重绘等于把旧图标焊死，只重绘不存则下次 set_running
+        # 又回到旧色。色值仍来自 src/gui_qt/theme.py 令牌，托盘层不自带任何配色常量。
         self._tokens = tokens
         self.icon.setIcon(self._current_icon())
 

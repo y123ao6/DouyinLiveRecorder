@@ -82,7 +82,7 @@ def action_button(text: str, variant: str = "", parent: QWidget | None = None) -
 
 class ArrowComboBox(QComboBox):
     # 带自绘箭头的下拉。不用 QSS 的 ::down-arrow 有三个硬伤：只定义 ::drop-down 而不给 image
-    # 时 Qt 会连原生箭头一起丢掉；border 三角会被画成实心方块（实测）；
+    # 时 Qt 会连原生箭头一起丢掉；border 三角会被画成实心方块（2026-10-17 实测）；
     # image: url(...) 需外置资源，打包后路径与主题色难同步。
     # 改用 QLabel 叠一个 "▾"：字形跟随 DPI，颜色走 QSS 的 objectName 选择器，切主题无需重建
     # 控件。箭头设 WA_TransparentForMouseEvents，点击仍落到下拉本体。
@@ -108,7 +108,7 @@ class ArrowComboBox(QComboBox):
 
 class StatusDot(QWidget):
     # 设计稿 .dot-live：6px 圆点 + pulse 动画。用 QTimer + 手写 paintEvent 实现呼吸：
-    # timer 挂在控件自身，销毁即自动停，无需手工记账取消。
+    # timer 挂在控件自身，销毁即自动停，不必像 ttk 版那样手工保存并 cancel 五处 after id。
     # 不用 QPropertyAnimation 改色——QColor 不是可直接缓动的 Qt 属性，成本高于按需重绘。
     _SIZES: tuple[int, ...] = (10, 12, 14, 16, 14, 12)
 
@@ -154,7 +154,7 @@ class StatusDot(QWidget):
         offset = (self.width() - diameter) / 2
         color = self._color
         if self._animating:
-            # 呼吸 = 亮度向 #4ADE80（RGB 109,222,128）往返
+            # 呼吸=亮度往返（与旧版 _mix(SUCCESS, #4ADE80, ratio) 同语义）
             phase = (self._index / (len(self._SIZES) - 1)) * 2
             ratio = phase if phase <= 1 else 2 - phase
             color = QColor(
@@ -254,7 +254,7 @@ class EmptyState(QWidget):
         self.description.setObjectName("muted")
         self.description.setWordWrap(True)
         self.description.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # 必须是固定宽而不是最大宽（截图回归实测）：wordWrap 的 QLabel 只在**宽度确定**
+        # 必须是固定宽而不是最大宽（2026-10-17 截图回归）：wordWrap 的 QLabel 只在**宽度确定**
         # 时才能算出多行高度（heightForWidth），只设 maximumWidth 时父布局按单行 sizeHint 分配
         # 高度，描述会被裁掉两行（画质页实测 geo 18px / hint 36px，弹幕页 18px / 54px）。420px 是
         # 设计稿文本列宽，页面最小内容宽 548 留有余量，不会横向溢出。
@@ -287,7 +287,7 @@ class _LogHighlighter(QSyntaxHighlighter):
         self._formats = formats
 
     def set_palette(self, palette: Palette) -> None:
-        # 主题/缩放/字体切换后只换色表并重刷既有条目：不新建实例——QSyntaxHighlighter
+        # 主题/缩放/字体切换后只换色表并重刷既有条目（M-16）：不新建实例——QSyntaxHighlighter
         # 以 document 为父对象，旧实例永不销毁且仍参与高亮，切 N 次就叠 N 个。
         self._apply_tokens(palette)
         self.rehighlight()
@@ -302,10 +302,10 @@ class _LogHighlighter(QSyntaxHighlighter):
 
 # 等宽字体工厂：QFont 的族名位只接受**单个** family，把 CSS 式的
 # "Consolas, Menlo, Courier New, monospace" 整串塞进去等于请求一个不存在的族名。
-# [实测] 候选全缺时 Qt 按 styleHint=Monospace（枚举值 7）落进遗留别名 "Terminal"，
+# [实测 2026-10-17] 候选全缺时 Qt 按 styleHint=Monospace（枚举值 7）落进遗留别名 "Terminal"，
 # 一轮构造打出两条告警：DirectWrite CreateFontFaceFromHDC() failed（Family="Terminal"）与
 # "QFont::setPointSize: Point size <= 0 (-1)"。
-# 写法：按候选顺序取第一个本机真实存在的族名；全缺时交回平台的系统固定宽度字体
+# 唯一写法是按候选顺序取第一个本机真实存在的族名；全缺时交回平台的系统固定宽度字体
 # （QFontDatabase.FixedFont 保证本机可用）。styleHint(Monospace) 只在候选命中后设置。
 # point_size 留 None 的站点刻意不设定值、继续继承 QSS 的 px 字号（缩放档位要吃它）。
 _FIXED_FONT_CANDIDATES: Final[tuple[str, ...]] = (
@@ -334,7 +334,7 @@ class TerminalText(QPlainTextEdit):
     # 终端只读框：等宽字 + 终端配色 + 行级着色 + 上限行自动截断。
     #
     # 用 QPlainTextEdit 而不是 QTextEdit：后者是富文本引擎，同量级行数下内存与布局成本高一个
-    # 量级；本控件只需 append，且 maximumBlockCount 直接给出自动截断上限。
+    # 量级；日志页只需 append，且 maximumBlockCount 直接取代旧版手算的总行数裁剪。
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("terminal")
@@ -343,12 +343,13 @@ class TerminalText(QPlainTextEdit):
         self.setMaximumBlockCount(1000)
         self.setFont(fixed_font(11))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # 同一 document 只挂一个高亮器：apply_highlighter 每次主题/缩放/字体切换
-        # 都会被调到，这里持引用、首建之后一律走 set_palette 复用（叠实例的后果见其注释）。
+        # 同一 document 只挂一个高亮器（M-16）：apply_highlighter 每次主题/缩放/字体切换
+        # 都会被调到，这里持引用、首建之后一律走 set_palette 复用。
         self._highlighter: _LogHighlighter | None = None
 
     def apply_highlighter(self, palette: Palette) -> None:
         # 只建一次，后续仅更新色表并 rehighlight()，让既有条目按新主题重刷。
+        # [历史注] 旧实现每次调用都新建高亮器，切 N 次主题叠 N 个（颜色错乱 + N 份重复高亮，M-16）。
         if self._highlighter is None:
             self._highlighter = _LogHighlighter(self.document(), palette)
         else:
@@ -357,9 +358,10 @@ class TerminalText(QPlainTextEdit):
     def append_line(self, text: str) -> None:
         # 走光标在末尾插入而不是 appendPlainText：后者会强制新建段落并额外补一个换行，
         # 而调用方传入的行已经带 \n —— 用它会在日志里多出双倍空行。
-        # 2026-10-21：textCursor() 返回的是**副本**：只在副本上 move/insertText 而不 setTextCursor 写回，
-        # 控件会停在插入前的位置、日志面板不跟随最新行（表现为「在录，日志页却定格不动」）。
-        # insertText 必须保留（appendPlainText 的双换行老坑不回归）；与弹幕页 _render_stream
+        # M-81（2026-10-21）：textCursor() 返回的是**副本**，在副本上 move/insertText 只改
+        # 文档、不改控件自己的光标——旧实现写完后控件仍停在插入前的位置，日志面板不跟随
+        # 最新行（表现为「在录，日志页却定格不动」）。insertText 必须保留（appendPlainText
+        # 的双换行老坑不回归），补的只是 setTextCursor 这一步，与弹幕页 _render_stream
         # 的同形态写法（cursor 定位末尾后 setTextCursor）对齐。
         cursor = self.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)

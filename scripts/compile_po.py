@@ -33,6 +33,7 @@ _UNESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "a": "\a", 
 
 
 def _unescape(text: str) -> str:
+    # 还原 po 文件中的转义序列。
     out: list[str] = []
     i = 0
     while i < len(text):
@@ -125,7 +126,7 @@ def write_mo(entries: dict[str, str]) -> bytes:
 
 def main() -> int:
     # .po 的 msgid/msgstr 全是中文，把条目打到控制台时若沿用 cp936 输出码页就会
-    # UnicodeEncodeError（i18n 三件套必须在 UTF-8 下跑，与该同源）。
+    # UnicodeEncodeError（i18n 三件套必须在 UTF-8 下跑，与 MID-63 同源）。
     # 只在本进程内 reconfigure，不改环境变量——那会污染同一次调用里的其它子进程。
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         try:
@@ -140,14 +141,14 @@ def main() -> int:
         print(f"ERROR: 未找到 {PO_PATH}", file=sys.stderr)
         return 2
     entries = parse_po(PO_PATH)
-    # 下面打印的「条数」口径同 parse_po：含头部空 msgid，比 en_US.json / zh_TW.yaml 的键数
-    # 恰大 1，两种口径不得互换（见 AGENTS.md）。
+    # 下面打印的「条数」含头部空 msgid，即 .mo 头部的 N，比 en_US.json / zh_TW.yaml 的键数
+    # 恰大 1；往文档写目录条数时必须注明用的是哪种口径（两种不得互换，见 AGENTS.md）。
     # 先在纯内存里产出编译结果：--check 分支绝不触碰磁盘上的 .mo，否则读回自己刚写的文件
     # 必然相等，校验恒真、门禁形同虚设。
     fresh = write_mo(entries)
 
     # 退出码：0 已同步；1 .mo 与 .po 不同步；2 门禁本身没数据可判（找不到 .po，
-    # 或 .po 连头部空 msgid 条目都没有——见 parse_po 的 sys.exit(2)）。
+    # 或 .po 连头部空 msgid 条目都没有——见 parse_po 的 sys.exit(2)，与 MIN-19 口径同族）。
     # --check 比的是**完整字节流**而不是抽样：任何 .po 改动忘记重编译都会在这里变红。
     if "--check" in sys.argv:
         committed = MO_PATH.read_bytes() if MO_PATH.exists() else b""

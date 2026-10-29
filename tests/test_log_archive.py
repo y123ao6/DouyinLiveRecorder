@@ -8,9 +8,9 @@
 # 3. 弹幕监控边车：DanmakuMonitorHub.close_file() 关闭后下一条事件自动重开
 # 4. src.logger 文件 sink：remove_file_sinks/add_file_sinks 往返与幂等、GUI/配置关闭时不注册
 # 5. main.py atexit 注册顺序静态锁（atexit 为 LIFO，归档须先注册、后执行）
-# 6. 该归档裁剪：按文件名时间戳保留最新 N 份 + 删除超龄份、活动文件与非归档名不碰、
+# 6. M-46 归档裁剪：按文件名时间戳保留最新 N 份 + 删除超龄份、活动文件与非归档名不碰、
 #    裁剪必须落在全部关句柄步骤之后、单个删除失败只告警不中断归档
-# 7. 该两处环境变量的布尔判定走全仓唯一入口（on/是/TRUE 这类写法必须真的生效）
+# 7. M-50 两处环境变量的布尔判定走全仓唯一入口（on/是/TRUE 这类写法必须真的生效）
 
 import ast
 import importlib
@@ -85,7 +85,7 @@ class TestArchiveRuntimeLogs:
         self, logs_dir: Path, fake_sink_ops: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 固定时间戳并预置同名归档目标：新归档追加 _1/_2 序号，绝不覆盖已有文件
-        # [该适配] 替身现在必须返回**真 datetime**：归档裁剪要算保留窗口下界
+        # [M-46 适配] 替身现在必须返回**真 datetime**：归档裁剪要算保留窗口下界
         # （datetime.now() - timedelta(days=...)），只带 strftime 的匿名对象会让裁剪步骤抛错、
         # 被外层 except 吞成「归档返回空列表」，把本用例打成假失败。
         monkeypatch.setattr(la, "datetime", types.SimpleNamespace(now=lambda: datetime(2026, 8, 30, 12, 0, 0)))
@@ -106,7 +106,7 @@ class TestArchiveRuntimeLogs:
         self, logs_dir: Path, fake_sink_ops: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 单文件改名失败（如句柄被第三方进程占用）仅告警跳过，其余文件照常归档且不抛异常。
-        # `monkeypatch.setattr(os, "rename", ...)` 改的是**全进程唯一**的 os 模块本体，
+        # M-27：`monkeypatch.setattr(os, "rename", ...)` 改的是**全进程唯一**的 os 模块本体，
         # 窗口内 loguru 文件轮转、弹幕边车、GUI/录制后台线程的 rename 会一并命中「遇 PlayURL.log
         # 就抛 PermissionError」这条规则，属跨用例竞态源。与本文件对 datetime 的处置同口径：
         # 替身只落进被测模块命名空间。
@@ -118,7 +118,7 @@ class TestArchiveRuntimeLogs:
             real_rename(src, dst)
 
         monkeypatch.setattr(la, "os", types.SimpleNamespace(**{**vars(os), "rename": fake_rename}))
-        # 替身只落进 src.log_archive 的命名空间；进程全局 os.rename 必须仍是真实现。
+        # M-27 回归锁：替身只落进 src.log_archive 的命名空间；进程全局 os.rename 必须仍是真实现。
         # 恢复成 `monkeypatch.setattr(os, "rename", ...)` 形态时，这一行当场变红。
         assert os.rename is real_rename
         _touch(logs_dir, "streamget.log")
@@ -154,7 +154,7 @@ class TestArchiveRuntimeLogs:
     def test_disable_env_guard_accepts_every_documented_true_token(
         self, logs_dir: Path, fake_sink_ops: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch, marker: str
     ) -> None:
-        # 归档禁用开关必须走全仓唯一布尔入口（关键约定 #9 的 token 集合）。
+        # M-50 回归锁：归档禁用开关必须走全仓唯一布尔入口（关键约定 #9 的 token 集合）。
         # 旧形态 `os.environ.get(...).strip().lower() in ("1","true","yes")` 认不出 on / y / t / 是，
         # 而开发者按配置口径写 DOUYIN_DISABLE_LOG_ARCHIVE=on 时归档照样执行——pytest 退出会把
         # 开发者工作副本里正在看的真实日志改名归档（AGENTS「风险控制」的清理越界同族故障）。
@@ -168,7 +168,7 @@ class TestArchiveRuntimeLogs:
     def test_gui_parent_guard_accepts_every_documented_true_token(
         self, logs_dir: Path, fake_sink_ops: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch, marker: str
     ) -> None:
-        # 同族的第二处：GUI 父进程标记原先只认字符 "1"。DLR_GUI_PARENT=TRUE 时 GUI 进程
+        # M-50 同族的第二处：GUI 父进程标记原先只认字符 "1"。DLR_GUI_PARENT=TRUE 时 GUI 进程
         # 照样进归档链路，与录制子进程抢同一批日志文件句柄（轮转 PermissionError + 文件日志全丢）
         monkeypatch.setenv(la.GUI_PARENT_ENV, marker)
         _touch(logs_dir, "streamget.log")
@@ -199,7 +199,7 @@ class TestArchiveRuntimeLogs:
         assert fake_sink_ops["add"]
 
 
-# 2026-10-21：归档裁剪。归档只改名不删除时，7×24 循环监测下每天数十次启停会让 logs/
+# M-46（2026-10-21）：归档裁剪。归档只改名不删除时，7×24 循环监测下每天数十次启停会让 logs/
 # 无界增长；下列用例锁四件事——保留上限、保留窗口、排序一律取文件名时间戳（非 mtime）、
 # 以及「裁剪必须落在全部关句柄步骤之后」（Windows 下句柄未关 os.remove 直接抛 WinError 32）。
 class TestArchivePrune:
@@ -315,7 +315,7 @@ class TestArchivePrune:
                 raise PermissionError(32, "模拟句柄被占用", str(path))
             real_remove(path, *args, **kwargs)
 
-        # stdlib 替身只落进被测模块命名空间，不污染进程全局 os
+        # M-27 口径：stdlib 替身只落进被测模块命名空间，不污染进程全局 os
         monkeypatch.setattr(la, "os", types.SimpleNamespace(**{**vars(os), "remove": _deny_remove}))
         assert os.remove is real_remove  # 反向见证：替身没有改掉全局
         captured: list[str] = []
@@ -427,13 +427,13 @@ class TestWebConsoleRotation:
     def test_concurrent_print_inside_archive_window_does_not_raise(
         self, logs_dir: Path, fake_sink_ops: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 改名窗口内其它线程 print() 不得抛 ValueError: I/O operation on closed file。
+        # M-09 回归锁：改名窗口内其它线程 print() 不得抛 ValueError: I/O operation on closed file。
         # 旧顺序「flush+close → os.rename → _rebind_web_console」期间 sys.stdout/sys.stderr 仍指向
         # **已关闭对象**，Windows 慢盘/杀软扫描会把窗口从微秒放大到秒级，Web 请求线程的 print()
         # 落在里面就崩。取证手法：os.rename 换成「先睡 0.3s、再打一条、最后真改名」的替身，
         # 睡眠段即被人为放大的归档窗口（旧顺序下此刻标准流已关、替身尚未接管），另起一支线程
         # 整窗口持续 print()。判据：① 两支打印都不许抛；② 窗口内那条输出最终并入重建后的新文件
-        # （替身不是黑洞）。按 /该口径，替身只落进 src.log_archive 命名空间。
+        # （替身不是黑洞）。按 M-27/MT-11 口径，替身只落进 src.log_archive 命名空间。
         path = logs_dir / "web_console.log"
         real_rename = os.rename
         marker = "窗口内主线程打印的一行\n"
@@ -502,11 +502,11 @@ class TestMonitorHubCloseFile:
         path = tmp_path / "danmaku_monitor.jsonl"
         try:
             hub.room_message("roomA", "chat", "用户", "第一条")
-            # 此后落盘在独立边车写线程，任何「读磁盘 / 读句柄登记表」之前必须先
+            # MT-07：MID-25 之后落盘在独立边车写线程，任何「读磁盘 / 读句柄登记表」之前必须先
             # 排空队列。`hub._file` 内部的 drain **不带断言**，超时（慢盘 / 队列被占满）即返回 None，
             # 于是「首条事件尚未落盘」会表现为 size_before=0 或 _file is None 的随机假红；
             # 显式 `assert hub.flush()` 把「队列没排空」与「行为真的错了」两种故障分开（口径同
-            # tests/test_regression_2026_09_22_infra.py::TestSidecarArchiveWindow）。
+            # tests/test_regression_infra.py::TestSidecarArchiveWindow）。
             assert hub.flush()
             assert hub._file is not None
             size_before = path.stat().st_size

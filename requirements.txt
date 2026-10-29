@@ -2,7 +2,7 @@
 # DouyinLiveRecorder Python 运行时依赖清单
 # -----------------------------------------------------------------------------
 # 与 pyproject.toml [project.dependencies] 严格同步（「单源双写」），两侧包名集合的一致性由
-#   tests/test_regression_2026_09_22_gates.py 锁死（单侧遗漏直接判红）。本文件是 Docker builder
+#   tests/test_regression_gates.py 锁死（单侧遗漏直接判红）。本文件是 Docker builder
 #   阶段、CI 各 job（typecheck / test / concurrency-test / integration-verify / build-verify 等）
 #   与本地 `pip install -r` 的实际输入；static job 只装固定版本 lint 工具，不经本文件。
 # 构建期 / 开发期依赖不入本清单：PyInstaller 见 [project.optional-dependencies].build（>=6.10.0），

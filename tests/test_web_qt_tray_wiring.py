@@ -1,13 +1,15 @@
 # tests/test_web_qt_tray_wiring.py - web.py 里「Qt 托盘占用主线程」那两条接线的行为锁。
 #
-# 为什么单独成文件：托盘本体由 tests/test_web_tray.py 用 Qt 替身覆盖，而「uvicorn 挪到守护线程」
-# 「Ctrl+C 改由本进程接管」是 **web.py 侧**的接线——托盘单测永远看不见，却决定主线程归谁：
+# 为什么单独成文件：`src/web_tray.py` 的托盘本体由 tests/test_web_tray.py 用 Qt 替身覆盖，
+# 而「uvicorn 挪到守护线程」「Ctrl+C 改由本进程接管」这两条是 **web.py 侧**的接线——
+# 它们不在托盘模块里，托盘单测永远看不见，却又决定了主线程归谁：
 #   · `_serve_forever` 写错（比如忘了 asyncio.run）→ 服务根本不启动，而托盘照常显示；
-#   · `_install_sigint_shutdown` 漏装或没置 should_exit → Ctrl+C 后 serve() 不返回，web.py 的
-#     finally 清理段（后处理线程池 / ffmpeg / 连接池）永远等不到，用户视角是「托盘点了退出没反应」。
+#   · `_install_sigint_shutdown` 漏装或没置 should_exit → Ctrl+C 后 serve() 不返回，
+#     web.py 的 finally 清理段（后处理线程池 / ffmpeg / 连接池）永远等不到，
+#     用户视角是「托盘点了退出没反应」，只能靠任务管理器。
 #
-# Mock 口径：不真起 uvicorn、不把信号处理器留在进程里（装完取回 handler 直接调用，finally 段
-# 还原原 handler）——真装会在整个会话内改掉 Ctrl+C 行为，属进程级副作用。
+# Mock 口径：不真起 uvicorn、不把信号处理器留在进程里（装完取回 handler 直接调用，
+# finally 段还原原 handler）——真装会在整个会话内改掉 Ctrl+C 行为，属进程级副作用。
 
 import ast
 import signal

@@ -63,8 +63,8 @@ MODULE_HEADER_SCAN_LINES = 30
 # 扫描面。**任何一个未排除的第三方目录里出现同名绑定，就会让「被删符号的残留调用点」被判成
 # 「全仓有绑定」而漏报**——悬空符号门禁就此静默失效。
 # 跨文件回归锁见 tests/test_run_gates.py：
-#   :test_check_annotations_exclude_dirs_cover_pyproject_excludes（逐名比对 pyproject 三处清单）
-#   :test_check_annotations_scan_face_still_includes_tests_and_src（反向兜底：src/tests/scripts/web 不得被排掉）
+#   ::test_check_annotations_exclude_dirs_cover_pyproject_excludes（逐名比对 pyproject 三处清单）
+#   ::test_check_annotations_scan_face_still_includes_tests_and_src（反向兜底：src/tests/scripts/web 不得被排掉）
 EXCLUDE_DIRS = (
     "__pycache__",
     ".git",
@@ -346,7 +346,7 @@ def check_conventions(root: Path, min_density: float) -> int:
 
     for path in iter_source_files(root):
         rel = path.relative_to(root).as_posix()
-        # 残留（2026-10-21）：读不动源文件（权限/被占用/设备错误）此前以 rc=1 + Traceback
+        # M-93 残留（2026-10-21）：读不动源文件（权限/被占用/设备错误）此前以 rc=1 + Traceback
         # 结束，而 rc=1 在 CI 语义里是「代码不符合注释规范」。真相是「这条文件没查」，与
         # check_runtime_pins / check_coverage 的 rc=2 分级契约冲突，故显式退 2 并给出重跑命令。
         try:
@@ -422,7 +422,7 @@ def _reject_dangerous_baseline(baseline: Path) -> str | None:
         cwd = None
     if cwd is not None and (resolved == cwd or resolved in cwd.parents):
         return f"拒绝：基线目录是当前工作目录或其祖先 -> {resolved}"
-    # 原判据 `home in resolved.parents` 拒绝主目录下**一切**路径，而本仓常见布局正是检出在
+    # M-23：原判据 `home in resolved.parents` 拒绝主目录下**一切**路径，而本仓常见布局正是检出在
     # 家目录里（Windows `C:\Users\<you>\...`、Linux `~\...`），连工具自己提示的工作区子目录
     # （`.workbuddy/ast-baseline`）也被误拒。防呆目的逐条保住：① 家目录本体与被直接当基线传进来
     # 的第一层子目录（Documents/AppData/Temp 这些「一个人全部数据」的入口）仍一律拒绝；② 文件
@@ -431,7 +431,7 @@ def _reject_dangerous_baseline(baseline: Path) -> str | None:
     # 不放行（否则等于把整棵家目录树声明成「工作区」，把上面两条防线一次让掉）。
     # 位置必须在这里而不是并入 home 那条：Windows 侧的 system_roots 含 `C:\Users`，检出在
     # `C:\Users\<you>\repo` 时其下的快照目录会先被那条 `sr in resolved.parents` 误拒。
-    # 2026-10-21：这一段原先是「命中即 return None」的放行分支，未命中则继续往下走，
+    # S-13（2026-10-21）：这一段原先是「命中即 return None」的放行分支，未命中则继续往下走，
     # 末尾还有一条 `return None` —— 于是 cwd 之外的任意绝对路径（`--snapshot D:\OtherRepo`、
     # `/srv/data`、`E:\backup`）落到函数末尾被放行，rmtree 整树删除无关目录。排除式黑名单无法
     # 穷举危险形态（任何用户目录、挂载点、其它仓库都可能被误传），故改为**白名单正向判定**：
@@ -439,7 +439,7 @@ def _reject_dangerous_baseline(baseline: Path) -> str | None:
     # （否则等于把整棵家目录树声明成「工作区」，把上面两条防线一次让掉）。
     if cwd is not None and (home is None or cwd != home) and cwd in resolved.parents:
         return None
-    # 白名单之外一律拒绝。系统目录清单保留，只为给出**更准确的理由**——它原本是
+    # S-13：白名单之外一律拒绝。系统目录清单保留，只为给出**更准确的理由**——它原本是
     # 独立一条拒绝分支，现在与「不在 cwd 之下」结论相同，但点名「系统目录」对排障更有用
     # （tests/test_check_annotations.py::test_snapshot_guard_still_rejects_system_dirs 钉这条文案）。
     # 该清单刻意不含 Path(os.sep)：Windows 上 Path("\\").resolve() 是「当前盘符根」，任何绝对
@@ -506,7 +506,7 @@ def check_equivalence(root: Path, baseline: Path) -> int:
     changed: list[tuple[str, str]] = []
     missing: list[str] = []
 
-    # 残留（2026-10-21）：比对范围必须是「基线 ∪ 当前」的**并集**。旧写法只遍历 baseline，
+    # M-92 残留（2026-10-21）：比对范围必须是「基线 ∪ 当前」的**并集**。旧写法只遍历 baseline，
     # 于是快照之后新增的源文件完全不参与比对——本工具的结论恰恰是「只改了注释」，而新增文件是
     # 最容易夹带逻辑改动的形态，旧实现却对它永久失明。新增文件按 changed 计（门禁变红），
     # 由使用者显式重建基线，不得默认放行。

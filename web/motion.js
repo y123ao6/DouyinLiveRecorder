@@ -178,7 +178,7 @@
 
     Motion.init = function () {
         Motion.applyReveal();
-        if (prefersReduced()) return; // 不建 canvas、不起循环（入场过渡已在 applyReveal 内降级）
+        if (prefersReduced()) return; // 关闭入场过渡与背景动画
         setupCanvas();
         start();
     };
@@ -208,6 +208,7 @@
         };
     };
 
+    // 自启动：DOM 就绪后 init（无需等待 app.js）。
     function boot() {
         if (Motion._booted) return;
         Motion._booted = true;

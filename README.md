@@ -1090,7 +1090,7 @@ brew install node
 - **移除 `fastapi` / `pydantic` 运行时依赖**（明细见下方「依赖变更」）：Web 面板的 24 条路由、请求/响应形态、安全头与鉴权中间件行为不变；内部请求模型改 `.parse()` 读取，对外部使用方无 API 面变化。仅在面板之外直接 import 这两个包的自定义部署需要自行调整。
 
 **📦 依赖变更**
-- **运行时依赖 23 → 21 条**：删除 `fastapi>=0.140.0` 与 `pydantic>=2.13.4`；`requirements.txt` 与 `pyproject.toml [project.dependencies]` 包名集合逐项相等（回归锁 `tests/test_regression_2026_09_22_gates.py`），`uv.lock` 与 `DouyinLiveRecorder.egg-info` 经 `scripts/sync_metadata.py` 重建（二包零残留）。
+- **运行时依赖 23 → 21 条**：删除 `fastapi>=0.140.0` 与 `pydantic>=2.13.4`；`requirements.txt` 与 `pyproject.toml [project.dependencies]` 包名集合逐项相等（回归锁 `tests/test_regression_gates.py`），`uv.lock` 与 `DouyinLiveRecorder.egg-info` 经 `scripts/sync_metadata.py` 重建（二包零残留）。
 - **`urllib3` 声明下限 2.7.0 → 2.8.0**：CI `deps-audit`「下限复核」实测旧下限自身落在 CVE-2026-97687 / CVE-2026-97688 / CVE-2026-97689 受影响段（修复版本均为 2.8.0）；`requirements.txt` 与 `pyproject.toml [project.dependencies]` 同步抬升（仍 21 条、包名集合不变），`uv.lock` 与 `DouyinLiveRecorder.egg-info` 经 `sync_metadata.py` 重建；本机 venv 已装 2.8.0，解析集合不变。
 - **CI typecheck job 补装固定版本 `pytest==9.1.1`**：`tests/` 的类型检查不再半盲（fixture 与 `pytest.fail()` 的 `NoReturn` 恢复可见）。
 - **文档依赖口径修复**：双语 README「安装开发依赖」pip 行由 5 条（缺 `pytest-cov`，照此装出的环境跑不了覆盖率门禁）改为 `pip install .[dev]` 单源形态（指向 `[project.optional-dependencies].dev` 六条）。

@@ -7,7 +7,7 @@
 # 四条不变量（全部静态成立，零运行时依赖）：
 #   ① logger/print 不再出现「有价值的」插值 f-string；判据是「首参**子树**含带 FormattedValue
 #      的 JoinedStr」而非「首参直接是 JoinedStr」——后者会漏掉 `f"A" + (f"B" if x else "") + f"C"`
-#      这类 ast.BinOp 形态（详见该用例内注释）；
+#      这类 ast.BinOp 形态（MID-68，详见该用例内注释）；
 #   ② 每个 tr() 调用的模板占位符集合 == 关键字实参集合（防止改模板漏改实参）；
 #   ③ 运行时模板集合 ⊆ zh_CN.po 键集合（等价于提取器「缺失 0」）；
 #   ④ print_colored / messagebox 实参位不再出现插值 f-string：这两处是提取器盲区①②，
@@ -85,7 +85,7 @@ def _is_tr_call(node: ast.AST) -> TypeGuard[ast.Call]:
 
 
 def _interpolated_fstrings(node: ast.AST) -> list[ast.JoinedStr]:
-    # 2026-09-21：判据由「首参**直接是** JoinedStr」收紧为「首参**子树里**有带
+    # MID-68（2026-09-21）：判据由「首参**直接是** JoinedStr」收紧为「首参**子树里**有带
     # FormattedValue 的 JoinedStr」。旧判据看不见 `f"A" + (f"B" if x else "") + f"C"` 这类
     # ast.BinOp 形态，「先插值、后查目录」的违规整类逃逸（实测 6 处真实违规从此漏过：
     # 斗鱼降级链、画质降级告警、磁盘空间提示等）。
@@ -158,7 +158,7 @@ def test_no_valuable_fstring_in_logger_or_print() -> None:
 
 
 def test_gate_predicate_sees_concatenated_fstring() -> None:
-    # 判据自检：上面那条全仓扫描必须真的**能**抓到拼接形态，否则它仍是假绿。
+    # 判据自检（MID-68）：上面那条全仓扫描必须真的**能**抓到拼接形态，否则它仍是假绿。
     # 把 _interpolated_fstrings 退回旧判据 `isinstance(arg, ast.JoinedStr)` 会让本用例变红。
     src = (
         "logger.warning(f'A rate={a}' + (f', msg={m}' if m else '') + f' next rate={b}')\n"

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Web 面板「无认证 + 非回环」的安全拒绝必须发生在**任何 stdio 重定向 /
+# M-18 回归锁：Web 面板「无认证 + 非回环」的安全拒绝必须发生在**任何 stdio 重定向 /
 # 控制台隐藏之前**（被测：web.py::main 与 _enter_background_mode 的先后接线）。
 #
 # 为什么需要这条锁：web_show_console=false 时 _enter_background_mode() 会隐藏控制台窗口
@@ -40,7 +40,7 @@ class _BackgroundCalled(RuntimeError):
 class _RecordingLogger:
     # web.py 经 `logger.warning(...)` 落安全告警。替身的两个用途：① 不把测试文本真写进
     # 仓库 logs/（loguru 的文件 sink 在 src.logger 导入期就已注册）；② 把告警文本暴露给
-    # 断言——该要求拒绝文案除控制台外还有一条日志留痕（pythonw / 冻结 console=False
+    # 断言——M-18 要求拒绝文案除控制台外还有一条日志留痕（pythonw / 冻结 console=False
     # 的窗口化入口 sys.stderr 为 None，print 全部落空）。
     def __init__(self, sink: list[str]) -> None:
         self._sink = sink

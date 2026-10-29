@@ -1,6 +1,6 @@
 # src/web_models.py
 # Web 管理面板请求体的「零依赖」校验层：用标准库 dataclass + 显式 parse_* 替换 FastAPI 的
-# pydantic BaseModel，使 web_api.py 不再依赖 fastapi / pydantic。
+# pydantic BaseModel，使 web_api.py 不再依赖 fastapi / pydantic（阶段 2：FastAPI → Starlette）。
 #
 # 设计约束（与旧 pydantic 行为对齐，避免契约漂移）：
 #   · 必填字段缺失或非字符串 → ValueError（端点统一转 HTTPException(422, str(e))）。
@@ -56,6 +56,7 @@ def _as_str_list(value: Any, field: str) -> list[str]:
 def _require_dict(data: Any) -> dict[str, Any]:
     # 请求体必须是 JSON 对象；body 读取层（web_api._read_json_body）已先把非 dict / 非法 JSON
     # 转成 HTTPException(422)，这里再兜一层类型，避免 None / list 透传到字段解析。
+    # [历史注] L-27（2026-10-02）：原注释误写 web_api._read_json，符号不存在，已更正。
     if not isinstance(data, dict):
         raise ValueError(i18n.tr("请求体必须是 JSON 对象"))
     return data
@@ -93,7 +94,7 @@ class RoomCreate:
 @dataclass
 class RoomUpdate:
     # PUT /api/rooms。old_url 是旧行定位键（URL 即房间主键，改地址/改名/改画质都靠它找旧行），
-    # 新 url 经 format_url_line 唯一写入口做校验。
+    # 新 url 经 format_url_line 唯一写入口做 SEV-02 校验。
     old_url: str
     url: str
     quality: str | None = None
@@ -144,7 +145,7 @@ class RoomQualityUpdate:
 @dataclass
 class QualityOptionsUpdate:
     # PUT /api/rooms/qualities。options 是自定义画质档位的全集（PUT 覆盖式语义，非增量追加），
-    # 端点持 file_update_lock 写 config.ini。
+    # 端点持 file_update_lock 写 config.ini（H-6）。
     options: list[str]
 
     @classmethod

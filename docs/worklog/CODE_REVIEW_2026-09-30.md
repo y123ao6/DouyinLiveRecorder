@@ -117,7 +117,7 @@ if isinstance(v, str) and v and "h265" not in str(k).lower():
 
 - **问题**：`urllib.request.build_opener(...)` 即使显式传入 `ProxyHandler`，默认 Handler 集合（含 `FileHandler`/`FTPHandler`/`DataHandler`）仍然生效——这正是主线 `AGENTS.md`「sync_http 的 opener 必须显式按协议白名单构造」条目明令禁止、且主线已于 2026-09-29 补齐同步探针内网判定的形态。独立发行版未回灌三道防线：① 探针可探测 `file://`（FileHandler 返回 200）；② 全部平台流地址候选（来自平台 API 响应，注释自认「不可信输入面」）无协议白名单、无内网/回环/云元数据主机判定（仅虎牙有 `startswith("http")` 检查）；③ ffmpeg 命令无主线 `main.py:3466` 已有的 `-protocol_whitelist`（主线 2026-09-12 审查已显式移除 file 协议）。
 - **影响**：三层叠加成完整利用链——平台 API 响应被控（恶意/被劫持代理、接口投毒、MITM）时，`file:///C:/Users/<user>/...` 经 FileHandler 探针 200 → GET 复核放行 → ffmpeg 按默认协议白名单把本地媒体文件「录制」进 `downloads/`（本地数据外带）；`http://169.254.169.254/...`（云元数据）与内网 http 服务同理可被拉取落盘。末位候选「仅告警放行交 ffmpeg 定夺」的既有语义进一步保证该链必然走通。
-- **修复建议**：① `_build_opener` 改为显式 Handler 白名单构造（`HTTPSHandler` 必填实参，对齐主线 `sync_http` 口径）；② `select_source_url`/`validate_stream_url` 入口加「协议 ∈ {http, https} 且主机非内网/回环/链路本地/云元数据」判定，违规候选直接丢弃；③ ffmpeg 命令补 `-protocol_whitelist`（与 `main.py:3466` 逐字对齐）；④ 补回归锁（可参照 `tests/test_regression_2026_09_29_wp_b_netguard.py` 的行为锁形态）。
+- **修复建议**：① `_build_opener` 改为显式 Handler 白名单构造（`HTTPSHandler` 必填实参，对齐主线 `sync_http` 口径）；② `select_source_url`/`validate_stream_url` 入口加「协议 ∈ {http, https} 且主机非内网/回环/链路本地/云元数据」判定，违规候选直接丢弃；③ ffmpeg 命令补 `-protocol_whitelist`（与 `main.py:3466` 逐字对齐）；④ 补回归锁（可参照 `tests/test_regression_wp_b_netguard.py` 的行为锁形态）。
 
 ### S-02 standalone 完整 ffmpeg 命令（含 Cookie 头与带 token 流地址）逐轮写入日志且无轮转
 
@@ -274,7 +274,7 @@ logf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{cmd_log}\n")
 - 位置：`src/utils.py:924-934`
 - 类型：安全 / 脱敏缺口
 - 问题与影响：`(?<![A-Za-z0-9"'])` 这道防「`https:` 被抹」的 guard 挂在了驼峰分支上，而驼峰分支自身还有 `(?<=[a-z])`——前一处要求「前字符是小写字母」、后一处要求「前字符不是字母数字」，同一位置互斥，该分支恒死。按注释本意 guard 应加在 plain 分支。后果：请求头形态（`键: 值`）日志中，驼峰转折进凭据后缀且整段键名不在黑名单的凭据（如 `myToken: xxx`、`sessionKey: abc`）不被抹，明文进轮转日志；查询串形态 `_SECRET_QUERY_RE` 无此 guard、驼峰分支正常，两形态防护强度不一致。
-- 建议：把 guard 从驼峰分支移到 plain 分支；在 `tests/test_regression_2026_09_22_utils.py` 补 header 形态驼峰复合键「值确实消失」断言。
+- 建议：把 guard 从驼峰分支移到 plain 分支；在 `tests/test_regression_utils.py` 补 header 形态驼峰复合键「值确实消失」断言。
 
 **M-18 `replace_url` 的 `elif old in line` 是无边界子串替换，自动注释房间时误伤 ID 前缀重叠的兄弟房间** — 已复核机理
 
@@ -491,21 +491,21 @@ logf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{cmd_log}\n")
 
 **T-M-10 MID-2238 裸 storage 文本锁存在 `window.localStorage` 旁路，隐私模式不变量无行为备份**
 
-- 位置：`tests/frontend/test_regression_2026_09_22_gates.mjs:787-806`
+- 位置：`tests/frontend/test_regression_gates.mjs:787-806`
 - 类型：文本锁反模式（M-26 同族）
 - 问题与影响：负向先行 `(?<![\w.])` 把 `window.localStorage` 排除出命中，而裸 `window.localStorage` 在隐私模式下同样抛异常；白名单状态机按函数声明形态判定，改箭头函数即失配。该文本锁是 MID-2238 不变量的唯一防线。
 - 建议：补行为锁（注入「访问即抛」的 storage 桩，断言 init 不中断）；文本锁正则同时命中 `window.` 前缀形态。
 
 **T-M-11 MID-2253 行级扫描门禁不自证：多行调用/换导入形态即静默归零，offenders==[] 恒过**
 
-- 位置：`tests/frontend/test_regression_2026_09_22_gates.mjs:722-750`
+- 位置：`tests/frontend/test_regression_gates.mjs:722-750`
 - 类型：文本锁反模式 + 门禁不自证
 - 问题与影响：只处理「同一行同时含 `i18n.tr(` 与中文串」的行，Python 括号续行把中文实参写到下一行即完全逃逸；`from i18n import tr` 使匹配归零；没有「至少匹配到 N 处」的前提自证——「tr 模板掺中文常量值」回归可从任一逃逸形态进入而不红。
 - 建议：扫描前断言至少命中 N 处 `i18n.tr(`；根治改 Python AST 侧扫描。
 
 **T-M-12 「回前台恢复日志/弹幕轮询」生产分支在沙箱中零覆盖（querySelector 桩恒 null）**
 
-- 位置：`tests/frontend/test_regression_2026_09_22_gates.mjs:226`、`:670-676`（关联 `web/app.js:2045-2049`）
+- 位置：`tests/frontend/test_regression_gates.mjs:226`、`:670-676`（关联 `web/app.js:2045-2049`）
 - 类型：替身漂移
 - 问题与影响：可见侧恢复分支依赖 `document.querySelector('.view:not(.hidden)')`，桩对该选择器恒返 null，分支被静默跳过——SEV-2227/WD-10 的「回到前台立即恢复轮询」没有行为锁，该分支退化时相关用例全绿（文件内已自述该桩缺口）。
 - 建议：让桩按 hidden 类返回单个元素，补「隐藏→回前台恢复且不双链」用例。
@@ -753,13 +753,13 @@ logf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{cmd_log}\n")
 | # | 位置 | 类型 | 问题与建议 |
 | --- | --- | --- | --- |
 | 1 | test_spider.py:190-193 | 断言弱锁 | HTML 兜底用例只断言「返回 dict 不抛异常」，解析成败均绿；补正向断言（status==2 或 anchor_name 非空） |
-| 2 | test_regression_2026_09_22_spider.py:409-410 | 复制粘贴残留 | 同一 record_url 断言连续重复两次；删一行或改为本意字段 |
+| 2 | test_regression_spider.py:409-410 | 复制粘贴残留 | 同一 record_url 断言连续重复两次；删一行或改为本意字段 |
 | 3 | test_spider_fixes.py:38-39 等十余处 | 注释重复 | 相邻注释行逐字成对/三连重复（机械合并残留）；合并保留一份 |
 | 4 | test_spider_platform.py:1357/1364 | 命名失配 | `test_short_username_raises` 等名字声称 raises、实际断言返回 None（契约已改、名字未改）；改名为 returns_none |
 | 5 | test_spider_platform.py:106-118 | 冗余替身 | patch 与手工 save/restore 双重托管同一全局，`old` 取值时机已晚（恒为 ""）；删手工层 |
-| 6 | test_regression_2026_09_22_infra.py:115-121 | 线程内断言 | 写盘线程里的 assert 失败只杀死线程，主线程靠下游断言间接失败（报错与根因脱节）；改 failed 标志由主线程断言 |
-| 7 | test_regression_2026_09_22_infra.py:525-556、danmaku.py:135 | 真实等待偏长 | 后台线程真睡 10s/回归路径等 20s，全量尾部耗时；改可注入短时长保持相对关系 |
-| 8 | test_regression_2026_09_22_main.py:129-178 等 3 文件 | 跨文件复制 | `_four_catalogs`/`_assert_registered`/`_assert_translation_parity` 三份逐字拷贝，加强一处漏两处；抽共享 helper |
+| 6 | test_regression_infra.py:115-121 | 线程内断言 | 写盘线程里的 assert 失败只杀死线程，主线程靠下游断言间接失败（报错与根因脱节）；改 failed 标志由主线程断言 |
+| 7 | test_regression_infra.py:525-556、danmaku.py:135 | 真实等待偏长 | 后台线程真睡 10s/回归路径等 20s，全量尾部耗时；改可注入短时长保持相对关系 |
+| 8 | test_regression_main.py:129-178 等 3 文件 | 跨文件复制 | `_four_catalogs`/`_assert_registered`/`_assert_translation_parity` 三份逐字拷贝，加强一处漏两处；抽共享 helper |
 | 9 | test_srt_timeline_anchor.py:23 | 会话级全局修改 | 导入期 `sys.path.insert(0, 仓库根)`，pytest 下无增益且改变会话解析顺序；删除 |
 
 **组 5（3 项）**
@@ -776,10 +776,10 @@ logf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n{cmd_log}\n")
 | --- | --- | --- | --- |
 | 1 | 四个包装（如 test_frontend_quality_ui.py:178） | 恒真断言 | `summary["tests"] >= summary["pass"]` 数学恒真无防护力；改 `pass+fail+skipped == tests` |
 | 2 | test_auth_reauth.mjs:274-276 | 文本锁旁路 | 裸 prompt 负向锁漏行首 `prompt(` 与 `globalThis.prompt(`（有行为备份）；正则改 `(?:^|[^.\w])prompt\s*\(` 并纳入 globalThis 形态 |
-| 3 | test_regression_2026_09_22_gates.mjs:433-441 | 文本锁旁路 | `!s.engine_alive` 锁可被 `!== true` 等绕过（行为用例已兜底，仅冗余）；负向集扩为 `/!\s*s\.engine_alive\b|!==\s*true/` |
-| 4 | test_regression_2026_09_22_gates.mjs:854-862 | 文本锁单形态无备份 | downloadFile `res.statusText` 锁可解构绕过且无行为用例兜底；补行为用例 |
-| 5 | test_regression_2026_09_22_gates.mjs:359-374 | 钉缺席型文本锁（待确认） | SEV-2221 撤销组四条 doesNotMatch：死路径换名复活不报警（文件内有完整 justification）；可改对返回 dict 键集合做正向白名单断言 |
-| 6 | test_regression_2026_09_22_gates.mjs:866-883 | 冗余弱断言 | MID-2241 源码锁与行为锁并存，879 行 `\w+` 版弱于 911 行守卫版；收窄为结构索引断言 |
+| 3 | test_regression_gates.mjs:433-441 | 文本锁旁路 | `!s.engine_alive` 锁可被 `!== true` 等绕过（行为用例已兜底，仅冗余）；负向集扩为 `/!\s*s\.engine_alive\b|!==\s*true/` |
+| 4 | test_regression_gates.mjs:854-862 | 文本锁单形态无备份 | downloadFile `res.statusText` 锁可解构绕过且无行为用例兜底；补行为用例 |
+| 5 | test_regression_gates.mjs:359-374 | 钉缺席型文本锁（待确认） | SEV-2221 撤销组四条 doesNotMatch：死路径换名复活不报警（文件内有完整 justification）；可改对返回 dict 键集合做正向白名单断言 |
+| 6 | test_regression_gates.mjs:866-883 | 冗余弱断言 | MID-2241 源码锁与行为锁并存，879 行 `\w+` 版弱于 911 行守卫版；收窄为结构索引断言 |
 | 7 | test_quality_ui.mjs:106-108 | 可维护性 | 「应用启动」段注释连写两遍；删一行 |
 | 8 | test_frontend_quality_ui.py:51 | skip 面过宽（待确认） | 模块级 skipif 连带 skip 两条不需 node 的用例（CI 有 node，实际影响限于无 node 开发机）；拆分或各自显式 skipif |
 

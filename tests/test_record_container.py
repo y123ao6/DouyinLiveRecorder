@@ -178,7 +178,7 @@ class TestHevcFlvUrlCarriesCodecMarker:
 
 
 class TestRecordOutputBytesSegmentShape:
-    # 2026-09-20：分段产物求和必须按**模板自身的扩展名**匹配。原实现把
+    # MID-05（CODE_REVIEW_2026-09-20）：分段产物求和必须按**模板自身的扩展名**匹配。原实现把
     # `.ts` 写死在 glob 里 → 分段 FLV/MKV/MP4/音频恒不命中 → 恒返回 -1 → check_subprocess 的
     # 「零字节不得记成功」闭环在所有非 TS 分段形态上静默缺失（分段 FLV 恰是虎牙/斗鱼的常见形态）；
     # 且定长 `???` 漏计序号超过 999 的段。
@@ -225,7 +225,7 @@ class TestRecordOutputBytesSegmentShape:
 
 
 class TestSegmentTemplateDerivedFromPath:
-    # 是否分段必须由「已冻结的命令输出模板」推导，不能读运行期热更新的全局
+    # MID-08：是否分段必须由「已冻结的命令输出模板」推导，不能读运行期热更新的全局
 
     def test_template_shapes_are_recognized(self, main_mod: Any) -> None:
         assert main_mod._is_segmented_output("/d/主播_2026-09-20_10-00-00_%03d.ts") is True

@@ -179,15 +179,8 @@ bsk download @e3 --out ./report.pdf --session <id>
 
 本 Skill 是外部工具技能（`bsk` CLI + 浏览器扩展），不修改项目源码，无对应的项目级门禁。
 
-### 最小验证步骤
+完成判据：
 
-1. **环境检查**（可选，仅当 `bsk` 已安装时）：
-   ```bash
-   bsk --version
-   ```
-   预期：返回版本号或帮助信息。
-
-2. **任务完成判据**：
-   - 任务成功：`bsk session stop` 正常返回、借用的标签页已归还。
-   - 任务失败：已按「Human steps and recovery」表格处理，未遗留未关闭的会话。
-   - 安全：未提取或暴露 Cookie / token 等凭据。
+1. 任务成功：`bsk session stop` 正常返回、借用的标签页已归还。
+2. 任务失败：已按「Human steps and recovery」表格处理，未遗留未关闭的会话。
+3. 安全：未提取或暴露 Cookie / token 等凭据。

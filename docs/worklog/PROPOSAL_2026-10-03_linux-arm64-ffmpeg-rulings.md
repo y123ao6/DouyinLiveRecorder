@@ -116,7 +116,7 @@ GHCR 首推与多架构 `docker manifest inspect` 读数。**交回动作**：�
 
 **21 条失败的归因**（这是本批最需要自证清白的一处）：全部落在 6 个会真起子进程的测试文件——
 `test_build_exe`、`test_ci_retry_action`、`test_notify`、`test_notify_script_guard`、
-`test_regression_2026_09_22_standalone`、`test_stop_recording_vbs`。逐族串行/单跑复验全部转绿
+`test_regression_standalone`、`test_stop_recording_vbs`。逐族串行/单跑复验全部转绿
 （105 / 71 / 41 / 17 passed），实测失败原因统一是 `OSError: [WinError 6] 句柄无效`；
 本批未改动其中任何被测对象（`StopRecording.vbs` 的 `M` 属并行工作流）。
 两轮全量运行的失败数与集合漂移（30 → 21），本身即环境噪声的签名而非确定性代码失败。

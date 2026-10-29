@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # src/platforms/douyin.py 测试：抖音弹幕链路「凭据被平台拒绝 → 作废进程级缓存」的接线
-# （该弹幕侧半边）。
+# （MID-33 的弹幕侧半边）。
 #
 # 契约（三条，缺一不可）：
 #   ① WS 握手被服务端以 HTTP 200 拒绝（抖音对失效 ttwid 的实测形态：不返回 4xx，而是 200 +
@@ -131,7 +131,7 @@ class TestTtwidRefusalWiring:
 
     async def test_refusal_clears_real_ttwid_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 端到端不变量（**不**打桩 invalidate）：真实进程级缓存里的失效 ttwid 必须被清空，
-        # 否则「下一轮重新获取」根本不成立 —— 这正是该全部目的。
+        # 否则「下一轮重新获取」根本不成立 —— 这正是 MID-33 的全部目的。
         _StubWsClient.install(monkeypatch)
         saved_value, saved_at = ttwid_module._cached_ttwid, ttwid_module._cached_ttwid_at
         try:

@@ -41,12 +41,12 @@
 - **模块：`AGENTS.md`** — 「构建命令」下新增「产物体积门禁」小节：度量入口、排除入口与准入条件、四项不可删的固定成本、`strip` / `upx` 两条已评估未采纳方案的理由。
 
 
-## v4.3.0-dev (2026-09-24) — 前端回归锁修复 + 纳入 CI：`test_regression_2026_09_22_gates.mjs` 两条红锁定位为测试侧失效、补 `.py` 包装入 pytest/CI 回路（零生产代码改动）
+## v4.3.0-dev (2026-09-24) — 前端回归锁修复 + 纳入 CI：`test_regression_gates.mjs` 两条红锁定位为测试侧失效、补 `.py` 包装入 pytest/CI 回路（零生产代码改动）
 
 
 ### 涉及文件（按模块分类）
 
-- **模块：`tests/frontend/`（`web/app.js` 沙箱回归锁）** — 修改 `test_regression_2026_09_22_gates.mjs`（纯 LF）3 处：
+- **模块：`tests/frontend/`（`web/app.js` 沙箱回归锁）** — 修改 `test_regression_gates.mjs`（纯 LF）3 处：
   - MIN-2241「`/` 路由反向锁」：正则 `async def index\(\)[\s\S]*?\n\n` 要求连续两个裸 LF…
   - `makeElement` DOM 桩补 `options: []`：SEV-2228 后半「danmaku_unavailable 不得推进增量游标」报 `since=0` 而非 `since=7`
   - SEV-2228 后半断言由 2 轮升级为 3 轮（success → error → 再请求）
@@ -1289,7 +1289,7 @@
 
 #### 七、经核对确认「无需更新」的项（附判据）
 
-- `requirements.txt`（**唯一被修改的一行**：L95 行内注释补全，规格未动）：原注释断在「…additional_headers/proxy 参数为 14.0+ API，」——行尾注释无法续到下一行，属真截断（同文件其余 9 个以逗号结尾的是可续行的整行注释）。按 `pyproject.toml` 里 websockets 的同源注释补全为「12/13.x 时 `connect()` 直接 TypeError 且被重连循环吞掉，弹幕永远连不上」。改后复核：23 条运行时依赖不变、与 `pyproject.toml` 包名集合仍逐项相等、文件保持纯 LF（108 行）、`tests/test_regression_2026_09_22_gates.py` 25 passed。
+- `requirements.txt`（**唯一被修改的一行**：L95 行内注释补全，规格未动）：原注释断在「…additional_headers/proxy 参数为 14.0+ API，」——行尾注释无法续到下一行，属真截断（同文件其余 9 个以逗号结尾的是可续行的整行注释）。按 `pyproject.toml` 里 websockets 的同源注释补全为「12/13.x 时 `connect()` 直接 TypeError 且被重连循环吞掉，弹幕永远连不上」。改后复核：23 条运行时依赖不变、与 `pyproject.toml` 包名集合仍逐项相等、文件保持纯 LF（108 行）、`tests/test_regression_gates.py` 25 passed。
 - `pyproject.toml [project.dependencies]`：未改动，23 条与 `requirements.txt` 集合相等；`[dev]` / `[build]` / `[gui]` 三组 extras 亦相等。
 - `Dockerfile`：无硬编码版本；`ARG APP_VERSION` 声明先于 `LABEL` 使用点（`check_version.py` 断言行序）；Node 来源 `setup_24.x` 带 SHA256 钉定。
 - `docker-compose.yaml`：`APP_VERSION: "${APP_VERSION}"` 经 `.env` 注入，`pull_policy: build` 守住不拉远端 `:latest`；工作区当前无 `.env`，文件头注释已说明未设时 `LABEL version` 为空，属预期而非缺陷。

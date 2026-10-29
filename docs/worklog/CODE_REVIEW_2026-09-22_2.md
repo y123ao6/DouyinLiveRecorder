@@ -45,7 +45,7 @@
 
 | 编号 | 落点 | 状态 | 落实内容与证据 |
 | --- | --- | --- | --- |
-| SEV-2201 | `src/stream.py:1275` | 已修复 | `get_url` 先判 `isinstance(play_url, str)` 原样返回；`:288` 错误前提注释就地改正。锁 `tests/test_regression_2026_09_22_stream.py:39-99`（含混合列表）+ `:439` 变异守卫 |
+| SEV-2201 | `src/stream.py:1275` | 已修复 | `get_url` 先判 `isinstance(play_url, str)` 原样返回；`:288` 错误前提注释就地改正。锁 `tests/test_regression_stream.py:39-99`（含混合列表）+ `:439` 变异守卫 |
 | SEV-2202 | `main.py:308` | 已修复 | `rstr` 加入 `%`；`_build_record_output_path` 三分支加「额外 `%` 占位符即归一并告警」。锁 `test_segment_template_has_single_percent_placeholder`（**本轮补写**） |
 | SEV-2203 | `main.py:3026-3035` | 已修复 | 7 条表项去协议前缀（含上一轮漏掉的 `xiaohongshu.com` 一条）；「不可达分支」陈述改正。锁 `test_every_platform_host_matches_without_scheme` 覆盖 **http/https 两种协议各自都要命中**（旧静态锁用 `any(... for scheme in …)` 对本形态永久失明） |
 | SEV-2204 | `src/spider.py:1081-1100` | 已修复 | 快手 `playUrls` 按 h264→h265 优先级遍历 + `representation or []` + 无候选 `_warn_api_abnormal`。锁 `…_spider.py:88-117` |
@@ -284,9 +284,9 @@
 | `python scripts/check_version.py` | **PASS**（含本会话改的「检查对象消失即失败」两处分支） |
 | `python scripts/check_runtime_pins.py` | **PASS**（2 矩阵内 + 2 矩阵外槽位仍占位，按设计本地放行、`--strict` 拦发布） |
 | `pytest tests/test_check_coverage.py tests/test_test_hygiene.py` | **347 passed**（覆盖率门禁与测试卫生锁均有效） |
-| `pytest tests/test_i18n.py` / `test_ffmpeg_install.py` / `test_regression_2026_09_22_main.py` / `test_danmaku_monitor.py` | 39 / 108 / 62 / 19 passed（各自单文件独立跑，0 警告） |
-| `pytest tests/test_web_api.py` / `tests/test_regression_2026_09_22_web_g.py` | **163 passed + 40 passed，0 警告**（各自单文件独立两次）。中途读数曾是 263 passed/**10 failed**——那 10 条经复测确认是**既有测试仍按旧语义**（MID-2241 后端强制复验实现正确，日志 `auth_reauth_denied`），已为每条补「无复验 → 403 且配置字节不变」的 deny 锁后转绿 |
-| `node --test tests/frontend/test_regression_2026_09_22_gates.mjs` | **32 tests / 30 pass / 2 fail**（见 §7-9） |
+| `pytest tests/test_i18n.py` / `test_ffmpeg_install.py` / `test_regression_main.py` / `test_danmaku_monitor.py` | 39 / 108 / 62 / 19 passed（各自单文件独立跑，0 警告） |
+| `pytest tests/test_web_api.py` / `tests/test_regression_web_g.py` | **163 passed + 40 passed，0 警告**（各自单文件独立两次）。中途读数曾是 263 passed/**10 failed**——那 10 条经复测确认是**既有测试仍按旧语义**（MID-2241 后端强制复验实现正确，日志 `auth_reauth_denied`），已为每条补「无复验 → 403 且配置字节不变」的 deny 锁后转绿 |
+| `node --test tests/frontend/test_regression_gates.mjs` | **32 tests / 30 pass / 2 fail**（见 §7-9） |
 | `python scripts/check_coverage.py` | **红（按设计）**，见 §7-2 |
 | `pytest tests/test_i18n_migration.py` | **红**：114 条运行时模板未并入四语目录（§5-§2.4、§7-8） |
 
@@ -361,9 +361,9 @@
 6. **MID-2244（twitch 行缓冲上限）/ MID-2246 之外的零星项**：以 §6.1 全量 `pytest` 与 `mypy` 读数为最终裁定依据；若某项在本文件写作「已修复」而 §6.1 未能覆盖，视为未完成。
 7. **MIN-2268 + 仓库完整性**：`.git/HEAD` 已损坏（`fatal: bad object HEAD`），本会话无法用 `git status/diff` 取证，也**未尝试修复**（属高风险操作）。请用户先修 git，再把上述 4 个未入索引文件 `git add`。在此之前，任何 `git commit -am` 都会造成「本地绿、新克隆与 CI 直接 `ModuleNotFoundError`」。
 8. **把它跑绿的唯一顺序（三步，勿并行）**：① 等在途三代理终结（Web 认证测试对齐 / i18n 中央合并 / `test_concurrency` 真实现改造）；② 再跑一次 `black .` + `isort .` 写型纠正（本会话已跑过一次，被并发写入再次打破；`find *.isorted` 实测 0 残留）；③ 最后按顺序跑 `PYTHONUTF8=1 python scripts/run_gates.py --keep-going` → 全量 `pytest`（须 0 警告）→ `python scripts/check_coverage.py`，并把三条读数回填本文件 §6.1。**在 ① 之前重复跑门禁没有意义**——读数不收敛不是回归，是并发写入。
-9. **前端 `.mjs` 锁现存 2 条红（本会话收尾实测 `node --test tests/frontend/test_regression_2026_09_22_gates.mjs` = 32 tests / 30 pass / **2 fail**）**：其中一条已确证形态为 `actual: '/api/danmaku?since=0'` vs `expected: /since=7$/`（弹幕增量游标未随该轮 `MID-2240`/日志轮询改造一起推进）。本会话已顺手消掉另一条**自我矛盾**的红：`web_api.py:1390` 的注释原样引用了 `_read_main_loop_alive()` 这个符号名，而该 `.mjs` 用例正用 `doesNotMatch(WEB_API_PY, /_read_main_loop_alive|…/)` 断言「探针已撤下」——注释里出现名字即被打红（该用例自己的注释声明「断言的是代码引用而不是文件里出现过这个名字」，实现与声明不符）。处置取向：**改用词「主循环存活探针」避开符号名，保留锁的锋利**，不去放宽断言。剩余 1 条需在 `web/app.js` 侧决定：是补上 `since` 游标推进，还是改断言——属功能语义判断，未自行拍板。取证：`node --test tests/frontend/test_regression_2026_09_22_gates.mjs`。
+9. **前端 `.mjs` 锁现存 2 条红（本会话收尾实测 `node --test tests/frontend/test_regression_gates.mjs` = 32 tests / 30 pass / **2 fail**）**：其中一条已确证形态为 `actual: '/api/danmaku?since=0'` vs `expected: /since=7$/`（弹幕增量游标未随该轮 `MID-2240`/日志轮询改造一起推进）。本会话已顺手消掉另一条**自我矛盾**的红：`web_api.py:1390` 的注释原样引用了 `_read_main_loop_alive()` 这个符号名，而该 `.mjs` 用例正用 `doesNotMatch(WEB_API_PY, /_read_main_loop_alive|…/)` 断言「探针已撤下」——注释里出现名字即被打红（该用例自己的注释声明「断言的是代码引用而不是文件里出现过这个名字」，实现与声明不符）。处置取向：**改用词「主循环存活探针」避开符号名，保留锁的锋利**，不去放宽断言。剩余 1 条需在 `web/app.js` 侧决定：是补上 `since` 游标推进，还是改断言——属功能语义判断，未自行拍板。取证：`node --test tests/frontend/test_regression_gates.mjs`。
 10. ~~**全量 pytest 的 15 条污染型失败**~~ **已闭合（2026-09-23 下午）**：根因不是环境，而是本轮新增的
-    `tests/test_regression_2026_09_22_net.py` 里 **8 个手工 `pytest.MonkeyPatch()` 只配了 7 个 `undo()`**——
+    `tests/test_regression_net.py` 里 **8 个手工 `pytest.MonkeyPatch()` 只配了 7 个 `undo()`**——
     手工实例不由 pytest 自动还原，漏掉那处把 `src.utils.handle_proxy_addr` 永久置空；因 `async_http.utils` 与
     `src/sync_http.py` 的 `utils` 是同一个模块对象，同会话后续代理用例拿不到 `proxy_addr`、静默落到**未打桩的
     urllib 直连分支**，于是**真的向 `example.com` 发出请求**（断言拿到 HTML 而非桩返回值）。
@@ -371,7 +371,7 @@
     另 2 条是本轮有意改动导致的断言过时（SEV-2208 的两次 `stop()`、MID-2245 的新 `fail()` 出口），
     按真实语义改写并补「必须走带上报的 fail()」断言——只断言 `closed` 会放过退回 `close()` 的实现。
     防复发：`tests/test_test_hygiene.py` 新增 R6（手工 MonkeyPatch 创建数必须 ≤ `undo()` 数）+ 双向见证，
-    实测全仓无第二例。取证：`pytest tests/test_regression_2026_09_22_net.py tests/test_sync_http.py -q`。
+    实测全仓无第二例。取证：`pytest tests/test_regression_net.py tests/test_sync_http.py -q`。
 11. **两处人工收尾（门禁拦不住）**：① i18n 合并后遗留 **9 条孤儿 msgid**（`…错误信息:{e}` 7 条 + `[web] 清理 ffmpeg 进程失败: {e}` + `[web] 清理 HTTP 连接池失败: {e}`），需从四目录删除并重编 `.mo`；② `gui.py:762/887/2035/2059/2526/2786` **6 处 f-string messagebox 正文**（`messagebox` 不在提取器扫描面内，见 `AGENTS.md` 第 14 条），需登记四目录后改 `tr()`。另 MID-2253 的 gui 侧已实测确认**无法只做局部改写**：`没有正在录制` 不是任何一门目录的键，套 `tr()` 也无效，必须先定 `#DLRQ|` 契约并同改 `recorder_status.py`/`main.py`/`gui.py`（§7-3）。
 
 

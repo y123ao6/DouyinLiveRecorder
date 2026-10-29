@@ -53,12 +53,12 @@
 - **Recorded in passing (no change made)**: when black is invoked with **explicit file arguments**, `_external_runtime.pyi` / `__main__.pyi` each have one line >120 characters that it wants wrapped (leftover from the 2026-09-24 annotation batch).
 
 
-## v4.3.0-dev (2026-09-24) — Frontend regression-lock fixes + wired into CI: two red locks in `test_regression_2026_09_22_gates.mjs` diagnosed as test-side defects, `.py` wrapper added into the pytest/CI loop (zero production-code change)
+## v4.3.0-dev (2026-09-24) — Frontend regression-lock fixes + wired into CI: two red locks in `test_regression_gates.mjs` diagnosed as test-side defects, `.py` wrapper added into the pytest/CI loop (zero production-code change)
 
 
 ### Files affected (grouped by module)
 
-- **Module: `tests/frontend/` (`web/app.js` sandbox regression locks)** — 3 edits in `test_regression_2026_09_22_gates.mjs` (pure LF):
+- **Module: `tests/frontend/` (`web/app.js` sandbox regression locks)** — 3 edits in `test_regression_gates.mjs` (pure LF):
   -  The production `/` route already correctly returns `_WEB_DIR / "index.html"` — unchanged.
   - `makeElement` DOM stub gained `options: []`: the SEV-2228 second half "danmaku_unavailable must not advance the incremental cursor" reported `since=0` instead of `since=7`
   - Upgraded the SEV-2228 second-half assertion from 2 rounds to 3 (success → error → request again), adding an assertion that `calls[2]` is still `since=7`: the old form only asserted `calls[1]` (determined by req1's success response), so it could never observe the larger `last_seq:99` that req2's error response deliberately carries — a half-dead lock misaligned with its own title's promise.
@@ -157,7 +157,7 @@
   - `record_error()` / `record_success()`: removed the first inline-comment clause ("thread-safely record one error/success .
 - **Module: `src/proxy.py` (system-proxy detection)** — density 35.6% → 34.9%, net removal of 3 comment lines:
   - `_split_scheme()` / `_get_proxy_info_linux()`: the causal chain "socks5://.
-  - **Text-lock preserved**: the "residual registration" block above `_LINUX_PROXY_ENV_NAMES` (`没有任何生产消费点` / `代理地址` / `main.py`) was kept verbatim and no falsified "authentication proxy fixed" statement was introduced — those three substrings are asserted against the raw source by `tests/test_regression_2026_09_22_net.py::TestMid2233ResidualRegistered`.
+  - **Text-lock preserved**: the "residual registration" block above `_LINUX_PROXY_ENV_NAMES` (`没有任何生产消费点` / `代理地址` / `main.py`) was kept verbatim and no falsified "authentication proxy fixed" statement was introduced — those three substrings are asserted against the raw source by `tests/test_regression_net.py::TestMid2233ResidualRegistered`.
 - **Module: `src/logger.py` (logging configuration)** — density unchanged at 35.
 - **Module: `src/node_install.py` (Node.
 
@@ -877,7 +877,7 @@
 
 #### 7. Verified as needing no update (with the judgement used)
 
-- `requirements.txt` (**the only line modified**; inline comment completed, specifier untouched): the comment was cut at "...additional_headers/proxy parameters are a 14.0+ API," - a trailing comment cannot continue onto the next requirement line, so this was a genuine truncation (the other nine comma-terminated comments in the file are full-line comments that do continue). Completed from the matching `pyproject.toml` websockets comment as "on 12/13.x `connect()` raises TypeError immediately and the reconnect loop swallows it, so danmaku never connects". Re-verified after the edit: still 23 runtime entries, package-name sets still equal to `pyproject.toml`, file stays pure LF (108 lines), `tests/test_regression_2026_09_22_gates.py` 25 passed.
+- `requirements.txt` (**the only line modified**; inline comment completed, specifier untouched): the comment was cut at "...additional_headers/proxy parameters are a 14.0+ API," - a trailing comment cannot continue onto the next requirement line, so this was a genuine truncation (the other nine comma-terminated comments in the file are full-line comments that do continue). Completed from the matching `pyproject.toml` websockets comment as "on 12/13.x `connect()` raises TypeError immediately and the reconnect loop swallows it, so danmaku never connects". Re-verified after the edit: still 23 runtime entries, package-name sets still equal to `pyproject.toml`, file stays pure LF (108 lines), `tests/test_regression_gates.py` 25 passed.
 - `pyproject.toml [project.dependencies]`: unchanged, 23 entries equal to `requirements.txt`; the `[dev]` / `[build]` / `[gui]` extras groups match as well.
 - `Dockerfile`: no hardcoded version; `ARG APP_VERSION` is declared before the `LABEL` that consumes it (asserted by `check_version.py`); the Node source is `setup_24.x` with a SHA256 pin.
 - `docker-compose.yaml`: `APP_VERSION: "${APP_VERSION}"` injected from `.env`, and `pull_policy: build` prevents pulling a remote `:latest`; no `.env` exists in the workspace, which the file header already documents as "LABEL version stays empty when unset" - expected, not a defect.

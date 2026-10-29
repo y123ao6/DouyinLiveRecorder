@@ -262,8 +262,8 @@ HLS-only 房间 `quality_index` 被无条件置 0，用户选任何档位都拉 
 
 #### M-26　前端门禁「后端不得强复验」锁已成假绿：生产代码已实现强复验，用例钉死旧字面量空过
 
-- **位置**：[tests/frontend/test_regression_2026_09_22_gates.mjs L707-L727](file:///d:/DouyinLiveRecorder/tests/frontend/test_regression_2026_09_22_gates.mjs#L707-L727)（已核验）
-- **证据**：两条 `doesNotMatch` 钉的是旧形状 `verify_web_password(_reauth, _stored)` 与旧文案「修改认证配置需复验当前口令」；生产实现（[src/web_api.py L1205-L1214](file:///d:/DouyinLiveRecorder/src/web_api.py#L1205-L1214)）的实际形状是 `verify_web_password(_reauth, _stored_pwd)`、文案是「修改 Web 认证配置必须复验…」，两个断言因字面不一致而**空洞成立**。Python 侧 `test_regression_2026_09_22_web_g.py` 锁的恰是相反新契约，两侧互相矛盾。实测 `node --test` 32/32 全绿——安全边界锁给出错误信心。
+- **位置**：[tests/frontend/test_regression_gates.mjs L707-L727](file:///d:/DouyinLiveRecorder/tests/frontend/test_regression_gates.mjs#L707-L727)（已核验）
+- **证据**：两条 `doesNotMatch` 钉的是旧形状 `verify_web_password(_reauth, _stored)` 与旧文案「修改认证配置需复验当前口令」；生产实现（[src/web_api.py L1205-L1214](file:///d:/DouyinLiveRecorder/src/web_api.py#L1205-L1214)）的实际形状是 `verify_web_password(_reauth, _stored_pwd)`、文案是「修改 Web 认证配置必须复验…」，两个断言因字面不一致而**空洞成立**。Python 侧 `test_regression_web_g.py` 锁的恰是相反新契约，两侧互相矛盾。实测 `node --test` 32/32 全绿——安全边界锁给出错误信心。
 - **修复建议**：删除该条过期用例或改为与新契约一致的正向行为锁（行为已由 Python E2E 覆盖）。
 
 #### M-27　4 处用例直接 patch 进程全局 `os.remove`/`os.rename`，窗口内影响其他线程
@@ -407,9 +407,9 @@ HLS-only 房间 `quality_index` 被无条件置 0，用户选任何档位都拉 
 - [tests/test_anchor_rename.py L59-L65](file:///d:/DouyinLiveRecorder/tests/test_anchor_rename.py#L59-L65)：docstring 声称注释行改名后「整行激活」，断言锁的却是「保留单层 #」（注释意图与断言相反，易误导）。
 - [tests/test_bili_live_collector.py L43-L44](file:///d:/DouyinLiveRecorder/tests/test_bili_live_collector.py#L43-L44)、[test_huya_live_collector.py L47-L48](file:///d:/DouyinLiveRecorder/tests/test_huya_live_collector.py#L47-L48)：真机脚本清空 `_out_live` 无平台前缀过滤且不判目录，混入子目录会抛错、并行验证互删（手工脚本，影响小）。
 - [tests/test_cookie_cache.py L237-L259](file:///d:/DouyinLiveRecorder/tests/test_cookie_cache.py#L237-L259)：4 方 Barrier/join 无超时，worker 异常会令整个 pytest 挂死。
-- 深路径 patch 族：[test_stream_select.py L604、L670、L1004、L1029、L1239](file:///d:/DouyinLiveRecorder/tests/test_stream_select.py#L604)（`patch("src.stream_select.time.sleep")` 等改的是全进程 time 模块）、[test_regression_2026_09_22_utils.py L640](file:///d:/DouyinLiveRecorder/tests/test_regression_2026_09_22_utils.py#L640)（裸 patch builtins.open）、[test_regression_2026_09_22_net.py L723-L756](file:///d:/DouyinLiveRecorder/tests/test_regression_2026_09_22_net.py#L723)（字符串形式 patch httpx.AsyncClient）——仓库卫生门禁 R1 已知悉但未覆盖这些形态。
+- 深路径 patch 族：[test_stream_select.py L604、L670、L1004、L1029、L1239](file:///d:/DouyinLiveRecorder/tests/test_stream_select.py#L604)（`patch("src.stream_select.time.sleep")` 等改的是全进程 time 模块）、[test_regression_utils.py L640](file:///d:/DouyinLiveRecorder/tests/test_regression_utils.py#L640)（裸 patch builtins.open）、[test_regression_net.py L723-L756](file:///d:/DouyinLiveRecorder/tests/test_regression_net.py#L723)（字符串形式 patch httpx.AsyncClient）——仓库卫生门禁 R1 已知悉但未覆盖这些形态。
 - [tests/test_notify.py L21](file:///d:/DouyinLiveRecorder/tests/test_notify.py#L21)、[test_srt_timeline_anchor.py L23](file:///d:/DouyinLiveRecorder/tests/test_srt_timeline_anchor.py#L23)：模块级 `sys.path.insert` 不回收（冗余导入路径）。
-- 时序脆弱：[test_scheduler.py L57-L93](file:///d:/DouyinLiveRecorder/tests/test_scheduler.py#L57-L93) cooldown=0.05 + 2× 余量的真实 sleep；[test_regression_2026_09_22_infra.py L533-L573](file:///d:/DouyinLiveRecorder/tests/test_regression_2026_09_22_infra.py) 工作线程真实 sleep 10s+3s；[test_record_watchdog.py L331-L354](file:///d:/DouyinLiveRecorder/tests/test_record_watchdog.py#L331-L354) 硬编码 `/tmp/out.ts`（跨平台隐患，现行路径有父目录豁免巧合不致误判）。
+- 时序脆弱：[test_scheduler.py L57-L93](file:///d:/DouyinLiveRecorder/tests/test_scheduler.py#L57-L93) cooldown=0.05 + 2× 余量的真实 sleep；[test_regression_infra.py L533-L573](file:///d:/DouyinLiveRecorder/tests/test_regression_infra.py) 工作线程真实 sleep 10s+3s；[test_record_watchdog.py L331-L354](file:///d:/DouyinLiveRecorder/tests/test_record_watchdog.py#L331-L354) 硬编码 `/tmp/out.ts`（跨平台隐患，现行路径有父目录豁免巧合不致误判）。
 - [tests/test_platform_danmaku_offline.py L405-L410](file:///d:/DouyinLiveRecorder/tests/test_platform_danmaku_offline.py#L405-L410)：monkey patch 的 undo 位于断言之后，失败路径泄漏（理论窗口）。
 - [tests/test_machine_validation_fixes.py L196-L203](file:///d:/DouyinLiveRecorder/tests/test_machine_validation_fixes.py#L196-L203)：「三处调用都超时」用 `text.count("超时") >= 3` 聚合计数，无法归因到具体入口，单个入口少记/重复记都可能过线。
 - [web/app.js 对应前端测试](file:///d:/DouyinLiveRecorder/tests/frontend)：localStorage 回退导致会话持久化（[app.js L27-L35、L144-L156](file:///d:/DouyinLiveRecorder/web/app.js#L27-L35)，代码注释已知情接受，仅作风险记录）。

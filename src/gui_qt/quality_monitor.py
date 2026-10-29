@@ -41,7 +41,7 @@ class QualityMonitor:
                 msg = msg[dash_idx + 3 :]
 
         patterns = status_patterns()
-        # 译稿写坏导致某条模板拼不出可用正则时，按 problems 变化去重，避免每行日志刷一条。
+        # 译稿写坏导致某条模板拼不出可用正则时，按 problems 变化去重，避免每行日志刷一条（M-14）。
         if patterns.problems and self._problems != patterns.problems:
             self._problems = patterns.problems
             for problem in patterns.problems:

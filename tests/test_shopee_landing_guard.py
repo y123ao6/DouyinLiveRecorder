@@ -1,7 +1,7 @@
 # -*- encoding: utf-8 -*-
-# WP-A / （严重）：Shopee 短链落地页的凭据外泄 + 内网 SSRF 回归锁。
+# WP-A / S-1（严重）：Shopee 短链落地页的凭据外泄 + 内网 SSRF 回归锁。
 #
-# 病史（docs/worklog/CODE_REVIEW_2026-09-29_2.md 的，与已定稿的小红书该同型）：
+# 病史（docs/worklog/CODE_REVIEW_2026-09-29_2.md 的 S-1，与已定稿的小红书 SEV-2214 同型）：
 # get_shopee_stream_url 在「非直链且非店铺主页」分支用 async_req(redirect_url=True) 解短链，
 # 解出的落地页 URL 由**响应**决定并直接替换 url；随后 host_suffix 由裸字符串切分得出、
 # 拼成 api_host=https://live.shopee.{host_suffix}，再对它发三次请求（ongoing / replay_list /
@@ -125,7 +125,7 @@ class TestShopeeHostAllowlistPredicate:
         assert not sp._shopee_is_allowed_host("https://shopee.co.id.evil.com/x")
 
     def test_userinfo_at_form_rejected(self) -> None:
-        # 绕过载荷：urlparse 把 hostname 解成 @ **之后**的那一段（= 真实连接目标），
+        # S-1 的绕过载荷：urlparse 把 hostname 解成 @ **之后**的那一段（= 真实连接目标），
         # 于是「字面看着像官方域」在这条输入上不成立，含 @ 的 netloc 必须整条拒掉。
         assert not sp._shopee_is_allowed_host("https://live.shopee.sg@127.0.0.1/share?session=1")
         assert not sp._shopee_is_allowed_host("https://live.shopee.sg@169.254.169.254/x")
@@ -140,7 +140,7 @@ class TestShopeeHostAllowlistPredicate:
 
 
 class TestShopeeHostSuffixFromHostname:
-    # MI-16 / 该既有形态必须逐字不变（这四条与 tests/test_spider_fixes.py 的同源断言一致）。
+    # MI-16 / SEV-06 的既有形态必须逐字不变（这四条与 tests/test_spider_fixes.py 的同源断言一致）。
     # 本轮把实现从「按 / 切 authority」换成「urlparse().hostname」——换法本身不许改变正常输入的结果。
     def test_normal_hosts_keep_suffix(self) -> None:
         assert sp._shopee_host_suffix("https://live.shopee.sg/share?from=live&session=802458") == "sg"
@@ -334,7 +334,7 @@ async def test_legit_landing_keeps_credentials_and_records(monkeypatch: pytest.M
 
 async def test_direct_live_shopee_link_unaffected(monkeypatch: pytest.MonkeyPatch) -> None:
     # 直链形态（含 live.shopee、不含 uid）本就不进跳转分支：零安全告警、按 session 正常请求。
-    # 这条同时守住该既有语义——未开播轮次刻意保持静默（不刷 warning/error）。
+    # 这条同时守住 MIN-2211 的既有语义——未开播轮次刻意保持静默（不刷 warning/error）。
     spy = _ReqSpy(body='{"data": null}')
     logger = _LoggerSpy()
     monkeypatch.setattr(sp, "async_req", spy)
@@ -348,7 +348,7 @@ async def test_direct_live_shopee_link_unaffected(monkeypatch: pytest.MonkeyPatc
     assert _as_dict(spy.sent[0]["headers"]).get("Cookie") == "C=1"
 
 
-# ── 顺带收口：uid / session 拼进查询串与路径段的编码（ ⑤）───────────────
+# ── 顺带收口：uid / session 拼进查询串与路径段的编码（S-1 ⑤）───────────────
 
 
 async def test_uid_query_value_is_percent_encoded(monkeypatch: pytest.MonkeyPatch) -> None:

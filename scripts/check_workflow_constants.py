@@ -1,8 +1,9 @@
 # CI / Build-Release 版本常量一致性门禁。
 #
 # ci.yml 的 setup job 与 build-release.yml 的 prepare job 各自在 consts 步骤声明
-# python_build / node_version。AGENTS.md「CI / workflow 约定」要求跨 workflow 同值，但两份文件
-# 独立维护、改一处须同步另一处——纯靠人工对齐已被证明会漂移，故本脚本两侧提取后比对，不一致即红。
+# python_build / node_version 两个运行环境常量。AGENTS.md「CI / workflow 约定」要求
+# 「版本常量跨 workflow 同值」，但两份文件独立维护、改一处须同步另一处——纯靠人工对齐
+# 已被证明会漂移。本脚本在两侧各自提取后比对，不一致即红。
 #
 # 提取策略：正则匹配 `echo "key=value"` 形态（GitHub Actions 的 GITHUB_OUTPUT 写入惯例），
 # 刻意不引入 PyYAML 依赖——两份文件都只在一个 consts 步骤内写这些 key，精确匹配 key= 前缀即可。
@@ -26,6 +27,7 @@ BR_PATH = ROOT / ".github" / "workflows" / "build-release.yml"
 
 
 def extract_consts(workflow_path: Path) -> dict[str, str]:
+    # 从 workflow 文件的 consts 步骤提取版本常量：匹配 echo "key=value" / echo 'key=value'。
     # 只取第一个匹配——本脚本职责是「跨文件一致性」，同文件内重复声明不在检测范围内。
     if not workflow_path.exists():
         print(f"ERROR: workflow 文件不存在: {workflow_path}", file=sys.stderr)

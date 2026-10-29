@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 # pyrightconfig.json 与 pyproject 的类型检查口径同源锁。
 #
-# 本仓类型门禁是「CI 跑 mypy（Linux）+ 本地跑 basedpyright」，IDE 红线来自 Pylance——无命令行
-# 入口、无可核对配置面（AGENTS.md 因此禁止把 Pylance 当门禁证据）。补齐 pyrightconfig.json 后，
-# IDE 语言服务器与 `pyright` CLI 读同一份 include / exclude / typeCheckingMode，IDE 结论可用
-# CLI 逐条复现。本文件只锁「同源」，不锁「pyright 零错误」：后者随代码状态变化，进 CI 反而会
-# 开出第三条互相矛盾的类型门禁（mypy 才是 CI 裁决者）。
+# 为什么需要它：本仓类型门禁是「CI 跑 mypy（Linux）+ 本地跑 basedpyright」，而 IDE 红线来自
+# Pylance——没有命令行入口、也没有可核对的配置面（AGENTS.md 因此禁止把 Pylance 当门禁证据）。
+# 补齐 pyrightconfig.json 后，IDE 语言服务器与 `pyright` CLI 读同一份 include / exclude /
+# typeCheckingMode，IDE 结论可用 CLI 逐条复现。本文件只锁「同源」，不锁「pyright 零错误」：
+# 后者随代码状态变化，进 CI 反而会开出第三条互相矛盾的类型门禁（mypy 才是 CI 裁决者）。
 
 import tomllib
 from pathlib import Path

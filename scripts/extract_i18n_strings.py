@@ -34,8 +34,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCAN_FILES = [
     ROOT / "main.py",
     ROOT / "gui.py",
-    # [历史注] 此处曾是 gui_legacy.py 的扫描入口，该文件已删除；不得加回不存在的路径——
-    # main() 的 exists() 会静默跳过，看着仍有入口、实际没扫
+    # [历史注] 原第三条是 gui_legacy.py（2026-09-10 随 v4.1.0-dev 删除，2026-09-21 清掉引用）；
+    # 它此前恒被 main() 的 exists() 兜底跳过，留着只会让人误以为这里仍是扫描入口
     ROOT / "web.py",
     ROOT / "msg_push.py",
     ROOT / "i18n.py",
@@ -101,7 +101,7 @@ T_CALLER_IDS = {"T"}
 
 def scan_file(path: Path) -> set[str]:
     # 单文件扫描：print 的每个实参、logger.* 与 tr 的首参，各按规则 1~5 还原成模板形态。
-    # 已知局限：只认「常量串 / 单个 f-string」两种首参，`f"A" + (f"B" if x else "")`
+    # 已知局限（MID-68 同源）：只认「常量串 / 单个 f-string」两种首参，`f"A" + (f"B" if x else "")`
     # 这种 ast.BinOp 形态这里看不见——所以「目录覆盖完整」对本脚本是盲区，只能由
     # tests/test_i18n_migration.py 的收紧判据（首参**子树**）兜住；新增形参日志一律写 tr(常量模板)。
     source = path.read_text(encoding="utf-8-sig")

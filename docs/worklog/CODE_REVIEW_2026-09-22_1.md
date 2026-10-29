@@ -25,7 +25,7 @@
 
 #### 已修复（逻辑改动 + 回归锁落地）
 
-- **SEV-2201** `src/stream.py:1273-1276`（`get_url` 先判 `isinstance(play_url, str)` 原样返回，否则走 dict 探测）；`:288` 错误前提注释就地改正。`tests/test_regression_2026_09_22_stream.py` + 变异验证（删 str 分支即变红）。结论：8+ 平台 `list[str]` 契约互斥闭合。
+- **SEV-2201** `src/stream.py:1273-1276`（`get_url` 先判 `isinstance(play_url, str)` 原样返回，否则走 dict 探测）；`:288` 错误前提注释就地改正。`tests/test_regression_stream.py` + 变异验证（删 str 分支即变红）。结论：8+ 平台 `list[str]` 契约互斥闭合。
 - **SEV-2202** `main.py:308` 的 `rstr` 加入 `%`；`_build_record_output_path` 分段/音频分支加「额外 `%` 占位符即归一并告警」守卫。回归锁断言「分段模板除末位 `_%03d`/`_%02d` 外不得再含 `%`」。结论：分段录制因裸 `%` 失败的根因闭合。
 - **SEV-2203** `main.py:2758-2770` 7 条表项去掉协议前缀（与 `douyin.com/` 同口径）；`:2834` 附近「不可达分支」陈述改为「准入 host 命中但无匹配解析器」。结论：`http://` 房间无限空转修复。
 - **SEV-2204** `src/spider.py:1063-1105` 快手 `playUrls` 按 codec 优先级遍历（h264→h265），`representation` 补 `or []`，无候选时 `_warn_api_abnormal`。结论：HEVC-only / `"h264": null` 静默漏录闭合。
@@ -103,16 +103,16 @@
 - **SEV-2226（spider 侧注释）** 见 2.4（sync_http + AGENTS.md 尚未做）。
 
 #### 组 F
-- **SEV-2222（锁定）** `tests/test_regression_2026_09_22_gates.py:166` 真驱动 `src.stream_select._douyin_rate_limit()`，断言 sleep 恰为差值 + 时间戳推进；`tests/test_concurrency.py` 本身仍需跨组修正（见 2.3）。
+- **SEV-2222（锁定）** `tests/test_regression_gates.py:166` 真驱动 `src.stream_select._douyin_rate_limit()`，断言 sleep 恰为差值 + 时间戳推进；`tests/test_concurrency.py` 本身仍需跨组修正（见 2.3）。
 - **MIN-2260** `.gitignore:299-304`、`.dockerignore:162-165` 补临时产物忽略（刻意不忽略 `_FIX_BRIEF_*.md`/`_i18n_pending.json`/`_run.py`，收尾删除）。
 
 ### 1.4 已新建的回归锁文件
 
-- `tests/test_regression_2026_09_22_stream.py`（组 A，含变异判据）
-- `tests/test_regression_2026_09_22_main.py`（组 B2，AST 驱动生产源码）
-- `tests/test_regression_2026_09_22_utils.py`（组 C）
-- `tests/test_regression_2026_09_22_spider.py`（组 E）
-- `tests/test_regression_2026_09_22_gates.py`（组 F，25 条）
+- `tests/test_regression_stream.py`（组 A，含变异判据）
+- `tests/test_regression_main.py`（组 B2，AST 驱动生产源码）
+- `tests/test_regression_utils.py`（组 C）
+- `tests/test_regression_spider.py`（组 E）
+- `tests/test_regression_gates.py`（组 F，25 条）
 
 ---
 
@@ -134,7 +134,7 @@
 
 ### 2.3 测试卫生待修正（跨组）
 
-- **SEV-2222** `tests/test_concurrency.py` 的限流用例未真正驱动 `src` 侧实现（已用 `tests/test_regression_2026_09_22_gates.py:166` 固化根因形态，但文件本身不在 F 组独占范围）。下一步：改 `tests/test_concurrency.py` 使其直接 import 并驱动 `src.stream_select._douyin_rate_limit` 或等效 src 入口，使限流回归锁真能抓住失效。
+- **SEV-2222** `tests/test_concurrency.py` 的限流用例未真正驱动 `src` 侧实现（已用 `tests/test_regression_gates.py:166` 固化根因形态，但文件本身不在 F 组独占范围）。下一步：改 `tests/test_concurrency.py` 使其直接 import 并驱动 `src.stream_select._douyin_rate_limit` 或等效 src 入口，使限流回归锁真能抓住失效。
 - **test_i18n_migration**（2 例失败）：61 条运行时 `tr()` 模板未被 `zh_CN.po` 覆盖（含 `src/ffmpeg_master_download.py:399` 的 f-string）。该失败是**待做的 i18n 合并**引起的，非代码缺陷。下一步：见 2.4。
 - **test_ffmpeg_install / test_ffmpeg_path_preference / test_danmaku_wiring**：3 例失败，分别归 ffmpeg 安装组与 danmaku 接线组，待对应修复后复测。
 

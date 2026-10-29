@@ -5,7 +5,6 @@
 >
 > **后续**：本文第 4~6 节的遗留项在第二轮整改后已重新核对，逐条锚点、阻塞原因与验收判据见
 > [`CODE_REVIEW_2026-10-21_MANUAL.md`](CODE_REVIEW_2026-10-21_MANUAL.md)。
-> **2026-10-28 补记**：本文 §6 排期表里的一批条目（M-35~M-43、M-44~M-49、M-59~M-69、M-84/M-85、M-91/M-94/M-96 等）经 `CODE_REVIEW_2026-10-27.md` §3.1 实证复核**实际已落地**，只是当时没有回写更新日志；补记见 `CODE_WIKI.md` / `CODE_WIKI_EN.md`「更新日志」的 2026-10-28 回填条目（两侧同步，纯文档、零代码改动）。
 
 ## 0. 执行摘要
 
@@ -66,7 +65,7 @@
 | S-12 | 严重 | [src/node_install.py](../../src/node_install.py) 常量区 + `_fetch_official_sha256` + `_check_or_record_zip_sha256` + `install_nodejs_windows` | ① 下载循环累计字节，上限 `min(1.5×Content-Length, 512MB)`，超限抛错并删除半份文件；② 摘要文档按 `iter_content` 限长 2MB 读取；③ 官方文档不可达且无历史基准时**默认拒绝安装**（error 级），需显式 `DLR_NODE_ALLOW_TOFU=1` 才降级 TOFU | `tests/test_node_install.py`（+50 行：`test_no_official_hash_without_baseline_is_refused_by_default`、`test_unreachable_doc_without_opt_in_refuses_install` 等） |
 | S-13 | 严重 | [scripts/check_annotations.py](../../scripts/check_annotations.py) `_reject_dangerous_baseline`（:391-470） | 判定从**排除式黑名单**改为**白名单正向判定**：只有「严格位于 cwd 之下」才放行，其余一律拒绝（系统目录清单保留，仅用于给出更准确理由） | `tests/test_check_annotations.py::test_snapshot_guard_rejects_any_target_outside_cwd`（3 格参数化）+ **变异验证**：撤回修复后 2 格变红、按字节还原 |
 | S-14 | 严重 | 测试有效性（跨文件） | **部分修复**：① 修掉报告点名的核心契约缺陷——`test_m3u8_head_405_fallback_to_get` 增加对 `Range: bytes=0-0` 的显式断言（删该头会让探针退化成整文件下载而旧断言照样绿）；② 新增**R11 双向棘轮**（[tests/test_test_hygiene.py](../../tests/test_test_hygiene.py)）：把「函数体无任何判据」「参数承载语义的裸 `assert_called*`」机检化，存量按文件条数冻结为债务表、只许降不许升 | `tests/test_test_hygiene.py::test_r11_*`（4 条含反向见证） |
-| S-15 | 严重 | [main.py](../../main.py) 配置行归并（:5215-5419） | 新增「本轮被跳过/解析失败行」集合 `_unparsed_lines`（含从原行抠出的 URL），归并时整行豁免、绝不写进 `_url_comments`；被跳过行保留上一轮注释状态 | `tests/test_regression_2026_09_22_main.py`（磁盘块抽取式用例已同步新形参） |
+| S-15 | 严重 | [main.py](../../main.py) 配置行归并（:5215-5419） | 新增「本轮被跳过/解析失败行」集合 `_unparsed_lines`（含从原行抠出的 URL），归并时整行豁免、绝不写进 `_url_comments`；被跳过行保留上一轮注释状态 | `tests/test_regression_main.py`（磁盘块抽取式用例已同步新形参） |
 | S-16 | 严重 | [src/spider.py](../../src/spider.py) `get_play_url_list`（:539-566） | 兜底分支对相对行统一 `urllib.parse.urljoin(m3u8, line)`；`.m3u8` 判据改为按 URL 的 **path** 判定（带查询串的 `x.m3u8?token=` 不再被整条丢弃）；5 个调用点（PandaTV/WinkTV/TTingLive/Twitch/YouTube）不再做前缀拼接 | `tests/test_spider_platform.py`、`tests/test_stream.py` |
 
 ### 2.2 中等项（已修复 28 项）
@@ -142,7 +141,7 @@ S-14 批评的假绿形态）。
 | 本轮改动前（基线） | 15 failed, 4575 passed |
 | 本轮改动后 | **8 failed（均为上述环境失败）, 4645 passed** |
 
-即：基线里 7 个**仓库内在失败**已全部修复（`test_i18n_migration` 目录缺失、`test_regression_2026_09_22_net`
+即：基线里 7 个**仓库内在失败**已全部修复（`test_i18n_migration` 目录缺失、`test_regression_net`
 残留登记、`test_sync_probe_internal_guard` 历史注、`test_spider_hardening` 三组 json.loads 棘轮、
 `test_spider` 脱敏锁），净增 70 条通过用例。
 
@@ -233,12 +232,12 @@ AGENTS.md「完成定义」第 2 步要求涉及录制链路/选源/ffmpeg 参�
 | [tests/test_test_hygiene.py](../../tests/test_test_hygiene.py) | S-14 新增 R11 双向棘轮（4 条含反向见证 + 债务表） |
 | [tests/test_config_io_update_file.py](../../tests/test_config_io_update_file.py) | S-08 契约更新 2 条 |
 | [tests/test_async_http.py](../../tests/test_async_http.py) | S-14 Range 头显式断言 |
-| [tests/test_regression_2026_09_22_main.py](../../tests/test_regression_2026_09_22_main.py) | M-05 抽取式用例补 `_disk_measure_failed` 形参 |
+| [tests/test_regression_main.py](../../tests/test_regression_main.py) | M-05 抽取式用例补 `_disk_measure_failed` 形参 |
 | [tests/test_quality_tiers.py](../../tests/test_quality_tiers.py) | M-26 契约更新（`is_live=False`） |
 | [tests/test_start_record_command_golden.py](../../tests/test_start_record_command_golden.py) | M-11 黄金基准的代理条目改为 host 片段（`douyin`），保住 `-http_proxy` 覆盖 |
 | [tests/test_platform_dispatch.py](../../tests/test_platform_dispatch.py) | 随 S-01 scheme 兼容自动恢复（未改文件） |
 | [tests/test_spider.py](../../tests/test_spider.py) | S-10 替身补 `exception` 方法 |
-| 其余 5 个 | `test_exception_log_masking.py` / `test_regression_2026_09_29_wp_b_netguard.py` / `test_platform_danmaku_offline.py` / `test_i18n*.py` 等随判据口径同步 |
+| 其余 5 个 | `test_exception_log_masking.py` / `test_regression_wp_b_netguard.py` / `test_platform_danmaku_offline.py` / `test_i18n*.py` 等随判据口径同步 |
 
 ### 5.3 i18n 四语目录（5 个文件）
 

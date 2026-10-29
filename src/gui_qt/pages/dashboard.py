@@ -2,7 +2,7 @@
 # 控制台页：状态总览（大状态点 + 信息网格）、录制控制与快捷操作。
 #
 # 布局口径照搬设计稿的「卡片 + 12px 间距 + 右侧信息网格」，
-# 大状态点即 widgets.StatusDot，动画成本交给 Qt 时间线。
+# 大状态点取代旧版 Canvas 呼吸圆点（见 widgets.StatusDot），动画成本交给 Qt 时间线。
 from __future__ import annotations
 
 from typing import Callable
@@ -46,7 +46,7 @@ class DashboardPage(QWidget):
         text_col = QVBoxLayout()
         text_col.setSpacing(2)
         # 状态标题/副标题是运行态文案（窗口 _set_running_ui 经 set_status 按录制状态写入），
-        # 刻意不进重译登记表：登记后 retranslate_all() 会把「录制中」打回
+        # 刻意不进重译登记表（M-13，2026-10-18）：登记后 retranslate_all() 会把「录制中」打回
         # 初值「待机」，与侧栏/托盘互相矛盾。运行态标签不进登记表是仓库既有约定
         # （关键约定#16 / i18n 已知坑）；建时 tr() 取初值即可，切语言后由 _repopulate_static_texts
         # 按 recorder.is_running() 重驱 _set_running_ui，产生点的 tr() 自然取当前语言。

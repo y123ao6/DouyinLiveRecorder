@@ -162,7 +162,7 @@ class TestHuyaSubTiers:
     async def test_legacy_uhd_via_exsphd_labels(self) -> None:
         # 旧档位（UHD/HD/SD/LD）按 exsphd 的**数值语义**取档（与蓝光子档位同一张表）。
         # [历史注] 原实现用位置式 zip(findall) 把 exsphd 当有序序列，换个顺序标签就整体反转，
-        # 请求超清实拉蓝光8M 且 actual_quality 回写请求值（is_downgrade 恒 False）；该已改
+        # 请求超清实拉蓝光8M 且 actual_quality 回写请求值（is_downgrade 恒 False）；MID-13 已改
         # 按 ratio 数值查表，故此处锁 2000（=超清，见上方 2026-08-29 实测表）。
         result = await get_huya_stream_url(_huya_json(exsphd="264_0 264_500 264_2000 264_8000"), video_quality="UHD")
         assert str(result["flv_url"]).endswith("&ratio=2000")
@@ -255,7 +255,7 @@ class TestDouyuSubTiers:
 
     @pytest.mark.asyncio
     async def test_all_rates_failed_returns_no_urls(self) -> None:
-        # 2026-10-21：全档位失败必须返回 is_live=False。
+        # M-26（CODE_REVIEW_2026-10-21）：全档位失败必须返回 is_live=False。
         # 旧契约是「is_live=True 但无任何流地址」，上层据此把「开播但无地址」当待录房间空跑 ffmpeg；
         # 本函数此时已确认所有档位都拉不到流，继续声称开播是错误状态（表现为在播却不录、日志无异常）。
         json_data = {"anchor_name": "dy", "is_live": True, "room_id": 100}

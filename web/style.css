@@ -253,16 +253,17 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
 .config-hint { grid-column: 2; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .config-hint.hint-on { color: var(--success); }
 .config-hint.hint-off { color: var(--warning); }
-/* 掩码凭据行的说明提示：与「废弃项」的 hint-off 同用 --warning 橙色——
+/* MID-37：掩码凭据行的说明提示。它与「废弃项」的 hint-off 同用 --warning 橙色——
    区别只在语义，故文案必须自己讲清楚：该行值只是被 *** 遮蔽，提交空值会波及真实凭据，
    需要在保存前被看见（真正的区分靠 input 的 data-masked 标记与提示文字，不靠颜色）。 */
 .config-hint.hint-masked { color: var(--warning); }
 .config-row.row-deprecated label, .config-row.row-deprecated input { opacity: 0.5; text-decoration: line-through; }
 .config-row.row-deprecated .config-hint { text-decoration: none; }
-/* 保存中途失败的行标红（输入框描边 + 左侧色条）。
-   与「废弃项」的置灰、「掩码项」的警示黄都不同色，避免三种状态被看混。 */
+/* MIN-2239：保存中途失败的行标红（输入框描边 + 左侧色条）。
+   与「废弃项」的灰置灰、「掩码项」的警示黄都不同色，避免三种状态被看混。 */
 .config-row.row-failed input { border-color: var(--danger); box-shadow: inset 3px 0 0 var(--danger); }
-/* 保存未全部成功时的常驻明细（比 toast 更持久；toast 会消失且被覆盖）。传空串即隐藏，正常保存全程不出现。 */
+/* MIN-2239：保存未全部成功时的常驻明细（比 toast 更持久；toast 会消失且被覆盖）。
+   传空串即隐藏，正常保存全程不出现。 */
 .save-status {
     margin-top: 10px;
     padding: 8px 12px;
@@ -338,10 +339,9 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
 
 /* 响应式断点：窄屏(≤768px)下把仪表盘卡片从 4 列降到 2 列、配置行从两栏变单栏，
    配置提示改占第 1 列；标签页允许横向滚动以免溢出被裁切。无更大断点，移动端即按此布局。
-   顶栏拆两行的原因：移动端实测（2026-09-11 截图；iPhone 16 Pro Max 视口 440×956 CSS px / DPR 3，
-   Pixel 10 视口 412×915 / DPR 2.6）单行放不下「品牌 + 5 个标签 + 语言下拉 + 主题按钮」，
-   min-height: 56px 被竖排折字撑破、右侧按钮裁出屏幕——故拆两行：第一行品牌+右侧控件，
-   第二行标签页整行横向滚动。 */
+   移动端实测（iPhone 16 Pro Max 视口 440×956 CSS px / DPR 3，Pixel 10 视口 412×915 / DPR 2.6）：
+   顶栏单行放不下「品牌 + 5 个标签 + 语言下拉 + 主题按钮」，fixed 56px 高度被竖排折字撑破、
+   右侧按钮裁出屏幕——故拆成两行：第一行品牌+右侧控件，第二行标签页整行横向滚动。 */
 @media (max-width: 768px) {
     .topbar {
         flex-wrap: wrap;
@@ -462,7 +462,7 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
    窄视口（窗口缩窄 / Windows 高 DPI 缩放，有效宽度 ≈500px）下 6 列 auto 布局的最小内容宽
    （画质下拉 110px + 40px 开关 + 删除按钮 + 各列内边距）会超出 .panel 容器：width:100% 失效，
    表格按 min-content 溢出渲染——表头「启用/录制中」被压成一字宽竖排字、「删除」按钮溢出卡片右缘、
-   长 URL（discover?modal_id= 等）与长名称折成多行导致行高参差。
+   长 URL（discover?modal_id= 等）与长名称折成多行导致行高参差（2026-09-11 截图实锤）。
    下面按表头定列宽、地址列吃剩余宽并单行省略，全 URL 靠悬浮 title 可见（loadRooms 渲染的地址 td
    自带 title）。三条不可回退的约束：
    ① 改回 auto 布局或删掉省略号即让上述错位回归：Chrome 会在 URL 的 / ? & = 处断行，
@@ -490,7 +490,7 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
     #rooms-view .panel { overflow-x: auto; }
 }
 
-/* 无认证风险横幅（前端仅在 web_auth_enable=false 时插入）。
+/* F-09 / WD-07：无认证风险横幅（前端仅在 web_auth_enable=false 时插入）。
    与 .engine-warning 同色系但用警示黄以示区别：引擎死亡是故障，未认证是配置风险。 */
 .auth-warning {
     background: #f5a623;
@@ -501,10 +501,10 @@ button.small { background: var(--primary-soft); color: var(--primary); border: n
     line-height: 1.5;
 }
 
-/* ===== 认证复验口令窗 =====
-   形态：静态节点 + .hidden 切换（与 .login-card / .engine-warning 同族，不引框架、不在运行时
-   createElement —— 后者会让 tests/frontend/*.mjs 的 node:vm 沙箱无法驱动）。
-   [历史注] 旧形态用 window.prompt 采集口令：明文回显，是全站唯一非 type="password" 的口令输入。
+/* ===== 认证复验口令窗（M-22，2026-09-29） =====
+   面板原先用 window.prompt 采集复验口令（明文回显，是全站唯一非 type="password" 的口令输入形态），
+   现改成本文件既有形态：静态节点 + .hidden 切换（与 .login-card / .engine-warning 同族，
+   不引框架、不在运行时 createElement —— 后者会让 tests/frontend/*.mjs 的 node:vm 沙箱无法驱动）。
    层级：.modal-overlay 的 z-index 必须**高于** .toast 的 1000，保存失败/403 的 toast 才不会被
    口令窗盖住而看不见（反之若口令窗压在 toast 之下，用户会在提示下面看不清正在发生什么）。
    配色一律取既有变量（--card/--border/--text/--muted/--bg/--primary），不新增颜色字面量；

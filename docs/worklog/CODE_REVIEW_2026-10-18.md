@@ -252,7 +252,7 @@
 **MT-07 后台写线程下断言未先 flush，存在竞态假红**
 - 位置：`tests/test_log_archive.py:206` ｜ 类型：并发竞态
 - 说明：边车独立写线程下，`room_message` 后未 `flush()` 即断言 `hub._file` 与磁盘 size，首条事件可能未落盘。
-- 修复：每步断言前先 `hub.flush()`（同 `test_regression_2026_09_22_infra.py` 口径）。
+- 修复：每步断言前先 `hub.flush()`（同 `test_regression_infra.py` 口径）。
 
 **MT-08 心跳超时用例依赖真实挂钟**
 - 位置：`tests/test_machine_validation_fixes.py:93` ｜ 类型：时间依赖
@@ -260,17 +260,17 @@
 - 修复：改用可控假时钟驱动 `wait_for` 超时或放大停止余量。
 
 **MT-09 直接补丁 stdlib asyncio.sleep 本体**
-- 位置：`tests/test_regression_2026_09_22_spider.py:586` ｜ 类型：补丁路径
+- 位置：`tests/test_regression_spider.py:586` ｜ 类型：补丁路径
 - 说明：`patch.object(sp.asyncio, "sleep", ...)` 补在 stdlib asyncio 模块本体，窗口内全进程协程 sleep 被替换，违反仓库既定口径。
 - 修复：浅拷贝 shim 后 `monkeypatch.setattr(sp, "asyncio", shim)`。
 
 **MT-10 直接补丁 stdlib smtplib 本体，注释与实现相反**
-- 位置：`tests/test_regression_2026_09_22_utils.py:289` ｜ 类型：补丁路径
+- 位置：`tests/test_regression_utils.py:289` ｜ 类型：补丁路径
 - 说明：`_no_real_network`/`_send` 把 SMTP/SMTP_SSL 补在 `msg_push.smtplib`（即 stdlib 模块本体），`:296` 注释称"不碰 stdlib 模块对象本身"与实现相反。
 - 修复：注入 `msg_push` 可替换的模块级引用。
 
 **MT-11 直接改写 os.rename 本体**
-- 位置：`tests/test_regression_2026_09_22_infra.py:213` ｜ 类型：补丁路径
+- 位置：`tests/test_regression_infra.py:213` ｜ 类型：补丁路径
 - 说明：`monkeypatch.setattr(os, "rename", ...)` 直接改写全进程唯一的 `os.rename`；仓库内同类问题（M-27 形态）已被定性为跨用例竞态源并修复过。
 - 修复：改为替换 `log_archive` 命名空间内的 os 引用（shim）。
 
@@ -339,7 +339,7 @@
 | LT-07 | `tests/test_notify_script_guard.py:40`、`tests/test_notify.py:22` | 状态泄漏 | 模块级 `sys.path.insert(0, ...)` 永不还原；移入 fixture 并退出时移除 |
 | LT-08 | `tests/test_logger_gui_parent.py:31` | 状态泄漏 | `reload_logger` 卸载漏复位 `_streamget_sink_id`/`_playurl_sink_id`（同构 fixture 已复位三项）；补齐 |
 | LT-09 | `tests/test_i18n.py:21` | 环境依赖 | 直接断言宿主环境 `LANG != "zh_CN.utf8"`，本机设置该 locale 的开发者必误报；改为对比导入前后取值 |
-| LT-10 | `tests/test_regression_2026_09_22_spider.py:409` | 冗余 | 对 `record_url` 的同一断言连续重复两行；删一行 |
+| LT-10 | `tests/test_regression_spider.py:409` | 冗余 | 对 `record_url` 的同一断言连续重复两行；删一行 |
 | LT-11 | `tests/test_ffmpeg_install.py:92` | 死代码/注释失实 | 注释称 `MASTER_CALLS` "由 fixture 逐用例清空"但实现未清空且无断言读取；补 `clear()` 或删除死记录 |
 | LT-12 | `tests/test_web_tray.py:347` | 补丁方式 | `monkeypatch.setattr(os, "_exit", ...)` 直改 stdlib os 本体，与仓库"不改 stdlib 本体"约定相悖；改 shim 方式 |
 | LT-13 | `tests/test_start_record_command_golden.py:459` | 工具风险 | `GOLDEN_REGEN=1` 配合 `-k` 只跑部分用例时会用部分快照覆写黄金基准 JSON；落盘前断言用例集合完整 |

@@ -1,15 +1,33 @@
 // 认证复验口令链（M-22 / M-26）的前端行为回归锁。
 //
+<<<<<<< Updated upstream
+// 【为何单独成文件】M-22 要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
+// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_gates.mjs 里
+// MID-2241 那条是源码级断言，正是 M-26 实证的「钉字面量 → 契约反转时空过」形态，故在此补行为侧。
+=======
+<<<<<<< Updated upstream
 // 【为何单独成文件】要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
 // 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_2026_09_22_gates.mjs 里对同一
 // 契约只有源码级断言——钉字面量在契约反转时会空过，故在此补行为侧。
+=======
+<<<<<<< HEAD
+// 【为何单独成文件】M-22 要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
+// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_gates.mjs 里
+// MID-2241 那条是源码级断言，正是 M-26 实证的「钉字面量 → 契约反转时空过」形态，故在此补行为侧。
+=======
+// 【为何单独成文件】要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
+// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_2026_09_22_gates.mjs 里对同一
+// 契约只有源码级断言——钉字面量在契约反转时会空过，故在此补行为侧。
+>>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 //
-// 【与后端契约同源】src/web_api.py::update_config 的认证键复验段：认证当前开启时写 [Web]
+// 【与后端契约同源】src/web_api.py::update_config 的 MID-2241 段：认证当前开启时写 [Web]
 // web_auth_enable / web_password 必须带能过 verify_web_password 的 reauth_password，否则 403；
 // 其余键不受影响。本文件锁三条前端行为：① 认证两键的 PUT 携带 reauth_password（缺了必然 403）；
-// ② 其余键的 PUT 不带该字段（失效形态：循环外的粘变量会把口令复制进本次保存的每个请求）；
+// ② 其余键的 PUT 不带该字段（M-22 修的正是循环外粘变量把口令复制进本次保存的每个请求）；
 // ③ 空口令/取消一律不提交（不白撞 403，也不留必然失败的 auth_reauth_denied 告警）。
-// 后端自身判定不在此复制，已由 tests/test_regression_2026_09_22_web_g.py 的 TestAuthKeyReauth
+// 后端自身判定不在此复制，已由 tests/test_regression_web_g.py 的 TestAuthKeyReauth
 // 与 tests/test_web_api.py::TestAuthDowngradeRejected 用真实端点 E2E 锁住。
 //
 // 【桩的最小集合】与 test_quality_ui.mjs 同源：DOM/fetch/confirm 桩 + no-op 定时器；
@@ -163,9 +181,27 @@ async function bootConfigView(cfg, { routes = {}, confirm = () => true, seedClas
         setItem: (k, v) => storage.set(k, String(v)),
         removeItem: k => storage.delete(k),
     };
+<<<<<<< Updated upstream
+    // M-84：生产 _tokenStore() 的**首选**载体是 sessionStorage（关标签页即失效），沙箱必须提供它，
+    // 用例才走得到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实
+    // （内存回退那一支由 tests/frontend/test_regression_gates.mjs 的 M-84 用例专门驱动）。
+=======
+<<<<<<< Updated upstream
     // 沙箱必须提供 sessionStorage——它是生产 _tokenStore() 的**首选**载体（关标签页即失效），否则用例
     // 走不到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实（内存回退
     // 一支由 tests/frontend/test_regression_2026_09_22_gates.mjs 的 M-84 用例专门驱动）。
+=======
+<<<<<<< HEAD
+    // M-84：生产 _tokenStore() 的**首选**载体是 sessionStorage（关标签页即失效），沙箱必须提供它，
+    // 用例才走得到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实
+    // （内存回退那一支由 tests/frontend/test_regression_gates.mjs 的 M-84 用例专门驱动）。
+=======
+    // 沙箱必须提供 sessionStorage——它是生产 _tokenStore() 的**首选**载体（关标签页即失效），否则用例
+    // 走不到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实（内存回退
+    // 一支由 tests/frontend/test_regression_2026_09_22_gates.mjs 的 M-84 用例专门驱动）。
+>>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     const sessionData = new Map();
     const sessionStorage = {
         getItem: k => (sessionData.has(k) ? sessionData.get(k) : null),
@@ -271,8 +307,9 @@ test('M-22 前提：index.html 的口令窗用 type="password" 且默认隐藏',
 });
 
 test('M-22：app.js 全文件不存在 window.prompt 形态的口令采集（剥注释后判定）', () => {
-    // 失效形态：用 window.prompt 采集复验口令（面板唯一**明文回显**的口令输入框，原生弹窗无法指定
-    // type/autocomplete）。判据先剥行注释：沿革注释里写着旧形态名，不剥会把注释当成代码命中。
+    // 失效形态：用 window.prompt 采集复验口令——面板唯一**明文回显**的口令输入框，且原生弹窗
+    // 无法指定 type/autocomplete，口令会进自动填充候选。判据先剥行注释：沿革注释里写着旧形态名，
+    // 不剥会把注释当成代码命中。
     const code = APP_JS.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
     assert.ok(!/window\.prompt\s*\(/.test(code), '仍存在 window.prompt 调用');
     assert.ok(!/[^.\w]prompt\s*\(/.test(code), '仍存在裸 prompt 调用（同为明文采集形态）');
@@ -344,7 +381,7 @@ test('M-22：两个认证键共用一次采集（每轮保存最多弹一次口�
 });
 
 test('M-22 反向边界：认证当前关闭时启用认证不采口令（否则第一次收紧配置被口令窗死锁）', async () => {
-    // 判据与后端同源：update_config 的认证键复验段**只在 web_auth_enable 现为真**时要求
+    // 判据与后端同源：update_config 的 MID-2241 段**只在 web_auth_enable 现为真**时要求
     // reauth_password（认证关闭时没有可信的「当前口令」可验）。前端若无条件弹窗，「第一次打开
     // 认证」就永远走不通：用户没有旧口令可填 → 留空即放弃 → 键被跳过。
     const ctx = await bootConfigView({
@@ -385,8 +422,8 @@ test('M-22：取消认证键不得卡住同一轮里的普通配置键', async (
 });
 
 test('M-22：留空提交即放弃本次认证改动，绝不发出不带 reauth_password 的认证键 PUT', async () => {
-    // 后端契约：认证已开启时空/缺 reauth_password 都是 403，故前端就地跳过——既不白撞一次 403，
-    // 也不在日志里留一条必然失败的 auth_reauth_denied 告警。
+    // 后端契约：认证已开启时空/缺 reauth_password 都是 403。旧形态让 prompt 的空串照样走 PUT
+    // （白撞一次 403、日志里留一条 auth_reauth_denied），现在前端就地跳过。
     const ctx = await bootConfigView(AUTH_CONFIG);
     findInput(ctx, 'web_auth_enable').value = 'false';
     clickSave(ctx);

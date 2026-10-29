@@ -7,7 +7,7 @@
 # 被清空；收尾清理越界会连运行期产物一起删。② 隐形：变异验证标记残留与整文件换行符翻转，对
 # black / mypy / 注释检查三面全不报错；新增 `tests/frontend/*.mjs` 忘登记 ci.yml 同理
 # （`node --test <文件>` 不会顺带发现同级其他 .mjs）；运行时钉定表（`build_exe.py` 的
-# `_PINNED_RUNTIME_SHA256` / `scripts/check_runtime_pins.py`）改后不跑 check 同理（发布链必须 fail-closed 钉定）。
+# `_PINNED_RUNTIME_SHA256` / `scripts/check_runtime_pins.py`）改后不跑 check 同理（SEV-10）。
 # 这类判据每次都要执行又容易被忘，正是 Hook 的适用面；本文件只做**判定与反馈**，不引入第二套
 # 门禁清单。
 #
@@ -33,7 +33,7 @@
 #     只认 tool_input 的 file_path 类字段；Bash/Shell 内的文件写入不经该事件——已知边界而非漏洞，
 #     相关约束由收尾门禁（R8 全仓扫描 / run_gates.py / CI）在入库前兜底。
 #   - UTF-8：拒绝理由与反馈都是中文，中文 Windows（cp936）下写 stderr 会抛 UnicodeEncodeError
-#     炸掉 Hook 进程（与门禁 isort 静默跳文件同根因），故 stdout/stderr 都要 reconfigure 并显式给 errors。
+#     炸掉 Hook 进程（与 MID-63 同根因），故 stdout/stderr 都要 reconfigure 并显式给 errors。
 #
 # 用法（由 .qoder/settings.json 的 hooks 注册调用，不需要手工执行）：
 #   python scripts/agent_hook_guard.py            # 从 stdin 读事件 JSON
@@ -68,7 +68,7 @@ PROTECTED_MAINTENANCE_DIR = "scripts"
 # 只认动词，不认「出现 delete 字样」——`git status`、`ls` 之类不在此列，避免把只读命令拦下。
 # `ri`（Remove-Item 别名）、`os.removedirs` 与 `Clear-*` 必须显式列出：`os\.remove` 带 `\b` 收尾，
 # 其后的 `d` 是词字符，边界不成立 → 不写就会对 `os.removedirs` 零命中。
-# 2026-10-21：扩充三族日常写法：`mv`/`Move-Item`（移动即从源路径删除，等价物）、
+# M-95（2026-10-21）扩充三族日常写法：`mv`/`Move-Item`（移动即从源路径删除，等价物）、
 # `truncate`/`shred`/`srm`（内容清零与销毁，比 unlink 更彻底）、以及管道右侧的 `xargs rm`
 # （由右侧动词命中，见 `_FIND_DELETE_RE` 上方说明）。同时把 `find` 从动词表**移出**：旧形态是
 # 「动词表里有 find，随后只要语句里出现 find 且没有 -delete 就整条 continue」，于是
@@ -81,7 +81,7 @@ _DELETE_VERB_RE = re.compile(
 )
 
 # `find` 只有在带 -delete / -exec rm 时才是删除；`find . -name x` 是只读查询，不得拦。
-# `find logs -type f | xargs rm` 此前零命中，根因不在 xargs（右侧的 `rm` 本来就在动词表里），
+# M-95：`find logs -type f | xargs rm` 此前零命中，根因不在 xargs（右侧的 `rm` 本来就在动词表里），
 # 而在旧实现的「语句里出现 find 且没有 -delete 就整条 continue」——它把**整条语句**连带右侧的
 # rm 一起跳过了。现在 find 不进动词表、也不再有整条跳过的分支，xargs 形态自然由右侧动词命中。
 _FIND_TOKEN_RE = re.compile(r"\bfind\b", re.IGNORECASE)
@@ -90,7 +90,7 @@ _FIND_DELETE_RE = re.compile(r"-delete\b|-exec\s+rm\b", re.IGNORECASE)
 # 工作区级的「丢弃本地改动」形态：这三条都不带删除动词，却同样不可逆——
 # `git checkout -- .` / `git restore .` / `git reset --hard` 会把本次任务写下的全部未提交改动
 # 一次性打回（含刚生成的临时脚本与被改的生产文件），与 `git clean -fdx` 同族，故并入 R-WIPE-SCOPE。
-# 2026-10-21：；`git checkout main` / `git checkout -- 某个具体文件` 不命中（见 _is_wide_git_discard）。
+# M-95（2026-10-21）；`git checkout main` / `git checkout -- 某个具体文件` 不命中（见 _is_wide_git_discard）。
 _GIT_DISCARD_RE = re.compile(r"\bgit\s+(checkout|restore|reset)\b", re.IGNORECASE)
 
 # 受保护目录名之后的合法边界字符：路径分隔符、引号、空白与常见闭合符；空串（语句结尾）同样算边界。
@@ -104,7 +104,7 @@ _FILTER_RE = re.compile(r"-Include\b|-name\b|-iname\b|-notmatch\b|-not-like\b|-E
 
 # 排除式上下文：受保护目录名若只出现在 -notmatch / not -path 这类**排除式**里，说明它是
 # 「不要碰」的白名单而不是删除目标（AGENTS.md 清理命令的 Where-Object 子句正是这种写法）。
-# 2026-10-21：命中范围由「match 前 60 字符的窗口」改为「整条 statement 上先定位最近的
+# M-95（2026-10-21）：命中范围由「match 前 60 字符的窗口」改为「整条 statement 上先定位最近的
 # 排除标记，再判该 occurrence 是否仍在这个排除段落内」——见 _is_inside_exclusion_clause。
 _EXCLUSION_RE = re.compile(r"notmatch|not-like|not\s+-path|Exclude", re.IGNORECASE)
 
@@ -123,7 +123,7 @@ _GIT_CLEAN_RE = re.compile(r"\bgit\s+clean\b[^\n]*-[a-zA-Z]*f", re.IGNORECASE)
 
 # 递归+强制删除的开关组合（rm -rf / Remove-Item -Recurse -Force / rd /s /q）。
 # 后两组是**分写形态**：shell 下 `-r -f` 与 `-rf` 完全等价、`--recursive --force` 与
-# `-Recurse -Force` 同义，只认连写会让最常见的分写绕过守卫（2026-10-19 审查该实测
+# `-Recurse -Force` 同义，只认连写会让最常见的分写绕过守卫（2026-10-19 审查 S-01 实测
 # `rm -r -f .` 放行）。每个开关后都加 `(?=\s|$)` 断言，避免把 `-File`（PowerShell 常见参数）
 # 当成 `-f`——放行面误伤会训练使用者绕过 Hook。
 _RECURSIVE_FORCE_RE = re.compile(
@@ -284,7 +284,7 @@ def _redirect_targets(statement: str) -> list[str]:
 
 
 def _has_truncating_redirect(statement: str) -> bool:
-    # 2026-10-21：`> file` 把**已存在**的文件清空重写，与删除等价，是旧动词表里最普通的漏网
+    # M-95（2026-10-21）：`> file` 把**已存在**的文件清空重写，与删除等价，是旧动词表里最普通的漏网
     # 形态（`echo x > scripts/foo.py` 此前零命中）。目标不存在时这条是「新建文件」而不是「清空文件」，
     # 收尾范围守卫不该管新写入，故按存在性分流；含 `$`/`*`/反引号 的 token 解析不到确定路径，
     # 保守判成截断（宁可多问一句，也不让「整批清空」从判定缝里过去）。
@@ -312,7 +312,7 @@ def _is_wide_git_discard(statement: str) -> bool:
 
 
 def _is_delete_statement(statement: str) -> bool:
-    # 「这条语句会不会毁掉已有内容」的唯一入口（该动词/形态覆盖面）：
+    # 「这条语句会不会毁掉已有内容」的唯一入口（M-95 的动词/形态覆盖面）：
     # 动词表 / find 带删除开关 / 截断式重定向 / git 丢弃本地改动，四类任一成立。
     # `find` 刻意不并进 `_DELETE_VERB_RE`：它单独出现是查询，必须与删除开关同时出现才算删除；
     # 而 `find … | xargs rm` 那种「左侧 find、右侧真删」由右侧动词命中——旧实现没有这条通路，
@@ -327,7 +327,7 @@ def _is_delete_statement(statement: str) -> bool:
 
 
 def _is_inside_exclusion_clause(statement: str, position: int) -> bool:
-    # 2026-10-21：第二处缺陷：旧实现只看 match 前 60 个字符，长 `-Exclude`/`-notmatch` 段落
+    # M-95（2026-10-21）第二处缺陷：旧实现只看 match 前 60 个字符，长 `-Exclude`/`-notmatch` 段落
     # （多分支交替 + 转义引号）会把标记推到窗口之外，于是「被刻意排除掉的路径」反被当成删除目标——
     # 这正是 AGENTS.md 收尾清理命令的形状，误伤等于逼使用者加 `|| true` 绕过守卫。
     # 改法：先在**整条 statement** 上定位该 occurrence 之前最近的一个排除标记，再要求「标记与
@@ -391,7 +391,7 @@ def check_bash_command(command: str) -> tuple[str, str] | None:
             )
 
         if _is_wide_git_discard(statement):
-            # 2026-10-21：`git checkout -- .` / `git restore .` / `git reset --hard` 不带删除
+            # M-95（2026-10-21）：`git checkout -- .` / `git restore .` / `git reset --hard` 不带删除
             # 动词，却把工作区全部未提交改动一次性打回——被丢弃的既有本次任务的一次性脚本，也有刚改到
             # 一半的生产文件（后者更贵：改动没落盘、也没有任何门禁能告诉你它没了）。与 git clean 同档。
             return (
@@ -403,7 +403,7 @@ def check_bash_command(command: str) -> tuple[str, str] | None:
 
         if not _is_delete_statement(statement):
             # 动词表 / find 带删除开关 / 截断式重定向 / git 丢弃 四类形态都不成立
-            # → 这条是只读语句，不参与删除判定（该形态覆盖面，见 _is_delete_statement）。
+            # → 这条是只读语句，不参与删除判定（M-95 的形态覆盖面，见 _is_delete_statement）。
             continue
 
         for name in PROTECTED_RUNTIME_DIRS + (PROTECTED_MAINTENANCE_DIR,):
@@ -432,7 +432,7 @@ def _check_runtime_pins_changed(
     path: Path, segments: list[str], anchored: bool | None = None
 ) -> tuple[str, str] | None:
     # P-RUNTIME-PIN：写入目标命中运行时钉定表所在文件时，即时提醒 agent 收尾跑 check
-    # （AGENTS.md「发布链运行时二进制必须 fail-closed 钉定」第三层防线）。
+    # （AGENTS.md「发布链运行时二进制必须 fail-closed 钉定（SEV-10）」第三层防线）。
     #
     # 定位策略分两档：
     #   - 路径在 ROOT 内（anchored=True）按**规范位置**精确锚定：根级 build_exe.py 与
@@ -528,14 +528,14 @@ def check_written_file(path: Path) -> tuple[str, str] | None:
 
     # P-RUNTIME-PIN：钉定表所在文件（根级 build_exe.py / scripts/check_runtime_pins.py）被修改后，
     # 收尾必须跑一次 `python scripts/check_runtime_pins.py`——空表 / 缺平台 / 缺槽位对 black /
-    # mypy / 注释检查三面全隐形，只有该脚本自己能兜住。定位策略（根内精确锚定、
+    # mypy / 注释检查三面全隐形（SEV-10），只有该脚本自己能兜住。定位策略（根内精确锚定、
     # 根外末尾分段、跳过工具产物目录）见 _check_runtime_pins_changed 的注释。
     runtime_pin_feedback = _check_runtime_pins_changed(path, segments)
     if runtime_pin_feedback is not None:
         return runtime_pin_feedback
 
     # P-MJS-REGISTER：新增 tests/frontend/*.mjs 必须同批登记进 ci.yml 的 node-id 清单，
-    # 否则该文件的全部回归锁在正常 CI 中从不执行（该实证）。按**目录结构**（…/tests/frontend/x.mjs）
+    # 否则该文件的全部回归锁在正常 CI 中从不执行（M-28 实证）。按**目录结构**（…/tests/frontend/x.mjs）
     # 识别，不依赖检出根路径，也不依赖 ROOT 解析成功。
     if len(segments) >= 3 and segments[-3] == "tests" and segments[-2] == "frontend" and path.suffix.lower() == ".mjs":
         wrapper = f"tests/frontend/{path.stem}.py::"
@@ -565,7 +565,7 @@ def run_self_test() -> int:
         ("R-PIP-BULK", "pip install --force-reinstall -r requirements.txt"),
         ("R-CLEAN-SCOPE", "Remove-Item -Recurse -Force ./downloads/"),
         ("R-WIPE-SCOPE", "rm -rf ."),
-        # —— 以下为该实测放行的变形语料，逐条固化 ——
+        # —— 以下为 S-01 实测放行的变形语料，逐条固化 ——
         ("R-CLEAN-SCOPE", "rm -rf logs "),  # 尾随空格
         ("R-CLEAN-SCOPE", 'rm -rf "logs"'),  # 双引号
         ("R-CLEAN-SCOPE", "rm -rf 'logs'"),  # 单引号
@@ -574,7 +574,7 @@ def run_self_test() -> int:
         ("R-CLEAN-SCOPE", "ri -r -fo downloads"),  # PowerShell 别名 ri + 分写
         ("R-CLEAN-SCOPE", "python -c \"import os;os.removedirs('recordings')\""),  # os.removedirs
         ("R-CLEAN-SCOPE", "Clear-Content -Path .\\logs\\* -Force"),  # PowerShell 清空动词
-        # —— （2026-10-21）实测放行的日常形态，逐条固化 ——
+        # —— M-95（2026-10-21）实测放行的日常形态，逐条固化 ——
         ("R-CLEAN-SCOPE", "find logs -type f | xargs rm"),  # find 右侧交给 xargs 删除（旧判据整条跳过）
         ("R-CLEAN-SCOPE", "mv recordings/seg001.ts /tmp/"),  # 移动即从源目录删除
         ("R-CLEAN-SCOPE", "truncate -s 0 logs/streamget.log"),  # 内容清零
@@ -592,7 +592,7 @@ def run_self_test() -> int:
         'HTTP_PROXY="" HTTPS_PROXY="" pip install --proxy "" brotli',
         "python scripts/run_gates.py",
         "python -m pytest tests/test_agent_hook_guard.py -q",
-        # 排除式覆盖面：长 `-notmatch` 段落里的受保护目录名是**白名单**，不是删除目标；
+        # M-95 的排除式覆盖面：长 `-notmatch` 段落里的受保护目录名是**白名单**，不是删除目标；
         # 旧实现只回看 60 字符，把标记推出窗口后即误判（此处标记距 logs 已超 80 字符）。
         "Get-ChildItem -Recurse -File -Include *_tmp_*.py,tmp_*.py,mock_*.py | Where-Object { $_.FullName"
         " -notmatch '\\\\(.venv|node_modules|ffmpeg_binaries|typings_stubs|downloads_backup|recordings_archive|"

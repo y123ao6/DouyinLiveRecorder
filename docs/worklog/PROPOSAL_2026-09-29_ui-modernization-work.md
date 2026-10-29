@@ -39,8 +39,8 @@
   - 新增 `_route` 适配器工厂（`inspect.signature` 驱动分类：模型参数 / Query 参数 / request）：JSON body 经 `_read_json_body` 解析（非法体→422）；Query 按 `_QUERY_DEFAULTS` 默认值与上下界夹取；同步 def 端点经 `run_in_threadpool` 派发（对齐 FastAPI 行为，避免阻塞事件循环）；非 Response 返回值统一包 JSONResponse。
   - **所有 24 个路由处理器函数体零改动**，业务逻辑与全部安全不变量（MID-*/SEV-*）逐字保留。
 - `src/web_models.py`（新增）：9 个纯标准库 dataclass（LoginRequest / RoomCreate / RoomUpdate / RoomToggle / RoomQualityUpdate / QualityOptionsUpdate / RecordingToggle / ConfigUpdate / LanguageUpdate），以 `.parse(data)` classmethod 替代 pydantic `BaseModel`；缺字段/类型错→ValueError；bool 仅接受 Python bool；多余字段忽略。
-- 依赖清单：`requirements.txt` / `pyproject.toml` 同步删除 `fastapi>=0.140.0` 与 `pydantic>=2.13.4`；保留 `starlette>=1.3.1` / `uvicorn` / `python-multipart`；包名集合相等性经 `tests/test_regression_2026_09_22_gates.py` 实测通过；`uv.lock` / `DouyinLiveRecorder.egg-info` 经 `python scripts/sync_metadata.py` 重建（requires.txt 已无 fastapi/pydantic）。
-- 测试文件 `TestClient` import 切到 `starlette.testclient`：`tests/test_web_api.py`、`tests/test_web_config_locks.py`、`tests/test_danmaku_monitor.py`、`tests/test_regression_2026_09_22_web_g.py`（共 5 处）。
+- 依赖清单：`requirements.txt` / `pyproject.toml` 同步删除 `fastapi>=0.140.0` 与 `pydantic>=2.13.4`；保留 `starlette>=1.3.1` / `uvicorn` / `python-multipart`；包名集合相等性经 `tests/test_regression_gates.py` 实测通过；`uv.lock` / `DouyinLiveRecorder.egg-info` 经 `python scripts/sync_metadata.py` 重建（requires.txt 已无 fastapi/pydantic）。
+- 测试文件 `TestClient` import 切到 `starlette.testclient`：`tests/test_web_api.py`、`tests/test_web_config_locks.py`、`tests/test_danmaku_monitor.py`、`tests/test_regression_web_g.py`（共 5 处）。
 - 新增 `tests/test_web_api_routes.py`：动态遍历 `app.routes`，断言 24 条路由（method/path 精确集合）+ `/web` 挂载点，取代被敏感门禁拦截的静态 `web_api_routes_baseline.json`（已删除）。
 
 ### 1.3 阶段2 — 运行期门禁实测（2026-09-29 晚，venv 恢复后全绿）
@@ -61,7 +61,7 @@
 1. **P0：`@app.middleware("http")` 导入即崩** —— Starlette 无该装饰器方法，Web 面板整体不可用。修复：`add_middleware(BaseHTTPMiddleware, dispatch=auth_middleware)`，语义与 FastAPI 装饰器底层实现一致。
 2. **契约漂移：HTTPException 回纯文本** —— Starlette 内建 handler 把端点内 raise 的 HTTPException 回成 PlainTextResponse(detail)，`{"detail": ...}` JSON 结构丢失，批量安全不变量用例转红（TestAuthKeyReauth / TestOutboundTargetKeysValidated / TestInsecureBindInvariant 等）。修复：注册 FastAPI 同款 JSON handler（`headers` 透传保留 Retry-After 等用法）。
 3. **门禁对象更新**：`scripts/check_version.py` 的 web_api 版本检查对象从 `FastAPI(version=)` 换成 importlib.metadata 动态读取形态（MIN-2262 fail-closed 语义保留；DYNAMIC / 写死字面量 / 对象消失三分支变异验证通过）。
-4. **测试锚点随迁移同步**：`tests/frontend/test_regression_2026_09_22_gates.mjs` MID-2241 的 `reauth_password` 字段扫描迁到 `src/web_models.py`、端点截取锚点迁到 `@_route(app, ["GET"], "/api/language")`；`test_web_api.py` 的 `/health` version 断言从 `app.version`（FastAPI 元数据，Starlette 无）改为同源 `wa._APP_VERSION`。
+4. **测试锚点随迁移同步**：`tests/frontend/test_regression_gates.mjs` MID-2241 的 `reauth_password` 字段扫描迁到 `src/web_models.py`、端点截取锚点迁到 `@_route(app, ["GET"], "/api/language")`；`test_web_api.py` 的 `/health` version 断言从 `app.version`（FastAPI 元数据，Starlette 无）改为同源 `wa._APP_VERSION`。
 5. **格式与注解收尾**：black/isort 对迁移期改动的 2 个文件重排（行尾形态逐文件核查未变）；`test_web_api_routes.py` fixture 补注解；`src/web_models.py` 补 9 条模型语义注释（密度 10.2%→达标，内容均经端点源码核实）。
 
 **残留事实（非阻塞）**

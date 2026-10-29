@@ -94,7 +94,7 @@
 - **当前锚点**：`src/async_http.py::_build_hop_guard` 的 `_guard`（复核行 645）→ `_internal_stream_target_reason`（491）→ `web_config._host_internal_reason` 内 `socket.getaddrinfo`
 - **现状**：每一跳、每一次请求都在循环线程同步解析；DNS 慢时冻结该房间整个事件循环。
 - **为什么未做**：httpx 的 response 钩子是**同步签名**，不能 `await`；改成 `loop.getaddrinfo` 需在钩子内取循环并加超时，属并发模型改动。
-- **不可回退的约束**：该钩子必须仍是 `_build_client` 的**唯一** response 钩子（`tests/test_regression_2026_09_29_wp_b_netguard.py` 断言恰一支）；不得给判定结果加缓存（会拉长 DNS 重绑定窗口）；「先定罪、后读体」顺序不变。
+- **不可回退的约束**：该钩子必须仍是 `_build_client` 的**唯一** response 钩子（`tests/test_regression_wp_b_netguard.py` 断言恰一支）；不得给判定结果加缓存（会拉长 DNS 重绑定窗口）；「先定罪、后读体」顺序不变。
 - **验收判据**：DNS 桩延迟 2s 时，同循环其它请求不被阻塞（可用 tick 计数用例）；判据结论与现状逐条一致。
 
 ### M-30 `decompress_brotli_limited` 事后检测上限且异常路径不释放
@@ -185,7 +185,7 @@
 - **现状**：Tk 侧三处路径已过 `mask_credentials`；Qt 侧无任何 `mask_credentials` 引用，录制输出会把直播间 URL、平台签名参数、请求头原样写入日志页并落盘。
 - **为什么未做**（本轮核对发现的口径缺口，非报告歧义）：需先定**脱敏点**——读线程脱敏会连日志页也看不到原文（排障有时需要原文），只在落盘前脱敏则日志页仍暴露；且既有 Qt 输出链用例可能按原文断言。
 - **建议**：与 Tk 侧同口径，在入队前统一过 `utils.mask_credentials`，补一条「签名参数值消失」的行为用例；若确需保留日志页原文，则「落盘前脱敏 + 页面标注」两处都做，**不得只做一处**。
-- **验收判据**：录制输出含 `token=`/`wsSecret=`/`user:pass@` 时 `logs/gui.log` 中值消失；`tests/test_regression_2026_10_18_gui_output_chain.py` 全绿。
+- **验收判据**：录制输出含 `token=`/`wsSecret=`/`user:pass@` 时 `logs/gui.log` 中值消失；`tests/test_regression_gui_output_chain.py` 全绿。
 
 ### M-86 / M-87 `src/javascript/` 签名脚本（Liveme / X-Bogus）
 

@@ -103,7 +103,7 @@
 | 前端 DOM | 动效只加 class / 属性，**不插入包裹元素**——`test_quality_ui.mjs` 断言 `tbody.innerHTML` 片段 |
 | 配置与 i18n | config.ini 键名与布尔解析口径不变；GUI 主题键避开 `=` / `:`；新增文案同步 i18n 四目录 + `web/app.js` 五处 |
 
-**已知会被撞到的既有门禁**（须同批改，不为门禁绿而绕过）：`tests/test_regression_2026_09_22_gates.py` 的「运行时依赖 23 条包名集合逐项相等」锁——移除 `fastapi` / `pydantic` / `customtkinter` 后该锁需同步更新，并随改动提交理由。
+**已知会被撞到的既有门禁**（须同批改，不为门禁绿而绕过）：`tests/test_regression_gates.py` 的「运行时依赖 23 条包名集合逐项相等」锁——移除 `fastapi` / `pydantic` / `customtkinter` 后该锁需同步更新，并随改动提交理由。
 
 ---
 

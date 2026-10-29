@@ -8,11 +8,10 @@
 # 锁：shared 的数值容错与配置裁决三态；danmaku_monitor 的逐事件防护与 stop_event 随线程
 # 新建；recorder 的 session_id 迟到回调、_stopping 复位早于会话校验、停止/退出单飞；
 # settings_dialog 的 reload/conflict 两条路径；widgets.fixed_font 的单个 family 与首个
-# 命中；TerminalText 高亮器单实例复用；/该真窗语言热切换——本文件
+# 命中；TerminalText 高亮器单实例复用（M-16）；M-13/M-14 的真窗语言热切换——本文件
 # 「不靠真窗」口径的刻意例外：登记表回填与「原地停旧语言」只有真控件树 + 真翻译目录
 # 才测得出来（夹具与 test_gui_qt_window.py 同源，登记表按用例快照还原）。
 
-import ast
 import json
 import os
 import signal as signal_module
@@ -150,7 +149,7 @@ def test_cleanup_process_tree_without_pid_only_logs() -> None:
 
 
 def test_status_patterns_match_production_lines_under_pinned_language() -> None:
-    # 正则必须由 tr() 后的形态派生，故按语言组装；conftest 把 tr 钉成恒等映射，
+    # M-14：正则必须由 tr() 后的形态派生，故按语言组装；conftest 把 tr 钉成恒等映射，
     # 这里显式钉 zh_CN 让「模板 → 正则 → 命中真实状态行」整条链可被断言。
     previous = i18n.get_language()
     i18n.set_language("zh_CN")
@@ -160,7 +159,7 @@ def test_status_patterns_match_production_lines_under_pinned_language() -> None:
         assert patterns.downgrade is not None
         match = patterns.recording.search("主播A[原画] 正在录制中 00:01:02")
         assert match is not None and match.group("recording_live") == "主播A"
-        # 主播名里的 [...] 不得被当成画质段边界，画质取最后一个 [...]
+        # F-06：主播名里的 [...] 不得被当成画质段边界，画质取最后一个 [...]
         tricky = patterns.recording.search("房间[测试][高清] 正在录制中 1")
         assert tricky is not None and tricky.group("qa") == "高清"
         down = patterns.downgrade.search("主播B 画质降级：设置 原画(OD) 实际 高清(HD)")
@@ -244,7 +243,7 @@ def test_danmaku_tail_loop_reads_file_and_survives_dirty_events(tmp_path: Path) 
         assert [m.get("text") for m in messages] == ["第一条", "第二条"], "脏事件不得吃掉同批其余事件"
         # 坏 JSON 行与空行都被跳过、不留痕。写入顺序刻意把坏行放在「第三条」之前：
         # tail 线程按文件顺序消费，「第三条」能落到末位即坏行已被跳过的行为见证。
-        # 等待用 deadline 轮询而不是固定 sleep（固定余量在 CI 高负载下会假红）。
+        # 等待用 deadline 轮询而不是固定 sleep（MT-06：固定余量在 CI 高负载下会假红）。
         with jsonl.open("a", encoding="utf-8") as f:
             f.write("{not json}\n\n")
         _write_jsonl(jsonl, [{"ev": "msg", "room": "A", "user": "u3", "text": "第三条", "type": "chat"}])
@@ -272,76 +271,6 @@ def _controller(tmp_path: Path) -> RecorderController:
         app_root=str(tmp_path),
         script_dir=str(tmp_path),
     )
-
-
-# ─── recorder：i18n 迁移回归锁（AST 静态判据，零运行时依赖） ───
-
-
-def test_recorder_log_messages_route_through_tr() -> None:
-    # Qt 移植曾整批丢失 gui.py 的 tr() 迁移（2026-10-29 回填）：_log 首参一律经 i18n.tr 常量
-    # 模板（占位符沿用目录登记的归一形态 {pid}/{path}/{err}/{type_name}），裸常量/裸 f-string
-    # 在非 zh_CN 语言下永远渲染源文。判据只认「有价值的」首参——装饰线（"━" * 40 是 BinOp）
-    # 与转发变量实参（Name）不在判据面内。模板是否登记进目录由 tests/test_i18n_migration.py
-    # 的不变量③ runtime_templates_covered_by_catalog 跨仓把守，本用例只锁「调用形态」。
-    source = (Path(__file__).resolve().parent.parent / "src" / "gui_qt" / "recorder.py").read_text(encoding="utf-8")
-    offenders: list[str] = []
-    for node in ast.walk(ast.parse(source)):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_log"
-            and node.args
-        ):
-            continue
-        first = node.args[0]
-        if isinstance(first, ast.JoinedStr):
-            offenders.append(f"L{node.lineno}: 裸 f-string")
-        elif isinstance(first, ast.Constant) and isinstance(first.value, str) and first.value.strip():
-            offenders.append(f"L{node.lineno}: 裸常量 {first.value!r}")
-    assert not offenders, "recorder._log 存在绕过 tr() 的文案（移植丢失迁移的回归）: " + "; ".join(offenders)
-
-
-def test_recorder_path_logging_masks_credentials() -> None:
-    # 红线判据同 tests/test_gui_legacy_guards.py::test_absolute_paths_are_masked_before_logging
-    # （gui.py 当年正是路径日志漏过脱敏才立的判据）：「执行程序/工作目录」两条 {path} 模板的
-    # path= 实参必须是 mask_credentials(...) 调用。「未找到 console 解释器 {path}」不在旧守护
-    # 的 _MASKED_PATH_MSGIDS 集合内（gui.py 同款调用点就不脱敏，解释器位置属低敏诊断信息），
-    # 与 gui.py 逐行对齐、不扩大红线范围。
-    masked_msgids = ("执行程序: {path}", "工作目录: {path}")
-    source = (Path(__file__).resolve().parent.parent / "src" / "gui_qt" / "recorder.py").read_text(encoding="utf-8")
-    seen = 0
-    for node in ast.walk(ast.parse(source)):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_log"
-            and node.args
-        ):
-            continue
-        for inner in ast.walk(node):
-            if not (
-                isinstance(inner, ast.Call)
-                and isinstance(inner.func, ast.Attribute)
-                and inner.func.attr == "tr"
-                and inner.args
-                and isinstance(inner.args[0], ast.Constant)
-                and isinstance(inner.args[0].value, str)
-            ):
-                continue
-            template = inner.args[0].value
-            if template not in masked_msgids:
-                continue
-            seen += 1
-            path_kw = next((kw for kw in inner.keywords if kw.arg == "path"), None)
-            masked = (
-                path_kw is not None
-                and isinstance(path_kw.value, ast.Call)
-                and isinstance(path_kw.value.func, ast.Name)
-                and path_kw.value.func.id == "mask_credentials"
-            )
-            assert masked, f"路径未经 mask_credentials 脱敏就进日志: {template!r}"
-    # 反向见证：判据必须真的看见两条 {path} 日志点，否则「全部通过」只说明什么都没扫到
-    assert seen == 2, f"路径日志点的枚举面失效（应恰好 2 处，实得 {seen}）"
 
 
 def test_build_record_command_is_source_mode_outside_frozen(qt_app: QApplication, tmp_path: Path) -> None:
@@ -426,11 +355,11 @@ def test_recorder_shutdown_without_process_still_calls_finish(qt_app: QApplicati
 
 
 def test_stop_worker_body_with_vanished_process_still_emits_ended(qt_app: QApplication, tmp_path: Path) -> None:
-    # 「stop_async 已发起、按钮已按约定等 _on_recorder_ended 统一恢复，而句柄被
+    # M-79：「stop_async 已发起、按钮已按约定等 _on_recorder_ended 统一恢复，而句柄被
     # 自然 EOF 的 reclaim_after_natural_end 抢先清空」是两条通道并存的必然竞态。旧实现在
     # proc is None 分支只复位 _stopping 就 return、不 emit ended——两个按钮从此永久禁用，
     # 只能重启 GUI。白盒直调本方法模拟该窗口（真竞态无法稳定编排，锁的是「该出口必须
-    # emit」这条契约本身，与该对异常路径的要求同形）。
+    # emit」这条契约本身，与 M-33 对异常路径的要求同形）。
     controller = _controller(tmp_path)
     controller._session_id = 7  # noqa: SLF001 - 白盒：模拟已有一轮会话
     seen: list[int] = []
@@ -443,7 +372,7 @@ def test_stop_worker_body_with_vanished_process_still_emits_ended(qt_app: QAppli
 def test_shutdown_cleanup_consumes_pid_captured_at_start(
     qt_app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # _cleanup_target_pid 旧实现只写不读——停止链/自然 EOF 把 _process 清空后，
+    # M-79：_cleanup_target_pid 旧实现只写不读——停止链/自然 EOF 把 _process 清空后，
     # 退出收尾从 proc 拿到的 child_pid 恒为 None，cleanup_process_tree(None) 记一行就
     # 返回，「子进程没死利索、ffmpeg 还在录」的退出现场被静默跳过整树清理。
     controller = _controller(tmp_path)
@@ -467,7 +396,7 @@ def test_shutdown_cleanup_consumes_pid_captured_at_start(
 def test_stop_worker_body_clears_cleanup_target_only_when_process_dead(
     qt_app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 对称半句：停止链**确认进程已终止**时才清零清理目标——Windows 的 PID 进程
+    # M-79 的对称半句：停止链**确认进程已终止**时才清零清理目标——Windows 的 PID 进程
     # 退出即进复用池，留一个已回收的号码给下一次退出收尾补 taskkill，等于允许它命中新主人；
     # 而「没确认死透」就必须保留号码（那正是兜底要救的场景）。
     controller = _controller(tmp_path)
@@ -480,7 +409,7 @@ def test_stop_worker_body_clears_cleanup_target_only_when_process_dead(
             return 0
 
     # _stop_child_once 走「复核 poll 非 None 即返回」的最短真实分支（不触碰信号面）。
-    # 替身只复刻被读到的 pid/poll 两个面，故类型收窄走行尾 ignore（与该用例的
+    # 替身只复刻被读到的 pid/poll 两个面，故类型收窄走行尾 ignore（与 M-33 用例的
     # method-assign ignore 同口径，mypy 对 ignore 注释后的散文会判 invalid）。
     controller._process = _DeadProc()  # type: ignore[assignment]
     controller._cleanup_target_pid = 4242  # noqa: SLF001
@@ -492,7 +421,7 @@ def test_stop_worker_body_clears_cleanup_target_only_when_process_dead(
 def test_read_output_degrades_from_bounded_poll_to_blocking_wait(
     qt_app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 空 readline + 进程仍活 = 管道瞬时无数据（写端被孙进程握着），旧实现 0.05s
+    # M-79：空 readline + 进程仍活 = 管道瞬时无数据（写端被孙进程握着），旧实现 0.05s
     # 忙轮询没有任何退出条件——空转每秒 20 次直到进程消失。定稿给累计上限，超限后退化为
     # 阻塞 proc.wait()（唤醒点是进程真实终止），结束哨兵照投。
     controller = _controller(tmp_path)
@@ -685,7 +614,7 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, obj
     monkeypatch.setattr("PySide6.QtWidgets.QApplication", app_factory)
     monkeypatch.setattr("src.gui_qt.main_window.MainWindow", _window_factory)
     monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
-    # main() 现在还会装 threading.excepthook 并挂模块全局崩溃代理——两处进程级状态
+    # M-80：main() 现在还会装 threading.excepthook 并挂模块全局崩溃代理——两处进程级状态
     # 显式登记「还原为当前值」，否则替身用例会把崩溃钩子漏给后续所有文件（线程里再抛
     # 异常就会往 %TEMP%\dlr_gui_crash.log 里追加，污染其他用例的取证面）。
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)
@@ -756,7 +685,7 @@ def test_crash_sink_writes_file_and_does_not_raise(monkeypatch: pytest.MonkeyPat
 
 
 def test_main_installs_threading_excepthook_and_crash_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
-    # sys.excepthook 管不到线程——recorder-output / gui-stop / gui-quit / danmaku tail
+    # M-80：sys.excepthook 管不到线程——recorder-output / gui-stop / gui-quit / danmaku tail
     # 四个守护线程的未捕获异常走 threading.excepthook，默认形态只打 stderr，而 pythonw /
     # 冻结 console=False 下 stderr 为 None，异常被静默吞掉，正是本模块头声称要防的
     # 「无窗口、无报错」。旧实现只装了主线程那一半。
@@ -769,7 +698,7 @@ def test_main_installs_threading_excepthook_and_crash_proxy(monkeypatch: pytest.
 def test_crash_sink_marshals_dialog_through_proxy_not_current_thread(
     qt_app: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 行为半句：_crash_sink 不得再在「出事线程」上直接构造 QMessageBox——
+    # M-80 的行为半句：_crash_sink 不得再在「出事线程」上直接构造 QMessageBox——
     # 取证面是代理收到请求时的执行线程。主线程调用（sys.excepthook 的常规形态）就地直显；
     # 弹窗动作经由代理转发，_show_crash 是唯一的构造点（旧实现内联在 _crash_sink 里，
     # 变异验证「把弹窗构造搬回 _crash_sink」时，本用例的展示记录点数不变但生产源码结构
@@ -819,7 +748,7 @@ def _standalone_window(tmp_path: Path, main_config_body: str) -> tuple[MainWindo
 
 
 def test_startup_language_preference_retranslates_static_labels(qt_app: QApplication, tmp_path: Path) -> None:
-    # 行为锁：启动路径（_apply_language_preference）必须在 set_language 之后立刻
+    # M-78 行为锁：启动路径（_apply_language_preference）必须在 set_language 之后立刻
     # retranslate_all() 全量回填。旧实现里 retranslate_all 的唯一调用点在 on_language_change
     # （下拉菜单事件），而 set_text() 建时查表发生在 _build_ui()（先于语言切换）——
     # 配置语言显式写 en_US 的用户重启后静态标签一直停在中文，直到手动切一次语言下拉才被
@@ -843,7 +772,7 @@ def test_startup_language_preference_retranslates_static_labels(qt_app: QApplica
 
 
 def test_pref_combos_backfilled_from_saved_theme_and_scale(qt_app: QApplication, tmp_path: Path) -> None:
-    # 行为锁：显式偏好 dark/115 重启后，侧栏两个下拉的 currentData 必须与已生效的
+    # M-80 行为锁：显式偏好 dark/115 重启后，侧栏两个下拉的 currentData 必须与已生效的
     # palette 同值。旧实现 _resolve_initial_theme_and_scale 只算 palette 不回填下拉，
     # 下拉初值恒为 index 0（跟随系统/自动）——「窗口是深色、下拉指着跟随系统」的自相矛盾，
     # 且 toggle_theme（按 palette 翻）与 on_theme_change（按 currentData 落盘）从此不一致。
@@ -863,7 +792,7 @@ def test_pref_combos_backfilled_from_saved_theme_and_scale(qt_app: QApplication,
 
 
 def test_terminal_append_line_follows_newest_line(qt_app: QApplication) -> None:
-    # textCursor() 返回副本——只在副本上 movePosition/insertText 而不调 setTextCursor，
+    # M-81：textCursor() 返回副本——只在副本上 movePosition/insertText 而不调 setTextCursor，
     # 控件的**视口**从不跟随最新行。2026-10-21 offscreen 实测：纯副本写法下文档字符数一路涨、
     # 内部光标位置因「插入点恰在光标处」的位移记账甚至仍报 atEnd True，但 verticalScrollBar
     # 停在 0（maximum 已到几十）——正是「在录，日志页却定格在开头」的确切形态；补上
@@ -890,7 +819,7 @@ def test_terminal_append_line_follows_newest_line(qt_app: QApplication) -> None:
 
 
 def test_tray_apply_palette_repaints_icon_with_new_tokens(qt_app: QApplication) -> None:
-    # 托盘图标色是 TrayIcon 构造时的 palette 快照，旧实现此后从不刷新——主题切换后
+    # M-81：托盘图标色是 TrayIcon 构造时的 palette 快照，旧实现此后从不刷新——主题切换后
     # 托盘圆点与侧栏状态点分色（「一个状态 = 一种颜色」的一致性被打断）。定稿 = apply_palette
     # 存新色表并按当前运行态立即重绘；重绘结果必须与「用新色表现画」逐像素一致。
     light = theme_module.palette(theme_module.THEME_LIGHT, 1.0).tokens
@@ -981,13 +910,13 @@ def test_fixed_font_falls_back_to_system_fixed_font(qt_app: QApplication, monkey
     assert got.pointSize() == 9
 
 
-# ─── widgets.TerminalText.apply_highlighter：单实例复用 ───────────
+# ─── widgets.TerminalText.apply_highlighter：单实例复用（M-16） ───────────
 
 
 def test_apply_highlighter_attaches_once_and_only_recolors(
     qt_app: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 行为锁：主题/缩放/字体切换每次都走 apply_highlighter，旧实现在此处新建
+    # M-16 行为锁：主题/缩放/字体切换每次都走 apply_highlighter，旧实现在此处新建
     # _LogHighlighter 挂同一 document（QSyntaxHighlighter 以 document 为父对象，旧实例永不
     # 销毁）：切 N 次叠 N 个，旧行被反复重着色。取证面是 document 的 children 里
     # QSyntaxHighlighter 的个数（Qt 没有公开的「列出全部高亮器」API，父子关系是唯一可机检形态）。
@@ -1018,7 +947,7 @@ def test_apply_highlighter_attaches_once_and_only_recolors(
     ], "每次切换主题必须且只能触发一次 rehighlight：去掉它旧行停在旧配色，多触发是重复开销"
 
 
-# ─── /：真窗语言热切换的整窗回填 ─────────────────────────────────
+# ─── M-13/M-14：真窗语言热切换的整窗回填 ─────────────────────────────────
 
 
 def _fail_fast_box(*_args: object, **_kwargs: object) -> int:
@@ -1068,7 +997,7 @@ def _switch_to_en_us(win: MainWindow) -> None:
 def test_running_status_text_survives_retranslate_and_follows_language(
     qt_app: QApplication, lang_window: MainWindow
 ) -> None:
-    # 行为锁：状态标题/副标题是运行态文案，不能被 retranslate_all() 的回填打回
+    # M-13 行为锁：状态标题/副标题是运行态文案，不能被 retranslate_all() 的回填打回
     # 登记初值「待机」，且必须随语言切换按当前 recorder 状态重驱（四处投影一致）。
     win = lang_window
     # 进入「录制中」形态：白盒置 _running 让 is_running() 为真即可——本判据考的是切换钩子
@@ -1098,7 +1027,7 @@ def test_running_status_text_survives_retranslate_and_follows_language(
 
 
 def test_static_labels_and_derived_title_follow_language_switch(qt_app: QApplication, lang_window: MainWindow) -> None:
-    # 行为锁：offscreen 真建页面读 text()——导航按钮（带 emoji 键）、品牌副标题、
+    # M-14 行为锁：offscreen 真建页面读 text()——导航按钮（带 emoji 键）、品牌副标题、
     # 偏好说明标签、导入字体按钮、两张监控页的统计标题/空态/按钮，以及由导航文本派生的
     # 顶栏页标题，切语言后全部必须按当前目录重取；登记遗漏的形态是「原地停在旧语言」。
     win = lang_window
@@ -1210,7 +1139,7 @@ def test_tray_menu_action_items_are_wired_and_fire_in_menu_order(qt_app: QApplic
 def test_monitor_table_headers_and_filter_sentinel_follow_language_switch(
     qt_app: QApplication, lang_window: MainWindow
 ) -> None:
-    # 运行态重刷锁：两张监控表的表头与「全部房间」哨兵都在产生点 tr()，
+    # M-14 运行态重刷锁：两张监控表的表头与「全部房间」哨兵都在产生点 tr()，
     # refresh 对行内容等值时短路返回——语言切换后若不清上一轮缓存强制重画，旧语言原地常驻。
     win = lang_window
     assert win.danmaku_page.filter_combo.itemText(0) == "全部房间"

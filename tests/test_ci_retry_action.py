@@ -256,7 +256,7 @@ def test_fail_fast_branch_exits_with_original_rc_before_backoff() -> None:
     sleep_idx = _offset(body, 'sleep "$wait_seconds"', where="退避 sleep")
     loop_end = _while_loop_end(body)
     # 重试 warning 的锚点要带 ${RETRY_LABEL} 前缀：解析列表时对非法条目也打一条
-    # :warning::fail_fast_codes …，它位置在循环**之前**，拿裸 ::warning:: 当锚点会误判顺序。
+    # ::warning::fail_fast_codes …，它位置在循环**之前**，拿裸 ::warning:: 当锚点会误判顺序。
     warning_idx = _offset(body, "::warning::${RETRY_LABEL}", where="重试 warning")
     # 顺序判据：fail-fast 必须在退避 sleep **之前**、且仍在 while 循环体内。
     # 写反（挪到 sleep 之后）＝「白等一轮退避再失败」，对配置类错误毫无意义。
@@ -324,7 +324,7 @@ def test_retry_script_behaviour_with_real_bash(tmp_path: Path, case: _BehaviourC
 
     # 计数器落在 cwd（= tmp_path）的相对路径：两侧 runner 都能用，且完全不涉及路径分隔符转换。
     env = dict(os.environ)
-    # PYTHONUTF8=1 与门禁同源：本用例不跑 Python 门禁，保留同一口径免得后来人当装饰删。
+    # PYTHONUTF8=1 与门禁同源（MID-63）：本用例不跑 Python 门禁，保留同一口径免得后来人当装饰删。
     env["PYTHONUTF8"] = "1"
     env.update(
         {

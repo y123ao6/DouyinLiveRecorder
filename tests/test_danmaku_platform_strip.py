@@ -1,4 +1,4 @@
-# （2026-09-29 审查）：main.py 的「弹幕录制平台(逗号分隔)」解析必须逐项 strip
+# M-12 回归锁（2026-09-29 审查）：main.py 的「弹幕录制平台(逗号分隔)」解析必须逐项 strip
 # 并丢弃空项。
 #
 # 被测生产实现：main.py::main() 每轮配置重读里的
@@ -8,7 +8,7 @@
 # 为什么不 import main 驱动：该读取点内联在录制主循环的 try 块里、没有可注入的函数边界，为一条
 # 配置读取重构 main() 会牵进整条录制链/线程模型，且 `import main` 在导入期会切整个进程的控制台码页。
 # 故沿用本仓既有手法：按 AST 取出 main.py 里**那一条生产赋值语句原文**编译执行（同族做法见
-# tests/test_regression_2026_09_22_main.py::TestFlvConvertBeforeCommentEnd）。执行的是生产源码而非
+# tests/test_regression_main.py::TestFlvConvertBeforeCommentEnd）。执行的是生产源码而非
 # 测试自写的等价逻辑——把生产那行的 .strip() 删掉，本文件立即变红（已实跑变异验证）。
 
 import ast

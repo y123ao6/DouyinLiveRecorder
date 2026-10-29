@@ -65,11 +65,11 @@ def test_tr_does_not_match_substituted_form() -> None:
 
 
 # ---------------------------------------------------------------------------
-# tr() 的「永不抛」还须覆盖**值侧**失败：占位符语法合法，但实参为 None 时 str.format 抛
-# AttributeError（{x.y}）或 TypeError（{x:d}），危害同上——except 分支内二次异常顶掉原始异常、
-# 掩盖真实故障。以下用例是该缺口的回归锁。
-# 注：conftest 的 _pin_identity_translation 把 _tr 钉成恒等映射，故默认路径是「恒等 + 原文都
-# 格式化失败 → 返回裸模板」；需要「译文命中」时按本文件惯例临时替换 i18n._tr。
+# M-19：tr() 的「永不抛」还须覆盖**值侧**失败——占位符语法合法，但实参为 None 时
+# str.format 抛 AttributeError（{x.y}）或 TypeError（{x:d}）。危害同 MI-23：except 分支内
+# 二次异常顶掉原始异常、掩盖真实故障。以下用例是该缺口的回归锁。
+# 注：conftest 的 _pin_identity_translation 把 _tr 钉成恒等映射，故默认路径是「恒等 +
+# 原文都格式化失败 → 返回裸模板」；需要「译文命中」时按本文件惯例临时替换 i18n._tr。
 # ---------------------------------------------------------------------------
 
 
@@ -112,7 +112,7 @@ def test_tr_valid_attribute_and_format_spec_still_interpolate() -> None:
 
 
 def test_tr_missing_key_degradation_path_unchanged() -> None:
-    # 本组只加异常类型、不改语义：缺 kwarg 仍走 KeyError 支路，输出形态与新增两种异常一致
+    # M-19 只加异常类型、不改语义：缺 kwarg 仍走 KeyError 支路，输出形态与新增两种异常一致
     assert i18n.tr("hello {name}", name="A") == "hello A"
     assert i18n.tr("hello {name}") == "hello {name}"
     assert i18n.tr("hello {name}", name=None) == "hello None"

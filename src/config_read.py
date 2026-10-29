@@ -53,7 +53,7 @@ def tolerant_config_parser(preserve_case: bool = False) -> configparser.ConfigPa
 # 无节头的裸键归到空节名下——那种文件 configparser 自己会先抛 MissingSectionHeaderError，
 # 本函数只是归因辅助，不重复做格式裁判。
 # 整行没有 = 也没有 : 的一律不算键：configparser 把这种行当**续行**并入上一条键的值（多行值形态，
-# 2026-10-19），旧实现把缩进 strip 掉后当独立键统计，于是每份带多行值的配置都被误报成重复，
+# L-17，2026-10-19），旧实现把缩进 strip 掉后当独立键统计，于是每份带多行值的配置都被误报成重复，
 # 虚假告警会把 warn_duplicate_options 的「同一形态只报一次」额度耗尽、真重复反被淹没。
 # 放过它不会漏报：allow_no_value 在本仓从未开启（tolerant_config_parser 用默认值），无分隔符的
 # 行根本不会被解析成键，因此**不可能**成为重复键的一方。
@@ -64,7 +64,7 @@ def find_duplicate_options(text: str) -> list[tuple[str, str, tuple[int, ...]]]:
         line = raw_line.strip()
         if not line or line[0] in "#;":
             continue
-        # 2026-10-21：以空白起始的行**一律先跳过**。上一条分隔符判据只放过了「整行不含
+        # M-54（2026-10-21）：以空白起始的行**一律先跳过**。上一条分隔符判据只放过了「整行不含
         # = 也不含 :」的续行，于是 `cookie = v1` 之后跟着两行缩进续值 `   token=abc` / `   token=def`
         # 时，这两行会被 strip 后当成两个同名键 → 误报「存在重复配置项」。后果不止于噪声：
         # warn_duplicate_options 的「同一文件形态只点名一次」额度只有 _DUP_WARN_CACHE_MAX(32) 项，

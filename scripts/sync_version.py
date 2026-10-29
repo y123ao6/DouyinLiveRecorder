@@ -7,16 +7,17 @@
 # python scripts/sync_version.py --check      # 仅检查是否一致，不修改文件
 # python scripts/sync_version.py --dry-run    # 显示将要做的变更但不实际写入
 #
-# --check 的退出码分级：
+# --check 的退出码分级（2026-10-21 M-92 起在本文件显式登记）：
 #   0  SYNC_TARGETS 里的文件版本全部一致
 #   1  至少一个文件不一致 / 文件缺失 / 正则锚点失配
 #   2  判定面为空（SYNC_TARGETS 为空 = 循环跑零次），属「门禁没跑」，不得与 0 混同
 # 无参数与 --dry-run 是写型/预览模式，不参与门禁，沿用既有的恒 0 语义。
 #
-# 现状：版本号已全部动态化，SYNC_TARGETS 为空——main.py / src/web_api.py 经 importlib.metadata
-# 读 pyproject.toml，Dockerfile 经 APP_VERSION 注入，i18n/zh_CN.po 不再携带版本号。
-# 故版本一致性门禁是 scripts/check_version.py（查「动态化有没有被改回写死」，在 AGENTS.md 门禁块内）；
-# 本脚本结构保留，供将来真出现写死版本时复用。README / CODE_WIKI 由人工维护，不在本脚本范围。
+# 现状：版本号已全部动态化，SYNC_TARGETS 为空——运行时（main.py / src/web_api.py）经
+# importlib.metadata 读 pyproject.toml，Dockerfile 经 APP_VERSION 构建参数注入，
+# i18n/zh_CN.po 不再携带版本号，README / CODE_WIKI 由人工维护、不在本脚本范围。
+# 故版本一致性门禁不是本脚本，而是 scripts/check_version.py（它查「动态化有没有被改回写死」，
+# 且在 AGENTS.md 门禁命令块里）；本脚本结构保留，供将来真出现写死版本时复用。
 #
 
 from __future__ import annotations
@@ -32,8 +33,10 @@ PYPROJECT_PATH = ROOT_DIR / "pyproject.toml"
 
 # ── 需要同步的目标文件及其替换规则 ─────────────────────────────────────
 # 每条规则: (相对路径, [(正则模式, 替换模板), ...])，模板可用 \1 捕获组 + {version} 占位符。
-# 清单为空 → 本脚本当下是空转的：--check 打印「所有文件版本号一致」只是「零目标全部通过」，
-# 不自证任何事。新增写死版本的文件时在此追加；check_all() 刻意「先判命中再判等」，见其头部。
+# 清单为空 → 本脚本当下是**空转**的：--check 会打印「所有文件版本号一致」，那只是「零目标
+# 全部通过」，不自证任何事。要核版本一致性请跑 scripts/check_version.py。
+# 新增写死版本的文件时在此追加规则；check_all() 刻意「先判命中再判等」，别改回「sub 结果与
+# 原文相同 = 已一致」——那会在正则失配时静默变绿。
 SYNC_TARGETS: list[tuple[str, list[tuple[str, str]]]] = []
 
 
@@ -77,9 +80,10 @@ def sync_file(rel_path: str, patterns: list[tuple[str, str]], version: str, dry_
 def check_all(version: str) -> bool:
     # 检查所有文件版本号是否已一致。返回 True 表示全部一致。
     # SYNC_TARGETS 为空时这里 vacuous True（见该常量处的说明），不得拿它当版本门禁。
-    # 空判定面必须以 rc=2 结束：「循环跑零次 → 返回 True → 打印 [OK] → 退 0」在 CI 与
-    # 「所有文件都已同步」完全同形，真相却是「什么都没查」——门禁分级里那叫「门禁没跑」（2），
-    # 不是「通过」（0），也不是「代码不合格」（1）。
+    # M-92（2026-10-21）把这条口头说明升级为退出码：空判定面**必须**以 rc=2 结束。
+    # 「循环跑零次 → 返回 True → 打印 [OK] → 退 0」在 CI 与「所有文件都已同步」完全同形，
+    # 而真相是「什么都没查」——本仓的门禁分级里那叫「门禁没跑」（2），不是「通过」（0），
+    # 也不是「代码不合格」（1）。回归锁 tests/test_sync_version.py。
     if not SYNC_TARGETS:
         print("[FAIL] SYNC_TARGETS 为空：--check 的判定面是零个文件，属「门禁没跑」而非「版本一致」", file=sys.stderr)
         print(
@@ -95,6 +99,7 @@ def check_all(version: str) -> bool:
             all_ok = False
             continue
         content = file_path.read_text(encoding="utf-8")
+        # 对每个 pattern，检查替换后内容是否不变（即已是目标版本）
         file_ok = True
         for pattern, replacement in patterns:
             fmt_replacement = replacement.format(version=version)
@@ -118,8 +123,9 @@ def check_all(version: str) -> bool:
 
 
 def main() -> None:
-    # 退出码只在 --check 分支产生（0 一致 / 1 不一致 / 2 判定面为空）；同步与 --dry-run 一律正常退出，
+    # 退出码只在 --check 分支产生（0 一致 / 1 不一致）；同步与 --dry-run 分支一律正常退出，
     # 它是「执行工具」，不要接成门禁命令（版本门禁见 scripts/check_version.py）。
+    # [2026-10-21 M-92 增补] --check 还有第三档：判定面为空 → 2（见 check_all 头部与本文件头）。
     parser = argparse.ArgumentParser(description="同步 pyproject.toml 版本号到所有相关文件")
     parser.add_argument("version", nargs="?", default=None, help="指定新版本号（默认从 pyproject.toml 读取）")
     parser.add_argument("--check", action="store_true", help="仅检查一致性，不修改文件")

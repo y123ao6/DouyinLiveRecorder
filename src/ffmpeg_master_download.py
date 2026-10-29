@@ -2,29 +2,36 @@
 # -*- coding: utf-8 -*-
 # FFmpeg master 滚动构建的 Windows 下载器（x86_64 / ARM64）
 #
-# 目标源是「枫源镜像」(fyhub.cn) 对 BtbN「FFmpeg-Builds」仓库 master 分支滚动构建（latest 别名）的
-# 国内镜像：https://fyhub.cn/FFmpeg/latest/ffmpeg-master-latest-{win64,winarm64}-gpl.zip
-# 命名拆解：win64 = Windows x86_64；winarm64 = Windows ARM64（Surface / 骁龙 X 等）；gpl = 含 GPL 编解码器
-#   的构建（x264/x265/libvpx 等，另有 lgpl 变体不含）；master-latest = 取自 git master 的每日滚动构建
-#   （比 gyan.dev 的 release 构建更新也更不稳定，且是滚动别名、内容每次都变，故不能把哈希常量钉死）。
+# 背景：目标源是「枫源镜像」(fyhub.cn) 对 BtbN 的 GitHub「FFmpeg-Builds」仓库 master 分支
+# 滚动构建（latest 别名）的国内镜像：
+#   https://fyhub.cn/FFmpeg/latest/ffmpeg-master-latest-win64-gpl.zip
+#   https://fyhub.cn/FFmpeg/latest/ffmpeg-master-latest-winarm64-gpl.zip
+# 命名拆解：
+#   - win64       = Windows x86_64（Intel/AMD 64 位，绝大多数 PC）
+#   - winarm64    = Windows ARM64（Surface / 骁龙 X 等 Windows on ARM 设备）
+#   - gpl         = 含 GPL 编解码器的构建（x264/x265/libvpx 等）；另有 lgpl 变体不含
+#   - master-latest = 取自 ffmpeg git master 的每日滚动构建（比 gyan.dev 的 release 构建更新但
+#     更不稳定；且是滚动别名，上游每次出新构建内容即变，故不能把哈希常量钉死）
 #
-# 关键约束（实测，2026-09-22）：fyhub.cn 对这两个直链返回「下载验证」HTML 页（200 + text/html，引用
-#   vdf-worker.js 的 PoW 人机验证），普通脚本拿不到文件，其 .sha256 文档也返回 404。可直接下载的同源
-#   上游是 BtbN GitHub release 直链（字节一致、无门控），但同样不发布 latest 别名的 .sha256。故：
+# 关键约束（实测，2026-09-22）：fyhub.cn 对这两个直链返回「下载验证」HTML 页（200 + text/html，
+#   引用 vdf-worker.js 的 PoW 人机验证），普通脚本拿不到文件，其 .sha256 文档也返回 404。真正可
+#   直接下载的同源上游是 BtbN GitHub release 直链（字节一致、无门控），但同样不发布 latest 别名的
+#   .sha256。故本模块的正确下载方式（细则与 ID 见各函数注释）：
 #   ① 按宿主架构选 win64 / winarm64；
-#   ② 候选 [BtbN-GitHub, fyhub]，**顺序即优先级**：权威上游必排在镜像之前（镜像哪天直出文件也不得取代
-#      上游），fyhub 用 Range 探针识别「挑战页」并跳过、落到无门控的 BtbN 上游；
+#   ② 候选 [BtbN-GitHub, fyhub]，**顺序即优先级**：权威上游必排在镜像之前（镜像哪天直出文件也不得
+#      取代上游），fyhub 用 Range 探针识别「挑战页」并跳过、落到无门控的 BtbN 上游；
 #   ③ 下载后强制「是不是真的 zip」形态校验，拒把验证页/错误页当产物；
 #   ④ 滚动构建无权威哈希文档，完整性只能 TOFU（首次信任），与 ffmpeg_install 降级分支同强度、不冒充
-#      「已校验」；基准存在却读不出即**拒装**——这是本模块唯一一道完整性检查，不容静默失效；
+#      「已校验」；基准存在却读不出即**拒装**（SEV-2222）——这是本模块唯一一道完整性检查，不容静默失效；
 #   ⑤ TOFU 基准按构建标识分文件，写新删旧只留 1 份。
 #
-# **默认关闭**：ffmpeg_install 只在环境变量 FFMPEG_MASTER_ALLOWED 显式取真时才调用
-#   download_ffmpeg_master()，默认跳过并各落一条 warning（开启 = 声明本次用的是未校验 TOFU 源；跳过 =
-#   声明因未开启而未做兜底）。理由：AGENTS.md「三类钉定/校验」② 的红线是「新增任何第二条 Windows 运行期
-#   下载源前必须先满足『官方公布哈希』判据」，而本模块按 ④ 只有 TOFU 强度。
-#   与 ffmpeg_install.py 的关系：不改动其完整性模型（gyan.dev 官方源 + 官方 SHA256 优先），仅作为
-#   「Windows ARM64 无官方源」或「gyan.dev 不可达」时**需显式开启**的补充路径。
+# **默认关闭**（SEV-2218，2026-09-23 定稿）：ffmpeg_install 只在环境变量 FFMPEG_MASTER_ALLOWED 显式
+#   取真时才调用 download_ffmpeg_master()，默认跳过并各落一条 warning（开启 = 声明本次用的是未校验
+#   TOFU 源；跳过 = 声明因未开启而未做兜底）。理由：AGENTS.md「三类钉定/校验」② 的红线是「新增任何
+#   第二条 Windows 运行期下载源前必须先满足『官方公布哈希』判据」，而本模块按 ④ 只有 TOFU 强度。
+#
+# 与 ffmpeg_install.py 的关系：不改动其既有完整性模型（gyan.dev 官方源 + 官方 SHA256 优先），
+#   仅作为「Windows ARM64 无官方源」或「gyan.dev 不可达」时**需显式开启**的补充路径。
 
 import contextlib
 import hashlib
@@ -56,20 +63,20 @@ _CONNECT_TIMEOUT = 15
 _READ_TIMEOUT = 30
 # 探测挑战页只需 1 字节，给短超时：探针只判可达性、不取内容，5 秒已远超正常往返（实测毫秒级）。
 # [历史注] 原值 20 与本注释相互矛盾——fyhub 被探成挑战页/超时是**常态**，两候选串行即「无 ffmpeg
-# 机器首次启动」要多等 40 秒，故 2026-09-23 降到 5。
+# 的机器首次启动」要多等 40 秒，故 2026-09-23 降到 5（MIN-2267）。
 _PROBE_TIMEOUT = 5
 # 连接级失败（DNS/连接重置/读取中断）的重试次数与退避。
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 2.0  # 每次退避翻倍：2s, 4s, 8s
 
-# 临时 zip 的**前缀**（随机后缀由内联块 unique_path 追加）：保留
+# 临时 zip 的**前缀**（随机后缀由内联块 unique_path 追加，M-44）：保留
 # ffmpeg_master_<arch>_temp 这段可识别前缀，既有断言与日志仍靠它定位本次下载的产物。
 _TEMP_ZIP_PREFIX = "ffmpeg_master_{arch}_temp"
 _TEMP_ZIP_SUFFIX = ".zip"
-# 解包暂存目录前缀（与目标目录同级）与落位暂存目录前缀（同级暂存后改名替换）。
+# 解包暂存目录前缀（M-48：与目标目录同级）与落位暂存目录前缀（M-45：同级暂存后改名替换）。
 _UNPACK_PREFIX = "ffmpeg_unpack_"
 _STAGED_PREFIX = "ffmpeg_staged_"
-# 单次下载的字节上限（本模块此前有重试、无量）。BtbN win64-gpl 当前约 190MB，取 512MiB
+# 单次下载的字节上限（M-49：本模块此前有重试、无量）。BtbN win64-gpl 当前约 190MB，取 512MiB
 # 给上游构建增长留余量，同时关掉「CDN 持续吐字节、iter_content 永不结束」这一族无上限故障。
 # 与 ffmpeg_install._MAX_DOWNLOAD_BYTES、ffmpeg_linux_download._MAX_ARCHIVE_BYTES 同值但各存一份：
 # 三条链的产物形态不同，互 import 会在两个安装器之间新增一条耦合边（同 AGENTS「响应体上限
@@ -78,23 +85,25 @@ _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
 
 # =============================================================================
-# 运行期安装器的落盘纪律原语：独占创建与目录锁、暂存后改名替换、PATH 去重前置、解包前空间预检
-#   ——**内联孪生块**。本块在 ffmpeg_install.py / ffmpeg_master_download.py / ffmpeg_linux_download.py 中
-#   **逐字重复**，三份必须同改：一致性由 tests/test_ffmpeg_install.py::TestInlineInstallGuardParity 机检
-#   （提取 BEGIN/END 标记之间的字节并断言三份相等）。日志前缀刻意保留 "download_guard:" 原文，以免改动
-#   已登记的 15 条 i18n msgid。
-#   [历史注] 本块原为独立模块 src/download_guard.py，2026-10-21 按要求内联回三个安装器。
+# 运行期安装器的落盘纪律原语（M-44 独占创建与目录锁 / M-45 暂存后改名替换 / M-47 PATH 去重前置 /
+# M-48 解包前空间预检）——**内联孪生块**。
+#
+# 2026-10-21 用户要求把原先的 src/download_guard.py 内联回三个安装器，故本块在
+#   ffmpeg_install.py / ffmpeg_master_download.py / ffmpeg_linux_download.py 中**逐字重复**。
+# 三份必须同改：一致性由 tests/test_ffmpeg_install.py::TestInlineInstallGuardParity 机检
+#   （提取 BEGIN/END 标记之间的字节并断言三份相等）。日志前缀刻意保留 "download_guard:" 原文，
+#   以免改动已登记的 15 条 i18n msgid。
 #
 # 能力边界（勿据此高估，也别按「分布式锁」理解本块）：
-#   1) install_lock 是**尽力而为**的互斥——本地文件系统上 O_CREAT|O_EXCL 的原子创建 + 按龄回收。它治的是
-#      「同机两个实例互相覆盖对方的下载包、并在各自 finally 里 unlink 掉对方的文件」；NFS 之类的共享目录
-#      不保证创建原子性，本块不假装解决那一层。
-#   2) O_NOFOLLOW 在 Windows 上**不存在**（本仓 Python 3.14 win32 实测 os 无该属性），Windows 侧靠「名字
-#      不可预测」：随机后缀使攻击者等不到本次要写的名字，O_EXCL 保证「名字已被占用」时绝不写入、绝不
-#      跟随（占用者是不是链接都一样）。
-#   3) swap_directories 的「原子」是**两次改名之间的短暂窗口**（先让位、再落位），不是文件系统级原子替换。
-#      取舍在于：窗口期只有毫秒级的「PATH 上暂时少一个 ffmpeg」，而旧实现 `rmtree → copytree` 的窗口是
-#      「几百 MB 拷贝的全程」，且中途失败就是永久空壳。
+#   1) install_lock 是**尽力而为**的互斥——靠本地文件系统上 O_CREAT|O_EXCL 的原子创建 + 按龄回收。
+#      它要治的故障是「同机两个实例互相覆盖对方的下载包、并在各自 finally 里 unlink 掉对方的文件」；
+#      NFS 之类的共享目录不保证创建原子性，本块不假装解决那一层。
+#   2) 符号链接拒绝位 O_NOFOLLOW 在 Windows 上**不存在**（本仓 Python 3.14 win32 实测 os 无该属性）。
+#      Windows 侧靠「名字不可预测」：随机后缀使攻击者无法在链接位置上等到本次要写的那个名字，
+#      而 O_EXCL 保证「名字已被占用」（占用者是不是链接都一样）时绝不写入、绝不跟随。
+#   3) swap_directories 的「原子」是**两次改名之间的短暂窗口**（先让位、再落位），不是文件系统级原子
+#      替换。取舍在于：窗口期只有毫秒级的「PATH 上暂时少一个 ffmpeg」，而旧实现的
+#      `rmtree → copytree` 窗口是「几百 MB 拷贝的全程」，且中途失败就是永久空壳（M-45 的成因）。
 # >>> BEGIN INLINE INSTALL-GUARD BLOCK (keep byte-identical across the three installers)
 # 平台专属符号一律用 `sys.platform` 字面量门控（AGENTS.md「平台专属符号必须 sys.platform 字面量门控」）：
 # mypy 在 --platform win32 / --platform linux 下各只分析其中一支，另一支按常量真值判不可达。
@@ -133,7 +142,7 @@ _HELD_LOCKS: set[str] = set()
 #   普通 Lock 下同线程第二次进入会自锁（AGENTS.md「跨 await 持有的跨线程锁一律用 threading.RLock」）。
 _HELD_LOCKS_GUARD = threading.RLock()
 
-# 解包空间系数：压缩包 → 解包产物约 3~4 倍（gyan.dev essentials ~90MB → ~300MB），该同级暂存副本
+# 解包空间系数：压缩包 → 解包产物约 3~4 倍（gyan.dev essentials ~90MB → ~300MB），M-45 的同级暂存副本
 #   还要**再落一份**解包产物，故取 8 倍，并留出交换窗口内新旧两份并存的余量。判据是「估算」不是「实测」，
 #   所以宁大勿小：预检只负责在小 tmpfs / 快满的磁盘上**提前**失败，不承担精确记账。
 UNPACK_SPACE_FACTOR = 8.0
@@ -149,7 +158,7 @@ def unique_path(dir_path: str | Path, prefix: str, suffix: str) -> Path:
 # 失败形态一律抛 OSError 且**不产生任何写入**：FileExistsError（名字已被占用；占用者可能是本地攻击者
 #   预置的符号链接，也可能是另一个实例刚创建的包）、PermissionError、目录不存在。
 # 调用方据此判失败即可，**不得**在外层补一句「那就换个名字重写」——那等于把「已存在」重新解释成
-#   「可以覆盖」，正是该要关掉的那扇门。
+#   「可以覆盖」，正是 M-44 要关掉的那扇门。
 def open_exclusive(path: str | Path) -> BinaryIO:
     fd = os.open(str(path), _EXCLUSIVE_FLAGS, 0o600)
     try:
@@ -253,7 +262,7 @@ def _release_lock(lock_path: Path) -> None:
         logger.debug("download_guard: lock unlink failed: " + type(e).__name__)
 
 
-# 把「本次运行真正落成的目录」前置进 PATH，并对已存在的同一前缀去重。
+# 把「本次运行真正落成的目录」前置进 PATH，并对已存在的同一前缀去重（M-47）。
 # 两条口径各自对应一个真实故障：
 #   ① 必须用**本次**的目标目录，不能用模块级常量——dest_dir != execute_dir 时（测试宿主、便携包换位）
 #      注入的是一个没被写过的目录，紧随其后的 `ffmpeg -version` 复核必然失败，安装「成功」被判成失败；
@@ -268,7 +277,7 @@ def prepend_to_path_env(target_dir: str | Path) -> None:
     os.environ["PATH"] = os.pathsep.join([target, *kept])
 
 
-# 解包前的可用空间预检。返回 False = 明确知道装不下，调用方必须**在解包之前**放弃本次安装；
+# 解包前的可用空间预检（M-48）。返回 False = 明确知道装不下，调用方必须**在解包之前**放弃本次安装；
 # 探测本身失败时返回 True 并留一条 debug——预检是为「小 tmpfs / 快满磁盘上提前失败」而加的，
 # 让它反过来把探测不到的正常机器一律挡在门外，等于用一个新增防线制造新的不可用。
 def has_room_for_unpack(dir_path: str | Path, archive_bytes: int) -> bool:
@@ -285,7 +294,7 @@ def has_room_for_unpack(dir_path: str | Path, archive_bytes: int) -> bool:
     return False
 
 
-# 把**已完整落成**的暂存目录换成目标目录，中途失败则把旧目录放回原位。
+# 把**已完整落成**的暂存目录换成目标目录，中途失败则把旧目录放回原位（M-45）。
 # 与旧实现 `rmtree(target) → copytree(bin, target)` 的差别正是这道防线的落点：
 #   旧顺序把「删掉上一次可用安装」排在「这一次能不能装成」之前，拷贝被磁盘满 / 杀软占用打断后
 #   execute_dir/ffmpeg 只剩空壳，程序彻底失去录制能力，且下次启动会重复同一条破坏路径。
@@ -364,7 +373,7 @@ def _windows_arch() -> str:
 # 同一构建名在两源下的候选直链，**列表顺序即优先级**：权威上游（BtbN GitHub）在前，镜像（fyhub）
 # 在后——镜像既能替换产物也就能替换它自己的任何元数据，权威性严格弱于上游，其价值只在「上游不可达」
 # 时体现，故只作兜底项（fyhub 被探成挑战页时会被自动跳过，不会误导用户以为「源可用」）。
-#   [历史注] 2026-09-23 该子项之前，用户点名的个人镜像排在前面。
+#   [历史注] 2026-09-23 SEV-2218 子项之前，用户点名的个人镜像排在前面。
 def _candidate_urls(arch: str) -> list[str]:
     base = f"ffmpeg-master-latest-{arch}-gpl.zip"
     return [
@@ -384,8 +393,9 @@ def _looks_like_html(response: requests.Response) -> bool:
         first = next(response.iter_content(512), b"")
     except Exception:
         # 读不到首字节即内容不可信，判 True（是 HTML/坏页）。
-        # [历史注] 此处原返回 False（=「不是 HTML，放行」），把**读失败**当成「拿到的是文件」：流一断就
-        # 误报探针 ok，本可换源的候选被当成唯一可用源。
+        # [历史注] 2026-09-23 MIN-2267 之前此处返回 False（=「不是 HTML，放行」），把**读失败**当成
+        # 「拿到的是文件」：流一断就误报探针 ok，随后 _stream_download 才发现问题，而这一次误判会让
+        # 本可换源的候选被当成唯一可用源。
         return True
     text = first.lstrip()[:64].lower()
     return text.startswith(b"<!doctype") or text.startswith(b"<html")
@@ -395,8 +405,8 @@ def _looks_like_html(response: requests.Response) -> bool:
 # ("ok" | "challenge" | "http-error", response-or-None)——换源靠这个**字符串状态**驱动。用
 # bytes=0-0 而非 HEAD：HEAD 在 fyhub 上返回 405，与 ffmpeg_install 处理 douyinliving CDN 的 405
 # 同源——Range GET 才是可靠的探测手段。
-#   [历史注] 原有的 ChallengePageError 改为字符串状态后全仓零引用，已删——留着会让读者以为存在
-#   「抛挑战页异常换源」这条链路。
+#   [历史注] 2026-09-23 MIN-2267 删除了原有的 ChallengePageError：改为字符串状态后它全仓零引用，
+#   留着会让读者以为存在「抛挑战页异常换源」这条链路。
 def _probe(url: str) -> tuple[str, requests.Response | None]:
     try:
         response = requests.get(
@@ -454,13 +464,13 @@ def _build_identity(headers: Mapping[str, str] | None) -> str:
 
 # 流式下载（带重试与进度）：仅在连接级/读取级异常时重试，HTTP 4xx/5xx 直接失败。内存恒定的分块
 # 写法；tmp 落盘后再做形态/哈希校验，避免把半截文件当产物。
-# 2026-10-21 评审 / 该两处收紧，三条判序缺一不可：
+# 2026-10-21 评审 M-44 / M-49 的两处收紧，三条判序缺一不可：
 #   ① 写入走内联块 open_exclusive（O_CREAT|O_EXCL|O_NOFOLLOW），且创建点排在
 #     `raise_for_status()` **之后**——4xx/5xx 那一支根本不产生文件（与
 #     tests/test_ffmpeg_linux_download.py::TestDownloadRetryPolicy::test_http_error_is_not_retried
 #     对同名分支的判据同源），而「已存在」一律按失败处理，绝不覆盖、绝不跟随预置的符号链接；
 #   ② 只有**本次真正创建了**该文件才允许 unlink：路径可能被另一个实例或本地攻击者占着，
-#     无差别删除等于把该另一半（互删对方的包）留在原地；
+#     无差别删除等于把 M-44 的另一半（互删对方的包）留在原地；
 #   ③ 累计字节超上限即判 IntegrityError 并放弃：上限是「量」的防线，重试治不了「一直有字节」的流。
 def _stream_download(url: str, zip_path: Path) -> tuple[str, int, Mapping[str, str]]:
     last_err: Exception | None = None
@@ -499,7 +509,7 @@ def _stream_download(url: str, zip_path: Path) -> tuple[str, int, Mapping[str, s
             # 扩成 `except Exception` 时，上限判定也不会被顺带吞进重试循环。
             raise
         except (requests.RequestException, ConnectionError, OSError) as e:
-            # OSError 一并在此并捕（2026-10-21 ）：独占创建本身就会抛 FileExistsError /
+            # OSError 一并在此并捕（2026-10-21 M-44）：独占创建本身就会抛 FileExistsError /
             # PermissionError（路径被占、目录只读），而「换一个名字重写」不是可接受的处置——
             # 归一成重试耗尽后的 NetworkError，由入口转 False，才是与「绝不覆盖」一致的出口。
             last_err = e
@@ -609,20 +619,25 @@ def _tofu_verify_or_record(zip_path: Path, hash_file: Path, source_url: str) -> 
         try:
             expected = hash_file.read_text(encoding="ascii").strip().lower()
         except (OSError, UnicodeDecodeError) as e:
-            # 基准**存在**却读不出来 = 本机那份可信基准处于不可信状态，必须拒装。旧实现只 warning 后 return，
-            # 调用方把 None 当成校验通过，「唯一一道完整性检查在磁盘异常时静默失效」；只有「基准确实不存在」
-            # 才走首次记账。
-            # 必须并捕 UnicodeDecodeError：基准是**磁盘上可被外部改写的输入**，用户手工编辑、同步盘/压缩工具
-            # 把它转成 UTF-8 都会让 read_text(encoding="ascii") 抛 UnicodeDecodeError（ValueError 子类，
-            # **不是** OSError）。本模块接不住的代价比 Linux 姊妹侧更硬：顶层入口承诺「失败一律返回 False
-            # 不抛」，而调用方只并捕 (IntegrityError, OSError)，该异常会穿出 → install_ffmpeg_windows（全程
-            # 无 try）→ check_ffmpeg 直达启动流程，把「装不上」升级成「起不来」。归一成 IntegrityError 后走的
-            # 就是既有「删包 + 拒装」路径，并带「请人工核对或删除 {hash_file} 后重试」指引。
-            # 需要 as 绑定取 type(e)/e，故按 AGENTS 的 except 约定回退加括号形态。三处姊妹修法（Linux
-            # _verify_archive / ffmpeg_install 同名函数）同批修。回归锁：
+            # SEV-2222：基准**存在**却读不出来 = 本机那份可信基准处于不可信状态，必须拒装。旧实现
+            # 只 warning 后 return，调用方把 None 当成校验通过，于是「唯一一道完整性检查在磁盘异常时
+            # 静默失效」（与 MID-63/MID-68/MIN-19「不得用捕获异常后跳过让它变绿」同一族禁令）；
+            # 只有「基准确实不存在」才走首次记账。
+            # 必须并捕 UnicodeDecodeError（M-06）：基准是**磁盘上可被外部改写的输入**，用户手工编辑、
+            # 同步盘/压缩工具把它转成 UTF-8 都会让 read_text(encoding="ascii") 抛 UnicodeDecodeError
+            # （ValueError 子类，**不是** OSError）。本模块接不住的代价比 Linux 姊妹侧更硬：顶层入口
+            # 承诺「失败一律返回 False 不抛」，而调用方 download_ffmpeg_master 只并捕
+            # (IntegrityError, OSError)，该异常会穿出 → install_ffmpeg_windows（全程无 try）→
+            # check_ffmpeg 直达启动流程，把「装不上」升级成「起不来」。归一成 IntegrityError 后走的
+            # 就是本分支既有的「删包 + 拒装」路径，并带上「请人工核对或删除 {hash_file} 后重试」指引。
+            # [历史注] 本段曾称与 ffmpeg_install._check_or_record_zip_sha256 同形分支「刻意不同」
+            # （那边前面还有官方哈希一道）——L-44（2026-10-02）复核认为该理由对降级分支不成立
+            # （官方文档不可达时 TOFU 同样是最后一道），两侧已统一收紧为拒装，不再有口径分叉。
+            # 两处姊妹修法（ffmpeg_linux_download._verify_archive / ffmpeg_install 同名函数）与本条
+            # 同批修。需要 as 绑定取 type(e)/e，故按 AGENTS 的 except 约定回退加括号形态。回归锁：
             # tests/test_ffmpeg_install.py::TestMasterBaselineDecodeGuard
-            # :test_non_ascii_baseline_becomes_integrity_error_and_discards_zip（单元层）与
-            # :test_entrypoint_normalises_non_ascii_baseline_to_false（入口层，钉「返 False 而非抛」）。
+            # ::test_non_ascii_baseline_becomes_integrity_error_and_discards_zip（单元层）与
+            # ::test_entrypoint_normalises_non_ascii_baseline_to_false（入口层，钉「返 False 而非抛」）。
             _discard_master_zip(zip_path)
             raise IntegrityError(
                 i18n.tr(
@@ -667,11 +682,12 @@ def _tofu_verify_or_record(zip_path: Path, hash_file: Path, source_url: str) -> 
         logger.warning(i18n.tr("写入 ffmpeg master SHA256 缓存失败（不影响本次安装）: {e}", e=e))
 
 
-# 把解包出来的 bin 目录**完整落成同级暂存目录、再两次改名换进目标位**，与
-# src/ffmpeg_install._install_bin_dir 同一语义；破坏路径与「空壳」成因见内联块 swap_directories 的注释。
-# 本链尤其不能退回去：master 源是唯一一条**默认关闭**的兜底路径，用户开它正是因为主路径已装不上，
-# 再来一次破坏等于直接没救。前置校验照旧：调用点必须先确认解包产物里有 bin/ffmpeg.exe，删旧动作在
-# 校验之后。
+# 把解包出来的 bin 目录**完整落成同级暂存目录、再两次改名换进目标位**（M-45）。
+# 与 src/ffmpeg_install._install_bin_dir 同一语义（那条链的成因与取舍写在其注释里，不在此重述）：
+# 本模块此前是 `if target.exists(): rmtree(target)` + `copytree(bin, target)`，删旧动作排在
+# 「这一次能不能装成」之前，拷贝被磁盘满 / 杀软占用打断后就留下一个空壳 ffmpeg 目录——而 master 源
+# 是唯一一条**默认关闭**的兜底路径，用户开它正是因为主路径已经装不上，再来一次破坏等于直接没救。
+# 前置校验照旧：调用点必须先确认解包产物里有 bin/ffmpeg.exe，删旧永远发生在校验之后。
 def _install_master_binaries(bin_dir: str, target: Path) -> bool:
     parent = str(target.parent) or "."
     staged = Path(tempfile.mkdtemp(dir=parent, prefix=_STAGED_PREFIX))
@@ -690,14 +706,16 @@ def _install_master_binaries(bin_dir: str, target: Path) -> bool:
     return True
 
 
-# 顶层下载+安装入口：返回 True 表示成功把 bin 落到 dest_dir/ffmpeg。失败一律返回 False（不抛），与
-# ffmpeg_install.install_ffmpeg_windows 的契约一致，由调用方决定提示用户手动安装。
-# [历史注] 该承诺曾只兑现一半：写盘的 OSError（磁盘满 / 无权限 / 路径失效）会一路穿出安装入口直达启动期
-# check_ffmpeg()，故下载段与完整性段都额外并捕 OSError。
+# 顶层下载+安装入口：返回 True 表示成功把 bin 落到 dest_dir/ffmpeg。失败一律返回 False（不抛），
+# 与 ffmpeg_install.install_ffmpeg_windows 的契约一致，由调用方决定提示用户手动安装。
+# [历史注] 该承诺曾只兑现一半：_stream_download 仅捕 requests 系异常，open(zip_path, "wb") 的
+# OSError（磁盘满 / 无权限 / 路径失效）会一路穿出 except FfmpegDownloadError，经
+# install_ffmpeg_windows() 直达启动期 check_ffmpeg()；故下载段与完整性段都额外并捕 OSError。
 def download_ffmpeg_master(dest_dir: str, arch: str | None = None) -> bool:
     arch = arch or _windows_arch()
-    # 临时包名不可预测：unique_path 生成「可识别前缀 + 随机后缀」，写入由 open_exclusive 独占创建，
-    # 存在即失败、绝不跟随预置链接（固定名会让并发实例互删对方的包，也便于本地主体把下载引到任意路径）。
+    # M-44：`ffmpeg_master_<arch>_temp.zip` 是固定可预测名——两实例并发时互相覆盖并在各自 finally 里
+    # unlink 对方的包，能写本目录的本地主体还能预置同名符号链接把几百 MB 引到任意路径。现由
+    # unique_path 生成「可识别前缀 + 随机后缀」，实际写入由 open_exclusive 独占创建，存在即失败。
     zip_path = unique_path(dest_dir, _TEMP_ZIP_PREFIX.format(arch=arch), _TEMP_ZIP_SUFFIX)
     urls = _candidate_urls(arch)
     logger.debug(i18n.tr("ffmpeg master 下载：检测到架构 {arch}，候选源 {n} 个", arch=arch, n=len(urls)))
@@ -736,7 +754,7 @@ def download_ffmpeg_master(dest_dir: str, arch: str | None = None) -> bool:
         except Exception:
             pass
 
-    # 目录锁（该另一半）：随机名只保证「互不覆盖」，不保证「互不并发落位」。探针段不写
+    # 目录锁（M-44 的另一半）：随机名只保证「互不覆盖」，不保证「互不并发落位」。探针段不写
     # dest_dir，因此锁只包住真正落盘的后半段；竞争按**失败**处置（False），与上面的契约同口径。
     with install_lock(dest_dir) as lock_held:
         if not lock_held:
@@ -746,11 +764,12 @@ def download_ffmpeg_master(dest_dir: str, arch: str | None = None) -> bool:
         try:
             build_id, _total, _headers = _stream_download(chosen_url, zip_path)
         except (FfmpegDownloadError, OSError) as e:
-            # 写盘失败（磁盘满 / 无权限 / 路径失效）属「拿不到产物」，与网络失败同级，一律归一成 False，
-            # 不得穿出「失败不抛」的契约。
-            # 这里**不调** _discard_master_zip：本分支的含义是「下载段自己结束了」，而 _stream_download 内部
-            # 的 finally 已删掉**它自己创建过**的半截包；在这一层再删一次，删到的可能是「独占创建失败时占着
-            # 那个路径的别人的文件」。后面的失败出口都删在 _stream_download 已成功返回之后，产物必归本轮所有。
+            # OSError 分支见上方 MIN-2266⑤：写盘失败（磁盘满 / 无权限 / 路径失效）属「拿不到产物」，
+            # 与网络失败同级，一律归一成 False，不得穿出「失败不抛」的契约。
+            # [2026-10-21 M-44] 这里**不再**调 _discard_master_zip：本分支的含义是「下载段自己结束了」，
+            # 而 _stream_download 内部的 finally 已经删掉**它自己创建过**的半截包；在这一层再删一次，
+            # 删到的就可能是「独占创建失败时占着那个路径的别人的文件」（正是 M-44 登记的互删形态）。
+            # 后面的每一条失败出口都删在 `_stream_download 已成功返回` 之后，那时产物必然归本轮所有。
             logger.error(i18n.tr("ffmpeg master 下载失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
             return False
 
@@ -776,8 +795,10 @@ def download_ffmpeg_master(dest_dir: str, arch: str | None = None) -> bool:
             return False
 
         # 解压（统一走 unzip_file 的解压炸弹防护 + Zip Slip 校验），提取含 ffmpeg.exe 的 bin 目录。
-        # 解包目录落在目标目录同级而不是 %TEMP%：master 的 gpl 包解后可达数百 MB，而容器里的 /tmp 常是
-        #   小 tmpfs，默认临时目录一满就整条链 ENOSPC 死在解压这一步；空间预检排在解包之前。
+        # M-48：解包目录必须落在目标目录同级而不是 %TEMP%——master 的 gpl 包解后可达数百 MB，
+        #   而容器里的 /tmp 常是小 tmpfs，默认临时目录一满就整条链 ENOSPC 死在解压这一步；
+        #   Linux 侧（ffmpeg_linux_download._install_binaries）早就刻意落在应用目录内，此处对齐同一条
+        #   口径，并把空间预检排在解包之前。
         target = Path(dest_dir) / "ffmpeg"
         try:
             if not has_room_for_unpack(dest_dir, zip_path.stat().st_size):
@@ -793,7 +814,7 @@ def download_ffmpeg_master(dest_dir: str, arch: str | None = None) -> bool:
                 if bin_dir is None:
                     logger.error("ffmpeg.exe not found in master package")
                     return False
-                # 同级暂存 + 改名替换；失败时上一次可用安装原地保留，不再留下空壳目录。
+                # M-45：同级暂存 + 改名替换；失败时上一次可用安装原地保留，不再留下空壳目录。
                 if not _install_master_binaries(bin_dir, target):
                     return False
         except Exception as e:
@@ -805,11 +826,13 @@ def download_ffmpeg_master(dest_dir: str, arch: str | None = None) -> bool:
         # 与 download_ffmpeg_official 一致：安装成功后把 bin 目录前置注入 PATH，再用 `ffmpeg -version`
         # 真跑一次验证（returncode==0 才认成功）。该前置只发生在「系统本无可用 ffmpeg」的自动安装分支，
         # 不会与 W6 的 PATH 优先级判据冲突（W6 在 main.py 侧、注入前取快照，本处注入在其之后）。
-        # 注入走内联块 prepend_to_path_env：同一路径不会反复叠在 PATH 前面，与另两条链同形。
+        # M-47：注入走内联块 prepend_to_path_env——此前这里是「运行时目标目录 + 实时 PATH
+        #   直接拼接、无去重」，同一路径会被反复叠在 PATH 前面；去重与「本次目标目录」两条口径统一在
+        #   那一个函数里，与 ffmpeg_install / ffmpeg_linux_download 两侧同形。
         prepend_to_path_env(target)
         try:
-            # 本行真跑刚下载的 ffmpeg.exe，Windows 无控制台形态（pythonw / 冻结 console=False）下不传
-            # startupinfo 会闪出一个控制台窗口；判据见 _win_startup_info。
+            # L-15：本行真跑刚下载的 ffmpeg.exe，Windows 无控制台形态（pythonw / 冻结 console=False）
+            # 下不传 startupinfo 会闪出一个控制台窗口；判据见 _win_startup_info。
             rc = subprocess.run(
                 ["ffmpeg", "-version"], capture_output=True, timeout=30, startupinfo=_win_startup_info()
             )
@@ -834,7 +857,7 @@ if __name__ == "__main__":
     # 仅做「选源 + 探针」自测（不下载完整 ~190MB 包），方便快速确认本机架构与可达源。
     # 注意：本自测块会真的发起出站探测，因此只在人工通道下运行，不会被 pytest 收集执行。
     a = _windows_arch()
-    # 形参打印一律走 i18n.tr（该不变量①：f-string 在查目录之前完成插值，
+    # 形参打印一律走 i18n.tr（MID-68 不变量①：f-string 在查目录之前完成插值，
     # 目录里带占位符的 msgid 永远匹配不上，翻译会静默退化为原文）。
     print(i18n.tr("detected arch: {a}", a=a))
     for u in _candidate_urls(a):

@@ -1,21 +1,21 @@
-# src/web_config.py / src/web_api.py「敏感配置不得被空值覆盖」的回归锁（该补，2026-09-21）。
+# src/web_config.py / src/web_api.py「敏感配置不得被空值覆盖」的回归锁（MID-69 补，2026-09-21）。
 #
-# 范围刻意收窄：该点名的三个符号里，_looks_like_secret_value 与 _validate_room_url_target
-# 已由 tests/test_web_config_secret_mask.py 用**真实函数**的表驱动用例逐条钉死（/09/10 批次），
+# 范围刻意收窄：MID-69 点名的三个符号里，_looks_like_secret_value 与 _validate_room_url_target
+# 已由 tests/test_web_config_secret_mask.py 用**真实函数**的表驱动用例逐条钉死（CR-08/09/10 批次），
 # 本文件不再复制那两张表——出现第二份事实源后，改实现的人只会更新其中一处。
 # 这里只补当时**零引用**的那一条：敏感键被空值覆盖的后端守卫（web_api.py 的
 # `if is_sensitive_item(section, key) and not value.strip(): raise HTTPException(400, ...)`）。
 #
 # 为什么必须单独钉：面板对敏感项回显的是 '***' 掩码，前端只挡「原样提交 ***」这一种形态，
 # 用户全选删空后提交 '' 既 ≠ '***' 也 ≠ 旧值，于是真实 cookie/token 被空串静默覆盖；
-# 而 backup_config 副本按该同样脱敏，**无从恢复**。这条路径此前只在
+# 而 backup_config 副本按 CR-07 同样脱敏，**无从恢复**。这条路径此前只在
 # tests/frontend/test_quality_ui.mjs 里以「前端桩把 400 文案渲染成 toast」的形式出现，
 # 后端裁决本身没有 Python 用例——即删掉那行 raise 也不会有任何测试变红。
 #
 # 用例一律走真实 PUT /api/config（TestClient），判定函数是生产侧的 is_sensitive_item，
 # 测试内不重新实现任何脱敏/判定逻辑。
 #
-# 掩码侧的对称防线（此前记为「已知残留」，已于同日该残留修复关闭）：提交 value='***'
+# 掩码侧的对称防线（此前记为「已知残留」，已于同日 MID-37 残留修复关闭）：提交 value='***'
 # 现在也被后端拒成 400（src/web_api.py 的 `elif value.strip() == SENSITIVE_MASK`），由
 # tests/test_web_api.py::TestSensitiveValueBlankRejected::test_mask_sensitive_value_rejected 锁定；
 # 本文件只负责「空值覆盖」那半边，掩码那半边不在此重述以免形成第二份事实源。
@@ -82,7 +82,7 @@ def client(tmp_path: Path, fake_main: types.ModuleType) -> Generator[TestClient,
                 "钉钉推送接口链接 = https://oapi.dingtalk.com/robot/send?access_token=REAL_DING",
                 "推送开关 = 是",
                 "",
-                # 2026-10-21：把「推送配置」整节纳入敏感节后，反向用例需要一个
+                # M-61（2026-10-21）把「推送配置」整节纳入敏感节后，反向用例需要一个
                 # 真正不敏感的节来证明守卫没有扩大到普通键。
                 "[录制设置]",
                 "是否跳过代理检测(是/否) = 是",
@@ -91,7 +91,7 @@ def client(tmp_path: Path, fake_main: types.ModuleType) -> Generator[TestClient,
         ),
         encoding="utf-8-sig",
     )
-    # 中间件按每请求读配置缓存，逐个用例清干净，避免串到本文件其余用例
+    # 中间件按每请求读配置缓存（MID-34），逐个用例清干净，避免串到本文件其余用例
     wa._invalidate_web_cfg_cache()
     with wa._tokens_lock:
         wa._tokens.clear()
@@ -102,7 +102,7 @@ def client(tmp_path: Path, fake_main: types.ModuleType) -> Generator[TestClient,
         downloads_root=str(tmp_path / "downloads"),
         logs_dir=str(tmp_path / "logs"),
     )
-    # base_url 必须是 loopback：此后 Host 头参与同源判定，testclient 默认 Host 会被拒
+    # base_url 必须是 loopback：MID-36 之后 Host 头参与同源判定，testclient 默认 Host 会被拒
     test_client = TestClient(app, base_url=_BASE_URL)
     try:
         yield test_client
@@ -141,9 +141,9 @@ class TestBlankSensitiveValueRejected:
         [
             ("推送配置", "tgapi令牌", "", "empty"),
             ("推送配置", "pushplus推送token", "   ", "spaces-only"),
-            # 键名带首尾空白：入口先 strip 再判定，不得靠空白绕过
+            # 键名带首尾空白：入口先 strip 再判定（C-1），不得靠空白绕过
             ("推送配置", "  tgapi令牌  ", "", "padded-key"),
-            # 大小写变体：configparser 的 option 本就大小写不敏感（该同口径）
+            # 大小写变体：configparser 的 option 本就大小写不敏感（SEV-04 同口径）
             ("推送配置", "TGAPI令牌", "", "uppercase-key"),
         ],
     )

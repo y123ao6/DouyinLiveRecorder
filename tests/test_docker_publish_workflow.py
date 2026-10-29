@@ -58,7 +58,7 @@ INSTALL_ANCHORS = ("apt-get install", "pip install", "choco install", "brew inst
 
 # —— 评审 I-1/I-2/I-3 三条补锁的判据常量 ——
 # 共同取舍：判定先落到「解析后的结构」（YAML 取值 + shell 词法单元），再对结构断言；拿整段 run
-# 原文写正则等于把排版当契约（该教训：契约一反转这种锁就静默空洞成立）。另有三处刻意的
+# 原文写正则等于把排版当契约（M-26 的教训：契约一反转这种锁就静默空洞成立）。另有三处刻意的
 # 唯一形态约束（①with.tags 只认标量串 ②provenance 只认布尔 False ③实参解析只认 `-t/--tag <值>`），
 # 红点各自写在对应锁的上方并标了序号：放宽它们要在 shell 词法之外再引入「选项语义」解析（哪个
 # 选项带值、列表与标量同义、布尔与字符串在 action 入参处同形），复杂度与收益不匹配——本链唯一
@@ -308,7 +308,7 @@ def test_packages_write_only_where_images_are_pushed(data: dict[Any, Any]) -> No
 
 
 def test_image_version_still_comes_from_build_arg(data: dict[Any, Any]) -> None:
-    # Dockerfile 的 ARG 行序约束与 scripts/check_version.py 的断言都不动，
+    # Dockerfile 的 ARG 行序约束（MIN-14）与 scripts/check_version.py 的断言都不动，
     # 本工作流的职责只是把版本传进去；漏传会让镜像内版本固化成空串且构建期不报错。
     for name in ("docker-build-amd64", "docker-build-arm64"):
         build = _build_step(_job(data, name), name)

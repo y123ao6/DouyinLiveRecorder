@@ -1,10 +1,10 @@
 # tests/test_gui_monitor.py - 守护 gui.py 中不依赖 Tk 主循环的判定逻辑。
 #
-# 覆盖五类 GUI 缺陷（ID 为审查编号，便于回溯）： URL 配置有效性判据（带 BOM 的
-# 「全部注释」配置必须拦住启动，不能误判成有配置）；该语言下拉显示名唯一
-# （en_US/en_GB 不得同名）；该画质降级标志按时间序复位（不得一次瞬时降级永久钉住）；
-# 高级设置保存前必须先裁决外部改动（不得用打开时快照覆盖录制进程的新写入）；
-# _stopping 必须在 finally 复位（否则「开始录制」永久失效）。
+# 覆盖五类 GUI 缺陷（ID 为审查编号，便于回溯）：MID-51 URL 配置有效性判据（带 BOM 的
+# 「全部注释」配置必须拦住启动，不能误判成有配置）；MID-53 语言下拉显示名唯一
+# （en_US/en_GB 不得同名）；MID-54 画质降级标志按时间序复位（不得一次瞬时降级永久钉住）；
+# MID-55 高级设置保存前必须先裁决外部改动（不得用打开时快照覆盖录制进程的新写入）；
+# MID-56 _stopping 必须在 finally 复位（否则「开始录制」永久失效）。
 #
 # 不在本进程 `import gui`：gui.py 模块级写 os.environ["DLR_GUI_PARENT"]="1"（必须先于
 # 任何 src 导入），同进程导入会让后续用例的 src.logger 都被判成 GUI 父进程、不再建录制日志。
@@ -109,7 +109,7 @@ def _ttl_seconds() -> float:
     return _TTL_CACHE["ttl"]
 
 
-# ─── ：URL 配置有效性判据 ─────────────────────────────
+# ─── MID-51：URL 配置有效性判据 ─────────────────────────────
 class TestHasRoomConfig:
     def test_bom_and_all_commented_lines_block_start(self, tmp_path: Path) -> None:
         # 全仓写入方一律 utf-8-sig（文件必带 BOM），而「全部房间注释掉」是暂停录制的常规做法：
@@ -142,7 +142,7 @@ class TestHasRoomConfig:
         assert "utf-8" not in dumped, "守卫内不得自带一套读取编码"
 
 
-# ─── ：语言菜单显示名唯一 ─────────────────────────────
+# ─── MID-53：语言菜单显示名唯一 ─────────────────────────────
 class TestLanguageMenuNames:
     def test_display_names_unique_per_code(self) -> None:
         names = _gui_call("display_names")
@@ -171,7 +171,7 @@ class TestLanguageMenuNames:
         assert "split" not in ast.dump(value), "赋值表达式里不得再有显示名裁剪"
 
 
-# ─── ：降级告警的时间序复位 ───────────────────────────
+# ─── MID-54：降级告警的时间序复位 ───────────────────────────
 class TestQualityAlertExpiry:
     def test_fresh_alert_is_kept(self) -> None:
         info = {"downgraded": True, "alert_at": 1000.0, "set_quality": "蓝光"}
@@ -208,7 +208,7 @@ class TestQualityAlertExpiry:
         assert "alert_at" in keys, f"_QUALITY_NON_DISPLAY_FIELDS 未包含 alert_at（实际 {sorted(keys)}）"
 
 
-# ─── ：config.ini 的外部改动裁决 ───────────────────────
+# ─── MID-55：config.ini 的外部改动裁决 ───────────────────────
 class TestConfigSnapshotConflict:
     def test_unchanged_disk_allows_plain_save(self) -> None:
         verdict = _gui_call("verdict", disk_baseline="A\n", disk_now="A\n", editor_text="A", editor_baseline="A")
@@ -290,7 +290,7 @@ class TestConfigSnapshotConflict:
         assert "_schedule_config_watch" in ast.dump(watcher), "窗口打开期间须持续核对磁盘基线"
 
 
-# ─── ：_stopping 复位必须无条件 ────────────────────────
+# ─── MID-56：_stopping 复位必须无条件 ────────────────────────
 class TestStoppingFlagReset:
     def test_reset_sits_in_finally(self) -> None:
         # 收尾主体（含 _send_stop_signal_and_wait 里的 ctypes 调用）一旦抛异常逃出线程，

@@ -230,7 +230,7 @@ async function bootApp({ lang, routes, confirm = () => true, injectToken = true,
     };
     // M-84：生产 _tokenStore() 的**首选**载体是 sessionStorage（关标签页即失效），沙箱必须提供它，
     // 用例才走得到主路径；两个载体各用一个 Map，「令牌绝不落 localStorage」才可能被观察到
-    // （内存回退那一支由 tests/frontend/test_regression_2026_09_22_gates.mjs 的 M-84 用例专门驱动）。
+    // （内存回退那一支由 tests/frontend/test_regression_gates.mjs 的 M-84 用例专门驱动）。
     const sessionData = new Map();
     const sessionStorage = {
         getItem: k => (sessionData.has(k) ? sessionData.get(k) : null),
@@ -263,8 +263,9 @@ async function bootApp({ lang, routes, confirm = () => true, injectToken = true,
 
     docListeners['DOMContentLoaded'][0]();
     await flush();
-    // 401 引导已清空 token（api() 的 401 分支 setToken('')），注入测试 token 供鉴权头断言；
-    // 注入的是**首选载体** sessionStorage（见上方 storage 桩段），localStorage 那一侧保持空。
+    // 401 引导已清空 token（api() 的 401 分支 setToken('')），注入测试 token 供鉴权头断言。
+    // M-84：注入到**首选载体** sessionStorage——生产 _tokenStore() 只在它不可用时才退内存，
+    // 注进 localStorage 已不再是生产会读的那一份。
     if (injectToken) sessionStorage.setItem('dlr_token', 'tok-test');
     // 手动执行当前已排期的定时器回调（一轮只跑「进队时已在队列里」的那些，跑完再排新的一轮），
     // 使轮询节拍由用例掌握而不是由真实时钟掌握。
@@ -491,10 +492,10 @@ const boolSandbox = { Object };
 vm.createContext(boolSandbox);
 vm.runInContext(extractParseBoolSource(), boolSandbox, { filename: 'app.js#parseConfigBool' });
 
-// MID-2263 的断言基准**必须**取自两端源码，不得在测试里内联字面量清单：JS 侧抠 CONFIG_*_TOKENS、
-// Python 侧抠 src/config_bool.py 的 TRUE/FALSE_TOKENS，逐 token 双向断言两端解析同一布尔。
-// [历史注] 旧写法把 token 表抄进用例，两侧同时删/改也全绿，「后端回落 default、前端仍显示为
-// 『是』」的分叉只能靠人记。
+// MID-2263：断言基准**必须**取自两端源码，不得在测试里内联字面量清单——旧写法把 token 表
+// 抄进用例，两侧同时删/改也全绿（「后端回落 default、前端仍显示为『是』」的分叉只能靠人记）。
+// 现在 JS 侧抠 CONFIG_*_TOKENS，Python 侧抠 src/config_bool.py 的 TRUE/FALSE_TOKENS，
+// 逐 token 双向断言两端解析同一布尔。
 const CONFIG_BOOL_PY = readFileSync(new URL('../../src/config_bool.py', import.meta.url), 'utf8');
 
 function extractJsTokenSet(name) {

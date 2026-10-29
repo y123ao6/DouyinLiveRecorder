@@ -334,7 +334,7 @@ Windows 官方源在"取不到官方 `.sha256` 文档"时**无条件退回 TOFU 
 **M-47 `tests/test_node_install.py:312`、`:334`｜状态泄漏（改写 stdlib `platform` 本体）**
 `monkeypatch.setattr(node_install.platform, "machine", lambda: "ARM64")` —— `node_install.platform` 就是 stdlib `platform` 模块对象，不在 R1 的 `_MUTABLE_MODULE_NAMES` 里故门禁不拦（与已按 MT-13 修成 shim 的 `test_web_tray.py:150` 同形，这两处漏改）。修复：改为替换 `node_install` 命名空间内的 `platform` 引用（shim）。
 
-**M-48 `tests/test_regression_2026_09_22_gates.py:479`｜安全锁条件跳过**
+**M-48 `tests/test_regression_gates.py:479`｜安全锁条件跳过**
 `test_config_sanitizer_removes_every_sensitive_value`（SEV-2213 主锁：真实凭据不得被整目录复制）在 `config/config.ini` 不存在时 `pytest.skip`。已核实该文件当前被 git 跟踪（不会触发），但一旦有人误删，这条主锁会**静默跳过而非判红**。修复：把 skip 换成 `pytest.fail`，或在文件缺失时回落到合成样本走完同一判据。
 
 ---
@@ -437,16 +437,16 @@ Windows 官方源在"取不到官方 `.sha256` 文档"时**无条件退回 TOFU 
 | 编号 | 位置 | 类型 | 说明与修复建议 |
 |---|---|---|---|
 | LT-01 | 9 处：`test_huya_danmaku.py:17`、`test_huya_tars_simple_list.py:20`、`test_srt_timeline_anchor.py:23`、`test_notify.py:32`、`test_notify_script_guard.py:45`、`test_bili_e2e.py:25`、`test_bilibili_danmaku.py:31`、`test_douyu_danmaku.py:15`、`test_douyu_stream_url.py:14` | 状态泄漏 | 模块级 `sys.path.insert` 未还原，累积 9 条重复项且造成模块名遮蔽风险；删除或移入 conftest/pythonpath |
-| LT-02 | `test_gui_qt_settings_dialog.py:26`、`test_gui_qt_units.py:53`、`test_gui_qt_window.py:30`、`test_regression_2026_10_18_gui_output_chain.py:34` | 状态泄漏 | 模块级 `os.environ.setdefault("QT_QPA_PLATFORM","offscreen")` 不可还原且使判据随宿主漂移；移进 `pytest_configure` 或改 `monkeypatch.setenv` |
-| LT-03 | `test_regression_2026_09_29_wp_b_netguard.py:246` | 状态泄漏 | 改写 stdlib `urllib.request.FileHandler` 类本体；改桩 `src.sync_http` 命名空间内的 opener |
+| LT-02 | `test_gui_qt_settings_dialog.py:26`、`test_gui_qt_units.py:53`、`test_gui_qt_window.py:30`、`test_regression_gui_output_chain.py:34` | 状态泄漏 | 模块级 `os.environ.setdefault("QT_QPA_PLATFORM","offscreen")` 不可还原且使判据随宿主漂移；移进 `pytest_configure` 或改 `monkeypatch.setenv` |
+| LT-03 | `test_regression_wp_b_netguard.py:246` | 状态泄漏 | 改写 stdlib `urllib.request.FileHandler` 类本体；改桩 `src.sync_http` 命名空间内的 opener |
 | LT-04 | `test_spider_platform.py:1325`、`:849`；`test_huya_danmaku.py:82`；`test_start_record_command_golden.py:516` | 弱断言 | 只断 `isinstance(result, dict)` / `len>0` / `reason is not None`，桩已备好却未验证实质；补内容断言 |
 | LT-05 | `test_scheduler.py:57`、`:98`、`:128` | 脆弱时序 | 负向 sleep 断言可被"线程还没跑起来"满足；改为"Event 确认已进入阻塞 → 再断言未获得"的两段式 |
-| LT-06 | 15 个文件（`test_regression_2026_09_22_infra.py:669,709`、`test_gui_wrap_hints.py:82,90`、`test_frontend_quality_ui.py:210,288`、`test_danmaku_offloop.py:147,154`、`test_scheduler.py:160,173,188`、`test_log_archive.py:219`、`test_gui_qt_units.py:254,267,315,349`、`test_gui_tail_robustness.py:305,345`、`test_gui_stop_exit_singleflight.py:170,188,223,229`、`test_collector.py:271`、`test_danmaku_monitor.py:313,580,595`、`test_srt_timeline_anchor.py:118`） | 脆弱时序 | 固定 `time.sleep` 后直接断言；统一改 `_wait_until(pred, timeout=…)` 轮询（`:686` 已有该函数） |
+| LT-06 | 15 个文件（`test_regression_infra.py:669,709`、`test_gui_wrap_hints.py:82,90`、`test_frontend_quality_ui.py:210,288`、`test_danmaku_offloop.py:147,154`、`test_scheduler.py:160,173,188`、`test_log_archive.py:219`、`test_gui_qt_units.py:254,267,315,349`、`test_gui_tail_robustness.py:305,345`、`test_gui_stop_exit_singleflight.py:170,188,223,229`、`test_collector.py:271`、`test_danmaku_monitor.py:313,580,595`、`test_srt_timeline_anchor.py:118`） | 脆弱时序 | 固定 `time.sleep` 后直接断言；统一改 `_wait_until(pred, timeout=…)` 轮询（`:686` 已有该函数） |
 | LT-07 | 70 处（如 `test_agent_hook_guard.py:92`、`test_async_http.py:367`、`test_stream_select.py:2111`、`test_quality_tiers.py:207`） | 冗余 | `assert X is not None` 后紧接着使用；多为类型收窄，建议改注释说明以免被误读为判据 |
 | LT-08 | `test_ab_sign.py:246,276`、`test_gui_qt_units.py:190`、`test_spider.py:372`、`test_xhs_live_links.py:322` | 断言形态提示 | 自比形态 5 处，核查后均为确定性/幂等用例（合法），但其中 3 处缺少"不同输入产生不同输出"的配对用例 |
 | LT-09 | `test_spider_hardening.py:198` | 覆盖面 | 基类按 `silent_body is None` 跳过会悄悄缩小平台覆盖面；统计实际跳过数量并在报告显式化 |
 | LT-10 | 43 处 skip（26 命令式 + 17 `skipif`），`xfail` 0 | 登记 | 全部带环境理由、无长期挂起；仅作登记，不需处理 |
-| LT-11 | `test_regression_2026_09_22_spider.py:586`、`test_regression_2026_09_22_utils.py:289`、`test_regression_2026_09_22_infra.py:213` | 补丁路径 | 三处直改 stdlib 本体（`asyncio.sleep`、`msg_push.smtplib`、`os.rename`）；改 shim 浅拷贝 |
+| LT-11 | `test_regression_spider.py:586`、`test_regression_utils.py:289`、`test_regression_infra.py:213` | 补丁路径 | 三处直改 stdlib 本体（`asyncio.sleep`、`msg_push.smtplib`、`os.rename`）；改 shim 浅拷贝 |
 | LT-12 | `test_cookie_cache.py:248/259`、`test_async_http_lock.py:62/133`、`test_async_http.py:140`、`test_concurrency*.py` 等 | 登记 | join 未校验已根治（44 处 join 全配 `assert not t.is_alive()`，R10 门禁 + 文件内注释双保险）；仅登记确认 |
 
 ---

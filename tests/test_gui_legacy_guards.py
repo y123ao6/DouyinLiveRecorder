@@ -1,10 +1,28 @@
 # tests/test_gui_legacy_guards.py —— 遗留 tkinter 路径（gui.py）七条审查项的回归锁。
 #
-# 覆盖 CODE_REVIEW_2026-10-21 的 / / / / ②③ / ②。
+# 覆盖 CODE_REVIEW_2026-10-21 的 M-71 / M-72 / M-73 / M-75 / M-76①②③ / M-77①②。
 # 与同族文件的分工：tests/test_gui_tail_robustness.py 锁 after 自续期链「抛错仍续期」，
+<<<<<<< Updated upstream
+# 本文件锁的是**同一条链上的数据不丢**（M-71 批次不空转、M-73 哨兵不丢）；
+# tests/test_regression_root_entries.py 锁「确证复用即收手」（L-02 原格），
+# 本文件 M-72 锁**判据读不出来**那一格——那是 L-02 留下的最后一个误杀口子。
+=======
+<<<<<<< Updated upstream
 # 本文件锁的是**同一条链上的数据不丢**（该批次不空转、该哨兵不丢）；
 # tests/test_regression_2026_10_18_root_entries.py 锁「确证复用即收手」（该原格），
 # 本文件该锁**判据读不出来**那一格——那是该留下的最后一个误杀口子。
+=======
+<<<<<<< HEAD
+# 本文件锁的是**同一条链上的数据不丢**（M-71 批次不空转、M-73 哨兵不丢）；
+# tests/test_regression_root_entries.py 锁「确证复用即收手」（L-02 原格），
+# 本文件 M-72 锁**判据读不出来**那一格——那是 L-02 留下的最后一个误杀口子。
+=======
+# 本文件锁的是**同一条链上的数据不丢**（该批次不空转、该哨兵不丢）；
+# tests/test_regression_2026_10_18_root_entries.py 锁「确证复用即收手」（该原格），
+# 本文件该锁**判据读不出来**那一格——那是该留下的最后一个误杀口子。
+>>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 #
 # 桩口径（AGENTS 测试约定逐条对齐）：
 #   * 不在模块顶层 import gui：gui.py 模块级写 os.environ["DLR_GUI_PARENT"]="1"，收集期导入
@@ -56,7 +74,7 @@ def _method_body(source: str, tree: ast.Module, name: str) -> ast.FunctionDef:
     return fn
 
 
-# ─── ：判据读不出来 → 不杀（退出兜底的最后一个误杀口子） ────────────────────
+# ─── M-72：判据读不出来 → 不杀（退出兜底的最后一个误杀口子） ────────────────────
 
 
 class _FakeCompleted:
@@ -68,7 +86,7 @@ class _FakeCompleted:
 
 def _cleanup_stub(gui: ModuleType, recorded_image: object, recorded_stamp: object, logs: list[Any]) -> Any:
     # object.__new__ 跳过 __init__（不建真窗），只注入 _cleanup_zombie_ffmpeg 触及的三面；
-    # _child_image_name / _child_creation_stamp 用 setattr 而非裸赋值共享属性（AGENTS ）。
+    # _child_image_name / _child_creation_stamp 用 setattr 而非裸赋值共享属性（AGENTS M-25）。
     app = object.__new__(gui.LiveRecorderGUI)
     setattr(app, "_child_image_name", recorded_image)
     setattr(app, "_child_creation_stamp", recorded_stamp)
@@ -90,7 +108,7 @@ def _kill_runs(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> list[list[st
 
 
 def test_indeterminate_creation_stamp_blocks_whole_tree_kill(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 本体：源码运行态下 _child_image_name 恒为 python.exe（record_cmd[0] 就是解释器），
+    # M-72 的本体：源码运行态下 _child_image_name 恒为 python.exe（record_cmd[0] 就是解释器），
     # 映像名判据结构性失效；此时创建时间又读不出来（权限不足 / 号码已进复用池），旧形态
     # 按「无法判定即放行」继续 taskkill /F /T —— 打的是接手该号码的无关进程及其整棵子树。
     # 兜底的政策取向是宁可漏清不可误杀：漏清最多留一只孤儿 ffmpeg，误杀不可逆。
@@ -150,7 +168,7 @@ def test_no_expectation_recorded_does_not_narrow_cleanup(gui: ModuleType, monkey
 
 
 def test_reused_pid_same_image_verdict_matrix(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 判定函数本体的四格矩阵：该全部语义收敛在这里，别处只读它的结论。
+    # 判定函数本体的四格矩阵：M-72 的全部语义收敛在这里，别处只读它的结论。
     # 摘掉「读不到 → 判已复用」那一支时，第三格立刻变 False（本用例即红）。
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(gui, "_win_pid_creation_stamp", lambda pid: None)
@@ -162,7 +180,7 @@ def test_reused_pid_same_image_verdict_matrix(gui: ModuleType, monkeypatch: pyte
     assert gui._reused_pid_same_image(123456, 4242) is True
 
 
-# ─── ：进程结束哨兵必须在 finally 里处理 ─────────────────────────────────────
+# ─── M-73：进程结束哨兵必须在 finally 里处理 ─────────────────────────────────────
 
 
 class _RaisingText:
@@ -316,7 +334,7 @@ class _RecordingText:
         return None
 
 
-# ─── ：输出线程的批次时间兜底 ────────────────────────────────────────────────
+# ─── M-71：输出线程的批次时间兜底 ────────────────────────────────────────────────
 
 
 class _TrickleStdout:
@@ -376,7 +394,7 @@ def test_read_output_flushes_partial_batch_on_time(gui: ModuleType) -> None:
     assert batch == [("主播[原画] 正在录制中 00:01:00", "info")], f"半截批次从未按时间入队: {batch}"
 
 
-# ─── ：画质表的 last_seen 走本文件自定的容错口径 ───────────────────────────
+# ─── M-76①：画质表的 last_seen 走本文件自定的容错口径 ───────────────────────────
 
 
 class _FakeTable:
@@ -437,7 +455,7 @@ def test_update_quality_display_tolerates_dirty_last_seen(gui: ModuleType) -> No
     assert stub._quality_table.synced, "当轮刷新必须把表同步出去，不得停在旧值"
 
 
-# ─── ：编辑器读不到正文时返回哨兵，且绝不落盘 ──────────────────────────────
+# ─── M-76②：编辑器读不到正文时返回哨兵，且绝不落盘 ──────────────────────────────
 
 
 class _BrokenText:
@@ -496,7 +514,7 @@ def test_save_config_never_writes_the_sentinel(
     assert hints, "取消保存必须留下可见痕迹，否则用户以为已经保存成功"
 
 
-# ─── ：_load_config 的早退分支也要刷新「已保存」基线 ───────────────────────
+# ─── M-76③：_load_config 的早退分支也要刷新「已保存」基线 ───────────────────────
 
 
 class _EchoText:
@@ -537,7 +555,7 @@ def test_load_config_early_return_marks_saved_baseline(gui: ModuleType, tmp_path
     ), "早退分支仍未刷新已保存基线（会反复弹未保存提示）"
 
 
-# ─── ：几何收敛不得重入完整事件循环 ────────────────────────────────────────
+# ─── M-77①：几何收敛不得重入完整事件循环 ────────────────────────────────────────
 
 
 def test_settled_reqwidth_never_reenters_the_event_loop() -> None:
@@ -570,7 +588,7 @@ def test_settled_reqwidth_never_reenters_the_event_loop() -> None:
         and node.func.attr == "_nudge_table_configure"
     ]
     assert nudged, "列宽重算必须仍有触发点，否则读数停在构建初期的旧值（右边框裁切回归）"
-    # 有界采样：循环上界必须钉在形参 passes 上，不得改成 while True（该那条无界等待的同族形态）。
+    # 有界采样：循环上界必须钉在形参 passes 上，不得改成 while True（MID-59 那条无界等待的同族形态）。
     loops = [node for node in ast.walk(fn) if isinstance(node, ast.For)]
     assert loops and all(ast.unparse(loop.iter) == "range(passes)" for loop in loops), "收敛循环必须是有界 for"
 
@@ -594,7 +612,7 @@ def test_table_configure_nudge_is_bounded_and_tolerant() -> None:
     assert guarded, "补发必须容错（未 realize / 已销毁的控件会抛 TclError）"
 
 
-# ─── ：一次性 after 的 id 必须记账并可取消 ─────────────────────────────────
+# ─── M-77②：一次性 after 的 id 必须记账并可取消 ─────────────────────────────────
 
 
 def test_cancel_after_job_records_and_tolerates_failure(gui: ModuleType) -> None:
@@ -618,7 +636,7 @@ def test_cancel_after_job_records_and_tolerates_failure(gui: ModuleType) -> None
 def test_one_shot_after_jobs_are_recorded_and_cancelled() -> None:
     # 接线必须同时成立四处：主题延迟重取色「先取消上一支再记账」、对话框延迟 grab「先取消再记账」、
     # 对话框销毁路径取消、退出收尾两支都取消。只钉「谁被调用、返回值去了哪里」这一不变量，
-    # 不钉行号也不钉文案（该教训：字面量文本锁会在契约反转后静默空洞成立）。
+    # 不钉行号也不钉文案（M-26 的教训：字面量文本锁会在契约反转后静默空洞成立）。
     def assignments(name: str, attr_name: str) -> list[ast.Assign]:
         fn = _method_body(_GUI_SOURCE, _GUI_TREE, name)
         return [
@@ -651,7 +669,7 @@ def test_one_shot_after_jobs_are_recorded_and_cancelled() -> None:
     assert assignments("_on_theme_change", "_canvas_bg_job_id"), "主题切换的 after(50) 未记账 id"
     assert assignments("on_closing", "_close_dialog_grab_job_id"), "对话框的 after(100) 未记账 id"
     # 连点同一个菜单会排出两支 job：排新的一刻必须先取消旧的，否则「后一支在窗口销毁后触发」
-    # 这条故障形态与不记账等价（要收的是全部三个面，缺一面就漏一类误触发）。
+    # 这条故障形态与不记账等价（M-77② 要收的是全部三个面，缺一面就漏一类误触发）。
     assert cancelled_attrs("_on_theme_change") == {"_canvas_bg_job_id"}, "主题切换未先取消上一支 job"
     assert cancelled_attrs("on_closing") == {"_close_dialog_grab_job_id"}, "对话框排 grab 时未先取消上一支 job"
     # 对话框的三条销毁路径（最小化 / 完全退出 / Escape）统一收口在 close_dialog，也必须取消。
@@ -673,7 +691,7 @@ def test_one_shot_after_jobs_are_recorded_and_cancelled() -> None:
     }, "退出收尾漏取消一次性 job"
 
 
-# ─── ：三条绝对路径进日志前必须过脱敏 ────────────────────────────────────────
+# ─── M-75：三条绝对路径进日志前必须过脱敏 ────────────────────────────────────────
 
 
 _MASKED_PATH_MSGIDS = ("已打开下载目录: {path}", "执行程序: {path}", "工作目录: {path}")
@@ -683,7 +701,7 @@ def test_absolute_paths_are_masked_before_logging() -> None:
     # 同一文件对字体路径早已走 mask_credentials（那条红线的既有落点），这三处是同红线上的遗漏：
     # logs/gui.log 按大小轮转保留多份，未脱敏的路径等于长期落盘。
     # 判据走 AST：只认「tr 模板属于这三条、且 path= 实参是 mask_credentials(...) 调用」，
-    # 不钉源码文本子串（该教训：字面量文本锁会在契约反转后静默空洞成立）。
+    # 不钉源码文本子串（M-26 的教训：字面量文本锁会在契约反转后静默空洞成立）。
     seen: dict[str, bool] = {msgid: False for msgid in _MASKED_PATH_MSGIDS}
     tr_count = 0
     for node in ast.walk(_GUI_TREE):

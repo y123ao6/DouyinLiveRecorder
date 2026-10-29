@@ -1,4 +1,4 @@
-# scripts/sync_metadata.py 与 scripts/smoke_test.py 的错误处理契约回归锁（退出码 + 降级路径）。
+# scripts/sync_metadata.py 与 scripts/smoke_test.py 的**错误处理契约**回归锁（WP-I / M-32）。
 #
 # 被测面（两块都是「退出码 + 降级路径」契约，不是业务逻辑）：
 #   ① sync_metadata.regenerate()：PATH 无 uv 时不得抛栈，必须落 WARN，且**不依赖 uv 的
@@ -57,9 +57,10 @@ class _Completed:
 
 class _FakeEnv:
     # uv 安装状态 + 子进程返回值的一体化环境模型。
-    # which 与 run 必须共享同一个事实（PATH 里有没有 uv）：若 which 说「没有」而 run 却优雅地
-    # 返回非 0，用例就在验证现实里不存在的世界——真机器上按裸名启动不存在的程序抛
-    # FileNotFoundError，而那正是本组契约要覆盖的原始触发形态（旧代码只看 returncode）。
+    # 为什么把 which 与 subprocess 放在同一个对象里：二者必须共享同一个事实（PATH 里有没有
+    # uv）。若 which 说「没有」而 run 却优雅地返回非 0，用例就是在验证一个现实里不存在的
+    # 世界——真机器上按裸名启动不存在的程序抛的是 FileNotFoundError，而**那正是 M-32① 的
+    # 原始触发形态**（旧代码只看 returncode，从不预期异常，于是崩栈 + egg-info 段被带走）。
     def __init__(
         self,
         uv_path: str | None,
@@ -75,8 +76,8 @@ class _FakeEnv:
         self.lock_rc = lock_rc
         self.probe_exc = probe_exc
         self.lock_exc = lock_exc
-        # 两个超时形态开关：TimeoutExpired 不是 OSError 子类，不能复用 *_exc 通道
-        # （那条锁的是「无法启动 → 本段 WARN 降级」，语义完全不同）。
+        # M-94（2026-10-21）新增两个超时形态开关：TimeoutExpired 不是 OSError 子类，
+        # 不能复用 *_exc 通道（那条锁的是「无法启动 → 本段 WARN 降级」，语义完全不同）。
         self.lock_timeout = lock_timeout
         self.egg_timeout = egg_timeout
         self.calls: list[tuple[str, list[str]]] = []
@@ -127,14 +128,14 @@ def _install(monkeypatch: pytest.MonkeyPatch, fake: _FakeEnv) -> _FakeEnv:
     # 只替换被测模块全局的 subprocess / shutil 引用（浅 namespace，见 AGENTS.md 的
     # 「patch subprocess 必须替换模块全局引用」条目）：不改 stdlib 本体，避免波及同进程
     # 其它用例与 harness 自身的子进程。
-    # shutil 用 raising=False 打桩：本模块的 shutil 是修复（ which 探测）才引入的，
+    # shutil 用 raising=False 打桩：本模块的 shutil 是修复（M-32① which 探测）才引入的，
     # 若要求属性必须存在，变异验证回退到修复前形态时用例只会因「属性不存在」而红，
     # 看不到真实失效面（FileNotFoundError 崩栈 + egg-info 段被带走）。改成强制装上后，
     # 旧形态仍会走 subprocess.run(["uv", ...]) → 命中本替身的 FileNotFoundError → 红在行为上。
     monkeypatch.setattr(sync_metadata, "shutil", types.SimpleNamespace(which=fake.which), raising=False)
     # 替身必须从**真 subprocess 命名空间**浅拷贝再覆盖两个入口（AGENTS.md 的 shim 口径）：
     # 只挑 run/call 会让替身缺 TimeoutExpired 等同模块常量，被测代码新增 except 分支时
-    # 替身先 AttributeError，报错还被读成生产缺陷（该加超时上界时实测踩到）。
+    # 替身先 AttributeError，报错还被读成生产缺陷（M-94 加超时上界时实测踩到）。
     subprocess_shim = types.SimpleNamespace(**vars(subprocess))
     subprocess_shim.run = fake.run
     subprocess_shim.call = fake.call
@@ -147,8 +148,8 @@ def _install(monkeypatch: pytest.MonkeyPatch, fake: _FakeEnv) -> _FakeEnv:
 
 class TestSyncMetadataUvDegradation:
     def test_missing_uv_warns_and_still_rebuilds_egg_info(self, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
-        # 主用例：PATH 无 uv → WARN 可达（[历史注] 旧形态此处是 FileNotFoundError 崩溃栈），
-        # egg-info 重建照常执行（旧形态整段 regenerate 被异常带走，一步都不剩）。
+        # M-32① 主用例：PATH 无 uv → ① WARN 可达（旧形态此处是 FileNotFoundError 崩溃栈），
+        # ② egg-info 重建照常执行（旧形态整段 regenerate 被异常带走，一步都不剩）。
         fake = _install(monkeypatch, _FakeEnv(uv_path=None))
         assert sync_metadata.regenerate() is True
 
@@ -214,7 +215,7 @@ class TestSyncMetadataUvDegradation:
 
     def test_check_path_spawns_no_subprocess(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # --check 是 CI static job 的门禁：纯读三张文件，**绝不允许**调 subprocess / 联网。
-        # 本用例把子进程入口全换成 tripwire，任何一次调用都会当场红（该修复把 which
+        # 本用例把子进程入口全换成 tripwire，任何一次调用都会当场红（M-32① 的修复把 which
         # 引入 regenerate 一侧，这里锁住它没有被 --check 路径顺带牵进来）。
         def boom(*args: Any, **kwargs: Any) -> Any:
             raise AssertionError("--check 路径不得启动任何子进程/可执行文件查找")
@@ -280,7 +281,7 @@ MALFORMED_CONFIGS: list[tuple[object, str, str]] = [
     ({"checks": [{"path": "/", "headers": ["Referer"]}]}, "headers", "object"),
     ({"checks": [{"path": "/", "expect_json": ["status"]}]}, "expect_json", "object"),
     ({"checks": [{"path": "/", "expect_contains": "欢迎"}]}, "expect_contains", "array"),
-    # 2026-10-18：容器形态对、元素形态错同样属畸形。run_check 的 `token in content`
+    # L-31（2026-10-18）：容器形态对、元素形态错同样属畸形。run_check 的 `token in content`
     # 对数字/对象元素抛 TypeError 并穿透 main()（只接 OSError/ValueError）→ rc=1 崩溃栈，
     # 被 .github/actions/retry 读成「面板接口挂了」。needle 带下标，定位到具体那一个元素。
     ({"checks": [{"path": "/", "expect_contains": ["ok", 200]}]}, "expect_contains[1]", "string"),
@@ -344,18 +345,23 @@ def _install_fake_urlopen(monkeypatch: pytest.MonkeyPatch, response: _FakeRespon
 
 
 def _spawn_smoke_child(cfg_path: Path) -> subprocess.CompletedProcess[bytes] | None:
-    # 真起子进程拿真实退出码（错误处理契约的最终裁判）。返回 None = 本机起不了子进程：
-    # 中文 Windows 本机 harness 多 agent 并发时偶发 `OSError: [WinError 6] 句柄无效`，
-    # 属 AGENTS.md「本机偶发环境噪声」，只对「spawn 本身失败」重试；**断言永不参与重试**
-    # （一旦拿到 CompletedProcess，rc/输出不合规就是红）。
-    # 起不来刻意用 Optional 返回值交调用方 skip，而非在辅助函数里直接 pytest.skip：辅助函数
-    # 终态不依赖 pytest 的 NoReturn 可见性（CI typecheck job 装不装 pytest 结论都该一致），
-    # 也免掉「不可达语句」那类二次告警。skip 的边界（不是放宽门禁）：被跳过的只有「进程边界」
-    # 这一层，rc=2 + 无崩溃栈的判定在进程内由 test_main_exits_two_without_traceback 全量覆盖
-    # （SystemExit.code 即退出码）；CI（ubuntu runner）稳定起子进程，本条在门禁面上恒为真实
-    # 执行；skip reason 出现在 `-rs`/汇总里，本机不会形成「全绿但其实没跑」的错觉。
-    # 具体异常类型（OSError 家族，实测为 PermissionError 型拦截与 WinError 6）不进返回值：
-    # 调用方只需区分「跑得起来 / 跑不起来」。
+    # 真起子进程拿真实退出码（错误处理契约的最终裁判）。返回 None = 本机起不了子进程。
+    # 只对「spawn 本身失败」重试：中文 Windows 的本机 harness 在多 agent 并发时偶发
+    # `OSError: [WinError 6] 句柄无效`（子进程句柄复制被拦；实测 2026-09-29 单跑连过 6 次、
+    # 并发窗口内 3 次重试全被拦），属 AGENTS.md「本机偶发环境噪声」，与退出码判定无关。
+    # **断言永不参与重试**：一旦拿到 CompletedProcess，rc/输出不合规就是红。
+    # 「起不来」刻意用 Optional 返回值交调用方 skip，而不是在辅助函数里直接 pytest.skip：
+    # 按 AGENTS.md 口径辅助函数的终态不依赖 pytest 的 NoReturn 可见性（CI typecheck job
+    # 装不装 pytest 结论都该一致），可省形态也免掉「不可达语句」那类二次告警。
+    # 走 skip 的边界（不是放宽门禁）：
+    #   · 被跳过的只有「进程边界」这一层；rc=2 + 无崩溃栈的判定在进程内由
+    #     test_main_exits_two_without_traceback 全量覆盖（SystemExit.code 即退出码），
+    #     故本机跳这条不会让任何一条畸形形态失去用例。
+    #   · CI（ubuntu runner）能稳定起子进程，本条在门禁面上恒为真实执行，不存在
+    #     「靠 skip 让 CI 少跑一段平台分支」的那种静默失效（AGENTS.md 反对的是那一类）。
+    #   · skip reason 会出现在 `-rs`/汇总里，本机不会形成「全绿但其实没跑」的错觉。
+    # 具体异常类型（FileExistsError 之外的 OSError 家族，实测为 PermissionError 型拦截与
+    # WinError 6）不进返回值：调用方只需区分「跑得起来 / 跑不起来」，判定与理由都在用例里写。
     for _attempt in range(3):
         try:
             return subprocess.run(
@@ -427,7 +433,7 @@ class TestSmokeConfigMalformed:
     def test_bad_element_in_expect_contains_exits_two_before_any_request(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # 进程边界形态：元素级畸形必须同样落 rc=2（配置问题），而不是 run_check 抛
+        # L-31 的进程边界形态：元素级畸形必须同样落 rc=2（配置问题），而不是 run_check 抛
         # TypeError 的 rc=1（接口问题）。这两档在 scripts/_ci_web_smoke.sh 里处置相反——
         # 前者直接停、后者还会退避重试，混同等于把「配置写坏了」重跑一遍。
         seen = _install_fake_urlopen(monkeypatch, _FakeResponse(200, "ok"))
@@ -490,7 +496,7 @@ class TestSmokeConfigValid:
         assert _call_main(monkeypatch, cfg) == 1
 
     def test_empty_and_missing_checks_keep_rc_two(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # 既有语义必须原样保留：空 array 与缺 checks 键都退 2。
+        # MIN-2260 的既有语义必须原样保留：空 array 与缺 checks 键都退 2（本次收口不得挤掉）。
         empty = _write_cfg(tmp_path, {"checks": []}, "empty.json")
         assert _call_main(monkeypatch, empty) == 2
         missing = _write_cfg(tmp_path, {"base_url": "http://127.0.0.1:9"}, "missing.json")
@@ -498,7 +504,7 @@ class TestSmokeConfigValid:
 
     def test_shipped_smoke_web_config_still_loads(self) -> None:
         # 仓库自带的 CI 配置（scripts/smoke_web.json）是新校验的第一个消费者：必须仍能解析，
-        # 且解析出 2 条断言（该「0 条也算红」在消费侧还有第二道判据）。
+        # 且解析出 2 条断言（MIN-2260 的「0 条也算红」在消费侧还有第二道判据）。
         checks, base_url = smoke_test.load_config(str(ROOT / "scripts" / "smoke_web.json"))
         assert len(checks) == 2
         assert base_url == "http://127.0.0.1:8000"

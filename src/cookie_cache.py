@@ -16,7 +16,7 @@
 #   （归一化网址 + 代理地址），value = (原始 cookie 字典, 失效时刻 monotonic)。
 #   存的是网址下发的原始访客 cookie 字典，不做平台特定裁剪，由调用方按需取字段
 #   （如 ttwid 取 "ttwid"，快手取 "did"/"didv"）。
-#   失效时刻在写入时由该次 ttl 折算，所有读取方只判 now < 失效时刻——早期存的是写入时刻、
+#   失效时刻在写入时由该次 ttl 折算，所有读取方只判 now < 失效时刻（L-07）——早期存的是写入时刻、
 #   由各读取方拿自己手上的 ttl 去减，同一条目会因读取方不同而有不同寿命。
 #
 # ── 失效策略 ──
@@ -26,7 +26,7 @@
 #   - 世代号（MI-12）：invalidate() / clear() / invalidate_generic() 递增 _cache_generation，在途拉取者
 #     写回前比对，期间发生过失效就丢弃本次结果——否则失效后立即 fetch_cookies() 若命中在途登记，又会
 #     拿到那份**已被判定过期**的 cookie，自愈链要直到 TTL（默认 30 分钟）自然过期为止。
-#   - 在途登记的孤儿回收：登记项记下「拉取者所在事件循环」，失效与新抢到拉取权的协程都**只摘
+#   - 在途登记的孤儿回收（L-06）：登记项记下「拉取者所在事件循环」，失效与新抢到拉取权的协程都**只摘
 #     owner 循环已关闭**的登记（拉取线程被硬杀 / 拉取任务被丢弃——它永远无人交付，实测会让同 key 之后
 #     每次调用都白等一轮 timeout+余量再拿空结果），并就地以空结果唤醒挂在它上面的等待者。拉取者仍
 #     活着的登记一律不得摘：那等于把它的等待者判空，还会让同 key 并发重发一次请求。「失效后旧值不得
@@ -105,7 +105,7 @@ def _get_cached_entry(key: str) -> tuple[dict[str, str], float] | None:
 
 
 def _is_orphan(rec: _Inflight) -> bool:
-    # 拉取者所在事件循环已关闭 ⇒ 这次拉取永远不会有人交付，登记是孤儿。
+    # 拉取者所在事件循环已关闭 ⇒ 这次拉取永远不会有人交付，登记是孤儿（L-06）。
     # is_closed() 只读一个标志位，跨线程调用安全；按等待时长判死会误伤「活着但慢」的拉取者。
     return rec.owner_loop.is_closed()
 
@@ -161,7 +161,7 @@ def _release_inflight(registry: dict[str, _Inflight], key: str, mine: _Inflight)
 def get_cached(url: str, proxy_addr: OptionalStr = None) -> dict[str, str] | None:
     # 同步只读查询：命中且未过期返回 cookie 字典，否则返回 None（不触发网络请求）。
     # 判过期只认条目里记下的失效时刻，不硬编码 DEFAULT_TTL——否则写入方用自定义 ttl 时，
-    # 两个读取方会对同一条目给出相反结论。
+    # 两个读取方会对同一条目给出相反结论（L-07）。
     entry = _get_cached_entry(_make_key(url, proxy_addr))
     if entry is None:
         return None
@@ -212,7 +212,7 @@ async def fetch_cookies(
     # (url, *, proxy_addr, headers, return_cookies, timeout, http2) -> dict。
     #
     # ttl：只决定「本次写入的条目能活多久」，写入时折成绝对失效时刻存进条目；两个读取方一律与该
-    # 时刻比对。故「想强制重新拉取」只能走 invalidate()，不能靠传更小的 ttl。
+    # 时刻比对（L-07）。故「想强制重新拉取」只能走 invalidate()，不能靠传更小的 ttl。
     key = _make_key(url, proxy_addr)
     now = time.monotonic()
     do_fetch: Callable[..., Any] = fetcher if callable(fetcher) else async_req
@@ -235,7 +235,7 @@ async def fetch_cookies(
             return entry[0]
         rec = _inflight.get(key)
         if rec is not None and _is_orphan(rec):
-            # 拉取者所在的循环已经关了 ⇒ 它永远不会有人交付。挂在它上面的等待者只能白等
+            # L-06：拉取者所在的循环已经关了 ⇒ 它永远不会有人交付。挂在它上面的等待者只能白等
             # 一轮 timeout，而这条死登记还会把同 key 之后每一次调用都拖进同一个结局
             # （实测：孤儿登记令 fetch_cookies 恒返回 {}，直到进程重启）。就地摘掉并接管。
             _inflight.pop(key, None)
@@ -307,7 +307,7 @@ async def fetch_cookies(
     if cookies:
         with _cache_lock:
             if _gen_before == _cache_generation:
-                # 把本次 ttl 折成绝对失效时刻存进条目，读取方不再各自拿 ttl 去减
+                # L-07：把本次 ttl 折成绝对失效时刻存进条目，读取方不再各自拿 ttl 去减
                 _cookie_cache[key] = (cookies, time.monotonic() + ttl)
         logger.debug(
             i18n.tr(
@@ -338,7 +338,7 @@ async def get_cookie_str(
     return "; ".join(f"{k}={v}" for k, v in cookies.items())
 
 
-# 通用 singleflight 缓存：与 fetch_cookies 同范式，但缓存值是任意对象而非 cookie dict，
+# 通用 singleflight 缓存（H-2）：与 fetch_cookies 同范式，但缓存值是任意对象而非 cookie dict，
 # 供「一次性拉取、长期复用」的凭据类数据（Twitch Client-Id、B站 buvid3、快手 did、抖音 ttwid）复用。
 # 这些拉取点原先在「threading.Lock 临界区内 await 网络请求」：本项目每房间一线程一循环，锁内 await
 # 期间房间 B 执行到 with 会同步阻塞其整个事件循环线程；B站处为不可重入锁，同循环两协程并发进入即
@@ -374,7 +374,7 @@ async def singleflight(
     #
     # - key：缓存键（调用方自行保证不同用途不碰撞，建议带前缀，如 "twitch_client_id|proxy"）
     # - factory：无参协程工厂（Callable[[], Awaitable[Any]]）；被调用于锁外，故可安全 await
-    # - ttl：缓存秒数，写入时折成条目的绝对失效时刻，读取一律按该时刻判过期（与
+    # - ttl：缓存秒数，写入时折成条目的绝对失效时刻，读取一律按该时刻判过期（L-07，与
     #   fetch_cookies / get_cached 同口径）；cache_falsy=False（默认）时空结果不缓存（视为失败，下次重试）
     # - timeout：等待其它协程在途拉取的超时（秒），超时返回 None 而非永久挂起
     #
@@ -399,7 +399,7 @@ async def singleflight(
             return entry[0]
         rec = _generic_inflight.get(key)
         if rec is not None and _is_orphan(rec):
-            # 同 fetch_cookies——拉取者所在的循环已关闭 ⇒ 这条登记永远无人交付，
+            # L-06：同 fetch_cookies——拉取者所在的循环已关闭 ⇒ 这条登记永远无人交付，
             # 摘掉并接管，别把同 key 之后的每次调用都拖成「等待超时→None」。
             _generic_inflight.pop(key, None)
             stranded = rec.waiters
@@ -428,14 +428,14 @@ async def singleflight(
     # 本协程为拉取者：锁外执行 factory（临界区内绝无 await），写回前比对世代号——与 fetch_cookies
     # 共用同一个 _cache_generation，两层必须同口径：否则「凭据被平台拒绝 → invalidate_generic(key)」
     # 与「同 key 在途拉取」并发时，已被判定作废的那份结果（如 B 站软拒绝的随机 UUID buvid3）会在
-    # 拉取结束后重新固化进缓存、直到 TTL 自然过期，自愈链在 singleflight 侧断开。
+    # 拉取结束后重新固化进缓存、直到 TTL 自然过期，自愈链在 singleflight 侧断开（MID-40）。
     with _cache_lock:
         _gen_before = _cache_generation
     try:
         try:
             value = await factory()
         except Exception as e:
-            # 异常文本常内嵌带签名/鉴权查询串的完整 URL（factory 里就是 async_req/sync_req），
+            # M-05：异常文本常内嵌带签名/鉴权查询串的完整 URL（factory 里就是 async_req/sync_req），
             # 与 fetch_cookies 同口径一律过 mask_credentials——logs/ 按 rotation 保留多份，
             # 原文入日志等于凭据长期落盘。{type_name} 保持不脱敏（Windows 下 str(e) 可能为空，
             # 缺类型名就只剩一条空白告警，无法归因）。
@@ -461,7 +461,7 @@ async def singleflight(
             # 不回填缓存——与 fetch_cookies 的 MI-12 口径一致（那里同样静默丢弃，等待者仍拿
             # 到本次值，但下一轮会重新拉取，从而让「被拒凭据」不被固化 30 分钟）。
             if _gen_before == _cache_generation:
-                # ttl 在写入时折成绝对失效时刻（与 cookie 侧同口径）
+                # L-07：ttl 在写入时折成绝对失效时刻（与 cookie 侧同口径）
                 _generic_cache[key] = (value, time.monotonic() + ttl)
     pending = _release_inflight(_generic_inflight, key, mine)
     for waiter_loop, waiter_fut in pending:
@@ -474,7 +474,7 @@ def invalidate_generic(key: str | None = None) -> None:
     global _cache_generation
     with _cache_lock:
         _cache_generation += 1
-        # 与 cookie 侧同形——只回收「拉取者所在循环已关闭」的登记，并在锁外把挂在上面的
+        # L-06：与 cookie 侧同形——只回收「拉取者所在循环已关闭」的登记，并在锁外把挂在上面的
         # 等待者立即唤醒（交付 None，等价于它们本会走到的超时结局，只是不再白等）。
         stranded = _reap_orphans_locked(_generic_inflight, key)
         if key is None:
@@ -490,7 +490,7 @@ def invalidate(url: str | None = None, proxy_addr: OptionalStr = None) -> None:
     with _cache_lock:
         # MI-12：递增世代，令在途拉取者放弃回填
         _cache_generation += 1
-        # 同步清理在途登记表。原先只清结果字典，于是拉取线程被硬杀留下的孤儿 key 永不自愈
+        # L-06：同步清理在途登记表。原先只清结果字典，于是拉取线程被硬杀留下的孤儿 key 永不自愈
         # （实测：该 key 之后每次 fetch_cookies 都白等 timeout 再拿 {}），而「主动作废凭据」正是
         # 唯一的重置入口。仍活着的拉取者的登记一律不动——摘它会连带丢掉它已挂上的等待者，
         # 并让同 key 并发重发请求。世代比对（MI-12）管「旧值不得复活」，本条管「登记者的存在性」。
@@ -511,7 +511,7 @@ def clear() -> None:
     global _cache_generation
     with _cache_lock:
         _cache_generation += 1
-        # 两张在途登记表一并回收（同样只回收已失主的登记）。tests/conftest 的
+        # L-06：两张在途登记表一并回收（同样只回收已失主的登记）。tests/conftest 的
         # autouse _clean_credential_caches 每条用例前后都调本函数，孤儿登记若不清掉，
         # 上一条用例留下的死 key 会让下一条用例的 fetch 直接退化成「超时→空结果」。
         stranded_cookie = _reap_orphans_locked(_inflight, None)

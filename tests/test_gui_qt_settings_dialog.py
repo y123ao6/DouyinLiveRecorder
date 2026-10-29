@@ -1,4 +1,4 @@
-# tests/test_gui_qt_settings_dialog.py — 高级设置对话框「轮询随可见性启停」的行为锁。
+# tests/test_gui_qt_settings_dialog.py — 高级设置对话框「轮询随可见性启停」的行为锁（M-15）。
 #
 # 单独成文件：settings_dialog 的加载/保存/外部改动两条裁决路径在 tests/test_gui_qt_units.py，
 # 本文件的判据是「窗口关闭之后不再有磁盘轮询」，需要真实 show/hide 事件，属对话框生命周期。

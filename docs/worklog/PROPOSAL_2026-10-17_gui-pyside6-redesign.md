@@ -46,7 +46,7 @@ src/gui_qt/
 
 ## 4. 依赖 / 打包 / 测试
 
-- `PySide6>=6.10`（Python 3.14 支持起点）进 `[project.optional-dependencies].gui` 与 `requirements.txt`——两侧包名集合相等由 `tests/test_regression_2026_09_22_gates.py` 锁死，必须同批双写。
+- `PySide6>=6.10`（Python 3.14 支持起点）进 `[project.optional-dependencies].gui` 与 `requirements.txt`——两侧包名集合相等由 `tests/test_regression_gates.py` 锁死，必须同批双写。
 - `build_exe.py`：`collect_all('PySide6')`，`BLOAT_EXCLUDES` 维持挂三个 Analysis；体积预计 91.81MB → ~150MB+，完成后 `scripts/report_bundle_size.py` 实测刷新基线并落 `measured-evidence.md`。
 - 测试：`QT_QPA_PLATFORM=offscreen` 真窗断言（替代 xvfb 方案）；主题 token/对比度契约、页面装配、控制器逻辑三类；旧 `test_ui_kit.py` / `test_ui_theme.py` 随 ttk 层退役删除。
 - i18n 复用 `src/ui_i18n.py`（迁移时验证 tk 独立性，有耦合则抽离）。

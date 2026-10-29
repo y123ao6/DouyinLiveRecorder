@@ -60,9 +60,9 @@ def clean_name(input_text: str) -> str:
     # Windows 特殊字符清理：& 在 cmd 中会触发命令分隔，统一替换为下划线
     cleaned_name = cleaned_name.replace("&", "_")
     # 保留设备名改名（CON → CON_），否则 Windows 上无法创建同名目录。
-    # Windows 拒绝的是「基础名 + 任意扩展名」的整个形态（CON.txt 同样建不出来），故按第一个
-    # 点切出基础名、改名后**接回原扩展名**（CON.txt → CON_.txt）；只在整串末尾加下划线
-    # 会让基础名仍然是保留名、目录创建依旧失败。
+    # M-25（2026-10-21）：Windows 拒绝的是「基础名 + 任意扩展名」的整个形态（CON.txt 同样建不出来），
+    # 原实现只在整串末尾加下划线（CON.txt → CON.txt_），基础名仍是保留名、目录创建依旧失败。
+    # 故按第一个点切分出基础名，改名后**接回原扩展名**（CON.txt → CON_.txt）。
     reserved_head, dot, reserved_tail = cleaned_name.partition(".")
     if reserved_head.upper() in _WINDOWS_RESERVED_NAMES:
         cleaned_name = reserved_head + "_" + dot + reserved_tail
@@ -283,9 +283,9 @@ clear_ffmpeg_reject = _clear_probe_reject
 
 # 判定流地址是否为 h265 编码：候选过滤、record_url 兜底与 stream.py 的 h264 备选收集
 # 三处共用的单一实现，避免口径漂移。是否可直拷取决于输出容器，见 _h265_copy_format_supported。
-# 判据与抖音侧（stream.py）统一为「小写比较、h265 / hevc 都算」：两处口径一旦不同，平台下发
-# HEVC / H265 的候选就不会被剔除，仍被交付 ffmpeg 直拷，录制失败或产物异常。
-# [历史注] 旧实现只认 codec[0] == "h265"，即上述错配。
+# M-23（2026-10-21）：原实现只认 `codec[0] == "h265"`，而抖音侧（stream.py）用的是大小写不敏感的
+# 「h265 / hevc 都算」——同一条流两处口径不同：平台下发 `HEVC` / `H265` 时本侧不剔除，保存 FLV/纯音频
+# 仍把 HEVC 候选交付 ffmpeg 直拷，录制失败或产物异常。现收敛为同一判据：小写比较、同时识别 hevc。
 def _is_h265(url: str) -> bool:
     codec = utils.get_query_params(url, "codec")
     return isinstance(codec, list) and bool(codec) and codec[0].strip().lower() in ("h265", "hevc")
@@ -301,7 +301,7 @@ def _h265_copy_format_supported() -> bool:
     return fmt in ("TS", "MKV", "MP4")
 
 
-# 可交给 ffmpeg `-i` 的流地址协议白名单。rtmp/rtmps 是合法用例
+# 可交给 ffmpeg `-i` 的流地址协议白名单（MID-19）。rtmp/rtmps 是合法用例
 # （斗鱼 rtmp 拼接、部分海外平台仍下发 rtmp），故不能简单要求 http(s)。
 _ALLOWED_STREAM_SCHEMES = frozenset({"http", "https", "rtmp", "rtmps"})
 
@@ -413,11 +413,11 @@ def _bounded_probe_get(
 # 内网 / 本机 / 链路本地目标的判定。只判字面量、不做 DNS 解析：探针每轮对多候选执行，解析既多
 # 一个可被远端操纵的攻击面，也多一段不可控延迟。
 #
-# 必须在结构化层面判定：整数字面量（2130706433）、八进制（0177.0.0.1）、IPv4-mapped IPv6
-# （::ffff:127.0.0.1）、CGNAT（100.64.0.1）最终都解析成 127.0.0.1 / CGNAT 目标，却没有一个以
-# `127.` 这类前缀开头——按字面量前缀匹配会四类全漏。名字判定只保留「本机名」一条，且用全等
-# 而非前缀：`localhost` 前缀与 `0.` 前缀都能被 evil 域名反用成假阳性。
-# [历史注] 旧实现正是「字面量前缀」正则，四类写法全部漏网后才改为按地址结构判定。
+# S-04（2026-10-21）：原实现是「字面量前缀」正则，实测四类写法全部漏网——`2130706433`（整数字面量）、
+# `0177.0.0.1`（八进制）、`::ffff:127.0.0.1`（IPv4-mapped IPv6）、`100.64.0.1`（CGNAT）：它们最终都被
+# 解析成 127.0.0.1 / CGNAT 目标，却没有一个以 `127.` 这类前缀开头。现按结构化判定，就地升级、不新建
+# 模块（判据族仍只有一份事实源）。只保留「本机名」这条名字判定，且改为全等而非前缀——原正则的
+# `localhost` 前缀（LOCALHOST 后接任意串命中）与 `0.` 前缀（0.evil.com 命中）都是假阳性。
 _PRIVATE_HOST_EXACT = frozenset({"localhost"})
 # CGNAT 100.64.0.0/10：3.14 的 is_private 不再覆盖它，但它是运营商级 NAT 地址、云上常见元数据代理落点，
 # 同样不该由播放列表正文把探针引过去。
@@ -521,13 +521,13 @@ class _DerivedHopRejected(Exception):
         self.reason = reason
 
 
-# 公共后缀表：只把「末两段」当注册域时，`.co.kr` / `.com.cn` / `.co.uk` / `.com.br` 这类**公共
-# 后缀本身含两段**的域上，`a.example.co.kr` 与 `evil.co.kr` 的「注册域」都是 `co.kr`，于是被判
-# 同域、沿用原请求头 → 本机带平台 Cookie 向同公共后缀的任意主机发 GET。本仓覆盖的 PandaTV /
-# FlexTV 正是 `.co.kr` 域，该分支极易命中。
-# 取向是**保守**：只内置「两段及以上的公共后缀」——漏登记一条的后果只是多剥一次 Cookie（少一次
-# 带凭据探测），错登记的后果才是凭据外泄，故宁可多列。单段后缀（com/cn/kr/io…）「末两段」本身
-# 就是注册域，不需要登记。
+# 公共后缀表（S-05，2026-10-21）：原实现把「末两段」当注册域，`.co.kr` / `.com.cn` / `.co.uk` /
+# `.com.br` 这类**公共后缀本身含两段**的域上，`a.example.co.kr` 与 `evil.co.kr` 的「注册域」都是
+# `co.kr`，于是被判同域、沿用原请求头→本机带平台 Cookie 向同公共后缀的任意主机发 GET。本仓覆盖的
+# PandaTV / FlexTV 正是 `.co.kr` 域，该分支极易命中。
+# 取向是**保守**：只内置「两段及以上的公共后缀」——漏登记一条的后果只是多剥一次 Cookie（少一次带凭据
+# 探测），错登记的后果才是凭据外泄，故宁可多列。单段后缀（com/cn/kr/io…）「末两段」本身就是注册域，
+# 不需要登记。
 _TWO_LEVEL_PUBLIC_SUFFIXES = frozenset(
     "ac.cn com.cn edu.cn gov.cn net.cn org.cn "
     "co.kr ne.kr or.kr re.kr pe.kr go.kr "
@@ -610,7 +610,7 @@ def _headers_for_derived_hop(base_url: str, derived_url: str, headers: Mapping[s
     return _headers_without_cookie(headers)
 
 
-# master playlist 变体属性行里的带宽字段。src/spider.py 另有一份同名模式用于
+# master playlist 变体属性行里的带宽字段（MIN-03）。src/spider.py 另有一份同名模式用于
 # HLS 带宽解析，两处用途不同（一处解析接口 JSON/文本、一处解析播放列表），刻意不共享，
 # 避免 spider 的解析口径漂移影响到探针选路。
 _BANDWIDTH_PATTERN = re.compile(r"BANDWIDTH=(\d+)")
@@ -892,8 +892,8 @@ def _validate_stream_url(
     client: httpx.Client | None = None,
     security_rejected: set[str] | None = None,
 ) -> bool:
-    # 函数内 import 的理由见 _probe_client（模块级出边会改变本模块与 main 的初始化顺序）。
-    # RedirectHopRejected 必须是 except 可见的名字，故也在此取。
+    # 函数内 import 的理由见 _probe_client（沿 async_http.py:518-521 的同一手法，模块级出边会改变
+    # 本模块与 main 的初始化顺序）。RedirectHopRejected 必须是 except 可见的名字，故也在此取。
     from src.async_http import RedirectHopRejected, internal_stream_target_reason
 
     # 初始 URL 的内网/保留目标判定，位置三条都不能挪：
@@ -911,7 +911,7 @@ def _validate_stream_url(
                 reason=internal_reason,
             )
         )
-        # 把安全结论回传给调用方——「本轮已探过就复用结论」那条分支只看 probed 的真假，
+        # S-04：把安全结论回传给调用方——「本轮已探过就复用结论」那条分支只看 probed 的真假，
         # 分不出「CDN 拒绝」与「安全拒绝」，必须靠这个集合另行把关。
         if security_rejected is not None:
             security_rejected.add(url)
@@ -1121,10 +1121,10 @@ def _validate_stream_url(
                 reason=f"重定向逐跳复检命中: {e.reason}（初始地址 {utils.mask_credentials(url)}）",
             )
         )
-        # 2026-10-21：与上面两条安全出口一样登记进 security_rejected：只 return False 而不登记时，本地址在
-        # probed 里只是「结论 False」，select_source_url 的 record_url 同址复用分支会套上「CDN
-        # 拒绝」的语义、照常交付给 ffmpeg -i——而抖音/TikTok/网易CC 的 record_url 恒等于 m3u8_url
-        # 或 flv_url，该分支极易命中，等于内网地址带着平台 Cookie 直接连出去。
+        # S-03（2026-10-21）：与上面两条安全出口一样登记进 security_rejected。只 return False 而不登记
+        # 时，本地址在 probed 里只是「结论 False」，select_source_url 的 record_url 同址复用分支会把
+        # 「CDN 拒绝」的语义套上去、照常交付给 ffmpeg -i——而抖音/TikTok/网易CC 的 record_url 恒等于
+        # m3u8_url 或 flv_url，该分支极易命中，等于内网地址带着平台 Cookie 直接连出去。
         if security_rejected is not None:
             security_rejected.add(url)
         return False
@@ -1301,9 +1301,9 @@ def select_source_url(
     # 构造失败收敛为 probe_client=None（本轮无可用探针客户端），而不是判成「所有候选不可达」：
     # client=None 会走 _validate_stream_url 既有的自建路径，自建再失败时由该函数记 WARNING 并
     # 按末位语义放行，故本轮恒有地址返回给 ffmpeg；且一个探针都没发出，不写探针退避表。
-    # 必须显式赋 None 而不能只留类型标注：构造抛出捕获面之外的异常（ssl.SSLError / OSError 等，
-    # 见下方 except 的注释）时 probe_client 从未绑定，finally 里的 `if probe_client is not None`
-    # 会先抛 UnboundLocalError，把原始异常整个吞掉并穿透房间线程——最需要诊断的路径反而最没信息。
+    # M-20（2026-10-21）：显式赋 None 而不是只留类型标注。原先构造抛出捕获面之外的异常（ssl.SSLError /
+    # OSError 等，见下方 except 的注释）时，probe_client 从未绑定，finally 里的 `if probe_client is not
+    # None` 先抛 UnboundLocalError，把原始异常整个吞掉并穿透房间线程——最需要诊断信息的路径反而最没信息。
     probe_client: httpx.Client | None = None
     try:
         # 构造走 _probe_client 单点工厂，逐跳复检钩子随客户端覆盖本轮全部候选；归一仍在
@@ -1394,7 +1394,7 @@ def select_source_url(
         for idx, (cand, is_hls) in enumerate(usable):
             if prev_kind is not None and is_hls != prev_kind:
                 if prev_kind:
-                    # 用户可见的回退告警一律经 i18n，不写裸常量
+                    # L-16（2026-10-02）：用户可见回退告警统一走 i18n（原为裸英文常量）
                     logger.warning(i18n.tr("HLS 候选校验失败，回退 FLV"))
                 else:
                     logger.warning(i18n.tr("FLV 候选校验失败，回退 HLS"))
