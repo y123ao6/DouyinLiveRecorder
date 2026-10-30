@@ -891,27 +891,9 @@ test('MID-2241：saveConfig 对 Web 认证两键先 confirm 再要求复验口�
 test('M-22/M-26：认证两键的复验口令经 password 弹窗采集、且只随认证键下发（正向锁）', () => {
     // 契约事实源是生产代码：src/web_api.py::update_config 的 MID-2241 段已实现强制复验（认证开启时
     // 写认证两键不带可过 verify_web_password 的 reauth_password 即 403），本条因此锁定「前端确实
-<<<<<<< Updated upstream:tests/frontend/test_regression_gates.mjs
-    // 采集并下发」。M-26 教训：此前两条 doesNotMatch 文本锁因后端字面量改名而**空洞成立**（实测
-    // 32/32 全绿，而 Python 侧锁的恰是相反契约），故：① 不再以源码字面量锁安全边界；② 后端行为
-    // 不在本文件复制，已由 test_regression_web_g.py::TestAuthKeyReauth 与
-=======
-<<<<<<< Updated upstream:tests/frontend/test_regression_2026_09_22_gates.mjs
     // 采集并下发」。[历史注] 此前两条 doesNotMatch 文本锁因后端字面量改名而**空洞成立**（实测 32/32
     // 全绿，而 Python 侧锁的恰是相反契约），故：① 不再以源码字面量锁安全边界；② 后端行为
-    // 不在本文件复制，已由 test_regression_2026_09_22_web_g.py::TestAuthKeyReauth 与
-=======
-<<<<<<< HEAD:tests/frontend/test_regression_gates.mjs
-    // 采集并下发」。M-26 教训：此前两条 doesNotMatch 文本锁因后端字面量改名而**空洞成立**（实测
-    // 32/32 全绿，而 Python 侧锁的恰是相反契约），故：① 不再以源码字面量锁安全边界；② 后端行为
     // 不在本文件复制，已由 test_regression_web_g.py::TestAuthKeyReauth 与
-=======
-    // 采集并下发」。[历史注] 此前两条 doesNotMatch 文本锁因后端字面量改名而**空洞成立**（实测 32/32
-    // 全绿，而 Python 侧锁的恰是相反契约），故：① 不再以源码字面量锁安全边界；② 后端行为
-    // 不在本文件复制，已由 test_regression_2026_09_22_web_g.py::TestAuthKeyReauth 与
->>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f:tests/frontend/test_regression_2026_09_22_gates.mjs
->>>>>>> Stashed changes:tests/frontend/test_regression_gates.mjs
->>>>>>> Stashed changes:tests/frontend/test_regression_2026_09_22_gates.mjs
     // test_web_api.py::TestAuthDowngradeRejected 用真实端点 E2E 锁住；③ 前端保留这条正向断言，
     // 端到端行为另见 tests/frontend/test_auth_reauth.mjs。
     const fn = APP_JS.match(/async function saveConfig\(\) \{[\s\S]*?\n    \}/);

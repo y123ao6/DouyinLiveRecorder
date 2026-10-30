@@ -56,7 +56,13 @@ _RUN_TIMED_OUT: list[str] = []
 
 def _read_project() -> dict[str, Any]:
     # 单一事实源：pyproject.toml 的 [project] 段。
-    data: dict[str, Any] = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    try:
+        data: dict[str, Any] = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        # 纯读路径兜底（2026-10-29 审查）：读不出/解析不出时以 rc=2（没跑成，同 _RC_TIMEOUT 分档）
+        # 明示「工具无法产出结论」，不得以 rc=1 + 裸栈冒充「元数据已漂移」——两者排障方向相反。
+        print(f"ERROR: pyproject.toml 无法读取/解析（{type(e).__name__}: {e}）", file=sys.stderr)
+        sys.exit(2)
     return cast("dict[str, Any]", data["project"])
 
 
@@ -65,7 +71,12 @@ def _check_uv_lock(project: dict) -> bool:
     if not UV_LOCK.exists():
         print("  MISSING  uv.lock")
         return False
-    lock = tomllib.loads(UV_LOCK.read_text(encoding="utf-8"))
+    try:
+        lock = tomllib.loads(UV_LOCK.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        # 同 _read_project：不可读/不可解析 → rc=2「没跑成」，不冒充一致性结论。
+        print(f"ERROR: uv.lock 无法读取/解析（{type(e).__name__}: {e}）", file=sys.stderr)
+        sys.exit(2)
     roots = [
         pkg
         for pkg in lock.get("package", [])
@@ -87,7 +98,12 @@ def _check_egg_info(project: dict) -> bool:
     if not pkg_info.exists():
         print("  MISSING  DouyinLiveRecorder.egg-info/PKG-INFO")
         return False
-    text = pkg_info.read_text(encoding="utf-8")
+    try:
+        text = pkg_info.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        # 同 _read_project：不可读 → rc=2「没跑成」，不冒充一致性结论。
+        print(f"ERROR: egg-info/PKG-INFO 无法读取（{type(e).__name__}: {e}）", file=sys.stderr)
+        sys.exit(2)
     version = next(
         (line.partition(":")[2].strip() for line in text.splitlines() if line.startswith("Version:")),
         None,

@@ -202,7 +202,11 @@ def collect_pairs(repo: Path, base: Path, targets: list[str]) -> list[tuple[Path
         return [(repo / r, base / r) for r in dict.fromkeys(rels)]
     # Whole-baseline mode: only compare file types this tool knows how to judge. The snapshot may
     # also contain manifest.json or docs; treating those as deleted code files is a false alarm.
-    rels = [f.relative_to(base) for f in sorted(base.rglob("*")) if f.is_file() and f.suffix.lower() in SUPPORTED]
+    rels = [
+        f.relative_to(base)
+        for f in sorted(base.rglob("*"))
+        if f.is_file() and f.suffix.lower() in SUPPORTED
+    ]
     return [(repo / r, base / r) for r in rels]
 
 

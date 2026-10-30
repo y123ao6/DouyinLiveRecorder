@@ -1313,7 +1313,11 @@ def select_source_url(
         )
     # httpx.InvalidURL 直继 Exception（不是 ValueError 子类）：裸 IPv6 形态的代理会在构造期
     # 抛它，不捕获会每轮抛穿房间线程。归入「本轮无可用探针客户端」，走下方自建降级路径。
-    except ValueError, TypeError, httpx.InvalidURL:
+    # 2026-10-29 审查：捕获面补 OSError——httpx.Client 构造期还会用 verify 建 SSL 上下文，
+    # 证书库异常以 ssl.SSLError（OSError 子类）形态抛出；上方注释承诺「构造失败收敛为
+    # probe_client=None」的本意是覆盖全部构造失败，只捕前三个会把 ssl/OSError 系仍漏回房间线程，
+    # 与 1301-1303 的设计承诺互相矛盾。
+    except ValueError, TypeError, httpx.InvalidURL, OSError:
         probe_client = None
     try:
         # record_url 通道先过形态白名单——不合规直接摘掉该档（连探针都不发），也不再据此

@@ -2,27 +2,9 @@
 #
 # 覆盖 CODE_REVIEW_2026-10-21 的 M-71 / M-72 / M-73 / M-75 / M-76①②③ / M-77①②。
 # 与同族文件的分工：tests/test_gui_tail_robustness.py 锁 after 自续期链「抛错仍续期」，
-<<<<<<< Updated upstream
-# 本文件锁的是**同一条链上的数据不丢**（M-71 批次不空转、M-73 哨兵不丢）；
-# tests/test_regression_root_entries.py 锁「确证复用即收手」（L-02 原格），
-# 本文件 M-72 锁**判据读不出来**那一格——那是 L-02 留下的最后一个误杀口子。
-=======
-<<<<<<< Updated upstream
 # 本文件锁的是**同一条链上的数据不丢**（该批次不空转、该哨兵不丢）；
-# tests/test_regression_2026_10_18_root_entries.py 锁「确证复用即收手」（该原格），
+# tests/test_regression_root_entries.py 锁「确证复用即收手」（该原格），
 # 本文件该锁**判据读不出来**那一格——那是该留下的最后一个误杀口子。
-=======
-<<<<<<< HEAD
-# 本文件锁的是**同一条链上的数据不丢**（M-71 批次不空转、M-73 哨兵不丢）；
-# tests/test_regression_root_entries.py 锁「确证复用即收手」（L-02 原格），
-# 本文件 M-72 锁**判据读不出来**那一格——那是 L-02 留下的最后一个误杀口子。
-=======
-# 本文件锁的是**同一条链上的数据不丢**（该批次不空转、该哨兵不丢）；
-# tests/test_regression_2026_10_18_root_entries.py 锁「确证复用即收手」（该原格），
-# 本文件该锁**判据读不出来**那一格——那是该留下的最后一个误杀口子。
->>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f
->>>>>>> Stashed changes
->>>>>>> Stashed changes
 #
 # 桩口径（AGENTS 测试约定逐条对齐）：
 #   * 不在模块顶层 import gui：gui.py 模块级写 os.environ["DLR_GUI_PARENT"]="1"，收集期导入

@@ -357,14 +357,18 @@ jobs:
           floors=$(mktemp)
           trap 'rm -f "$floors"' EXIT
           python - "$floors" <<'PY'
-          import re, sys
+          import re, sys, tomllib
           out = []
           for line in open("requirements.txt", encoding="utf-8"):
               spec = line.split("#", 1)[0].strip()
               m = re.match(r"^([A-Za-z0-9_.\[\]-]+)\s*>?=\s*([0-9][0-9a-zA-Z.]*)", spec)
               if m:
                   out.append(f"{m.group(1)}=={m.group(2)}")
-          assert len(out) >= 20, f"下限条数异常（{len(out)}），清单形态可能已变更"
+          # 取数即随事实源同步：两侧条数必须相等。硬编码下限（旧实现 >=20）会在依赖增删后与事实源
+          # 脱节——本轮实测事实源与 requirements 均为 18 条，守卫却要求 >=20，job 一触发必红，且红的
+          # 是「守卫自己失效」，与真实漏洞不可区分（CODE_REVIEW_2026-10-29 M-08）。
+          expected = len(tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"])
+          assert len(out) == expected, f"下限条数与 pyproject 依赖数不一致（requirements={len(out)}, pyproject={expected}）"
           open(sys.argv[1], "w", encoding="utf-8").write("\n".join(out) + "\n")
           print(f"复核 {len(out)} 条声明下限")
           PY

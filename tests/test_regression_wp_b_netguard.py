@@ -28,19 +28,7 @@ import src.async_http as async_http
 import src.sync_http as sync_http
 from src import web_config
 
-<<<<<<< Updated upstream:tests/test_regression_wp_b_netguard.py
-# 与 tests/test_async_http.py / tests/test_regression_net.py 同一个 DNS seam：MIN-2219
-=======
-<<<<<<< Updated upstream:tests/test_regression_2026_09_29_wp_b_netguard.py
-# 与 tests/test_async_http.py / tests/test_regression_2026_09_22_net.py 同一个 DNS seam：
-=======
-<<<<<<< HEAD:tests/test_regression_wp_b_netguard.py
-# 与 tests/test_async_http.py / tests/test_regression_net.py 同一个 DNS seam：MIN-2219
-=======
-# 与 tests/test_async_http.py / tests/test_regression_2026_09_22_net.py 同一个 DNS seam：
->>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f:tests/test_regression_2026_09_29_wp_b_netguard.py
->>>>>>> Stashed changes:tests/test_regression_wp_b_netguard.py
->>>>>>> Stashed changes:tests/test_regression_2026_09_29_wp_b_netguard.py
+# 与 tests/test_async_http.py / tests/test_regression_net.py 同一个 DNS seam：
 # 起探针会按「本机解析结果」给直连目标定罪，用例必须与该 seam 隔离，否则无 DNS 环境下「公网源可达」
 # 类用例会随机转红。内网目标一律写成 IP 字面量——判定不依赖解析，也就不受本桩影响。
 _PUBLIC_IP = "93.184.216.34"

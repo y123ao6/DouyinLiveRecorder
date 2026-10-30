@@ -21,6 +21,15 @@ agent_created: true
 
 # Comment Refactor at Scale
 
+## 本轮合并（2026-10-29）
+
+本 Skill 是 2026-10-29 同类合并的归并结果。以下源能力的完整 playbook 已收编进本目录，按需加载 `references/<name>/SKILL.md`，不要把全部参考文档读进上下文：
+
+- `dispatch-quota-aware-write-agents` → `references/dispatch-quota-aware-write-agents/SKILL.md`
+- `safe-batch-text-rewrite` → `references/safe-batch-text-rewrite/SKILL.md`
+
+被吸收源技能的 frontmatter 仅在其原子文档内作历史留存；本目录的 `name` 与路由表为准。跨组的兄弟能力引用见各参考文档内的重定向注。
+
 ## Overview
 
 Turn "I only touched comments" into machine-checkable evidence — and make that evidence survive

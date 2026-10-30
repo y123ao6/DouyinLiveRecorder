@@ -1921,7 +1921,8 @@ class TestChildConsoleStartupInfo:
         assert seen == [], "非 Windows 早返回路径不得触达 video_postprocess（那条链顶层 import main）"
 
     def test_twin_helpers_agree_on_both_gate_states(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 孪生实现的行为等价性（与 tests/test_ffmpeg_path_preference.py::TestTwinEquivalence 同一口径）：
+        # 孪生实现的行为等价性（与 tests/test_ffmpeg_path_preference.py::test_twin_agrees_on_every_criterion_combination
+        # 同一口径）：
         # 两处 _win_startup_info 因循环导入无法收敛到单点，故「两边同时改」必须由机检兜住。
         # seen 记的是委托次数：门控为真时两侧各调一次 get_startup_info，为假时一次都不该调。
         for gate in (True, False):

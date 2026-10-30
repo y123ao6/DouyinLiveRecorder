@@ -250,6 +250,25 @@ class TestSyncMetadataUvDegradation:
             sync_metadata.main()
         assert cast(int, drift.value.code) == 1
 
+    def test_unreadable_artifact_exits_two_without_traceback(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: Any, tmp_path: Path
+    ) -> None:
+        # 2026-10-29 审查：产物「存在但不可读」是「没跑成」（rc=2，同 _RC_TIMEOUT 分档），
+        # 不是「元数据漂移」（rc=1），更不是裸栈崩穿——两者排障方向相反。用同名目录替身触发
+        # IsADirectoryError（exists() 为真、read_text 必抛 OSError），比真实 chmod 稳
+        # （Windows 管理员下只读位不拦截读）。
+        _write_consistent_metadata(monkeypatch, tmp_path)
+        bad_lock = tmp_path / "uv.lock_dir"
+        bad_lock.mkdir()
+        monkeypatch.setattr(sync_metadata, "UV_LOCK", bad_lock)
+        monkeypatch.setattr(sys, "argv", ["sync_metadata.py", "--check"])
+        with pytest.raises(SystemExit) as exc:
+            sync_metadata.main()
+        assert cast(int, exc.value.code) == 2
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err, f"不可读产物不得逃逸崩溃栈: {captured.err}"
+        assert "无法读取/解析" in captured.err
+
 
 def _write_consistent_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # 三个路径常量一起搬到 tmp_path：--check 的判定完全由本用例自造的文件决定，
@@ -288,6 +307,13 @@ MALFORMED_CONFIGS: list[tuple[object, str, str]] = [
     ({"checks": [{"path": "/", "expect_contains": [{"k": "v"}]}]}, "expect_contains[0]", "string"),
     ({"checks": [{"path": "/", "expect_contains": [None]}]}, "expect_contains[0]", "string"),
     ({"checks": [{"path": "/"}], "base_url": 8000}, "base_url", "string"),
+    # 2026-10-29 审查：expected_status 标量畸形同样必须前置挡住——run_check 里
+    # `300 <= expected_status < 400` 的重定向开关判定在 try 之外，字符串/ null 会以 TypeError
+    # 穿透 main() 的 except (OSError, ValueError) → rc=1 崩溃栈，与上面 expect_contains 元素检同族。
+    # bool 显式单列一条：bool 是 int 子类，isinstance(value, (int, float)) 会放行 true/false。
+    ({"checks": [{"path": "/", "expected_status": "200"}]}, "expected_status", "number"),
+    ({"checks": [{"path": "/", "expected_status": None}]}, "expected_status", "number"),
+    ({"checks": [{"path": "/", "expected_status": True}]}, "expected_status", "number"),
 ]
 
 
@@ -324,8 +350,11 @@ class _FakeResponse:
     def status(self) -> int:
         return self._status
 
-    def read(self) -> bytes:
-        return self._body.encode("utf-8")
+    def read(self, size: int = -1) -> bytes:
+        # size 形参对齐真实 http.client.HTTPResponse.read(amt)：run_check 现按 _SMOKE_BODY_LIMIT
+        # 传 size 上限（2026-10-29 审查），替身不忠实会在合法路径抛 TypeError。
+        body = self._body.encode("utf-8")
+        return body if size < 0 else body[:size]
 
 
 def _install_fake_urlopen(monkeypatch: pytest.MonkeyPatch, response: _FakeResponse) -> list[str]:

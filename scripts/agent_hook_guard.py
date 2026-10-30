@@ -120,6 +120,10 @@ _PIP_IGNORE_INSTALLED_REQ_RE = re.compile(
 # `git clean` 带 -f 且带 -d/-x 时是工作区级不可逆删除（含未跟踪的运行期产物）。
 # AGENTS.md「铁律：临时文件零残留」要求绝对路径、逐个删，禁止顺手 git clean 整个工作区。
 _GIT_CLEAN_RE = re.compile(r"\bgit\s+clean\b[^\n]*-[a-zA-Z]*f", re.IGNORECASE)
+# 只读预览形态（`--dry-run` / 短开关簇里含 n）：git clean 的 -n 不删除任何文件，必须放行。
+# 判 d/x 的正则 `-\w*[dx]` 会命中 `--dry-run` 里的 `-d` 与 `-ndx`/`-nfd` 里的 d、x，旧实现因此
+# 把预览判成递归强删，诱导使用者加 `|| true` 绕过守卫（CODE_REVIEW_2026-10-29 M-13 实测）。
+_GIT_CLEAN_PREVIEW_RE = re.compile(r"(?:^|\s)(?:--dry-run|-[a-zA-Z]*n[a-zA-Z]*)(?=\s|$)", re.IGNORECASE)
 
 # 递归+强制删除的开关组合（rm -rf / Remove-Item -Recurse -Force / rd /s /q）。
 # 后两组是**分写形态**：shell 下 `-r -f` 与 `-rf` 完全等价、`--recursive --force` 与
@@ -381,7 +385,11 @@ def check_bash_command(command: str) -> tuple[str, str] | None:
         )
 
     for statement in statements:
-        if _GIT_CLEAN_RE.search(statement) and re.search(r"-\w*[dx]", statement):
+        if (
+            _GIT_CLEAN_RE.search(statement)
+            and not _GIT_CLEAN_PREVIEW_RE.search(statement)
+            and re.search(r"-\w*[dx]", statement)
+        ):
             # R-WIPE-SCOPE：工作区级 git clean 会连带未跟踪的运行期产物与 tests/ 临时输出。
             return (
                 "R-WIPE-SCOPE",
@@ -582,6 +590,8 @@ def run_self_test() -> int:
         ("R-WIPE-SCOPE", "git checkout -- ."),  # 工作区级丢弃，不带删除动词
         ("R-WIPE-SCOPE", "git restore ."),
         ("R-WIPE-SCOPE", "git reset --hard"),
+        # M-13：真删除仍须拦（放行 preview 不得把整条规则放开）
+        ("R-WIPE-SCOPE", "git clean -fdx"),
     ]
     allow_cases: list[str] = [
         # AGENTS.md 给出的两条收尾清理命令形态必须放行
@@ -600,6 +610,10 @@ def run_self_test() -> int:
         # 具体文件的 git 撤销与切分支不是工作区级丢弃
         "git checkout main",
         "git checkout -- src/room.py",
+        # M-13：只读预览不是删除——`-n` 短开关簇与 `--dry-run` 都必须放行（旧判据把两者都判成
+        # 递归强删，诱导使用者加 `|| true` 绕过守卫）。
+        "git clean -ndx",
+        "git clean --dry-run -fd",
     ]
     failed = 0
     for expected_rule, command in block_cases:
@@ -740,9 +754,11 @@ def main() -> int:
                             )
                         )
                     return 0
-    except OSError as exc:
-        # 读盘失败（文件已被后续操作删掉等）不判失败：Hook 只在能拿到证据时才发言。
-        print(f"[agent-hook] 检查未完成，已放行：{exc}", file=sys.stderr)
+    except Exception as exc:
+        # fail-open 兜底（M-13）：模块头承诺「脚本自身异常一律放行」，旧实现只捕 OSError——其余
+        # 异常以 rc=1 结束，与「仅 --self-test 失败才非 0」的退出码语义撞车，把 Hook 故障伪装成
+        # 代码不合格。读盘失败（文件已被后续操作删掉等）同样落这里：只在能拿到证据时才发言。
+        print(f"[agent-hook] 检查未完成，已放行：{type(exc).__name__}: {exc}", file=sys.stderr)
         return 0
     return 0
 

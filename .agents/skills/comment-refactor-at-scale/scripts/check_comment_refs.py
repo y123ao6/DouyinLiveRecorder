@@ -23,26 +23,9 @@ from pathlib import Path
 
 SRC_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".css", ".scss", ".html", ".htm", ".vbs"}
 REF_EXTS = r"py|js|mjs|cjs|ts|css|html|md|ini|json|ya?ml|vbs|po|mo|txt|yml"
-EXCLUDE_DIRS = {
-    ".git",
-    ".venv",
-    "venv",
-    "node_modules",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".coverage",
-    "build",
-    "dist",
-    "node",
-    "ffmpeg",
-    "downloads",
-    "logs",
-    ".workbuddy",
-    ".qoder",
-}
+EXCLUDE_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
+                ".ruff_cache", ".tox", ".coverage", "build", "dist", "node", "ffmpeg", "downloads", "logs",
+                ".workbuddy", ".qoder"}
 SKIP_GLOBS = ("*.min.js", "*.min.css", "*.map")
 PROSE_NAMES = {"node.js", "vue.js", "react.js", "deno.js", "next.js", "three.js", "lodash.js", "jquery.js"}
 IGNORE_WORDS = re.compile(r"^(https?|ftp|utf|gbk|crlf|lf|argv|kwargs|args|self|cls|TODO|FIXME)")
@@ -54,9 +37,7 @@ BACKTICK_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)*)`")
 JS_COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", flags=re.S)
 
 
-PLACEHOLDER_RE = re.compile(
-    r"(?:^|/)(?:x|xx|xxx|test_x|sample|example|foo|bar|template)[-_.]?\w*\.(?:py|js|mjs|vbs)$", re.I
-)
+PLACEHOLDER_RE = re.compile(r"(?:^|/)(?:x|xx|xxx|test_x|sample|example|foo|bar|template)[-_.]?\w*\.(?:py|js|mjs|vbs)$", re.I)
 
 
 def iter_files(root: Path, exts):
@@ -218,10 +199,9 @@ def comments_with_lines(path: Path, text: str) -> list[tuple[int, str]]:
     if suf == ".py":
         try:
             toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
-        except tokenize.TokenError, IndentationError, SyntaxError:
-            return [
-                (text.count("\n", 0, m.start()) + 1, m.group(0)) for m in re.finditer(r"^[ \t]*#.*$", text, flags=re.M)
-            ]
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            return [(text.count("\n", 0, m.start()) + 1, m.group(0))
+                    for m in re.finditer(r"^[ \t]*#.*$", text, flags=re.M)]
         return [(t.start[0], t.string) for t in toks if t.type == tokenize.COMMENT]
     if suf in (".js", ".mjs", ".cjs", ".ts", ".css", ".scss"):
         masked = blank_code_keep_comments(text)

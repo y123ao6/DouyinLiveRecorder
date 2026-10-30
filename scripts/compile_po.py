@@ -132,8 +132,10 @@ def main() -> int:
         try:
             # sys.stdout/stderr 标准解释器下为 TextIOWrapper（含 reconfigure）；
             # typeshed 将其声明为 TextIO | Any，TextIO 抽象基无该方法，故收窄到真实类型。
-            cast("io.TextIOWrapper", sys.stdout).reconfigure(encoding="utf-8")
-            cast("io.TextIOWrapper", sys.stderr).reconfigure(encoding="utf-8")
+            # errors="replace" 与同仓 8 处同类站点同口径（AGENTS「任何 reconfigure 显式给 errors」）：
+            # 缺省会重置为 strict，中文 Windows 下一条 emoji/中文行即可让门禁崩掉进程。
+            cast("io.TextIOWrapper", sys.stdout).reconfigure(encoding="utf-8", errors="replace")
+            cast("io.TextIOWrapper", sys.stderr).reconfigure(encoding="utf-8", errors="replace")
         except AttributeError, OSError:
             pass
 

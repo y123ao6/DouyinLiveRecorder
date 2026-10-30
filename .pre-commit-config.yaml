@@ -52,6 +52,9 @@ repos:
   # 使用 system Python 以消费项目 venv 已安装的第三方包；
   # pyproject [tool.mypy] 提供 files / python_version / exclude，
   # 不带路径参数（AGENTS.md 硬约束：显式传参会覆盖 [tool.mypy].files）。
+  # AGENTS 基准的 `mypy --platform linux` / `mypy --platform win32` 平台双跑不进本文件
+  # （提交期三跑太慢）：由 scripts/run_gates.py 这个一次性门禁入口承担（AGENTS「格式化命令」
+  # 全量逐字执行），此处只跑本机平台一次（2026-10-29 审查备案，非缺口）。
   - repo: local
     hooks:
       - id: mypy

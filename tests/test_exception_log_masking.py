@@ -47,9 +47,15 @@ _EXCLUDED_PARTS = {
     "scripts",
 }
 # 出站动作标记（出现在函数体源码里即认为该函数会发起带 URL 的请求）。
+# `opener.open(` 是 S-07 补的形态：msg_push 各渠道先构造 opener 再 open，函数体里没有裸
+# urlopen/build_opener 调用，旧标记因此让整个推送模块（含自托管反代口令）落在扫描面之外。
 _OUTBOUND_MARK = re.compile(
-    r"(async_req\(|sync_req\(|httpx\.AsyncClient\(|httpx\.Client\(|urlopen\(|build_opener\(|requests\.|websockets|\.connect\()"
+    r"(async_req\(|sync_req\(|httpx\.AsyncClient\(|httpx\.Client\(|urlopen\(|build_opener\(|opener\.open\(|"
+    r"requests\.|websockets|\.connect\()"
 )
+# 认可的脱敏出口：直接调 utils.mask_credentials，或经本仓收敛的异常文本脱敏器
+# （msg_push._mask_exc_text 内部即调 mask_credentials；此处按调用形态判定，不做跨模块数据流）。
+_MASK_CALL_NAMES = ("mask_credentials", "_mask_exc_text")
 # 承载「异常文本」的关键字实参名（本仓日志模板的既有 kwarg 命名集合）。
 _EXC_TEXT_KWARGS = frozenset({"e", "err", "error", "exc", "message", "msg", "reason", "detail", "errmsg"})
 # 值里出现这些名字才算「把异常对象塞进了日志」。
@@ -130,7 +136,7 @@ def _collect_sites(files: list[Path]) -> tuple[dict[tuple[str, str], int], int]:
                             value = ast.unparse(kw.value)
                             if not _EXC_NAME_RE.search(value):
                                 continue
-                            if "mask_credentials" in value:
+                            if any(name in value for name in _MASK_CALL_NAMES):
                                 masked_count += 1
                                 continue
                             unmasked[(rel, func.name)] = unmasked.get((rel, func.name), 0) + 1

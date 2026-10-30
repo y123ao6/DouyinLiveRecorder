@@ -50,6 +50,14 @@ agent_created: true
 
 # DLR 领域硬约束（选源 → 录制执行 → 构建发布）
 
+## 本轮合并（2026-10-29）
+
+本 Skill 是 2026-10-29 同类合并的归并结果。以下源能力的完整 playbook 已收编进本目录，按需加载 `references/<name>/SKILL.md`，不要把全部参考文档读进上下文：
+
+- `js-signature-pin-byte-parity` → `references/js-signature-pin-byte-parity/SKILL.md`
+
+被吸收源技能的 frontmatter 仅在其原子文档内作历史留存；本目录的 `name` 与路由表为准。跨组的兄弟能力引用见各参考文档内的重定向注。
+
 ## 定位
 
 本 Skill 是 DouyinLiveRecorder **领域约束面**的单一入口，由原 `ffmpeg-command-construction`、
@@ -124,10 +132,11 @@ agent_created: true
 
 ### 项目级门禁（统一入口，Skill 不复制命令清单）
 
-统一门禁入口、命令清单的唯一事实源与退出码语义（含平台增跑 `mypy --platform linux` 口径）由
-`dlr-dev-playbook` 的「验证 → 项目级门禁」一节定义，本 Skill **引用不重复罗列**——这正是 dlr-dev-playbook
-铁律 4（复制清单会制造并行事实源并在 `AGENTS.md` 更新后静默漂移）。需要逐条命令时用
-`python scripts/run_gates.py --list` 现场解析，或直接查 `AGENTS.md`「格式化命令（门禁唯一基准）」。
+唯一入口：`python scripts/run_gates.py`（仓库根目录执行）。black/isort/mypy/check_annotations 的
+命令清单以 `AGENTS.md`「格式化命令（门禁唯一基准）」为唯一事实源——本 Skill 只引用不复制
+（dlr-dev-playbook 铁律 4：复制清单会制造并行事实源并在 `AGENTS.md` 更新后静默漂移）。
+退出码：`0` 通过 / `1` 门禁红 / `2` 清单缺失或含写型命令 / `3` 可执行文件缺失；后两者属「没跑」，不是回归。
+需要逐条命令时用 `run_gates.py --list` 现场解析。
 
 ### 命中段的专项检查（只跑命中的那一组）
 
@@ -193,7 +202,8 @@ pytest tests/test_ffmpeg_install.py -v          # TOFU/下载源白名单
 - 轮末无条件 `record_success`，稀释按 host 熔断统计。
 - 为让 CI 绿回填本地自算的运行时哈希（固化「构建机已中毒」）。
 - 把签名档标记当成放行条件（标记本身不构成放行，须在 `_RUNTIME_GPG_SIGNATURES` 登记指纹）。
-- 只跑全量门禁、不跑下方「命中段的专项检查」各组 pytest——全绿只证明整体没坏，不证明本次改动点有测试覆盖（关联验证纪律见 dlr-dev-playbook 的 `[reviewed-relevant-check]`）。
+- 在 Skill 或文档里复制 black/isort/mypy 命令清单（违反铁律 4）。
+- 只跑全量门禁、不跑命中段的专项检查——全绿只能证明「整体没坏」，不能证明「本次改动点有对应测试覆盖」。
 
 ## 目录结构
 

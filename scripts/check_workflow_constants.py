@@ -32,7 +32,13 @@ def extract_consts(workflow_path: Path) -> dict[str, str]:
     if not workflow_path.exists():
         print(f"ERROR: workflow 文件不存在: {workflow_path}", file=sys.stderr)
         sys.exit(2)
-    text = workflow_path.read_text(encoding="utf-8")
+    try:
+        text = workflow_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        # 纯读路径兜底（2026-10-29 审查）：存在但不可读（权限/占用/编码）与「文件不存在」同档，
+        # 都是「工具无法产出结论」→ rc=2，不得以 rc=1 + 裸栈冒充「版本常量不一致」。
+        print(f"ERROR: workflow 文件无法读取: {workflow_path} - {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(2)
     result: dict[str, str] = {}
     for key in CONST_KEYS:
         # 匹配 echo "key=value" —— value 不含引号/换行，用 [^\s"']+ 足够

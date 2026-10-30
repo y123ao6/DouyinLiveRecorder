@@ -173,7 +173,7 @@ def git_output(repo: Path, args: list[str]) -> str | None:
             timeout=20,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout if proc.returncode == 0 else None
 
@@ -311,7 +311,7 @@ def removed_locks(repo: Path, base: Path, files: dict, current: dict, args) -> t
             continue
         try:
             old_text, _, _ = decode_bytes((base / rel).read_bytes())
-        except OSError, UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError):
             continue
         old_tokens = comment_tokens(base / rel, old_text)
         new_tokens = comment_tokens(repo / rel, current[rel])
@@ -440,7 +440,9 @@ def cmd_preflight(args) -> int:
                 if baseline_density < args.floor:
                     infos.append(f"PRE-EXISTING below floor: {rel} {baseline_density}% -> {density}%")
                 else:
-                    fails.append(f"density below floor: {rel} {baseline_density}% -> {density}% < {args.floor}%")
+                    fails.append(
+                        f"density below floor: {rel} {baseline_density}% -> {density}% < {args.floor}%"
+                    )
             elif density < args.floor + args.near:
                 warns.append(f"near floor: {rel} {baseline_density}% -> {density}% (floor {args.floor}%)")
 
@@ -514,24 +516,14 @@ def cmd_guard(args) -> int:
             baseline_text, _, _ = decode_bytes(baseline_data)
         except UnicodeDecodeError:
             continue
-        lost = sorted(
-            readings_in_comments(current_path, baseline_text) - readings_in_comments(current_path, current_text)
-        )
+        lost = sorted(readings_in_comments(current_path, baseline_text) - readings_in_comments(current_path, current_text))
         if lost:
             message = f"readings lost: {rel} -- {', '.join(lost[: args.limit])}"
             (fails if args.strict_readings else warns).append(message)
 
-    emit(
-        "non-comment changes",
-        [item for item in fails if item.startswith(("non-comment", "deleted", "no baseline"))],
-        args.limit,
-    )
+    emit("non-comment changes", [item for item in fails if item.startswith(("non-comment", "deleted", "no baseline"))], args.limit)
     emit("readings lost", [item for item in fails + warns if item.startswith("readings lost")], args.limit)
-    emit(
-        "other failures",
-        [item for item in fails if not item.startswith(("non-comment", "readings lost", "deleted", "no baseline"))],
-        args.limit,
-    )
+    emit("other failures", [item for item in fails if not item.startswith(("non-comment", "readings lost", "deleted", "no baseline"))], args.limit)
     emit("warnings", [item for item in warns if not item.startswith("readings lost")], args.limit)
     print(
         f"\n== summary == FAIL {len(fails)} | WARN {len(warns)} | unchanged {unchanged} | "
@@ -544,9 +536,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="repository root (default: cwd)")
     parser.add_argument("--base", type=Path, required=True, help="baseline directory containing manifest.json")
     parser.add_argument("--ext", nargs="+", default=list(DEFAULT_EXTS), help="file extensions in scope")
-    parser.add_argument(
-        "--exclude-glob", nargs="+", default=list(DEFAULT_EXCLUDE_GLOBS), help="generated/minified files to skip"
-    )
+    parser.add_argument("--exclude-glob", nargs="+", default=list(DEFAULT_EXCLUDE_GLOBS), help="generated/minified files to skip")
     parser.add_argument("--limit", type=int, default=20, help="max lines printed per bucket")
 
 
@@ -563,25 +553,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     preflight = sub.add_parser("preflight", help="check coverage, density, locks, anchors, encoding")
     add_common(preflight)
-    preflight.add_argument(
-        "--no-changed",
-        dest="changed",
-        action="store_false",
-        default=True,
-        help="skip the git changed-set coverage check",
-    )
+    preflight.add_argument("--no-changed", dest="changed", action="store_false", default=True, help="skip the git changed-set coverage check")
     preflight.add_argument("--floor", type=float, default=13.0, help="per-file comment density floor (default: 13.0)")
     preflight.add_argument("--near", type=float, default=3.0, help="report files within this margin of the floor")
     preflight.add_argument("--density-ext", nargs="+", default=[".py"], help="extensions the density floor applies to")
-    preflight.add_argument(
-        "--lock-scope", nargs="+", default=["tests", "scripts"], help="where verbatim locks are searched"
-    )
-    preflight.add_argument(
-        "--anchor-scope", nargs="+", default=["tests", "scripts"], help="where path:line anchors are searched"
-    )
-    preflight.add_argument(
-        "--no-strict-locks", dest="no_strict_locks", action="store_true", help="report removed locks as warnings"
-    )
+    preflight.add_argument("--lock-scope", nargs="+", default=["tests", "scripts"], help="where verbatim locks are searched")
+    preflight.add_argument("--anchor-scope", nargs="+", default=["tests", "scripts"], help="where path:line anchors are searched")
+    preflight.add_argument("--no-strict-locks", dest="no_strict_locks", action="store_true", help="report removed locks as warnings")
     preflight.add_argument("--warn-only", action="store_true", help="always exit 0")
     preflight.add_argument("paths", nargs="*", help="files or directories that must be covered")
     preflight.set_defaults(func=cmd_preflight)

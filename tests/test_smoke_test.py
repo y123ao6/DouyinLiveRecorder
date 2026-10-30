@@ -97,8 +97,10 @@ def test_html_report_escapes_response_derived_error_end_to_end(tmp_path: Path, m
         def __init__(self, payload: bytes) -> None:
             self._payload = payload
 
-        def read(self) -> bytes:
-            return self._payload
+        def read(self, size: int = -1) -> bytes:
+            # size 形参对齐真实 http.client.HTTPResponse.read(amt)：run_check 现按
+            # _SMOKE_BODY_LIMIT 传 size 上限（2026-10-29 审查），替身不忠实会在合法路径抛 TypeError
+            return self._payload if size < 0 else self._payload[:size]
 
         def __enter__(self) -> "_FakeResponse":
             return self

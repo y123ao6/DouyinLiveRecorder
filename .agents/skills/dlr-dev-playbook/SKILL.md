@@ -12,6 +12,14 @@ agent_created: true
 
 # DLR 开发手册（DouyinLiveRecorder）
 
+## 本轮合并（2026-10-29）
+
+本 Skill 是 2026-10-29 同类合并的归并结果。以下源能力的完整 playbook 已收编进本目录，按需加载 `references/<name>/SKILL.md`，不要把全部参考文档读进上下文：
+
+- `windows-readonly-source-probing` → `references/windows-readonly-source-probing/SKILL.md`
+
+被吸收源技能的 frontmatter 仅在其原子文档内作历史留存；本目录的 `name` 与路由表为准。跨组的兄弟能力引用见各参考文档内的重定向注。
+
 ## 定位
 
 本手册是 DouyinLiveRecorder 仓库**开发工作流的唯一入口**：把「动手前怎么想 → 编码时守什么 → 改完怎么验」三件事收在一处，按场景路由到具体配方。它是**路由与提炼**，不是新规则。
@@ -69,15 +77,18 @@ agent_created: true
 
 **不属于本手册范围**：真正的崩溃栈回溯（走 systematic-debugging）、纯日志格式美化、一键式 trivial 改动。
 
-## 验证
+## 统一验证门禁（唯一定义，各配方共用）
 
-### 项目级门禁（统一入口，不复制命令清单）
-
-全量门禁的唯一入口是 `python scripts/run_gates.py`（在仓库根目录执行）：按原顺序跑完全部 `--check` 型门禁，任一失败非 0 退出。**完整命令清单、收窄排障（`--only`/`--keep-going`/`--list`）与平台增跑（`mypy --platform linux`）的口径以 `AGENTS.md`「格式化命令（门禁唯一基准）」为唯一事实源，本手册只引用不复制**——需要逐条命令时用 `run_gates.py --list` 现场解析，或直接查该章节。
+| 项 | 命令 / 判据 |
+|---|---|
+| 全量门禁 | `python scripts/run_gates.py`（在仓库根目录执行，退出码 0 = 全绿） |
+| 收窄排障 | `--only mypy`、`--only black`、`--keep-going`（失败后续跑）、`--list`（只列命令不执行） |
+| 平台增跑 | `mypy --platform linux <paths>`（仅当改动涉及 `sys.platform` 分支或平台专属符号） |
+| 单测 | `pytest tests/test_<module>.py -v` → **0 warnings**；涉及子进程输出时再单独跑一次该文件（抓 GBK/UTF-8 代码页问题） |
+| 覆盖率 | `python scripts/check_coverage.py`（模块阈值在脚本内 `MODULE_THRESHOLDS`） |
+| 编译 | `python -m py_compile <改动文件>` 或 `python -m compileall src`（跑完按铁律 1 清 `__pycache__`） |
 
 退出码语义：`0` 通过 / `1` 门禁红（代码问题）/ `2` 清单缺失或含写型命令（属「没跑」）/ `3` 可执行文件缺失（环境问题）。后两者不是代码不合格，别当成回归。
-
-**单任务验证补充**（随配方执行，非 CI 门禁清单）：改动模块跑 `pytest tests/test_<module>.py -v` → **0 warnings**，涉及子进程输出时再单独跑一次该文件（抓 GBK/UTF-8 代码页问题）；改动文件用 `python -m py_compile` 或 `compileall src` 做语法检查，跑完按铁律 1 清 `__pycache__`；覆盖率跑 `scripts/check_coverage.py`（口径见 `AGENTS.md`「测试」与「完成定义」）。
 
 安全不变量类测试必须做**变异验证**：临时改坏生产代码，确认测试转红；仅被既有测试覆盖的平凡断言可豁免。
 
@@ -114,7 +125,7 @@ agent_created: true
 
 ```text
 dlr-dev-playbook/
-├── SKILL.md                                  # 路由 + 通用铁律 + 统一门禁（引用 AGENTS.md）
+├── SKILL.md                                  # 路由 + 通用铁律 + 统一门禁（唯一定义）
 ├── references/
 │   ├── engineering-principles.md             # 想清楚再做：假设外显、极简、外科手术、目标驱动
 │   ├── design-brainstorming.md               # 设计流程、规格文档、评审门禁

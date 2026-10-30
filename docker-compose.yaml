@@ -33,16 +33,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # APP_VERSION 取自同目录 .env（口径见文件头），不设置则镜像 LABEL 的 version 为空
+      # APP_VERSION / TZ 取自同目录 .env（口径见文件头），不设置则 LABEL version 为空、时区落到
+      # Dockerfile ARG TZ 的默认值。此前 environment 侧硬编 TZ、.env 的 TZ 被遮蔽（compose 里
+      # environment 优先级高于 env_file），「可在 .env 覆盖」的承诺整条无接线（2026-10-29 审查）。
       args:
         APP_VERSION: "${APP_VERSION}"
+        TZ: "${TZ:-Asia/Shanghai}"
 
-    # 注入容器运行时行为；除 TZ 外均与 Dockerfile 的 ENV 同源，TZ 与 ARG TZ 默认一致、可在 .env 覆盖
+    # 注入容器运行时行为；均与 Dockerfile 的 ENV 同源，TZ 经 ${TZ:-Asia/Shanghai} 引用同目录
+    # .env（与上方 build.args 的 APP_VERSION 同一替换机制）、默认与 ARG TZ 一致
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONIOENCODING=utf-8
-      - TZ=Asia/Shanghai
+      - TZ=${TZ:-Asia/Shanghai}
       - TERM=xterm-256color
 
     # 从同目录 .env 加载额外变量；文件不存在也不报错
@@ -141,6 +145,7 @@ services:
       dockerfile: Dockerfile
       args:
         APP_VERSION: "${APP_VERSION}"
+        TZ: "${TZ:-Asia/Shanghai}"
         INSTALL_GUI: "true"
     profiles:
       - gui

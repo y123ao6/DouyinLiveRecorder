@@ -13,7 +13,7 @@
 #   ⑤-C 四份目录键集合逐项相等（单侧漏登记/多登记会让某语言静默回落原文）。
 #
 # 变异验证锚点（删掉任一判据必须让某条用例变红）：把 ⑤-A 的 key_sets 收窄到只查 zh_CN.po →
-# ::test_by_name_msgids_covered_by_catalogs 红；从白名单删掉 ui_i18n.py:34 →
+# ::test_by_name_msgids_covered_by_catalogs 红；从白名单删掉 ui_i18n.py::render →
 # ::test_unresolved_by_name_calls_match_allowlist 红；把 ⑤-C 退化成「只比 po 与 en_US」→
 # ::test_catalog_key_sets_are_identical 红。
 
@@ -27,10 +27,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 
 # 按名调用点里「按设计无法静态解析」的白名单（集合相等判定，多一处少一处都红）：
-# src/ui_i18n.py:34 是 Translatable.render() 的 `tr(self.msgid)`——候选即全仓 T(...) 的字面量
-# 首参，那批串由 tests/test_i18n_migration.py 的不变量③逐条核对，本锁不重复收。
+# src/ui_i18n.py::Translatable.render 是 Translatable.render() 的 `tr(self.msgid)`——候选即全仓
+# T(...) 的字面量首参，那批串由 tests/test_i18n_migration.py 的不变量③逐条核对，本锁不重复收。
 # 新增不可解析点必须先进本白名单并写明「由哪条锁覆盖」，否则该 msgid 无人核对。
-ALLOWED_UNRESOLVED_BY_NAME_CALLS = {"src/ui_i18n.py:34"}
+# 键形态 = 「文件::函数名」（M-35④）：行号会随同文件增删漂移，锚点不会。
+ALLOWED_UNRESOLVED_BY_NAME_CALLS = {"src/ui_i18n.py::render"}
 
 # 参数位实参链式解析的收敛轮数：`模块常量 → 调用方实参 → 形参 → 再传入下一层 → tr(形参)`
 # 在 gui.py / src/gui_qt/shared.py 的实际深度是 2 层（_pattern_from_template → _sentinel_text），
@@ -193,6 +194,23 @@ def _resolve(arg: ast.AST, src: str, local: dict[str, set[str]], upper: dict[str
     return set()
 
 
+# 函数/类定义的行区间表：label 取最内层包含该行的定义名，用于构造与行号无关的锚点。
+def _symbol_spans(tree: ast.Module) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            spans.append((node.lineno, getattr(node, "end_lineno", None) or node.lineno, node.name))
+    return spans
+
+
+def _enclosing_symbol(spans: list[tuple[int, int, str]], lineno: int) -> str:
+    innermost: tuple[int, str] | None = None
+    for start, end, name in spans:
+        if start <= lineno <= end and (innermost is None or start > innermost[0]):
+            innermost = (start, name)
+    return innermost[1] if innermost is not None else "<module>"
+
+
 def collect_by_name_calls() -> tuple[dict[str, set[str]], list[str]]:
     # 返回 ({调用点: msgid 候选集合}, [解析不出候选的调用点])
     # 缓存理由：三条用例共用同一次全量解析（74 个文件 × _INDEX_PASSES 轮），
@@ -224,6 +242,9 @@ def collect_by_name_calls() -> tuple[dict[str, set[str]], list[str]]:
     for path, (tree, src) in parsed.items():
         local = locals_by_path[path]
         rel = path.relative_to(ROOT).as_posix()
+        # 锚点用「文件::函数名」而不是行号（M-35④）：上方增删一行就会让行号键漂移，白名单随即
+        # 造出假红（本仓 AGENTS「引用代码位置优先写锚点，不写行号」同一口径）。
+        symbols = _symbol_spans(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue
@@ -235,7 +256,7 @@ def collect_by_name_calls() -> tuple[dict[str, set[str]], list[str]]:
             if isinstance(arg, (ast.Constant, ast.JoinedStr)):
                 continue  # 字面量形态归不变量③/提取器管，本锁只补按名这一类
             cands = _resolve(arg, src, local, upper)
-            label = f"{rel}:{node.lineno}"
+            label = f"{rel}::{_enclosing_symbol(symbols, node.lineno)}"
             if cands:
                 found.setdefault(label, set()).update(cands)
             else:

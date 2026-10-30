@@ -523,8 +523,14 @@ def check_equivalence(root: Path, baseline: Path) -> int:
         if not current.exists():
             missing.append(rel_posix)
             continue
-        old_src = base_file.read_text(encoding="utf-8", errors="replace")
-        new_src = current.read_text(encoding="utf-8", errors="replace")
+        try:
+            old_src = base_file.read_text(encoding="utf-8", errors="replace")
+            new_src = current.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            # 纯读路径兜底（2026-10-29 审查）：存在但不可读（权限/占用）按 changed 计——「无法证明
+            # 等价」对本门禁同样是红，但要有可读理由而非 rc=1 裸栈冒充「代码不等价」。
+            changed.append((rel_posix, f"无法读取（{type(exc).__name__}: {exc}），等价性无法验证"))
+            continue
         try:
             same = code_signature(current, old_src) == code_signature(current, new_src)
         except SyntaxError as exc:

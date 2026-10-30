@@ -10,7 +10,9 @@
 #   2. SKILL.md frontmatter name 必须与目录名一致
 #   3. SKILL.md 必须声明 AGENTS.md 为约束事实源
 #   4. SKILL.md 引用的 AGENTS.md 章节标题必须实际存在
-#   5. .agents/skills/ 下存在但未被 AGENTS.md 表登记的项目级 Skill 目录（告警）
+#   5. .agents/skills/ 下存在但未被 AGENTS.md 表登记的项目级 Skill 目录（硬失败）
+#      2026-10-29 由「只告警 rc=0」升为硬失败：告警形态在真实漂移（三个已合并删除的旧 Skill
+#      目录随坏提交回流）面前仍返回 0，等于同源锁不自证——违 AGENTS「告警即失败」同回路判定。
 #
 # 用法：
 #   python scripts/check_skill_agents_consistency.py
@@ -244,7 +246,7 @@ def main() -> int:
                 child_text = child_skill_md.read_text(encoding="utf-8")
                 # 如果 SKILL.md 内引用了 AGENTS.md 作为事实源，说明它是项目级 Skill
                 if "约束事实源" in child_text and "AGENTS.md" in child_text:
-                    warnings.append(f"[WARN] 项目级 Skill 目录存在但未在 AGENTS.md 表格登记: " f"{child_rel}")
+                    errors.append(f"[FAIL] 项目级 Skill 目录存在但未在 AGENTS.md 表格登记: " f"{child_rel}")
 
     # 输出结果
     for w in warnings:

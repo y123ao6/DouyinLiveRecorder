@@ -1,16 +1,4 @@
-<<<<<<< Updated upstream:tests/test_regression_gui_output_chain.py
-# tests/test_regression_gui_output_chain.py — CODE_REVIEW_2026-10-18 的 S-01/M-11/M-12 行为锁。
-=======
-<<<<<<< Updated upstream:tests/test_regression_2026_10_18_gui_output_chain.py
 # tests/test_regression_2026_10_18_gui_output_chain.py — CODE_REVIEW_2026-10-18 的 //该行为锁。
-=======
-<<<<<<< HEAD:tests/test_regression_gui_output_chain.py
-# tests/test_regression_gui_output_chain.py — CODE_REVIEW_2026-10-18 的 S-01/M-11/M-12 行为锁。
-=======
-# tests/test_regression_2026_10_18_gui_output_chain.py — CODE_REVIEW_2026-10-18 的 //该行为锁。
->>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f:tests/test_regression_2026_10_18_gui_output_chain.py
->>>>>>> Stashed changes:tests/test_regression_gui_output_chain.py
->>>>>>> Stashed changes:tests/test_regression_2026_10_18_gui_output_chain.py
 #
 # 为什么单独成文件：test_gui_qt_units.py / test_gui_qt_window.py 钉的是「模块单元」与「窗口外观/
 # 接线」，而这三条都是**跨线程投递与模态重入**的通路锁，必须同时持有真窗（MainWindow）与真子进程。

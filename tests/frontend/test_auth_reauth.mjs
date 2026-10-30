@@ -1,26 +1,8 @@
 // 认证复验口令链（M-22 / M-26）的前端行为回归锁。
 //
-<<<<<<< Updated upstream
-// 【为何单独成文件】M-22 要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
-// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_gates.mjs 里
-// MID-2241 那条是源码级断言，正是 M-26 实证的「钉字面量 → 契约反转时空过」形态，故在此补行为侧。
-=======
-<<<<<<< Updated upstream
 // 【为何单独成文件】要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
-// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_2026_09_22_gates.mjs 里对同一
+// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_gates.mjs 里对同一
 // 契约只有源码级断言——钉字面量在契约反转时会空过，故在此补行为侧。
-=======
-<<<<<<< HEAD
-// 【为何单独成文件】M-22 要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
-// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_gates.mjs 里
-// MID-2241 那条是源码级断言，正是 M-26 实证的「钉字面量 → 契约反转时空过」形态，故在此补行为侧。
-=======
-// 【为何单独成文件】要证的是**交互结果**（口令窗是否弹出、口令随哪些请求下发、取消/留空
-// 是否真的不提交、DOM 是否残留），而非源码形状。test_regression_2026_09_22_gates.mjs 里对同一
-// 契约只有源码级断言——钉字面量在契约反转时会空过，故在此补行为侧。
->>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f
->>>>>>> Stashed changes
->>>>>>> Stashed changes
 //
 // 【与后端契约同源】src/web_api.py::update_config 的 MID-2241 段：认证当前开启时写 [Web]
 // web_auth_enable / web_password 必须带能过 verify_web_password 的 reauth_password，否则 403；
@@ -181,27 +163,9 @@ async function bootConfigView(cfg, { routes = {}, confirm = () => true, seedClas
         setItem: (k, v) => storage.set(k, String(v)),
         removeItem: k => storage.delete(k),
     };
-<<<<<<< Updated upstream
-    // M-84：生产 _tokenStore() 的**首选**载体是 sessionStorage（关标签页即失效），沙箱必须提供它，
-    // 用例才走得到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实
-    // （内存回退那一支由 tests/frontend/test_regression_gates.mjs 的 M-84 用例专门驱动）。
-=======
-<<<<<<< Updated upstream
     // 沙箱必须提供 sessionStorage——它是生产 _tokenStore() 的**首选**载体（关标签页即失效），否则用例
     // 走不到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实（内存回退
-    // 一支由 tests/frontend/test_regression_2026_09_22_gates.mjs 的 M-84 用例专门驱动）。
-=======
-<<<<<<< HEAD
-    // M-84：生产 _tokenStore() 的**首选**载体是 sessionStorage（关标签页即失效），沙箱必须提供它，
-    // 用例才走得到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实
-    // （内存回退那一支由 tests/frontend/test_regression_gates.mjs 的 M-84 用例专门驱动）。
-=======
-    // 沙箱必须提供 sessionStorage——它是生产 _tokenStore() 的**首选**载体（关标签页即失效），否则用例
-    // 走不到主路径；与 localStorage 各用一个 Map，「令牌不进 localStorage」才是可观察的事实（内存回退
-    // 一支由 tests/frontend/test_regression_2026_09_22_gates.mjs 的 M-84 用例专门驱动）。
->>>>>>> f93c504c4cb63d2a8316753c9be4e78947de445f
->>>>>>> Stashed changes
->>>>>>> Stashed changes
+    // 一支由 tests/frontend/test_regression_gates.mjs 的 M-84 用例专门驱动）。
     const sessionData = new Map();
     const sessionStorage = {
         getItem: k => (sessionData.has(k) ? sessionData.get(k) : null),
