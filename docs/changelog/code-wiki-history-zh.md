@@ -1,7 +1,7 @@
 # CODE_WIKI 更新日志归档（简体中文卷）
 
 > 本卷由 `CODE_WIKI.md` 的「更新日志」于 2026-09-28 整卷迁出，条目正文逐字保留；根文档保留当前发布周期的标题索引与版本概要 + 本卷指针。
-> 收录 193 条历史条目（2026-05-17 ~ 2026-10-01：2026-09-28 整卷迁出的 164 条 + 2026-10-18 滚动迁入的 29 条）；2026-10-31 增补当前发布周期 63 条（v4.6.0 / v4.5.0-dev，见「迁入：当前发布周期」），另新增 2 条（AGENTS.md 对账、四份根文档同步与滚动归档），本卷合计 258 条。
+> 收录 193 条历史条目（2026-05-17 ~ 2026-10-01：2026-09-28 整卷迁出的 164 条 + 2026-10-18 滚动迁入的 29 条）；2026-10-31 增补当前发布周期 63 条（v4.6.0 / v4.5.0-dev，见「迁入：当前发布周期」），另新增 2 条（AGENTS.md 对账、四份根文档同步与滚动归档），本卷合计 261 条（2026-11-01 增补 brotli 下限抬升 1 条 + CI Linux 平台敏感用例修复 1 条 + 发布目录凭据校验误报修复 1 条）。
 > 回补口径：上一轮文档粗剪脚本把部分句子截成行尾 `…` 的半句，本卷按 `.workbuddy/docold`（2026-09-25 基线）对残句做**逐行前缀匹配**回补，共回补 659 行（唯一匹配失败 136 行、有歧义 0 行保持原样）。
 > 刻意**不做**的事：不复活历史上被有意删除的条目，不回填已外迁到 `docs/agent-reference/changelog-file-inventories.md` 的文件清单块——整块回填会撤销那些有意的整理，故只补残句。
 > 归档卷不参与镜像构建产物，运行时不读取；根文档入口：[CODE_WIKI.md](../../CODE_WIKI.md)。
@@ -10,6 +10,9 @@
 
 | 版本条目 | 日期 |
 | --- | --- |
+| v4.7.0 (2026-11-01) — 发布目录凭据校验（SEV-2213）误报修复：逐键比对收窄到「同键位」，根治 v4.6.0 四平台发布构建同红 | 2026-11-01 |
+| v4.7.0 (2026-11-01) — CI Linux 三处平台敏感用例转平台无关 + POSIX 优雅停止标记缺失纠正（recorder.py） | 2026-11-01 |
+| v4.7.0 (2026-11-01) — brotli 声明下限 1.2.0 → 1.2.1：deps-audit「下限复核」抓出旧下限自身落在 PYSEC-2026-4322 受影响段 | 2026-11-01 |
 | v4.6.0 (2026-10-31) — 四份根文档同步真实状态并滚动归档；更新日志逐字迁入本卷，根文档保留标题索引与版本概要 | 2026-10-31 |
 | v4.6.0 (2026-10-31) — AGENTS.md 与仓库现状对齐并压缩表述（纯文档改动） | 2026-10-31 |
 | v4.6.0 / v4.5.0-dev (2026-10-02 ~ 2026-10-31) — 当前发布周期详细条目（2026-10-31 逐字迁入） | 2026-10-31 |
@@ -180,6 +183,31 @@
 | v4.0.8-dev (2026-05-17) | 2026-05-17 |
 
 ## 归档条目
+
+### v4.7.0 (2026-11-01) — 发布目录凭据校验（SEV-2213）误报修复：逐键比对收窄到「同键位」，根治 v4.6.0 四平台发布构建同红
+
+- **触发**：v4.6.0 发布构建（build-release.yml 四平台矩阵）在 PyInstaller 成功后同一处挂红——`[build][FATAL] 发布目录内检出凭据（SEV-2213…）` 点名 `config/config.ini` 的 [推送配置] 六键「真实值未被脱敏（长度 4/5）」，四平台（windows-x64 / linux-x64 / linux-arm64 / darwin-arm64）报文逐字一致，属规则性误报而非环境问题。
+- **根因**：`build_exe.py::assert_no_credentials_in_release` ② 的判据是「源值作为**子串**出现在发布文件全文」。`[推送配置]` 整节在 `SENSITIVE_SECTIONS` 白名单内，源值多为 `false`/`true`/`1800` 泛化开关值；脱敏模板里 `[录制设置]` 等非敏感节**合法保留**同一批字面量（`视频分段时间(秒) = 1800`、`是否跳过代理检测(是/否) = true` 等），子串必然命中——六键全误报；`active`/`bell`/`tada` 因无碰撞位未报，反向印证。脱敏侧无失职：真实链路已把整节置空。
+- **修复（只换搜索位置，守卫集合零变化）**：② 改为「发布侧**同 (节, 键)** 的值 == 源值」才判「脱敏漏了该键」；守卫集合仍与脱敏侧 `is_sensitive_item` / `_looks_like_secret_value` 同源，泛化值在自己的键位原样出现依旧是脱敏失败（fail-closed 不回退）。配套回归锁两条：正向（真实 `_prepare_config_dir` 产出模板后必须放行；修复前红且六键报文与 CI 逐字一致）、反向（[推送配置] 键名不命中凭据正则、值 `true` 仅靠节白名单守卫，同键位漏网必须照拦——防把误报「修」成整节/短值豁免）。
+- **注释**：② 原行内注释「空值/纯布尔运维参数不算凭据」与实现不符（守卫集合实际把布尔值算入，恰是本次误报前提），按「已被证伪的事实性陈述」例外修正；其余以 [历史注 2026-11-01] 只增不改。
+- **验证**：`scripts/run_gates.py` **10/10 全绿**（内置 pytest 兜底 **4766 passed** / warnings summary 为空）；`scripts/check_coverage.py` **67 模块全过**；`basedpyright` **0 errors / 0 warnings / 0 notes**；真基线端到端（真实 `PROJECT_ROOT` + 临时 `RELEASE_DIR`，`_prepare_config_dir()` → `assert_no_credentials_in_release()`）PASS。
+- **DoD #2 口径**：改动不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析；CI 发布构建是本修复的真机回路，四平台重跑交回用户（本地 PyInstaller 全量打包未重跑——凭据校验环节已由真基线端到端等价覆盖）。
+- **交回/留意**：① 失败的四条 CI 在 v4.6.0 tag 上，修复落在 main（4.7.0 周期），发布工作流需重跑（重打 tag 或随 v4.7.0 发布，由用户定）；② ③（全树扫描）对复制进来的文件做 guarded_values 字节搜索，泛化值理论上可在二进制内碰撞——当前仓库 config/ 无第三文件未触发，属已知潜在误报面，本次刻意未动（外科手术边界）。
+
+### v4.7.0 (2026-11-01) — CI Linux 三处平台敏感用例转平台无关 + POSIX 优雅停止标记缺失纠正（recorder.py）
+
+- **触发**：CI（ubuntu + Python 3.14.9）`pytest` 三连红而本机 Windows 全绿——三条用例各自把「Windows 上的事实」当成了跨平台断言：① `test_build_exe.py::test_online_layer_is_off_by_default_and_never_touches_network` 期望值写死 `windows-x64` 段，而 `_pinned_slots()` 按 `runtime_slot_key()` 取当前机器段（CI 实取 linux-x64 的 BtbN ffmpeg 钉定值 `182c1b…`，与内置表 windows-x64 段失配）；② `test_web_tray.py::test_resource_roots_frozen_then_source` 用 Windows 风格假路径喂 `os.path.dirname`，posixpath 解析 `C:\dist\app-Web.exe` 得空串；③ `test_gui_qt_units.py::test_send_stop_signal_and_wait_graceful_path` 的 `is True` 断言在 POSIX 上走了真实分支，暴露产品缺陷（CI 输出里子进程 `returncode: -2` 即真实 SIGINT 已发出的证据）。
+- **产品修复（`src/gui_qt/recorder.py` 仅 +1 行）**：POSIX 分支 `os.kill(proc.pid, SIGINT)` 成功后补置 `graceful_signal_sent = True`——SIGINT 就是 CTRL_BREAK 的对位优雅信号（录制子进程捕获后走 safe_exit 清 ffmpeg），原实现不置位导致日志谎报「硬杀路径」、方法返回值在 POSIX 恒为 `False`；win32 分支与其余代码零改动。
+- **测试修复**：① 钉定断言改取 `build_exe.runtime_slot_key()` 当前段——off 档不变量本就是「与当前平台内置表一致」，macOS 签名档（`OFFICIAL_SIGNATURE_PIN` 大小写归一后逐字相等）同样成立；② 托盘冻结根目录用例改用 `tmp_path` 以宿主形态构造假路径（真实冻结态的路径本就与宿主同形态）；③ 硬杀触发按平台分工——win32 沿用 CTRL_BREAK 失败桩；POSIX 依测试约定禁 patch stdlib 的 `os.kill`，改「先收尸再发」：对已 reap 的 pid 发 SIGINT 必抛 `ProcessLookupError`，正是 `except → terminate` 兜底要接的真实竞态。
+- **验证**：`scripts/run_gates.py` **10/10 全绿**（内置 pytest 兜底 4764 passed / warnings summary 为空）；`pytest --cov=src`（venv Python 3.14.9）**4764 passed / 16 skipped**（总覆盖 84.69%）；`scripts/check_coverage.py` **PASSED：67 个模块全部达标**；`basedpyright` **0 errors / 0 warnings / 0 notes**；三份涉改测试文件单独跑 231 passed。POSIX 分支在本机 Windows 经 `sys.platform='linux'` 运行时补丁内联实测：优雅路径返回 `True`（修复前恒 `False`，即 CI 失败形态）、发信号失败路径返回 `False`。
+- **DoD #2 口径**：改动只落 POSIX 停止分支与测试断言，Windows 录制链路行为零变化（win32 分支未动）；Linux GUI 停止路径的真机验证由 CI（ubuntu + xvfb）该三条用例承担，本机无 Linux 录制环境记 `SKIP(无 Linux 真机)`，交回动作 = 推送后复核 CI 转绿。
+
+### v4.7.0 (2026-11-01) — brotli 声明下限 1.2.0 → 1.2.1：CI deps-audit「下限复核」抓出旧下限自身落在 PYSEC-2026-4322 受影响段
+
+- **触发**：CI `deps-audit` 第二步（声明下限钉 `==` 逐项 `--no-deps` 审计）报 brotli 1.2.0 命中 PYSEC-2026-4322（修复版本 1.2.1）；同份 requirements.txt 的解析模式步骤不报——正是该步专防的「下限自身落在受影响段」形态第五次出现（此前 starlette 1.0.1、protobuf 6.31.1、h2 4.3.0、urllib3 2.7.0）。
+- **修复**：`requirements.txt` 与 `pyproject.toml [project.dependencies]` 同步抬升 `brotli>=1.2.0` → `>=1.2.1`（仍 18 条、包名集合不变，CI 条数断言不受影响）；`AGENTS.md`「安全下限」条目补登 `brotli>=1.2.1`；两处行内/紧邻注释同源补 PYSEC 依据。`uv.lock` 与 `DouyinLiveRecorder.egg-info` 经 `sync_metadata.py` 重建（specifier 同步 `>=1.2.1`）。
+- **影响面**：本机 venv 已装 1.2.1、`uv.lock` 解析本已落在 1.2.1，抬下限不改解析集合，零运行期行为变化；B站弹幕解压链路（`src/ws_client.py` 的 `decompress_brotli_limited`，protover=3）不受影响。
+- **验证**：本地复跑 CI 同款下限提取（18 条）+ `pip-audit -r floors --no-deps`：No known vulnerabilities found。
 
 ### v4.6.0 (2026-10-31) — 四份根文档同步真实状态并滚动归档：更新日志正文逐字迁入 `docs/changelog/`，根文档只保留标题索引与版本概要
 

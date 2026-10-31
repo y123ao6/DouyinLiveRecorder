@@ -286,6 +286,9 @@ class RecorderController(QObject):
             self._log(i18n.tr("正在发送 SIGINT 信号..."))
             try:
                 os.kill(proc.pid, signal.SIGINT)
+                # POSIX 上 SIGINT 就是 CTRL_BREAK 的对位优雅信号（子进程捕获后走 safe_exit 清 ffmpeg）：
+                # 不置位会让下方日志谎报「硬杀路径」、返回值恒 False——CI Linux 实测抓出。
+                graceful_signal_sent = True
             except Exception as e:
                 self._log(i18n.tr("发送 SIGINT 失败，回退 terminate: {err}", err=e))
                 proc.terminate()

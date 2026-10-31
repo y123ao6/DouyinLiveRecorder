@@ -565,7 +565,10 @@ def test_send_stop_signal_and_wait_hard_kill_path(
     monkeypatch.setattr(recorder_module, "subprocess", subprocess_shim)
     proc = subprocess.Popen([sys.executable, "-c", "pass"], stdout=subprocess.PIPE, text=True)
     try:
-        # 信号发不出去 → 走整树强杀，且不得宣称「ffmpeg 已由子进程清理」
+        # 信号发不出去 → 走整树强杀，且不得宣称「ffmpeg 已由子进程清理」。两条平台的触发器不同：
+        # win32 由上方桩把 CTRL_BREAK 打成失败；POSIX 禁 patch stdlib 的 os.kill，改用「先收尸再发」——
+        # 对已 reap 的 pid 发 SIGINT 必抛 ProcessLookupError，正是 except → terminate 兜底要接的真实竞态。
+        proc.wait()
         assert controller._send_stop_signal_and_wait(proc) is False
         assert proc.poll() is not None
     finally:

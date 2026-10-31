@@ -70,7 +70,7 @@ The hand-maintained sources are the **5** root documents (`AGENTS.md` plus the C
 
 - **Project Name**: DouyinLiveRecorder (Douyin Live Recorder)
 - **Description**: A live-stream recorder for 60+ platforms (Douyin, TikTok, YouTube, Kuaishou, etc.), with looped recording, multi-room recording and message push
-- **Version**: 4.6.0 (single source of truth: `pyproject.toml`)
+- **Version**: 4.7.0 (single source of truth: `pyproject.toml`)
 - **Python**: >=3.14
 - **Author / License**: y123ao6 / MIT
 - **Entry points**: `douyin-recorder` → `main:main`; `douyin-recorder-gui` → `gui:main`; `douyin-recorder-web` → `web:main`
@@ -820,7 +820,7 @@ def host_of(url: str) -> str: ...
 | uvicorn[standard] | >=0.51.0 | ASGI server |
 | websockets | >=14.0 | Danmaku WebSocket client (`src/ws_client.py`; `additional_headers` is a 14.0+ API) |
 | protobuf | >=6.33.5,<8 | Douyin danmaku protocol decoding (`src/proto/douyin_pb2.py`; the `<8` cap is a gencode compatibility guard) |
-| brotli | >=1.2.0 | Bilibili danmaku decompression (protover=3) |
+| brotli | >=1.2.1 | Bilibili danmaku decompression (protover=3) |
 | PyYAML | >=6.0.3 | YAML translation catalog support (`i18n/zh_TW.yaml`) |
 
 > Note 1: [Historical note] this section used to record that "Weverse platform authentication is implemented by
@@ -1507,6 +1507,12 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > **Section index**: the verbatim bodies below were moved to the [archive volume](docs/changelog/code-wiki-history-en.md) ("Imported: current release window") on 2026-10-31; this section keeps only the heading index. Search the archive by the original heading text.
 >
 > **v4.6.0 summary (2026-10-18 ~ 2026-10-31)**: (1) GUI stack consolidated on PySide6; the legacy tkinter/pystray implementations plus `src/ui_kit.py` / `src/ui_motion.py` were removed; (2) unified ICO icon support across the GUI tray, Web tray/page and packaged artifacts; (3) Web tray migrated to Qt and the run log wraps to the viewport; (4) five repo-wide review rounds (per-hop SSRF re-checks, dangerous config keys, outbound read caps, credential masking); (5) EOL pinning, regression-test de-dating, metadata parity, CI tool bumps and repo-wide comment slimming.
+
+### v4.7.0 (2026-11-01) — Release credential-check (SEV-2213) false positive fixed: per-key comparison narrowed to "same key position", removing the root cause of the v4.6.0 four-platform release build failure
+
+### v4.7.0 (2026-11-01) — Three platform-sensitive tests made platform-agnostic for CI Linux + the missing POSIX graceful-stop flag fixed in recorder.py
+
+### v4.7.0 (2026-11-01) — brotli declared floor 1.2.0 → 1.2.1: CI deps-audit floor recheck caught the old floor itself inside the PYSEC-2026-4322 affected range
 
 ### v4.6.0 (2026-10-31) — Four root documents resynced with reality and rolled into the archive: changelog bodies moved verbatim into `docs/changelog/`, root docs keep only the heading index and release summary
 

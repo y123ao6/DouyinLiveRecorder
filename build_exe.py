@@ -521,22 +521,27 @@ def assert_no_credentials_in_release() -> None:
             if stripped and not stripped.startswith("#"):
                 problems.append(f"config/URL_config.ini:{n} 含未注释的有效行（可能内嵌房间/token）：{stripped[:80]!r}")
 
-    # ② config.ini：逐键比对**仓库源文件的真实值**——命中即说明脱敏漏了该键。用「源值出现在发布文件里」
-    #    作判据而不是「键名敏感」：前者是实际泄漏的事实、后者只是推断，且这样也覆盖「键名不在敏感表里
-    #    但值确实是凭据」的漏网情形。
+    # ② config.ini：逐键比对**仓库源文件的真实值**——命中即说明脱敏漏了该键。判据取「实际泄漏的事实」
+    #    而不是「键名敏感」的推断，且这样也覆盖「键名不在敏感表里但值确实是凭据」的漏网情形；比对位置
+    #    是发布侧**同一个 (节, 键)** 的值，不是全文子串。
+    #    [历史注 2026-11-01] 原判据「源值作为子串出现在发布文件全文」在真实基线上系统性误报（v4.6.0
+    #    四平台发布构建同红，[推送配置] 六键全报「长度 4/5」）：该节整节在 SENSITIVE_SECTIONS 白名单
+    #    内、值却多为 true/false/1800 泛化开关值，而脱敏模板里 [录制设置] 等非敏感节**合法保留**同一批
+    #    字面量，全文子串必然命中。守卫集合（谁需要查）与脱敏侧保持同源不变，只把搜索位置收到同键位；
+    #    泛化值在**自己的键位**原样出现依旧是脱敏失败，fail-closed 不回退。
     src_ini = PROJECT_ROOT / "config" / "config.ini"
     dst_ini = cfg_dst / "config.ini"
     src_pairs = _read_ini_pairs(src_ini) if src_ini.is_file() else []
     if src_ini.is_file() and dst_ini.is_file():
-        dst_text = dst_ini.read_text(encoding="utf-8-sig", errors="replace")
+        dst_values = {(section, key): value.strip() for section, key, value in _read_ini_pairs(dst_ini)}
         for section, key, value in src_pairs:
             v = value.strip()
-            # 只拦「有实质内容且确实敏感」的值；空值/纯布尔运维参数不算凭据。
+            # 只拦「有实质内容且确实敏感」的值；空值不算凭据（长度滤网只挡近空值）。
             if len(v) < 4:
                 continue
             if not (web_config.is_sensitive_item(section, key) or web_config._looks_like_secret_value(v)):
                 continue
-            if v in dst_text:
+            if dst_values.get((section, key)) == v:
                 problems.append(f"config/config.ini 的 [{section}] {key} 真实值未被脱敏（长度 {len(v)}）")
 
     # ③ 「复制即判定」的第二半：config/ 下**任何**被复制进来的文件（含子目录、不看文件名白名单）

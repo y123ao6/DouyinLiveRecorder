@@ -89,7 +89,9 @@ dependencies = [
     # 现装 7.36.2），brotli 解压 B站弹幕。上限 <8（F-14）：douyin_pb2.py 由 protoc 25.x 生成
     # （gencode 4.25.3），跨大版本升级 runtime 有 gencode 兼容窗口外失效风险，升级前须同代 protoc 重新生成。
     "protobuf>=6.33.5,<8",
-    "brotli>=1.2.0",
+    # brotli 下限 1.2.1（2026-11-01 deps-audit「下限复核」）：PYSEC-2026-4322 影响 1.2.0、修复于 1.2.1，
+    # 旧下限自身落在受影响段；现装即 1.2.1，抬下限不改解析集合。
+    "brotli>=1.2.1",
     # i18n YAML 翻译目录支持（i18n/zh_TW.yaml；缺失时仅损失该格式，JSON/gettext 不受影响）
     "PyYAML>=6.0.3",
 ]

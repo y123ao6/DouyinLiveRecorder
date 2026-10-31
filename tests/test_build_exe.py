@@ -1649,7 +1649,9 @@ def test_online_layer_is_off_by_default_and_never_touches_network(
     monkeypatch.delenv("DLR_RUNTIME_PIN_SOURCE", raising=False)
     assert build_exe.pin_source_mode() == build_exe.PIN_SOURCE_OFF
     merged = build_exe._pinned_slots()
-    assert merged["ffmpeg"] == build_exe._PINNED_RUNTIME_SHA256["windows-x64"]["ffmpeg"].lower()
+    # 期望值必须取「当前机器」那段内置表：_pinned_slots 按 runtime_slot_key() 取段，写死
+    # windows-x64 在 CI Linux 上必然漂移（实测抓出）；off 档的不变量是「与当前平台内置表一致」。
+    assert merged["ffmpeg"] == build_exe._PINNED_RUNTIME_SHA256[build_exe.runtime_slot_key()]["ffmpeg"].lower()
 
 
 def test_unrecognized_pin_source_env_value_falls_back_to_off(
@@ -2000,6 +2002,60 @@ def test_credential_assertion_accepts_benign_copied_files(monkeypatch: pytest.Mo
     monkeypatch.setattr(build_exe, "PROJECT_ROOT", tmp_path / "nonexistent_root")
 
     build_exe.assert_no_credentials_in_release()  # 不抛异常即通过
+
+
+def test_credential_assertion_passes_when_push_generic_values_only_collide_in_other_sections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # SEV-2213 误报回归锁（2026-11-01，v4.6.0 四平台发布构建同红）：[推送配置] 整节在
+    # SENSITIVE_SECTIONS 白名单内，源值 false/true/1800 是泛化开关值，而脱敏模板里 [录制设置]
+    # 等非敏感节**合法保留**同一批字面量——② 若按「源值全文子串」比对必然六键全误报。
+    # 判据是「发布侧同 (节,键) 的值 == 源值」：真实脱敏链路（_prepare_config_dir）置空这批键后必须放行。
+    repo = tmp_path / "repo"
+    src = repo / "config"
+    src.mkdir(parents=True)
+    (src / "config.ini").write_text(
+        "[录制设置]\n"
+        "是否跳过代理检测(是/否) = true\n"
+        "保存文件夹是否以时间区分 = false\n"
+        "视频分段时间(秒) = 1800\n"
+        "[推送配置]\n"
+        "钉钉通知@全体(是/否) = false\n"
+        "是否使用smtp服务ssl加密(是/否) = true\n"
+        "只推送通知不录制(是/否) = false\n"
+        "直播推送检测频率(秒) = 1800\n"
+        "开播推送开启(是/否) = true\n"
+        "关播推送开启(是/否) = false\n",
+        encoding="utf-8",
+    )
+    release = tmp_path / build_exe.APP_NAME
+    monkeypatch.setattr(build_exe, "PROJECT_ROOT", repo)
+    monkeypatch.setattr(build_exe, "RELEASE_DIR", release)
+
+    build_exe._prepare_config_dir()
+    build_exe.assert_no_credentials_in_release()  # 不抛异常即通过
+
+
+def test_credential_assertion_flags_push_section_value_left_unmasked_at_same_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 反向锁（守卫面不回退）：[推送配置] 的键名**不命中**凭据正则、值又是短泛化形态（true），
+    # 唯一的守卫来源是节白名单——若脱敏漏网（同键位原样带出源值），② 必须照拦。
+    # 把上面的误报「修」成整节豁免或短值豁免的回归在这里转红。
+    repo = tmp_path / "repo"
+    src = repo / "config"
+    src.mkdir(parents=True)
+    (src / "config.ini").write_text("[推送配置]\n开播推送开启(是/否) = true\n", encoding="utf-8")
+    release = tmp_path / build_exe.APP_NAME
+    cfg = release / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "config.ini").write_text("[推送配置]\n开播推送开启(是/否) = true\n", encoding="utf-8")
+    (cfg / "URL_config.ini").write_text("#https://live.douyin.com/000000000000\n", encoding="utf-8")
+    monkeypatch.setattr(build_exe, "PROJECT_ROOT", repo)
+    monkeypatch.setattr(build_exe, "RELEASE_DIR", release)
+
+    with pytest.raises(SystemExit):
+        build_exe.assert_no_credentials_in_release()
 
 
 def test_ffmpeg_failure_path_purges_temp_archive_from_release_dir(

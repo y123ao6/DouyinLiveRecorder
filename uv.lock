@@ -369,7 +369,7 @@ wheels = [
 
 [[package]]
 name = "douyinliverecorder"
-version = "4.6.0"
+version = "4.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "brotli" },
@@ -412,7 +412,7 @@ gui = [
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
-    { name = "brotli", specifier = ">=1.2.0" },
+    { name = "brotli", specifier = ">=1.2.1" },
     { name = "distro", specifier = ">=1.9.0" },
     { name = "exejs", specifier = ">=1.0.1" },
     { name = "h2", specifier = ">=4.4.1" },

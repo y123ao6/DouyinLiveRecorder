@@ -70,7 +70,7 @@
 
 - **项目名称**: DouyinLiveRecorder (抖音直播录制器)
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具，支持循环录制、多人录制、消息推送
-- **版本**: 4.6.0（唯一事实源 `pyproject.toml`）
+- **版本**: 4.7.0（唯一事实源 `pyproject.toml`）
 - **Python**: >=3.14
 - **作者 / 开源协议**: y123ao6 / MIT
 - **入口**: `douyin-recorder` → `main:main`；`douyin-recorder-gui` → `gui:main`；`douyin-recorder-web` → `web:main`
@@ -904,7 +904,7 @@ def host_of(url: str) -> str: ...
 | uvicorn[standard] | >=0.51.0 | ASGI 服务器 |
 | websockets | >=14.0 | 弹幕 WebSocket 客户端（`src/ws_client.py`；`additional_headers` 为 14.0+ API） |
 | protobuf | >=6.33.5,<8 | 抖音弹幕协议解码（`src/proto/douyin_pb2.py`；上限 <8 为 gencode 兼容护栏） |
-| brotli | >=1.2.0 | B站弹幕解压（protover=3） |
+| brotli | >=1.2.1 | B站弹幕解压（protover=3） |
 | PyYAML | >=6.0.3 | YAML 翻译目录支持（`i18n/zh_TW.yaml`） |
 
 > 注 1：[历史注] 旧版此处记录「Weverse 平台认证由 `src/weverse_auth.py` 实现、不再依赖 pip 上的 `weverse` 包」。
@@ -1589,6 +1589,12 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > **本节索引**：以下条目的逐字正文已于 2026-10-31 迁入 [归档卷](docs/changelog/code-wiki-history-zh.md) 的「迁入：当前发布周期」一节；本节仅保留标题索引，按标题原文可在归档卷检索。
 >
 > **v4.6.0 概要（2026-10-18 ~ 2026-10-31）**：① GUI 技术栈全面收敛到 PySide6，tkinter/pystray 遗留实现与 `src/ui_kit.py` / `src/ui_motion.py` 移除；② 统一 ICO 图标支持（GUI 托盘 / Web 托盘与页面 / 打包产物）；③ Web 托盘迁 Qt，运行日志自动折行；④ 五轮全仓审查整改（SSRF 逐跳复检、危险配置键、出站读取上限、凭据脱敏）；⑤ 行尾钉定、回归锁去日期化、元数据对账、CI 工具抬版与全仓注释精简。
+
+### v4.7.0 (2026-11-01) — 发布目录凭据校验（SEV-2213）误报修复：逐键比对收窄到「同键位」，根治 v4.6.0 四平台发布构建同红
+
+### v4.7.0 (2026-11-01) — CI Linux 三处平台敏感用例转平台无关 + POSIX 优雅停止标记缺失纠正（recorder.py）
+
+### v4.7.0 (2026-11-01) — brotli 声明下限 1.2.0 → 1.2.1：CI deps-audit「下限复核」抓出旧下限自身落在 PYSEC-2026-4322 受影响段
 
 ### v4.6.0 (2026-10-31) — 四份根文档同步真实状态并滚动归档：更新日志正文逐字迁入 `docs/changelog/`，根文档只保留标题索引与版本概要
 
