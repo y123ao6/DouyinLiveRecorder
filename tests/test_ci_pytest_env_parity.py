@@ -25,7 +25,7 @@
 # 双向钉（对齐 tests/test_ci_frontend_registration.py 的「清单 ↔ 配置」口径）：
 #   正向——每个 pytest job 都必须装 requirements.txt（漏装即红，正是事故一形态）；
 #   反向——检测器必须**认得出**已知的 pytest job、且**认不出** setup job（后者只 echo 版本
-#         常量字符串 `pytest_version=9.1.1`；认错说明正则退化成子串匹配，正向判据随即失真）。
+#         常量字符串 `pytest_version=9.2.0`；认错说明正则退化成子串匹配，正向判据随即失真）。
 #
 # 变异验证（2026-10-18 实跑，均已当轮还原）：① vbs-behavior-test 改回 `pip install pytest` →
 #   正向判据红；② 检测器放宽成裸子串 `pytest` → 反向判据红；③ 摘掉 `libegl1` → Qt 运行库判据红
@@ -43,9 +43,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 CI_FILE = ROOT / ".github" / "workflows" / "ci.yml"
 
-# 独立 token 形态的 pytest：既排除 `pytest_version=9.1.1`（setup job 的 echo，后随 `_`），
+# 独立 token 形态的 pytest：既排除 `pytest_version=9.2.0`（setup job 的 echo，后随 `_`），
 # 也排除 `pytest-cov` / `pytest-asyncio`（后随 `-`）——两者都不是「跑/装 pytest」本身。
-# 装上 `pytest==9.1.1` 的 typecheck job 会被认出（后随 `=` 不在排除集内），这是有意的：
+# 装上 `pytest==9.2.0` 的 typecheck job 会被认出（后随 `=` 不在排除集内），这是有意的：
 # 那条 job 也是靠 requirements.txt 兜底的，纳入判定面只会让锁更紧而非更松。
 _PYTEST_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_.\-])pytest(?![A-Za-z0-9_\-])")
 
@@ -59,7 +59,7 @@ _REQUIREMENTS_INSTALL_RE = re.compile(r"pip install\b[^\n|&;]*-r requirements\.t
 _KNOWN_PYTEST_JOBS = ("test", "concurrency-test", "vbs-behavior-test")
 
 # 检测器精度守卫：这些 job 不得被认成 pytest job。`setup` 是最关键的一格——它只 echo 版本常量
-# （`pytest_version=9.1.1`），裸子串匹配会命中它，于是正向判据会被一个从不跑 pytest 的 job 稀释。
+# （`pytest_version=9.2.0`），裸子串匹配会命中它，于是正向判据会被一个从不跑 pytest 的 job 稀释。
 _KNOWN_NON_PYTEST_JOBS = ("setup", "static", "deps-audit", "integration-verify", "build-verify")
 
 
@@ -183,6 +183,6 @@ def test_test_job_gates_qt_gui_collection() -> None:
 @pytest.mark.parametrize("job_name", _KNOWN_NON_PYTEST_JOBS)
 def test_setup_job_is_not_mistaken_for_a_pytest_job(job_name: str) -> None:
     # 反向钉：这些 job 不该被检测器认成 pytest job。setup 是最关键的一格——它只有
-    # `echo "pytest_version=9.1.1"` 这类版本常量字符串，裸子串匹配会命中它，
+    # `echo "pytest_version=9.2.0"` 这类版本常量字符串，裸子串匹配会命中它，
     # 于是「pytest job 必须装 requirements」这条判据会被一个从不跑 pytest 的 job 稀释。
     assert job_name not in _pytest_jobs(), f"{job_name} 不含 pytest 执行/安装，检测器不应命中它"

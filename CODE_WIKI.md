@@ -1761,6 +1761,13 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
+### v4.6.0-dev (2026-10-31) — CI 工具版本抬到 PyPI 最新：mypy 2.4.0 → 2.4.1、pytest 9.1.1 → 9.2.0
+
+- **用户指令**：把 `ci.yml` 的工具版本更新为最新版本。
+- **改动**：`.github/workflows/ci.yml` 的 `setup` job consts 步骤 `mypy_version` 2.4.0 → 2.4.1、`pytest_version` 9.1.1 → 9.2.0；两值仍只有这一处声明，lint / typecheck / test 三类 job 继续经 `needs.setup.outputs` 消费。black 26.10.1、isort 9.0.2 经 PyPI JSON API 当日核对已是最新，保持不变，故 `.pre-commit-config.yaml` 的两个 mirror rev 无需跟改。`tests/test_ci_pytest_env_parity.py` 注释中引用该常量的 5 处字面量同步为 9.2.0（仅注释，判据未变）。
+- **判据**：版本号取 PyPI JSON API 当日读数；抬值后四值与本地 `.venv` 实装（black 26.10.1 / isort 9.0.2 / mypy 2.4.1 / pytest 9.2.0）逐一同值。
+- **验证**：`yaml.safe_load` 解析 ci.yml 通过（10 jobs）；读取 ci.yml 的 CI 结构锁与版本常量锁 433 passed / 2 skipped；`scripts/run_gates.py` 10/10 PASS（含 pytest 兜底 4764 passed、warnings summary 为空）；black / isort 对被改文件 unchanged；basedpyright / pyright 各 0 error / 0 warning。**CI 实跑未执行**——新常量要等下一次 push 在 GitHub Actions 上真正安装 `mypy==2.4.1` / `pytest==9.2.0` 后才算 CI 口径验证。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
+
 ### v4.6.0-dev (2026-10-31) — 彻底移除 tkinter GUI 技术栈（PySide6 成为唯一窗口实现）
 
 - **用户指令**：彻底移除 GUI 中仍保留的 tkinter 框架及其全部相关代码（含回退路径、隐藏依赖），能力须先迁移到 PySide6 / 共享模块，不得改变用户可见行为、录制核心、配置读写、日志、子进程控制与 Web/无头入口语义。

@@ -1749,6 +1749,13 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > (`python file.py <URL> [seconds]`; requires a live room + network; manual channel by default).
 > **Rolling archive**: this section keeps only the current release window; older entries live verbatim in [`docs/changelog/code-wiki-history-en.md`](docs/changelog/code-wiki-history-en.md) (rule stated in the "Changelog Archive Index" above).
 
+### v4.6.0-dev (2026-10-31) — CI tool pins moved to the latest PyPI releases: mypy 2.4.0 → 2.4.1, pytest 9.1.1 → 9.2.0
+
+- **User directive**: update the tool versions in `ci.yml` to the latest releases.
+- **Change**: in the `setup` job's consts step, `mypy_version` 2.4.0 → 2.4.1 and `pytest_version` 9.1.1 → 9.2.0. These remain the only declaration points; the lint / typecheck / test jobs keep consuming them through `needs.setup.outputs`. black 26.10.1 and isort 9.0.2 were already the latest releases when checked against the PyPI JSON API, so they stay unchanged and the two mirror revs in `.pre-commit-config.yaml` need no matching edit. The five literal references to this constant in `tests/test_ci_pytest_env_parity.py` comments were synced to 9.2.0 (comments only; the predicate is unchanged).
+- **Criterion**: versions were read from the PyPI JSON API on the day of the change; after the bump all four values equal the local `.venv` installs (black 26.10.1 / isort 9.0.2 / mypy 2.4.1 / pytest 9.2.0).
+- **Verification**: `yaml.safe_load` parses ci.yml (10 jobs); the CI structure locks and version-constant lock that read ci.yml report 433 passed / 2 skipped; `scripts/run_gates.py` 10/10 PASS (including the pytest fallback: 4764 passed, empty warnings summary); black / isort leave the edited files unchanged; basedpyright / pyright each report 0 errors / 0 warnings. **CI has not actually run** — the new constants only become CI-verified after the next push installs `mypy==2.4.1` / `pytest==9.2.0` on GitHub Actions. **DoD step 2 is not applicable** (no recording chain / source selection / ffmpeg argument / platform parsing changes).
+
 ### v4.6.0-dev (2026-10-31) — Complete removal of the tkinter GUI stack (PySide6 is the only window implementation)
 
 - **User directive**: remove every remaining tkinter framework artifact and related code from the GUI (including fallbacks and hidden dependencies); migrate required capabilities to PySide6 / shared modules first, without changing user-visible behavior, the recording core, config I/O, logging, subprocess control, or Web/headless entry semantics.
