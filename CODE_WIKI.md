@@ -1758,7 +1758,16 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
-### v4.6.0-dev (2026-10-31) — i18n 资源同步：Web 托盘悬浮提示接入四语目录
+### v4.6.0 (2026-10-31) — 版本文档同步：CODE_WIKI 的 4.6.0-dev 更新日志按四类归纳进 README 双语 v4.6.0 条目，版本标签统一为 4.6.0
+
+- **用户指令**：读取 `CODE_WIKI.md` 中 4.6.0-dev 的完整更新日志，按「新增功能 / 缺陷修复 / 破坏性变更 / 依赖变更」四类归纳，新建并写入 README 双语 v4.6.0 条目，再把同一内容同步到 `README_EN.md`。
+- **版本标签**：`CODE_WIKI.md` / `CODE_WIKI_EN.md` 各 23 条 `### v4.6.0-dev (…)` 标题统一改为 `### v4.6.0 (…)`（合计 46 处，仅标题行，正文零改动）；`pyproject.toml` 事实源本就是 `4.6.0`，`scripts/check_version.py` 按设计不覆盖 README / CODE_WIKI（脚本注释已写明「版本由人工维护」）。
+- **README 条目**：两文件在「更新日志 / Changelog」内、`### v4.5.0` 之前新建 `### v4.6.0 (2026-10-18 ~ 2026-10-31) — …`，小节标题与顺序沿用 v4.5.0（✨ 新增功能 / 改进、🐛 修复的问题、⚠️ 破坏性变更 / 行为变化、📦 依赖变更、🛠️ 仓库维护与文档、🧪 测试与验证），中英逐节条目数相等。
+- **只归纳、不增补**：条目正文的读数与结论全部取自 CODE_WIKI 原文（4568 / 4977 / 5049 / 5053 / 5054 / 4786 passed、83.80% → 84.65%、运行时依赖 21 → 18 条、构建 2m35s 等），未新增日志外结论；DoD 第 2 步未执行的条目按日志原样记为交回用户。
+- **既有缺陷（交回）**：双语各有两段 2026-10-18 正文失去 `###` 标题——「`CODE_REVIEW_2026-10-18` 整改 85 项」与「macOS evermeet 端点 410 下架」两段（`CODE_WIKI.md` 现位于 R9/R10 条目之后、`v4.5.0-dev` 条目之前）；本轮按位置与日期归入 4.6.0 周期归纳，标题缺失本身未修补。README「只保留最近三个正式发布」的滚动归档（v4.3.0 → `docs/changelog/release-notes-history-{zh,en}.md`）未执行，按独立任务交回。
+- **验证**：`scripts/check_version.py` PASS（基准 4.6.0）；`scripts/compile_po.py --check` OK（1207 条）；`scripts/check_skill_agents_consistency.py` rc=0（7 条一致）；四份文档行尾仍纯 LF、无 BOM；`git status --short` 仅含 `README.md` / `README_EN.md` / `CODE_WIKI.md` / `CODE_WIKI_EN.md`。
+
+### v4.6.0 (2026-10-31) — i18n 资源同步：Web 托盘悬浮提示接入四语目录
 
 - **用户指令**：扫描全部源码与资源文件，提取面向最终用户的可见文案，同步维护 `zh_CN.po` / `en_US.json` / `en_GB.json` / `zh_TW.yaml`；四者键集必须完全一致，保留已有译文，仅为新增条目补译，并重编译 `zh_CN.mo`。
 - **扫描结论**：`scripts/extract_i18n_strings.py` 运行时提取 851 条、缺失 0；四语目录原已键集一致（各 1205 条）。盲区（`print_colored` / 弹窗 / 推送正文 / Qt `setToolTip`）复核后，唯一未入目录的用户可见文案是 `src/web_tray.py` 的托盘悬浮提示裸 f-string。
@@ -1766,7 +1775,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **未改**：提取器报告的 355 条「目录有、运行时无」历史/兼容条目按「保留已有译文」与仓库既有口径保留；`web/app.js` 的四套内嵌面板目录与后端四语目录相互独立，按既有约定不并入。
 - **验证**：`scripts/compile_po.py --check` OK；`gettext.GNUTranslations` 与 `i18n.tr()` 四语实测命中新键；i18n + 托盘相关 pytest **118 passed**；`black` / `isort` 对被改源文件 unchanged；前端四语目录一致性断言 36 passed。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
 
-### v4.6.0-dev (2026-10-31) — 元数据对账：以 `pyproject.toml` 为唯一事实源复核 15 个目标文件，修正 CODE_WIKI 依赖表与 egg-info 生成物
+### v4.6.0 (2026-10-31) — 元数据对账：以 `pyproject.toml` 为唯一事实源复核 15 个目标文件，修正 CODE_WIKI 依赖表与 egg-info 生成物
 
 - **用户指令**：以 `pyproject.toml` 为唯一事实源（项目名与入口、版本号、Python 版本要求、依赖及版本约束），扫描并同步校验 `AGENTS.md`、`Dockerfile`、`docker-compose.yaml`、`requirements.txt`、`.gitignore`、`.dockerignore`、`.coveragerc-concurrency`、`config/config.ini`、`README*`、`CODE_WIKI*`、egg-info、`build_exe.py` 与 `uv.lock`。
 - **事实源读数**：`version = 4.6.0` / `requires-python = ">=3.14"` / 运行时依赖 **18 条** / extras dev 7·gui 1·build 1 / 三入口 `douyin-recorder{,-gui,-web}` / `packages` 5 项 / `py-modules` 5 项。
@@ -1775,14 +1784,14 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **未改**：`uv.lock`（4.6.0 / 18 条依赖已一致，刻意跳过 `uv lock` 以免无关重算）；`README*` 与旧更新日志中的历史读数按「只增不改」保留；`Dockerfile` 的 LABEL description 是缩短版标签，不属 pyproject 元数据字段。
 - **验证**：`scripts/sync_metadata.py --check` OK；`scripts/check_version.py` PASS；`requirements.txt` ↔ pyproject 包名集合 18↔18；coverage `omit` 24↔24 / `exclude_also` 4↔4；`tests/test_regression_gates.py` 29 passed；`scripts/run_gates.py` **10/10 全绿**（pytest 兜底 4764 passed、warnings summary 为空）；`git diff` 仅含上述文件。**DoD 第 2 步不适用**（纯文档 / 生成物同步，不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
 
-### v4.6.0-dev (2026-10-31) — CI 工具版本抬到 PyPI 最新：mypy 2.4.0 → 2.4.1、pytest 9.1.1 → 9.2.0
+### v4.6.0 (2026-10-31) — CI 工具版本抬到 PyPI 最新：mypy 2.4.0 → 2.4.1、pytest 9.1.1 → 9.2.0
 
 - **用户指令**：把 `ci.yml` 的工具版本更新为最新版本。
 - **改动**：`.github/workflows/ci.yml` 的 `setup` job consts 步骤 `mypy_version` 2.4.0 → 2.4.1、`pytest_version` 9.1.1 → 9.2.0；两值仍只有这一处声明，lint / typecheck / test 三类 job 继续经 `needs.setup.outputs` 消费。black 26.10.1、isort 9.0.2 经 PyPI JSON API 当日核对已是最新，保持不变，故 `.pre-commit-config.yaml` 的两个 mirror rev 无需跟改。`tests/test_ci_pytest_env_parity.py` 注释中引用该常量的 5 处字面量同步为 9.2.0（仅注释，判据未变）。
 - **判据**：版本号取 PyPI JSON API 当日读数；抬值后四值与本地 `.venv` 实装（black 26.10.1 / isort 9.0.2 / mypy 2.4.1 / pytest 9.2.0）逐一同值。
 - **验证**：`yaml.safe_load` 解析 ci.yml 通过（10 jobs）；读取 ci.yml 的 CI 结构锁与版本常量锁 433 passed / 2 skipped；`scripts/run_gates.py` 10/10 PASS（含 pytest 兜底 4764 passed、warnings summary 为空）；black / isort 对被改文件 unchanged；basedpyright / pyright 各 0 error / 0 warning。**CI 实跑未执行**——新常量要等下一次 push 在 GitHub Actions 上真正安装 `mypy==2.4.1` / `pytest==9.2.0` 后才算 CI 口径验证。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
 
-### v4.6.0-dev (2026-10-31) — 彻底移除 tkinter GUI 技术栈（PySide6 成为唯一窗口实现）
+### v4.6.0 (2026-10-31) — 彻底移除 tkinter GUI 技术栈（PySide6 成为唯一窗口实现）
 
 - **用户指令**：彻底移除 GUI 中仍保留的 tkinter 框架及其全部相关代码（含回退路径、隐藏依赖），能力须先迁移到 PySide6 / 共享模块，不得改变用户可见行为、录制核心、配置读写、日志、子进程控制与 Web/无头入口语义。
 - **入口**：`gui.py` 由 5022 行 legacy 窗口实现改为 54 行薄入口——保留「`DLR_GUI_PARENT` 标记先于任何 `src` 导入」的进程契约、`main()` 延迟导入并委托 `src.gui_qt.app.main()`、窗口化运行下的 PySide6 `QMessageBox` 崩溃兜底与落盘；删除 `LiveRecorderGUI`、`AdvancedSettingsWindow`、`_legacy_main()`、tkinter 崩溃弹窗与 `_fix_encoding()`。
@@ -1791,14 +1800,14 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **工程配置**：测试 job 去掉 xvfb 安装与「Tk 真能开显示」反 skip 步骤（Qt 用例统一 `QT_QPA_PLATFORM=offscreen`）；`build_exe.py` / `DouyinLiveRecorder.spec` 的 `tkinter` 排除项保留为防回归口径并更新注释；`config/config.ini` 与中英 README 删除仅服务 legacy 动效层的 `[GUI] gui_motion` 键。
 - **验证**：`scripts/run_gates.py` 10/10 PASS（black/isort/mypy 双平台/注释/po/版本/钉定/Skill 一致性）；pytest 4786 passed / 16 skipped / 0 warnings；`scripts/check_coverage.py` 67/67 模块达标（总 84.65%）；basedpyright 0 error / 0 warning；`import gui` 在 `PySide6` 不可用（`sys.modules['PySide6']=None`）时仍成功；离屏构造 `MainWindow` 成功（5 页），`python gui.py` 离屏运行 6s 无崩溃（timeout 124）。全仓产品代码已无 `import tkinter` / `from tkinter`。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
 
-### v4.6.0-dev (2026-10-31) — GUI 运行日志窗口：自动换行随窗口宽度自适应
+### v4.6.0 (2026-10-31) — GUI 运行日志窗口：自动换行随窗口宽度自适应
 
 - **用户指令**：给运行日志的输出窗口增加因整体窗口大小变化而变化的自动换行（附截图：长行横向溢出视口）。
 - **改动**：`src/gui_qt/widgets.py::TerminalText` 折行模式 `NoWrap` → `WidgetWidth`（单行 + 「为什么」注释）。日志行普遍长于视口（平台状态行 / URL / 掩码占位），NoWrap 只能横向滚动；WidgetWidth 下 Qt 在控件 resize 时对既有块自动重排折行，长无空格串的断行点由 QPlainTextEdit 默认 `wordWrapMode`（WrapAtWordBoundaryOrAnywhere，实测确认）承担，无需显式再设。旧 tkinter 版 `gui.py` 仅迁移期保留、非在用 GUI，未动；`TerminalText` 仅被运行日志页使用，弹幕页等其他界面不受影响。
 - **回归锁**：`tests/test_gui_qt_units.py::test_terminal_wraps_at_widget_width_and_rewraps_on_resize`——取证面取 `document().firstBlock().lineCount()`（NoWrap 恒为 1，折行随宽单调变化；判据全用相对断言，跨字体 / CI 不脆断）。变异验证：改回 `NoWrap` 转红、恢复转绿。
 - **验证**：`run_gates.py` 10/10 PASS；带覆盖率 pytest 5054 passed / 16 skipped / 0 warnings；`check_coverage.py` 69/69 模块达标（总 84.47%）；basedpyright 0 error / 0 warning。离屏实测：240px 视口长行折 24 行、拉宽 1500px 自动重排为 5 行。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）；真机视觉确认（拖拽主窗口观察日志折行随宽重排）交回用户。
 
-### v4.6.0-dev (2026-10-31) — 全仓注释级精简与一致性优化（零行为变化）
+### v4.6.0 (2026-10-31) — 全仓注释级精简与一致性优化（零行为变化）
 
 - **用户指令**：扫描全部代码文件，仅对确定不影响构建/运行/工具解析的非执行注释做冗余精简与一致性优化；严禁改动可执行代码、常量、导入、签名、调用顺序、线程模型、日志重定向、安全闸门顺序、优雅退出收尾逻辑；注释与代码不一致时以代码为准最小修正；无法判断的保留原文列入人工确认。
 - **范围**：133 个代码文件（src/、tests/、scripts/、根目录入口、web/app.js、web/motion.js、tests/frontend、index.html、web/index.html、web/style.css），净删 263 行注释（+798/−1061）。**排除**（零触碰）：`src/proto/douyin_pb2.py`（protoc 生成）、`src/javascript/*.js`（SHA256 字节冻结）、`StopRecording.vbs`（UTF-16LE）、`typings/`（第三方存根）、`.agents/`（skill 工具）、`scripts/agent_hook_guard.py` 与 `tests/test_agent_hook_guard.py`（并行会话占用，移交）。
@@ -1808,7 +1817,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **判定记录（交回）**：43 个 preflight「锁定短语移除」候选经断言语句扫描全部判为散文提及（单号仅出现在断言失败消息里），非真锁；`web/motion.js` 等 2 处 S1 修正、`main_window.py:76` 旧名因果注等 33 条 N 项保留原文待人工确认（明细见当日台账）。
 - **验证**：`run_gates.py` 10/10 PASS；pytest 全量 5053 passed / 16 skipped / 0 警告（李生块恢复后复跑）；`check_coverage.py` 全过（总覆盖率 84.47%，69 模块全达标）；basedpyright 0 error / 0 warning。**DoD 第 2 步豁免**：纯注释改动不涉录制链路/选源/ffmpeg 参数/平台解析行为。
 
-### v4.6.0-dev (2026-10-31) — CODE_REVIEW_2026-10-30 整改：P0 五条 + P1 八条 + P2 三条 + L 组可定位项
+### v4.6.0 (2026-10-31) — CODE_REVIEW_2026-10-30 整改：P0 五条 + P1 八条 + P2 三条 + L 组可定位项
 
 - **用户指令**：按 `docs/worklog/CODE_REVIEW_2026-10-30.md` 逐条「解析分类 → 精确定位 → 最小化修复」，最后输出结构化汇总。
 - **P0（5 条）**：① M-08 `web_tray_icon` 入 `_DANGEROUS_CONFIG_KEYS`（免鉴权 `/favicon.ico` 任意文件读链的写侧关断；`/api/icon` 上传路径直写 config 不受影响）+ favicon 读取侧复验体积与 ICO 魔数（`probe_ico_sizes`，非 ICO 一律 404）；② M-09 `toggle_room` 改 `_rewrite_quality_field` 同款行首前缀解析（`^\s*#\s*`），写后验证升级为语义裁决（重解析 `enabled == 请求方向`），缩进注释行假成功与「# # url」双注释双修；③ M-10 `_SECRET_INI_LINE_RE` 允许「凭据词 + 至多一段括号注释尾缀」（基线模板真实键「发件人密码(授权码)」此前整体逃逸；刻意不放开任意尾缀——会误伤 presigned 反向棘轮），`_SECRET_KEYS` 补「接口链接」（bark 路径段型 key，四形态同时生效）；④ M-13 standalone 网络层异常文本内嵌 url 改 `strip_query`（http_request/http_probe 两处 raise 点，探针异常路径 token 不再落日志）；⑤ M-14 standalone `http_request` 响应体加 8MiB 上限（单次 `read(limit+1)`，与主线 `_MAX_RESPONSE_BYTES` 同值，副本头登记收敛）。
@@ -1819,7 +1828,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **判定记录（交回/暂缓）**：M-17（haixiu token）与 M-23（`.zcode/config.json`、`URL_config.ini` 跟踪态摘除）已提交用户裁定、未获答复，维持现状；L-02 六处 JSON 请求体拼接 + 38 处 URL 未编码位点**已完整枚举**（A 类 YY/百度/淘宝/京东，B 类含 8 处服务端值次级位点），修复留待可真机验证批次（全部属「改变线上请求字节形态」，DoD 第 2 步不可豁免）；L-04 build_exe.py PyInstaller 子进程 timeout 因 Mimosa 钩子对该行既有形态误判「命令注入」三次拦截写入未落地（建议手工补 `timeout=3600`）；L-08② gui 文案（牵动 gui i18n 四语同改）、L-09（维持报告口径不单独造大 diff）、L-10 web/app.js 三项、L-12①②（SetConsoleCtrlHandler 返回值检查、danmaku 筛选复位重绘）、L-14 构造器参数序（venv 未装 PyExecJS）、L-16 ci.yml warnings 门禁二次全量跑与根 index.html（CI 仅手动触发/上游遗留页）暂缓，理由与位点见本条目。
 - **验证**：`run_gates.py` 10/10 PASS；pytest 全量 5049 passed / 16 skipped / 0 警告；mypy（本机/linux/win32 三跑）0 error；basedpyright 0 error / 0 warning；`check_coverage.py` 全过（总覆盖率 84.47%，spider 77.1% / proxy 84.8% ≥ 新登记 60）；`compile_po --check` 同步（1206 条）。新增回归锁：M-08 写/读双侧、M-09 语义翻转、M-10 掩码语料、M-13/M-14 异常脱敏与上限、M-02/M-03 缺键/null 降级、M-04 结构锁、M-15 阈值机检、M-05 with 窗口结构锁、M-06 保留注释锁、M-11 fail-closed 双形态、M-12 双链超限降级、L-15 ValueError 反向锁——P0 五条全部经变异验证判红后还原。**未执行（DoD 第 2 步，交回用户）**：平台解析面的真实 URL 端到端（M-02/M-03/L-01）、打包链真机验证（M-05 的「子进程确实读到补丁值」）、面板端到端（M-08 任意文件读链、M-09 缩进注释行）。
 
-### v4.6.0-dev (2026-10-30) — CODE_REVIEW_2026-10-29 散落发现批次整改（未编号/待确认 15 项）
+### v4.6.0 (2026-10-30) — CODE_REVIEW_2026-10-29 散落发现批次整改（未编号/待确认 15 项）
 
 - **用户指令**：处理 2026-10-29 报告中未编号/待确认的散落发现：探针捕获面、`room_closed` 双投、托盘 `start()` 只护 import、`ffmpeg_proc` 异常日志缺 `type_name`、`config_bool` 自述失实、DNS 瞬时失败归因、`log_archive` 绑定流不对称、`smoke_test` 四处、`check_*` 纯读无兜底、Dockerfile TZ 承诺、pre-commit 平台双跑、目录树漂移与三个测试卫生项。
 - **生产侧（8 处）**：① `stream_select` 探针客户端构造 `except` 补 `OSError`（`ssl.SSLError` 是其子类；对齐「构造失败收敛为 `probe_client=None`」的既有设计承诺，构造期异常不再穿透房间线程）；② `collector` 四处 `hub.room_closed`（stop / `_on_close` / `_run` 异常兜底 / `_rollback_start`）改 `_room_closed_reported` **首投生效**——枢纽侧不去重（每次写一条新 seq 的 conn/closed 事件），双投让面板 closed 计数虚增；变异验证（回退 `_on_close` 守卫）判红；③ `web_tray.start()` 构造段整体纳入 try → 打印降级原因并返回 False（原 try 只护 import，`web.py` 调用点无兜底，QApplication/图标/菜单任一构造失败即崩掉面板启动）；④ `ffmpeg_proc` 两处异常日志补 `{type_name}`（「清理」复用 shared.py/gui.py 既有词条，「终止」新增词条×四目录 + `.mo` 重编译）；⑤ `config_bool` 头注证伪陈述修正（模板实测 31 条 true/false、是/否 0 条，README 才是 `= 是` 形态）；⑥ `web_config` 新增 `DNS_UNRESOLVABLE_REASON_PREFIX` 常量，`async_http.get_response_status` 对 DNS 解析失败分支改归因（仍 fail-closed 拒绝，不再打「疑似被篡改的流地址」）；⑦ `smoke_test` 的 `expected_status` 标量畸形（string/null/bool）在 `load_config` 前置拒绝（rc=2），三处响应体读取加 8MB 上限（`_SMOKE_BODY_LIMIT`）；⑧ `sync_metadata` 三处纯读、`check_workflow_constants`、`check_annotations` 补不可读兜底（rc=2「没跑成」或按 changed 计），不再以 rc=1+裸栈冒充「代码不合格」。
@@ -1828,7 +1837,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **判定记录**：`log_archive` 绑定流不对称**成立但生产不可达**（`web.py::_enter_background_mode` 单次 open 后同时赋两条流，恒对称；修复需把「接管哪些流」贯穿 install/rebind/merge 与 pending 状态，属带实测战史注的管线）→ 交回排期；`smoke_test` 的 `build_opener` 默认 handler 集修法不唯一 → 待人工确认；`test_danmaku_platform_strip` 的模板耦合指称**报告不成立**（该用例自述「真机输入」锁，缺键/脏值路径均有自诊断文案，且无硬编码条目数断言）。
 - **验证**：`run_gates.py` 9/10 PASS（唯一红为并发删除 `.agents/skills/browser-skill/` 目录 vs AGENTS.md 表格未同步，与本批无关、交回用户）；pytest 5033 passed / 16 skipped / 0 警告；basedpyright 0 error / 0 warning；覆盖率门禁带 `--cov=src` 复跑通过。**未执行**：真实 URL 端到端（本批对 `stream_select` 只动构造期异常捕获面，不改选源/画质/ffmpeg 语义；本机无外网验证条件），按 DoD 第 2 步交回用户。
 
-### v4.6.0-dev (2026-10-29) — CODE_REVIEW_2026-10-29 整改：S-03/S-04/S-06/S-07、M-01/M-04/M-05/M-13/M-17/M-26/M-34/M-35 落地
+### v4.6.0 (2026-10-29) — CODE_REVIEW_2026-10-29 整改：S-03/S-04/S-06/S-07、M-01/M-04/M-05/M-13/M-17/M-26/M-34/M-35 落地
 
 - **用户指令**：按 `docs/worklog/CODE_REVIEW_2026-10-29.md` 逐条解析分类 → 精确定位 → 最小化修复，最后输出结构化汇总。
 - **面板与配置（S-03/S-04）**：① `web/index.html` 删除文件头残留的孤立 `</body></html>` 两行（首个非空 token 归位 DOCTYPE，面板不再落 force-quirks），新增 `tests/test_web_index_structure.py` 三条结构锁；② `web_config` 的三个读取点（`read_web_config`/`read_quality_options`/`read_config_safe`）统一走延迟导入的 `_tolerant_config_parser()`（strict=False，后写覆盖前写），配置含重复键不再让 `auth_middleware` 每请求抛 `DuplicateOptionError`；补三条重复键用例。
@@ -1838,7 +1847,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **门禁与测试卫生（M-08/M-12/M-13/M-34/M-35）**：`ci.yml` deps-audit 守卫改按 `pyproject` 依赖条数取数（18==18）；`compile_po` 两处 `reconfigure` 补 `errors="replace"`；`agent_hook_guard` 放行 `git clean` 只读预览（`-n`/`--dry-run`）并把判定段兜底改为 `except Exception` → fail-open（自检 +2 条放行语料、+1 条真删除仍拦语料）；两处 `importorskip` 补子模块探测与 `exc_type=ImportError`；i18n 目录白名单键由 `file:line` 改为 `file::函数名`。
 - **验证**：`python scripts/run_gates.py` 10/10 PASS + pytest 兜底 5025 passed / 0 warnings；`mypy`（本机 / linux / win32 三跑）0 error；`basedpyright` 0 error / 0 warning；`scripts/check_coverage.py` 复跑见同日覆盖数据。**未执行**：S-06 的 mp4 真机停止验证、S-05 三处自建客户端收敛（中风险、涉及 B 站/抖音两条链路）、M-02 之外的大批中危功能项与全部 L 组。
 
-### v4.6.0-dev (2026-10-29) — 全仓静态代码审查（产出 `docs/worklog/CODE_REVIEW_2026-10-29.md`）+ `liveme.js` 钉定失配修复与字节对账锁
+### v4.6.0 (2026-10-29) — 全仓静态代码审查（产出 `docs/worklog/CODE_REVIEW_2026-10-29.md`）+ `liveme.js` 钉定失配修复与字节对账锁
 
 - **用户指令**：对工作区根目录全部源代码执行一次全面、系统的只读静态审查（严禁修改源文件、逐文件记录、按严重度分组出报告）；随后要求验证 `liveme.js` 修复后的接入状态，并批准「还原文件 + 补字节对账用例」。
 - **审查覆盖面**：跟踪文件 434 个 / 204,105 行中的代码口径 300 个文件 / 147,621 行（根入口 8、`src/` 43、`src/gui_qt/` 17、`src/platforms/` 8、`src/javascript/` 4、`scripts/` 17、`web/` 4、`tests/` 164、`tests/frontend/` 7、`typings/` 12、CI 与配置文件约 25）。排除 `.workbuddy/` 基线快照、`.venv`、`node/`、`ffmpeg/`、`dist`/`build`、`coverage.*`、`uv.lock`、`egg-info`、vendored `crypto-js.min.js`、protoc 生成物 `douyin_pb2.py`。执行形态：16 个只读分区代理逐行精读 + 主控独立复跑判据（AST 全量解析、11 条只读门禁、结构化度量、同源对账）。
@@ -1851,7 +1860,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **DoD 第 2 步**：`SKIP(未联网 / 无活 LiveMe 房间)` —— 本次改动是「删调试打印 + 加测试」的纯日志与测试面，签名算法与入参形态逐字未动；真实房间的联网增量验证交回用户（判据：`utils.run_js_async` 返回 14 键且日志无「与钉定值不符」告警）。
 - **遗留项**：① S-01 的收尾提交与 S-03/S-04/S-05/S-06/S-07 仍待处置（报告 §8.1 已按风险×成本排序）；② M-01 的 46 处悬空回归锁引用（HEAD 侧为短名、工作区被回退成旧名，`main.py` 实测 15/15），并发包正在收缩；③ 报告建议新增「冲突标记不得入库」硬门禁与「外迁章节锚点必须在目标文件命中」对账，本轮未实施。
 
-### v4.6.0-dev (2026-10-29) — 回归锁测试文件名去日期化：17 个文件改名、全仓引用同步
+### v4.6.0 (2026-10-29) — 回归锁测试文件名去日期化：17 个文件改名、全仓引用同步
 
 - **用户指令**：将文件名中的日期标志去掉，并确保文件内与全仓引用依旧有效。
 - **改名（17 个，全部 `git mv` 保留历史，无目标名冲突）**：`tests/test_regression_2026_09_22_{danmaku,gates,gui,infra,main,net,postprocess,spider,standalone,stream,utils,web_g}.py`、`tests/frontend/test_regression_2026_09_22_gates.mjs`、`tests/test_regression_2026_09_29_wp_b_netguard.py`、`tests/test_regression_2026_10_18_{gui_output_chain,root_entries}.py`、`tests/test_regression_2026_10_21_standalone_offline.py` —— 统一去掉日期段（如 `test_regression_2026_09_22_main.py` → `test_regression_main.py`）。文件头自述的审查日期属内容语义，保留不动。
@@ -1860,7 +1869,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **验证**：改名后全仓 tracked 文本文件 `grep regression_2026` 0 残留（本条目自身记录的旧名映射是唯一例外）；16 个改名 `.py` + 三个机检文件一批 `pytest` **1199 passed / 2 skipped / 0 failed**（42.4s，skip 为平台条件性）；`test_frontend_regression_gates` 单跑 PASSED（node v24.22.0 经 `node --test` 真实驱动改名后的 `.mjs`）；`scripts/run_gates.py` **10/10 全绿**（41.8s），其内置 pytest 兜底 **4977 passed、warnings summary 为空**（240.4s）；`scripts/check_coverage.py` **PASSED: All 69 module(s) meet coverage threshold**（总覆盖率 83.84%）；`basedpyright` **0 errors / 0 warnings / 0 notes**。
 - **DoD 第 2 步**：`SKIP(不涉及录制链路 / 选源 / ffmpeg 参数 / 平台解析)` —— 纯文件改名与引用路径同步，生产行为零改动（src/ 侧仅注释里的文件名字面量）。
 
-### v4.6.0-dev (2026-10-29) — 行尾钉定落地：新增 `.gitattributes` 并将 119 个已跟踪文本文件归一为 LF
+### v4.6.0 (2026-10-29) — 行尾钉定落地：新增 `.gitattributes` 并将 119 个已跟踪文本文件归一为 LF
 
 - **用户指令**：执行文档同步任务——扫描 git 全部改动并按模块分类同步双语 CODE_WIKI。变更采集发现工作区处于 stash-pop 冲突污染态（97 个文件含未解决冲突标记且已被暂存），先按行尾任务的断点配方修复仓库状态，再落文档；快照时刻另有回归测试改名的并行工作包在途（见「改动总览（按模块分类，2026-10-29）」前言行），不并入本条目。
 - **状态修复（仓库操作，非代码改动）**：逐文件哈希验证冲突「Updated upstream」一侧 == HEAD（忽略 CR，97/97 相等）后 `git restore --source=HEAD --staged --worktree -- . ':(exclude).gitattributes'` 还原；`git add --renormalize -- ':/' ':(exclude)src/javascript'` 复做归一（路径排除必须带，否则 JS 钉定面被工作区 CRLF 字节覆盖回去）；「Stashed changes」一侧完整保留在 `stash@{0}`（dev/dev WIP），零丢失。修复后判据：工作区与索引的冲突标记 grep 均为 0、`git diff --cached --ignore-cr-at-eol` 仅剩 `.gitattributes`、暂存 120 文件 = 1 新增 + 119 纯行尾、无未暂存与未追踪。
@@ -1871,7 +1880,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **DoD 第 2 步**：`SKIP(不涉及录制链路 / 选源 / ffmpeg 参数 / 平台解析)` —— 本条为行尾归一与仓库状态修复，无任何运行时行为改动。
 - **遗留项**：① `stash@{0}`（dev/dev WIP）待其归属分支处理，本侧不得擅动；② AGENTS.md「注释检查工具」盲点③描述的「本仓 CRLF/LF 混存」在本机工作区仍成立（已检出文件在被重写/重检出前保持原形态），新克隆与 CI 按 `eol=lf` 检出为纯 LF；③ AGENTS.md「代码风格」新增「行尾」小节登记钉定事实源与复做配方，后续行尾相关改动以该节为唯一事实源。
 
-### v4.6.0-dev (2026-10-22) — 统一 ICO 图标支持：GUI 托盘 / Web 托盘与页面 / 打包产物三处同源
+### v4.6.0 (2026-10-22) — 统一 ICO 图标支持：GUI 托盘 / Web 托盘与页面 / 打包产物三处同源
 
 - **用户指令**：为项目统一增加 ICO 图标支持与导入能力——① GUI 系统托盘加载并显示 ICO，提供「导入图标…」（选文件、格式与分辨率校验、配置持久化、启动自动加载），无自定义图标时回落内置默认；② Web 托盘与页面标签支持 ICO，并提供界面内上传导入；③ 打包产物配置 ICO 应用图标，使资源管理器 / 任务栏 / 窗口标题栏显示一致，同步更新打包配置（图标路径、资源收集）。统一要求：多分辨率 ICO（16×16 供托盘、256×256 供应用图标）、复用既有配置与工具函数、加载失败静默降级不影响启动。
 - **新增文件**：`assets/app.ico`（七档 16/24/32/48/64/128/256，37 555 字节；**≤64 写 BMP 帧、≥128 写 PNG 帧**——Windows 资源管理器/旧 GDI 取小图时对 ICO 内 PNG 帧存在兼容瑕疵，而 256 档若也用 BMP 要 256KB 占整包 98%，混编是唯一同时满足两端的选择；Pillow 的 ICO 保存不支持同包混编，故目录与偏移手写）；`src/ui_icons.py`（242 行：偏好读写、ICONDIR 解析、三段校验、导入落盘、内置图标探测）；`tests/test_ui_icons.py`（32 用例，纯函数 + 文件系统，无头可跑）。
@@ -1885,7 +1894,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **DoD 第 2 步**：`SKIP(不涉及录制链路 / 选源 / ffmpeg 参数 / 平台解析)` —— 本条只改图标资源与装饰性加载路径，未触及任何录制行为；真机验证落在 Qt 解码与 Pillow 逐帧回读（见上条）。
 - **遗留项**：exe 图标已按**资源级**核对（帧字节齐全 + 三冒烟通过），但「资源管理器列表视图 16px / 大图标视图 256px / 任务栏」三处的**目视一致性**无从在无人值守环境断言——交回用户双击 `dist/DouyinLiveRecorder/` 下的 exe 目视一眼即可；`assets/app.ico` 缺失时「不中断构建」的降级分支仍只有单测覆盖（真删文件跑构建会污染发布目录，未实测）。Web 面板上传后**托盘图标需下次启动生效**（进程内不重建托盘，前端文案已如实说明「下次启动生效」），标签图标即时破缓存刷新。
 
-### v4.6.0-dev (2026-10-21) — 审查整改第二轮：补齐「同族残留」与中断工作包，门禁/测试全绿
+### v4.6.0 (2026-10-21) — 审查整改第二轮：补齐「同族残留」与中断工作包，门禁/测试全绿
 
 - **用户指令**：继续按 `docs/worklog/CODE_REVIEW_2026-10-21.md` 逐条核实并完成最小化修复；先核实上一轮 `_FIX.md` 的真实落地情况，再补未实施项。
 - **核实结论（先测量后动手）**：上一轮 35 个文件的改动确实存在于工作区，但 `_FIX.md` 的 `file:line`/符号引用多处过期（例：它写的 `_normalize_numeric_host` 不存在，真实实现是 `_literal_address`/`_is_internal_host`），且它自述的「M-31 已修」实为更早提交的代码。本轮以**工作区代码**而非文档为事实源逐条复核。
@@ -1896,7 +1905,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **DoD 第 2 步**：`SKIP(本机无稳定外网与活跃直播间)` —— M-12/18、S-16 与平台解析改动仍**未做真机验证**；交回用户在可联网环境执行 `python tests/test_douyin_live_collector.py --seconds 30`（或任一受影响平台）并核对 PASS + 消息数/SRT 字节数。
 - **遗留项**：需维护者拍板/需领域信息/需单独立项的条目已整理为 [`docs/worklog/CODE_REVIEW_2026-10-21_MANUAL.md`](docs/worklog/CODE_REVIEW_2026-10-21_MANUAL.md)（含每条锚点、阻塞原因、可选方案与验收判据）。
 
-### v4.6.0-dev (2026-10-21) — 代码审查报告整改：16 项严重条目收口，判据族一次性统一
+### v4.6.0 (2026-10-21) — 代码审查报告整改：16 项严重条目收口，判据族一次性统一
 
 - **用户指令**：按 `docs/worklog/CODE_REVIEW_2026-10-21.md` 逐条提取、定位、最小化修复并跑既有门禁验证。
 - **严重项（15 全修 + 1 部分）**：S-01 `_match_host` 改标签边界（子串包含致 `evilweibo.com` 劫持）；S-02 消息推送补**逐跳**重定向复核 + 两处遗漏首跳校验 + 响应体截断脱敏（带回显 SSRF）；S-03 `except RedirectHopRejected` 补 `security_rejected.add`（内网地址不再经 record_url 复用分支交付 ffmpeg）；S-04 内网判定改 `ipaddress` 结构化（整数/八进制/IPv4-mapped/CGNAT 四类补上）；S-05 双段公共后缀表（`.co.kr` 同后缀不再沿用 Cookie）；S-06 B 站弹幕 host 拒绝 `?`/`#`/`@`/`\`；S-07 `mask_credentials` 补 ini 行形态、短键名 `sig`/`jwt`、JSON 数值、中文凭据键（11 条语料逃逸 7→0）；S-08 备份脱敏补「无 ini 节」与「原子写失败回退」两条明文通道（明文兜底副本加 `.UNMASKED`）；S-09 `sync_req` 复用 `internal_stream_target_reason` 补入口 + 逐跳 + 落地三处闸门；S-10 抖音解析最外层 `try` 收窄、ORIGIN/HEVC 注入抽成模块级函数（注入失败不再作废已解析结果）；S-11 知乎落地页 host 白名单 + `user_id` percent 编码；S-12 node 下载加字节上限、摘要文档限长、官方文档不可达**默认拒绝安装**（`DLR_NODE_ALLOW_TOFU=1` 显式放行）；S-13 `--snapshot` 改白名单正向判定（cwd 外绝对路径不再被 rmtree）；S-15 配置行解析失败/过短行不再进「已注释」归并（不再误停正在进行的录制）；S-16 `get_play_url_list` 统一 `urljoin` + 按 path 判 `.m3u8`。S-14 部分修：修掉报告点名的 Range 头契约缺陷，并新增 **R11 双向棘轮**把「无判据测试函数」「参数承载语义的裸 `assert_called*`」机检化（存量冻结为债务表，只许降不许升）。
@@ -1907,7 +1916,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **DoD 第 2 步**：`SKIP(本机无稳定外网与活跃直播间)` —— S-03/04/05/16 与 M-21~M-26 落在选源/取流链路，离线契约用例已覆盖判据但**不能替代真机验证**；交回用户在有活房间环境执行 `python tests/test_bili_live_collector.py --seconds 30` 并核对 PASS + 消息数/SRT 字节数。
 - **遗留**：26 项移入「待人工确认」（描述含糊或无法唯一定位，不猜测改动）、61 项因并行工作包会话中断**未实施**——逐条清单、缺失信息与建议排期见 [`docs/worklog/CODE_REVIEW_2026-10-21_FIX.md`](docs/worklog/CODE_REVIEW_2026-10-21_FIX.md)。
 
-### v4.6.0-dev (2026-10-20) — 九个录制链路模块注释精简：删考古、折重复，逻辑零改动
+### v4.6.0 (2026-10-20) — 九个录制链路模块注释精简：删考古、折重复，逻辑零改动
 
 - **用户指令**：精简 `src/{scheduler,room,srt_writer,startup_cleanup,spider,stream,sync_http,stream_select,recorder_status}.py` 的注释，不改任何可执行代码、常量值、导入、函数签名、调用顺序、线程模型、日志重定向、安全闸门顺序与优雅退出收尾逻辑。
 - **保留的承重信息**：`import main` 惰性读取避免循环导入与 `__main__` 二次执行；`ResizableSemaphore` 的 capacity/used 分离与 `recompute()` 必须比较 capacity；`PlatformBreaker` 的探针代数/租约与「只接受当前持有线程回报」；`record_state_lock` / `max_request_lock` 的持锁快照与 `display_info` 的异常退避；SRT 终态位、块号单调不回卷、打开失败节流重试与 close 带超时；启动期字节码清理的「内容哈希基线 / 正向白名单 / 全程不抛」；抖音/TikTok/虎牙/斗鱼/快手等平台的状态码语义、UA/SSL/代理一致性、`_dig` 安全下钻与空响应归因；`stream_select` 的探针节流/退避/末位放行边界、安全闸「拒绝必须早于背景化」、`record_url` 复用结论与 `security_rejected` 分离；`sync_http` 的协议白名单 opener、惰性 CERT_NONE、双道上限与「失败一律空串」契约；`stream.py` 的档位映射、就近降级、h265 备选与 HLS/FLV 字段语义。
@@ -1915,7 +1924,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **验证**：`scripts/check_annotations.py --baseline` **253 个文件全部等价**（9 个目标文件逐项等价）；`black --check` 9 files unchanged；`isort --check-only`（`PYTHONUTF8=1`）rc=0；`mypy`（无参）251 files 无问题；行尾形态逐文件复核：`recorder_status` / `sync_http` / `spider` / `scheduler` 仍纯 CRLF，`stream_select` / `stream` / `startup_cleanup` / `srt_writer` / `room` 仍纯 LF；注释密度仍全部 ≥13%（最低 `stream.py` 18.9%）。
 - **DoD 第 2 步**：`SKIP(不涉及录制链路 / 选源 / ffmpeg 参数 / 平台解析的行为改动)`；本批仅删除/压缩注释，未改任何可执行语句。
 
-### v4.6.0-dev (2026-10-20) — 十个运行时模块注释精简：删考古、压重复，逻辑零改动
+### v4.6.0 (2026-10-20) — 十个运行时模块注释精简：删考古、压重复，逻辑零改动
 
 - **用户指令**：精简 `src/{proxy,notify,node_install,logger,log_archive,http_config,ffmpeg_proc,ffmpeg_master_download,ffmpeg_linux_download,ffmpeg_install}.py` 的注释，不改任何可执行代码、常量、导入、函数签名、调用顺序、线程模型、日志重定向与安全闸门顺序。
 - **保留的承重信息**：凭据必须过 `mask_credentials` 才进日志；`safe=""` 的 userinfo 转义判据；`ftp_proxy` 刻意不在候选集；GUI 父进程不持录制日志句柄（WinError 32 轮转失败）；`{extra[room]}` 默认值不可删；stdio 重定向后必须 `rebind_console_sink()`；归档「替身接管标准流 → 关旧句柄 → 改名 → 建新句柄」顺序与 pending 回填；三段式 ffmpeg 终止与总预算配平；`_QUIT_VIA_STDIN` / `_HIDE_CHILD_CONSOLE` 的平台门控可测性；TOFU / 官方哈希的强度边界与「基准存在却读不出即拒装」；候选源顺序与「非 200 不采信载荷」；`should_prepend_bundled_ffmpeg_dir` 的五条判据。
@@ -1923,7 +1932,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **验证**：`scripts/check_annotations.py --baseline` **253 个文件全部等价**（对 10 个目标文件再做逐文件 `ast.dump` 复核，10/10 equal）；`black --check` 10 files unchanged；`isort --check-only` rc=0；`mypy`（无参）251 files 无问题；定向 `pytest` **429 passed / 2 skipped / 0 warnings**；行尾形态逐文件复核：`proxy` / `logger` / `ffmpeg_master_download` / `ffmpeg_linux_download` 仍纯 LF，`notify` / `node_install` / `log_archive` / `http_config` / `ffmpeg_proc` / `ffmpeg_install` 仍纯 CRLF。
 - **DoD 第 2 步**：`SKIP(不涉及录制链路 / 选源 / ffmpeg 参数 / 平台解析)`；注释密度整体下降但全部模块仍高于 13% 阈值（`check_annotations.py` rc=0）。
 
-### v4.6.0-dev (2026-10-20) — 全仓清理第二轮：未用 import / 只写变量 / 零引用函数与 38 处未读局部变量清零，TAG_NORMAL 与动效 token 接线
+### v4.6.0 (2026-10-20) — 全仓清理第二轮：未用 import / 只写变量 / 零引用函数与 38 处未读局部变量清零，TAG_NORMAL 与动效 token 接线
 
 - **用户指令 / 口径**：在上一轮清点基础上重扫当前 HEAD（251 个已跟踪 `.py`：根 6 / `scripts/` 15 / `src/` 69 / `tests/` 161），只把「全仓零引用」列为删除候选；动态导入、别名、`getattr` 字符串、构建脚本与测试锁全部交叉核对。**本轮未发现未使用依赖**：18 个运行时包全部有真实引用；`urllib3` / `h2` / `socksio` 保留为传递层运行期/CVE 下限，`PyExecJS` 保留为 `exejs` 兜底。
 - **未用 import（4 组）**：`main.py::shutil`（仅注释提及）、`src/platforms/bilibili.py::{zlib,brotli}`（解压走 `src/ws_client` 的限长助手）、`src/room.py` 的 `exejs as execjs` / `execjs` 条件导入（签名统一走 `utils.run_js_async`）。同步更正 `requirements.txt` 的 exejs / brotli 注释指向。
@@ -1934,7 +1943,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **保留项**：`src/sync_http.py` 模块（AGENTS 明示保留）、`gui.py` 遗留 tkinter 栈、`get_huajiao_sn`、`get_kuaishou_stream_data2`、`get_xbogus` + `x-bogus.js`、`SW_SHOW`、测试专用工具 API 均未改动；`src/ui_motion.frame_plan` 的 `per_frame` 虽未读取，但疑似潜在节奏缺陷，已单独标记、未按死代码删除。
 - **DoD 第 2 步**：`SKIP(不涉及录制链路 / 选源 / ffmpeg 参数 / 平台解析)`；本次仅 GUI token、导入、死变量与死函数清理。
 
-### v4.6.0-dev (2026-10-20) — 全仓依赖与死代码清点：摘除 python-multipart、删除死模块 src/ab_sign.py、18 个未使用 import 清零
+### v4.6.0 (2026-10-20) — 全仓依赖与死代码清点：摘除 python-multipart、删除死模块 src/ab_sign.py、18 个未使用 import 清零
 
 - **用户指令**：核对依赖清单中每个包是否被真实引用并列出未使用项；找出已退役死代码（未被调用的函数/类/方法/变量/导出项、无引用入口的模块、被注释掉的大段旧代码、不可达分支）；特别留意动态导入、反射调用、字符串拼接路径、配置文件引用、别名与构建脚本中的引用，避免误删；删除前先出「文件位置 + 类型 + 判定依据」清单经确认再执行；完成后验证构建与测试。
 - **清点口径（本机实测）**：生产 `.py` 91 个（根 6 + `scripts/` 15 + `src/` 70）、测试 `.py` 162 个、非 py 消费面 18 个（js/mjs/html/yml/spec/toml/vbs/css/ini）。符号可达性按「原始文本标识符计数」判定，计数面**包含注释与字符串字面量**——故 `getattr(x, "name")`、注册表字面量、i18n msgid、配置键这类间接引用一律计入「有引用」，判定刻意偏保守（宁可漏报，不误删）。**零发现的两类**：`return`/`raise`/`break`/`continue` 之后的不可达语句 0 处；`if False` / `while False` 常量假守卫 0 处。
@@ -1950,7 +1959,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **`saved_buttons()` 的注释按 AGENTS.md 关键约定 #12 改成如实描述**：原注释称「供测试断言按钮可用性（停止流程会禁用控制按钮）」，但 Qt 窗口层的停止流程只禁用 dashboard 的 start/stop 两键、从不触碰本页按钮——照原注释写断言必然失败，于是该访问器长期零调用方。现补 `tests/test_gui_qt_units.py::test_config_page_saved_buttons_exposes_both_control_buttons` 锁**真实存在**的契约（按 (reload, save) 顺序交出页面自持的两个按钮对象 + 构建期均为可用态）；变异验证（对调返回顺序）当场转红并按字节还原。
 - **文档同源**：AGENTS.md 依赖管理段（21 → 18 条、`.[gui]` 三条 → 一条、「GUI 三包」→ 单包、安全下限句去掉 python-multipart）、typings 存根段补 pystray 删除的历史注、macOS 双重主线程条目标为「成因存档」并指向现行 Qt 结论；README 中英双份目录树去掉 `ab_sign.py` 与 `typings/pystray/`；CODE_WIKI 中英双份去掉 `ab_sign.py` 的四处结构引用（目录树 / 测试树 / `### 签名算法` 整节 / 依赖树）与覆盖率表行。README 的 v4.5.0 历史条目里「pystray / Pillow 保留」一句**刻意不改**——那是当时为真的历史记录，由同日新条目取代。
 
-### v4.6.0-dev (2026-10-20) — GUI 托盘菜单补齐「隐藏主窗口 / 设置」+ 遗留 pystray 托盘退役，pystray/Pillow 移出依赖清单
+### v4.6.0 (2026-10-20) — GUI 托盘菜单补齐「隐藏主窗口 / 设置」+ 遗留 pystray 托盘退役，pystray/Pillow 移出依赖清单
 
 - **用户指令**：把 GUI 系统托盘迁到 PySide6（`QSystemTrayIcon` / `QMenu` / `QAction`），保留图标 / tooltip / 菜单项与左键单击双击行为，同步信号槽写法，并列出改动文件与关键变更点。
 - **前提更正（实测，非推断）**：本仓**从未引入 PyQt**——全仓 `*.py` 搜 `pyqtSignal|PyQt5|PyQt6|from PyQt|import PyQt` 及 PyQt 侧的事件循环旧写法（`exec_` 下划线形态）为 **0 命中**，故「把 `pyqtSignal` 改成 `Signal`、把 `exec_` 改成 `exec`」这一项无可迁对象。产品路径上的托盘**早已是 PySide6**：`gui.py::main()` 转发到 `src.gui_qt.app.main()`，`MainWindow._setup_tray()` 挂 `src/gui_qt/tray.py::TrayIcon`；Web 入口托盘（`src/web_tray.py`）同日已迁 `QSystemTrayIcon`。
@@ -1961,7 +1970,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **i18n**：新增 2 条 msgid（隐藏主窗口 / 设置）同步登记四目录（`zh_CN.po` / `en_US.json` / `en_GB.json` / `zh_TW.yaml`），`scripts/compile_po.py` 重编 `.mo`（`--check` 校验同步，1152 条）。
 - **验证**：新增 `tests/test_gui_qt_units.py::test_tray_menu_action_items_are_wired_and_fire_in_menu_order`——直接构造 `TrayIcon` 而非走 `_setup_tray()`（后者在 `isSystemTrayAvailable()` 为假时置 `None`，会让用例退化成空跑），逐项 `trigger()` 断言回调与顺序，并断言单击/双击归「显示」而右键（`Context`）不重复触发；变异验证（断开 `settings_action` 接线）当场转红并按字节还原。旧锁 `test_language_change_triggers_tray_menu_rebuild` 随遗留托盘删除，其不变式（语言切换后托盘菜单文案必须跟着换）由 `test_static_labels_and_derived_title_follow_language_switch` 的托盘四项断言接管。
 
-### v4.6.0-dev (2026-10-20) — Web 系统托盘由 pystray 迁到 PySide6（QSystemTrayIcon + QMenu），主线程改由 Qt 事件循环占用
+### v4.6.0 (2026-10-20) — Web 系统托盘由 pystray 迁到 PySide6（QSystemTrayIcon + QMenu），主线程改由 Qt 事件循环占用
 
 - **用户指令**：把 Web 入口（`src/web_tray.py`）基于 pystray 的托盘迁到 PySide6，保持图标显示 / 菜单 / 退出清理等功能一致，处理好线程整合，并说明图标资源与打包后的路径处理方式。
 - **线程模型必须反过来（本机实测，非推断）**：pystray 版是「主线程跑 uvicorn + 托盘图标跑守护线程」；Qt 版 `QApplication` **只能建在主线程**——2026-10-20 在子线程执行 `QApplication(sys.argv)` 实测**段错误退出**（进程 exit code 139，Python 层无异常可捕获），与 Qt 文档「GUI 线程即主线程」一致。故改为：主线程交给 `run_event_loop()`，uvicorn 由 `web.py::_serve_forever` 在守护线程驱动（uvicorn 0.54 的 `capture_signals()` 对非主线程直接跳过，不抛 `ValueError`）。
@@ -1972,7 +1981,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **i18n**：改名 1 条（`[web] 托盘不可用（缺少 pystray/Pillow）：{e}` → 缺少 PySide6）+ 新增 4 条（显示控制台 / 隐藏控制台 / 打开 Web 界面 / 浏览器打开失败提示），四目录键集合一致并重编 `.mo`。
 - **验证**：`tests/test_web_tray.py` 由 pystray 桩整体改写为 Qt 替身（43 passed），新增 `tests/test_web_qt_tray_wiring.py`（3 条 web.py 接线锁）；`mypy`（含 `--platform linux` / `--platform win32`）、`black` / `isort`、`check_annotations.py` 全绿；真机冒烟两条：① 真起 `web.py`——托盘启用 + `Uvicorn running on http://127.0.0.1:8000`；② 进程内真 Qt + 真 uvicorn——`HTTP GET / → 200`，托盘「退出程序」触发后 `serve()` 优雅返回、事件循环 1.82 s 内退出、`stop()` 收起图标。
 
-### v4.6.0-dev (2026-10-19) — 2026-10-19 审查报告批：5 项严重问题全修 + M/L 级中低危收敛
+### v4.6.0 (2026-10-19) — 2026-10-19 审查报告批：5 项严重问题全修 + M/L 级中低危收敛
 
 - **用户指令**：逐条提取 `CODE_REVIEW_2026-10-19.md` 的问题项、定位后逐一修复，不做超出审查范围的重构；模糊项说明原因不猜测性修改；改完跑门禁并输出汇总。
 - **S 级（5/5 已修）**：
@@ -1987,7 +1996,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 - **验证**：`scripts/run_gates.py` 十项门禁全绿（black / isort / mypy ×3 平台 / 注释检查 / 覆盖率 / pytest 全量 0 警告）；`tests/test_i18n*.py` 49 passed；`tests/test_agent_hook_guard.py` 51 passed；`tests/test_stream_select.py` 103 passed；`tests/test_async_http.py` 50 passed；`tests/test_sync_http.py` 30 passed；`tests/test_web_api.py` 173 passed。
 - **未完成 / 交回用户的判断**：见同轮汇总答复的「遗留项」表——M-02（凭据进 argv，需本地转发代理，属架构改动）、M-19/M-20/M-26（供应链校验策略改档）、M-25、M-36（tkinter 模块级导入）、M-37~M-44（前端/脚本）、M-45~M-48 与 LT 组（测试有效性与 R1 判据扩展）、L-16~L-23 / L-29~L-53 / L-56~L-81 的剩余条目。理由分三类：需设计决策、需真机/多平台验证、属跨模块重构超出本次审查范围。
 
-### v4.6.0-dev (2026-10-18) — 审查整改后续批：死代码删除 + §7.11 三条机制性门禁落地（R9/R10 + 两个新锁文件）
+### v4.6.0 (2026-10-18) — 审查整改后续批：死代码删除 + §7.11 三条机制性门禁落地（R9/R10 + 两个新锁文件）
 
 - **用户指令**：`L-27`/`L-28` 死代码删除、`scripts/patch_i18n_2026_09_12.py` 删除、报告第 7.11 节的机制性门禁建议落地。前两项是上一轮「按仓库约定交回用户决策」的事项，本轮由用户裁定。
 - **死代码删除（先复核再删，不直接采信报告）**：`web/style.css` 的 `.dm-time`(:405) / `.dm-empty`(:411) 与两套主题里的 `--sidebar`(:16/:35) 共 4 行删除。复核口径为「反向找生产者」而不是「正向找不到引用」：`grep -o "dm-[a-zA-Z]*" web/app.js` 实测 JS 侧实际产出的类名是 `dm-dropped`/`dm-gift`/`dm-line`/`dm-room`/`dm-sc`/`dm-status`/`dm-user` 七个，**确无** `dm-time`/`dm-empty`（同族 `.dm-dropped` 有产出者，因此刻意留下——只删报告点名且实测无生产者的两条）；`var(--sidebar)` 全仓零命中。`tests/frontend/test_quality_ui.mjs` 对 style.css 只作文字引用、不钉这些选择器，删后 91 条前端用例全绿。顺带记录一个**反向缺口**（未处理，属新增样式而非删除）：JS 会产出 `.dm-status` 类名，而 CSS 里没有对应规则。
