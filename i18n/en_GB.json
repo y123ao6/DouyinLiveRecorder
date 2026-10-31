@@ -190,6 +190,7 @@
   "[web] 录制引擎已在守护线程启动 (tid={ident})": "[web] recording engine started in a daemon thread (tid={ident})",
   "[web] 托盘不可用（缺少 PySide6）：{e}": "[web] tray unavailable (PySide6 missing): {e}",
   "[web] 托盘初始化失败，已降级为无托盘模式: {type_name}: {e}": "[web] tray initialisation failed; degraded to no-tray mode: {type_name}: {e}",
+  "Web 管理面板 - http://{url}\n点击显示控制台，最小化将收起到托盘": "Web panel - http://{url}\nClick to show the console; minimising sends it to the tray",
   "显示控制台": "Show console",
   "隐藏控制台": "Hide console",
   "打开 Web 界面": "Open web panel",

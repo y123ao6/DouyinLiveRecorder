@@ -1758,6 +1758,14 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
+### v4.6.0-dev (2026-10-31) — i18n 资源同步：Web 托盘悬浮提示接入四语目录
+
+- **用户指令**：扫描全部源码与资源文件，提取面向最终用户的可见文案，同步维护 `zh_CN.po` / `en_US.json` / `en_GB.json` / `zh_TW.yaml`；四者键集必须完全一致，保留已有译文，仅为新增条目补译，并重编译 `zh_CN.mo`。
+- **扫描结论**：`scripts/extract_i18n_strings.py` 运行时提取 851 条、缺失 0；四语目录原已键集一致（各 1205 条）。盲区（`print_colored` / 弹窗 / 推送正文 / Qt `setToolTip`）复核后，唯一未入目录的用户可见文案是 `src/web_tray.py` 的托盘悬浮提示裸 f-string。
+- **改动**：`src/web_tray.py` 的 `setToolTip` 改为 `i18n.tr("Web 管理面板 - http://{url}\n点击显示控制台，最小化将收起到托盘", url=...)`；四语目录各新增 1 条（en_US 用 `minimizing`、en_GB 用 `minimising`、zh_TW 用繁体「點擊/最小化/托盤」），键集升至 1206 条且逐一相等；`zh_CN.po` 头部更新日期与 `PO-Revision-Date` 同步为 2026-10-31；`zh_CN.mo` 重编译为 1207 条（含头部）。
+- **未改**：提取器报告的 355 条「目录有、运行时无」历史/兼容条目按「保留已有译文」与仓库既有口径保留；`web/app.js` 的四套内嵌面板目录与后端四语目录相互独立，按既有约定不并入。
+- **验证**：`scripts/compile_po.py --check` OK；`gettext.GNUTranslations` 与 `i18n.tr()` 四语实测命中新键；i18n + 托盘相关 pytest **118 passed**；`black` / `isort` 对被改源文件 unchanged；前端四语目录一致性断言 36 passed。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
+
 ### v4.6.0-dev (2026-10-31) — 元数据对账：以 `pyproject.toml` 为唯一事实源复核 15 个目标文件，修正 CODE_WIKI 依赖表与 egg-info 生成物
 
 - **用户指令**：以 `pyproject.toml` 为唯一事实源（项目名与入口、版本号、Python 版本要求、依赖及版本约束），扫描并同步校验 `AGENTS.md`、`Dockerfile`、`docker-compose.yaml`、`requirements.txt`、`.gitignore`、`.dockerignore`、`.coveragerc-concurrency`、`config/config.ini`、`README*`、`CODE_WIKI*`、egg-info、`build_exe.py` 与 `uv.lock`。

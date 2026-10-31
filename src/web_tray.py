@@ -251,7 +251,12 @@ class WebConsoleTray:
             self._patch_console_window()
 
             icon = QSystemTrayIcon(self._build_icon(), app)
-            icon.setToolTip(f"Web 管理面板 - http://{self.host}:{self.port}\n点击显示控制台，最小化将收起到托盘")
+            # 托盘悬浮提示属界面文案：先查表后插值（f-string 直传不在提取器扫描面内）。
+            icon.setToolTip(
+                i18n.tr(
+                    "Web 管理面板 - http://{url}\n点击显示控制台，最小化将收起到托盘", url=f"{self.host}:{self.port}"
+                )
+            )
             menu = QMenu()
             self.show_action = QAction(i18n.tr("显示控制台"), menu)
             self.hide_action = QAction(i18n.tr("隐藏控制台"), menu)

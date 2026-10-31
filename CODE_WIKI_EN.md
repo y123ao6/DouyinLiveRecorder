@@ -1746,6 +1746,14 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > (`python file.py <URL> [seconds]`; requires a live room + network; manual channel by default).
 > **Rolling archive**: this section keeps only the current release window; older entries live verbatim in [`docs/changelog/code-wiki-history-en.md`](docs/changelog/code-wiki-history-en.md) (rule stated in the "Changelog Archive Index" above).
 
+### v4.6.0-dev (2026-10-31) — i18n catalogue sync: Web tray tooltip added to all four locales
+
+- **User directive**: scan all source and resource files for end-user-visible text, keep `zh_CN.po` / `en_US.json` / `en_GB.json` / `zh_TW.yaml` key sets identical, preserve existing translations, add only new entries, and recompile `zh_CN.mo`.
+- **Scan result**: `scripts/extract_i18n_strings.py` extracts 851 runtime strings with 0 missing; the four catalogues already shared the same 1205 keys. After auditing the known blind spots (`print_colored` / dialogs / push bodies / Qt `setToolTip`), the only user-visible string outside the catalogues was the raw f-string tooltip in `src/web_tray.py`.
+- **Change**: `src/web_tray.py` now builds the tooltip with `i18n.tr("Web 管理面板 - http://{url}\n点击显示控制台，最小化将收起到托盘", url=...)`; each catalogue gains one entry (en_US uses `minimizing`, en_GB uses `minimising`, zh_TW uses traditional 「點擊/最小化/托盤」), bringing every catalogue to 1206 keys; the `zh_CN.po` revision date was updated to 2026-10-31; `zh_CN.mo` was rebuilt with 1207 entries (header included).
+- **Left untouched**: the 355 historical/compatibility entries reported as “catalogue has, runtime does not” are kept per the “preserve existing translations” instruction and the repository’s established policy; the four embedded panel catalogues in `web/app.js` are independent of the backend catalogues and are not merged into them.
+- **Verification**: `scripts/compile_po.py --check` OK; `gettext.GNUTranslations` and `i18n.tr()` resolve the new key in all four locales; i18n + tray pytest **118 passed**; `black` / `isort` leave the changed source unchanged; the frontend four-catalogue consistency suite reports 36 passed. **DoD step 2 is not applicable** (no recording chain / source selection / ffmpeg argument / platform parsing changes).
+
 ### v4.6.0-dev (2026-10-31) — Metadata parity: 15 target files re-checked against `pyproject.toml` as the single source of truth; CODE_WIKI dependency tables and the egg-info artifacts corrected
 
 - **User directive**: treat `pyproject.toml` as the single source of truth for project name/entry points, version, Python requirement, and dependencies/constraints; scan and reconcile `AGENTS.md`, `Dockerfile`, `docker-compose.yaml`, `requirements.txt`, `.gitignore`, `.dockerignore`, `.coveragerc-concurrency`, `config/config.ini`, `README*`, `CODE_WIKI*`, the egg-info, `build_exe.py` and `uv.lock`.

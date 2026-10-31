@@ -3,7 +3,7 @@
 # This file is distributed under the same license as the DouyinLiveRecorder package.
 #
 # DouyinLiveRecorder 简体中文翻译文件
-# 更新日期: 2026-10-18
+# 更新日期: 2026-10-31
 #
 # 维护说明：
 #   - 本文件是翻译源文本；gettext 运行时只读取同目录编译产物 zh_CN.mo。
@@ -24,7 +24,7 @@ msgstr ""
 "Project-Id-Version: DouyinLiveRecorder\n"
 "MIME-Version: 1.0\n"
 "POT-Creation-Date: 2024-10-20 00:00+0800\n"
-"PO-Revision-Date: 2026-10-18 12:00+0800\n"
+"PO-Revision-Date: 2026-10-31 12:00+0800\n"
 "Last-Translator: Hmily <ihmily@github>\n"
 "Language-Team: Chinese\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -1427,6 +1427,10 @@ msgstr "[web] 托盘不可用（缺少 PySide6）：{e}"
 
 msgid "[web] 托盘初始化失败，已降级为无托盘模式: {type_name}: {e}"
 msgstr "[web] 托盘初始化失败，已降级为无托盘模式: {type_name}: {e}"
+
+#: src/web_tray.py
+msgid "Web 管理面板 - http://{url}\n点击显示控制台，最小化将收起到托盘"
+msgstr "Web 管理面板 - http://{url}\n点击显示控制台，最小化将收起到托盘"
 
 msgid "显示控制台"
 msgstr "显示控制台"
