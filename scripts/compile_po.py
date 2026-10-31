@@ -147,7 +147,16 @@ def main() -> int:
     # 恰大 1；往文档写目录条数时必须注明用的是哪种口径（两种不得互换，见 AGENTS.md）。
     # 先在纯内存里产出编译结果：--check 分支绝不触碰磁盘上的 .mo，否则读回自己刚写的文件
     # 必然相等，校验恒真、门禁形同虚设。
-    fresh = write_mo(entries)
+    # [2026-10-30 L-07] parse_po/write_mo 纯读路径遇坏 .po 时旧实现以未捕获异常裸栈收场（rc=1），
+    # 违反下方 :152-153 的退出码契约（2 = 门禁本身没数据可判）。收敛为 rc=2 + 明确错误行。
+    try:
+        fresh = write_mo(entries)
+    except Exception as e:
+        print(
+            f"ERROR: .po 编译失败（门禁无数据可判，按契约回 rc=2）: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
+        return 2
 
     # 退出码：0 已同步；1 .mo 与 .po 不同步；2 门禁本身没数据可判（找不到 .po，
     # 或 .po 连头部空 msgid 条目都没有——见 parse_po 的 sys.exit(2)，与 MIN-19 口径同族）。

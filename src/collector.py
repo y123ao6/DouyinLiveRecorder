@@ -257,8 +257,11 @@ class DanmakuCollector:
             return
         self._stop_called = True
         # 上报监控枢纽：房间采集结束（连接状态置离线）。首投生效：随后的 _on_close 是重复侧。
+        # [2026-10-31 L-11] 加 _started 门：从未 start 过的采集器没有已注册的房间，
+        # 上报 closed 会让面板出现一条「从未上线就离线」的无主事件（与本文件上方
+        # 「只上报已注册房间」的自述相悖）。
         hub = self._monitor_hub()
-        if hub is not None and not self._room_closed_reported:
+        if hub is not None and not self._room_closed_reported and self._started:
             # 2026-10-02：reason 文案经 i18n——面板非中文语言下混入简中
             hub.room_closed(self._room_name, i18n.tr("采集停止"))
             self._room_closed_reported = True

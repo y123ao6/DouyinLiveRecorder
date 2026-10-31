@@ -126,7 +126,9 @@ def check() -> bool:
 def _run(cmd: list[str], timeout: float = _CHILD_TIMEOUT_SECONDS) -> int:
     print(f"  RUN       {' '.join(cmd)}")
     try:
-        return int(subprocess.call(cmd, cwd=str(ROOT), timeout=timeout))
+        # [2026-10-31 L-11] stdin=DEVNULL：run_gates.py:311-313 实证的同族防线——子进程读 stdin
+        # 会拿到已关闭的管道句柄（WinError 6）。
+        return int(subprocess.call(cmd, cwd=str(ROOT), timeout=timeout, stdin=subprocess.DEVNULL))
     except subprocess.TimeoutExpired:
         # M-94（2026-10-21）：`uv lock` 会在解析索引时联网、egg_info 会走 setuptools 插件链，
         # 两者都可能**永不返回**。旧形态 subprocess.call(cmd, ...) 无任何上界，整个脚本挂住 =
@@ -161,7 +163,13 @@ def _sync_uv_lock() -> bool:
         # M-94 残留（2026-10-21）：这是全脚本唯一未加上界的子进程调用。`uv --version` 命中了
         # PATH 里的目录 / 无执行位文件 / Windows 下同名非 exe 时不会抛 OSError，而是挂住等
         # 系统层面超时——本脚本常在 CI 的元数据同步步骤里跑，挂住等于整步无结论。
-        uv_probe = subprocess.run([uv_bin, "--version"], capture_output=True, text=True, timeout=_CHILD_TIMEOUT_SECONDS)
+        uv_probe = subprocess.run(
+            [uv_bin, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_CHILD_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,  # [2026-10-31 L-11] 同族 WinError 6 防线，见 _run
+        )
     except subprocess.TimeoutExpired:
         print(
             f"  WARN      uv --version 超过 {_CHILD_TIMEOUT_SECONDS:.0f}s 未返回，跳过 uv.lock（请手动执行 `uv lock`）",

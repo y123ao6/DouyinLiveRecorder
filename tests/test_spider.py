@@ -21,6 +21,7 @@ from src.spider import (
     _safe_extract_id,
     extract_douyin_hevc_flv_url,
     extract_kuaishou_eid,
+    get_acfun_stream_data,
     get_bilibili_room_info,
     get_bilibili_stream_data,
     get_douyin_web_stream_data,
@@ -673,6 +674,79 @@ class TestBilibiliStreamData:
         with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=[resp, room_info]):
             result = await get_bilibili_stream_data("https://live.bilibili.com/26066074")
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_url_info_null_host_extra_degrades_to_empty_string(self) -> None:
+        # M-03（2026-10-30）：url_info[0] 的 host/extra 显式 null（风控降级响应形态）时不得以
+        # TypeError 被装饰器吞成「未开播」——.get(key, "") 只挡缺键不挡 null。改走 _dig_str 后
+        # null 回空串、拼接继续，拼出的残缺地址由选源阶段形态闸判掉，而不是整轮静默归因未开播。
+        # 首响应给非 0 code：getRoomPlayInfo 回退只在 playUrl code!=0 时触发（code==0 且 durl
+        # 空是「无可用清晰度」直返 None 的既有语义）。
+        play_url_resp = json.dumps({"code": -352, "message": "risk"})
+        room_info_resp = json.dumps(
+            {
+                "data": {
+                    "live_status": 1,
+                    "playurl_info": {
+                        "playurl": {
+                            "stream": [
+                                {
+                                    "format": [
+                                        {
+                                            "codec": [
+                                                {
+                                                    "current_qn": 250,
+                                                    "base_url": "/live_250.m3u8",
+                                                    "url_info": [{"host": None, "extra": "?expires=1"}],
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                }
+            }
+        )
+        with patch("src.spider.async_req", new_callable=AsyncMock, side_effect=[play_url_resp, room_info_resp]):
+            result = await get_bilibili_stream_data("https://live.bilibili.com/26066074")
+            assert result is not None
+            assert result["url"] == "/live_250.m3u8?expires=1"
+
+
+class TestAcFunTolerantSortKey:
+    # get_acfun_stream_data：representation 档位排序的容错锁。
+
+    @pytest.mark.asyncio
+    async def test_missing_bitrate_element_sorts_last_instead_of_silencing_room(self) -> None:
+        # M-02（2026-10-30）：representation 任一元素缺 bitrate（风控降级响应形态）时，排序键
+        # 不得让已确认开播的取流整轮被 trace_error_decorator 吞成 {"is_live": False}——
+        # 取不到按 0 排到最后（与 B站 _qn_sort_key 同判据），只影响该元素排序。
+        inner = {
+            "liveAdaptiveManifest": [
+                {
+                    # adaptationSet 是 dict（representation 直接挂在其下）——_dig 链为
+                    # liveAdaptiveManifest[0].adaptationSet.representation
+                    "adaptationSet": {
+                        "representation": [
+                            {"url": "https://pull.acfun.example/flv_low.flv"},
+                            {"url": "https://pull.acfun.example/flv_high.flv", "bitrate": 8000},
+                        ]
+                    },
+                }
+            ]
+        }
+        user_resp = json.dumps({"profile": {"name": "AcFun主播", "liveId": 123}})
+        play_resp = json.dumps({"data": {"caption": "标题", "videoPlayRes": json.dumps(inner)}})
+        with (
+            patch("src.spider.async_req", new_callable=AsyncMock, side_effect=[user_resp, play_resp]),
+            patch("src.spider.get_acfun_sign_params", new_callable=AsyncMock, return_value=("1", "did", "st")),
+        ):
+            result = await get_acfun_stream_data("https://live.acfun.cn/live/17912421")
+        assert result["is_live"] is True
+        urls = [item["url"] for item in cast("list[dict[str, object]]", result["play_url_list"])]
+        assert urls[-1] == "https://pull.acfun.example/flv_low.flv"
 
 
 # ─── src/spider.py 安全收口回归锁 ────────────────────────────────────────────

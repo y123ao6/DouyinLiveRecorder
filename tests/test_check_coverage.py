@@ -127,6 +127,19 @@ def test_global_floor_is_not_looser_than_project_fail_under() -> None:
     ), f"GLOBAL_FLOOR={check_coverage.GLOBAL_FLOOR} 低于全库 fail_under={fail_under}：新模块可自动豁免"
 
 
+def test_registered_thresholds_never_sit_below_global_floor_without_debt() -> None:
+    # M-15（2026-10-30）：登记表不得存在「阈值 < GLOBAL_FLOOR 且未走 COVERAGE_DEBT」的条目——
+    # 那是无 tracker/无到期/不受条数上限约束的债务基线（2026-10-24 抬闸时 spider/proxy=50 曾
+    # 静默落入该形态）。运行时同回路机检在 check_coverage._validate_debt_and_exempt（rc=2）。
+    below = {
+        module: threshold
+        for module, threshold in check_coverage.MODULE_THRESHOLDS.items()
+        if threshold < check_coverage.GLOBAL_FLOOR
+    }
+    offenders = {module: value for module, value in below.items() if module not in check_coverage.COVERAGE_DEBT}
+    assert not offenders, f"登记阈值低于 GLOBAL_FLOOR 且未走债务表（须抬值或登记债务）: {offenders}"
+
+
 # ---------------------------------------------------------------------------
 # 本文件的组织口径机检（防「两次判定塞进一个用例」这一族假失败回归）
 # ---------------------------------------------------------------------------

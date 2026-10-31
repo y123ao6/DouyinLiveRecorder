@@ -80,7 +80,9 @@ def detect_system_animations() -> bool:
             # SPI_GETCLIENTAREAANIMATION 的 pvParam 指向 BOOL；不声明 argtypes 时 ctypes 按
             # 默认 int 传值，恰好与 BOOL 同宽。返回值 0 = 取值失败，此时 enabled 仍是初值 0，
             # 会被误判成「动画已关」——故失败按 True 处理。
-            ok = ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(enabled), 0)
+            # [2026-10-31 L-12] windll → WinDLL：对齐全仓「统一走 ctypes.WinDLL」惯例
+            # （AGENTS 3.14 基线；src/ui_kit.py、web.py、main.py 已迁移）。
+            ok = ctypes.WinDLL("user32").SystemParametersInfoW(0x1042, 0, ctypes.byref(enabled), 0)
             return True if not ok else bool(enabled.value)
         except Exception:
             return True

@@ -169,10 +169,10 @@ def _subprocess_stub(codes: dict[tuple[str, ...], int], calls: list[str]) -> typ
 
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    # 把安装落点收敛到 tmp_path，并冻结 PATH 快照（用例内 install 分支会真改 os.environ）。
+    # 把安装落点收敛到 tmp_path。[2026-10-31 L-11] 生产侧 PATH 注入已改为现读现拼
+    # （导入期快照 current_env_path 已删除），用例内 install 分支真改 os.environ 时
+    # monkeypatch 注册后会在用例结束整体还原，不会污染同进程后续用例。
     monkeypatch.setattr(node_install, "execute_dir", str(tmp_path))
-    monkeypatch.setattr(node_install, "current_env_path", "C:\\fakebin")
-    # monkeypatch 注册后会在用例结束整体还原，避免污染同进程后续用例。
     monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     # 安装链路用例不涉及信任策略（官方清单在这些用例里本来就取不到），统一显式开 TOFU 开关，
     # 使被测对象保持在「安装流程」而非「策略判定」；策略本身由 TestSkipOfficialDocPolicy 钉。
@@ -183,10 +183,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 class TestCheckOrRecordZipSha256:
     # trust-on-first-use 基准文件的四种形态：首次记录 / 重复比对 / 内容漂移 / 基准不可读。
-    # 边界不可混：只有「基准存在且不一致」才硬拒，其余（缺基准/读不动/写不进）一律不阻断安装。
+    # 边界不可混：「基准存在且不一致」与「基准存在但读不出来」（M-11，2026-10-30 收紧，
+    # 与 ffmpeg 三链同分支裁决对齐）都硬拒；缺基准默认拒装（TestSkipOfficialDocPolicy 单独钉）、
+    # 写不进基准不阻断安装。
     # 2026-10-21：TOFU 降级不再是默认行为——官方清单不可达且无历史基准时默认
-    # **拒绝安装**，必须显式设 DLR_NODE_ALLOW_TOFU=1。本类测的是 TOFU 机制本身，故统一开该开关；
-    # 「默认拒绝」由 TestSkipOfficialDocPolicy 单独钉。
+    # **拒绝安装**，必须显式设 DLR_NODE_ALLOW_TOFU=1。本类测的是 TOFU 机制本身，故统一开该开关。
     @pytest.fixture(autouse=True)
     def _allow_tofu(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(node_install._NODE_ALLOW_TOFU_ENV, "1")
@@ -215,15 +216,26 @@ class TestCheckOrRecordZipSha256:
         zip_path.write_bytes(b"different")
         assert node_install._check_or_record_zip_sha256(zip_path) is False
 
-    # 基准不一致一律按篡改处理：写成独立用例，放宽成「不一致只告警」会在此变红。
-    def test_unreadable_sidecar_degrades_to_pass(self, tmp_path: Path) -> None:
+    # M-11（2026-10-30）：基准**存在**却读不出来必须 fail-closed（删包 + 拒装）。旧实现 warning 后
+    # return True 放行（「装得上优先于校得严」的旧取舍），与 ffmpeg 三链的 fail-closed 裁决相悖。
+    # 基准文件被同名目录占住 → read_text 抛 OSError（IsADirectoryError）。
+    def test_unreadable_baseline_refuses_and_unlinks(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "node.zip"
         zip_path.write_bytes(ZIP_A)
         Path(str(zip_path) + node_install._NODE_HASH_SUFFIX).mkdir()
-        assert node_install._check_or_record_zip_sha256(zip_path) is True
+        assert node_install._check_or_record_zip_sha256(zip_path) is False
+        assert not zip_path.exists(), "fail-closed 分支必须删包（与 ffmpeg 侧同口径）"
 
-    # 基准文件被同名目录占住 → read_text 抛 OSError：按「跳过校验」放行。
-    # 取舍是「装得上」优先于「校得严」，与 ffmpeg 侧同一口径。
+    # ascii 解码失败（基准被非 ASCII 字节污染）旧实现穿到外层 catch-all 被归成泛化「安装失败」，
+    # fail-closed 分支整个被跳过；并捕 UnicodeDecodeError 后必须走同一条删包拒装路径。
+    def test_non_ascii_baseline_refuses_and_unlinks(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "node.zip"
+        zip_path.write_bytes(ZIP_A)
+        Path(str(zip_path) + node_install._NODE_HASH_SUFFIX).write_bytes(b"\xff\xfe\xfd")
+        assert node_install._check_or_record_zip_sha256(zip_path) is False
+        assert not zip_path.exists()
+
+    # 基准文件写不进（记录侧失败）不阻断本次安装：只影响「下一次能否比对」。
     def test_unwritable_sidecar_does_not_fail_install(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         zip_path = tmp_path / "node.zip"
         zip_path.write_bytes(ZIP_A)
@@ -276,7 +288,6 @@ class TestInstallNodejsWindows:
         monkeypatch.setattr(node_install, "tqdm", _DummyTqdm)
         proc_calls: list[str] = []
         monkeypatch.setattr(node_install, "subprocess", _subprocess_stub({("node", "-v"): node_rc}, proc_calls))
-        monkeypatch.setattr(node_install, "current_env_path", str(tmp_path))
         return proc_calls
 
     def test_full_install_renames_and_verifies(self, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -860,7 +871,6 @@ class TestNodeOfficialAuthorityWiring:
         monkeypatch.setattr(node_install, "tqdm", _DummyTqdm)
         proc_calls: list[str] = []
         monkeypatch.setattr(node_install, "subprocess", _subprocess_stub({("node", "-v"): node_rc}, proc_calls))
-        monkeypatch.setattr(node_install, "current_env_path", str(tmp_path))
         return calls, proc_calls
 
     def test_genuine_artifact_installs_and_doc_is_fetched_first(

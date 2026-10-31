@@ -739,7 +739,9 @@ async def get_response_status(
         # 轻量探测避免误判降档。判据覆盖 405/501（方法不允许/未实现）而非只认 `.m3u8` 扩展名：
         # flv/直链遇「CDN 拒绝 HEAD 但 GET 可拉流」同样该复核。**不放宽** 404/403——真死链必须
         # 继续判不可达。扩展名按小写判定（大写 .M3U8 否则会漏掉该探测）。
-        if response.status_code != 200 and (".m3u8" in url.lower() or response.status_code in (405, 501)):
+        # [2026-10-30 L-03] 旧条件带 `response.status_code != 200 and` 前缀——上方 ==200 已 return，
+        # 该前缀恒真，属死条件（误导读者以为 200 也会进复核）。摘掉前缀，语义不变。
+        if ".m3u8" in url.lower() or response.status_code in (405, 501):
             probe = await client.get(
                 url, headers={**(headers or {}), "Range": "bytes=0-0"}, follow_redirects=True, timeout=timeout
             )

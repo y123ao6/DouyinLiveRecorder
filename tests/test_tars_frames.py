@@ -165,6 +165,11 @@ def test_documented_residual_escape_types() -> None:
     with pytest.raises(IndexError):
         TarsInputStream(b"\xf0").finish_struct()  # tag==15 的扩展 tag 字节缺失
 
+    # [2026-10-30 L-15] STRING4 长度域未过 _need 是登记的第 4 处同族（探针实测 struct.error）；
+    # 补 _need(4) 后与「畸形帧降级为 ValueError」的统一承诺对齐，本锁钉住它不再回退。
+    with pytest.raises(ValueError):
+        TarsInputStream(b"\x17\x00")._skip(7)
+
 
 # C6：_assert_progress —— 「本轮无推进即抛错」的最后防线。C1/C2 挡的是「长度字段本身」，
 # 但 while True 循环的正确性还依赖「每轮至少前进 1 字节」这一**不变式**；一旦某个类型分支

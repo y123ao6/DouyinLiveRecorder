@@ -659,7 +659,9 @@ def test_slow_terminate_is_not_reported_as_unable_to_kill(monkeypatch: pytest.Mo
 
     def _slow_terminate(proc: Any, timeout: int = 30) -> bool:
         _ = timeout
-        time.sleep(10.0)
+        # [2026-10-31 L-13] 10s → 2s：fake 终止时长只需超过被收窄的 1.0s 总预算即可造出
+        # 「第一轮未确认」形态；10s 真睡眠是全 tests/ 仅有的 >1s 真实睡眠，白拖全量 suite。
+        time.sleep(2.0)
         proc.returncode = 0
         return True
 
@@ -698,7 +700,8 @@ def test_unconfirmed_entry_is_never_dropped_by_the_second_fact(monkeypatch: pyte
     self_exited = _SelfExitingProc()
 
     def _wedged(proc: Any, timeout: int = 30) -> bool:
-        time.sleep(3.0)
+        # [2026-10-31 L-13] 3s → 2s（同 _slow_terminate：只需超过 1.0s 预算，语义不变）
+        time.sleep(2.0)
         return True
 
     monkeypatch.setattr(fp, "_terminate_ffmpeg_process", _wedged)

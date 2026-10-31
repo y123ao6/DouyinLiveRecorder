@@ -81,6 +81,9 @@ class TarsInputStream:
             n = self._data[self._pos]
             self._advance(1 + n)
         elif typ == STRING4:
+            # [2026-10-30 L-15] 长度域先过 _need：截断帧（探针 b'\x17\x00' 实测）旧实现直接
+            # struct.error——「畸形帧降级为 ValueError」的统一承诺在此未兑现（登记表第 4 处同族）。
+            self._need(4)
             n = struct.unpack_from(">i", self._data, self._pos)[0]
             self._advance(4 + n)
         elif typ == SIMPLE_LIST:

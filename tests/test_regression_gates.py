@@ -456,7 +456,7 @@ def test_config_sanitizer_removes_every_sensitive_value() -> None:
     build_exe = _load_build_exe()
     src_ini = ROOT / "config" / "config.ini"
     if not src_ini.is_file():
-        pytest.skip("本工作区无 config/config.ini（该文件被 gitignore，属正常缺省）")
+        pytest.skip("本工作区无 config/config.ini（该文件是已跟踪的脱敏基线模板，本地被删/缺省时跳过真实样本校验）")
 
     source_text = src_ini.read_text(encoding="utf-8-sig", errors="replace")
     sanitized = build_exe._sanitized_config_text(source_text)
@@ -490,6 +490,50 @@ def test_config_sanitizer_fails_closed_on_unparsable_input() -> None:
     broken = "[录制设置]\n代理地址 = socks5://user:LEAKME@127.0.0.1:1080\n[[[ 坏结构\n"
     out = build_exe._sanitized_config_text(broken)
     assert "LEAKME" not in out, "解析失败时退回了原样文本（fail-open），凭据会随 zip 外发"
+
+
+def test_config_sanitizer_keeps_comments_and_structure() -> None:
+    # M-06（2026-10-30）：函数头承诺「保留注释与节结构」必须有行为锁——旧 configparser 往返把
+    # 注释全部丢弃（实测源 175 行/11 条注释 → 输出 164 行/0 条），发布 zip 里的模板成了无注释裸版。
+    build_exe = _load_build_exe()
+    source = (
+        "# 顶部说明注释\n"
+        "[录制设置]\n"
+        "# 是否自动录制（中文键内嵌说明）\n"
+        "自动录制 = true\n"
+        "[账号密码]\n"
+        "某平台密码 = SECRET_LEAK\n"
+    )
+    out = build_exe._sanitized_config_text(source)
+    assert "# 顶部说明注释" in out, "顶部注释被丢弃（承诺与实现不符）"
+    assert "# 是否自动录制（中文键内嵌说明）" in out, "节内注释被丢弃"
+    assert "自动录制 = true" in out, "非敏感键的值不得被改动"
+    assert "SECRET_LEAK" not in out, "敏感值必须被置空"
+    assert "某平台密码 = " in out, "敏感键保留「键 = 」空值形态，模板仍可直接编辑"
+
+
+def test_smoke_web_loopback_patch_covers_the_probe_window() -> None:
+    # M-05（2026-10-30）结构锁：with _loopback_web_host() 的窗口必须包住探活循环与子进程终止点
+    # （_finish 落在 with 块内）。旧实现只包 _launch——还原先于冻结子进程读配置（毫秒 vs 秒），
+    # 补丁对子进程从未生效（模板恰为 127.0.0.1 使补丁字节恒等才未显形）；「子进程确实读到补丁值」
+    # 的真机验证属打包链端到端（见 CODE_REVIEW_2026-10-30 M-05），不在本锁覆盖面内。
+    import inspect
+
+    build_exe = _load_build_exe()
+    lines = inspect.getsource(build_exe.smoke_web).splitlines()
+    with_idx = next(i for i, ln in enumerate(lines) if "with _loopback_web_host():" in ln)
+    with_indent = len(lines[with_idx]) - len(lines[with_idx].lstrip())
+    finish_inside = False
+    for ln in lines[with_idx + 1 :]:
+        if not ln.strip():
+            continue
+        indent = len(ln) - len(ln.lstrip())
+        if indent <= with_indent:
+            break
+        if "_finish(" in ln:
+            finish_inside = True
+            break
+    assert finish_inside, "_finish 必须落在 with _loopback_web_host() 块内（配置还原不得早于子进程终止）"
 
 
 def test_url_config_sanitizer_yields_comment_only_template() -> None:

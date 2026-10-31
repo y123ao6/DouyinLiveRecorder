@@ -21,6 +21,7 @@
 #   zip」，把「不可变标签 + 官方 digest + tar.xz」塞进去会让两个完整性档在同模块内互相打脸。
 
 import contextlib
+import json
 import os
 import platform
 import re
@@ -43,12 +44,20 @@ from loguru import logger
 import i18n
 from src import utils
 
+# 官方哈希文档（GitHub API 应答）的「按字节限长读取」判据（M-12）：单点住在 node_install
+# （S-12② 已抽成唯一函数），此处直接复用避免第三份拷贝再漂移；node_install 不 import 本模块，无环。
+# 常量仍按上方约定**各自持有**（见 _CONNECT_TIMEOUT 的耦合说明）。
+from src.node_install import _read_small_document_capped
+
 # 与 ffmpeg_master_download 同量级但**各自持有**：跨模块引私有常量会把 Windows 语义模块的内部细节
 # 变成第二个耦合点（该模块的超时取值是为「挑战页探针」调的，Linux 侧没有这个问题）。
 _CONNECT_TIMEOUT = 15
 _READ_TIMEOUT = 30
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 2.0
+# 官方哈希文档（GitHub API 应答）的读取上限（M-12）：与 node_install / ffmpeg_install 的文档链
+# 上限同值。下载主链路有 512MiB 上限，文档链此前无任何上限——被投毒的超大应答可在启动期耗尽内存。
+_OFFICIAL_DOC_MAX_BYTES = 2 * 1024 * 1024
 
 # 临时归档的**前缀**（M-44）：保留 ffmpeg_linux_native_temp 这段可识别前缀给既有断言与日志定位，
 # 随机后缀由内联块 unique_path 追加；实际写入一律走 open_exclusive（O_CREAT|O_EXCL|O_NOFOLLOW）。
@@ -432,7 +441,14 @@ def _fetch_asset_digest(asset_url: str) -> str:
         # 取 assets 这步必须留在 try 内，且形态归一交给 _payload_assets：原实现把 payload.get("assets")
         # 放在 try **之外**，于是「API 以 200 回数组载荷」这条真实可发生的畸形形态会抛 AttributeError
         # 穿出本函数，被入口 catch-all 归成「直下安装异常」，而「任何异常一律回 ""（= 走降级）」被偷换成 fatal。
-        return _digest_from_assets(_payload_assets(response.json()), _asset_name(asset_url))
+        # M-12（2026-10-30）：response.json() 整份物化无上限——GitHub API 应答被投毒成 GB 级时可在
+        # 启动期耗尽内存。先按字节限长读取（判据复用 node_install._read_small_document_capped，常量
+        # 与另两条文档链同值但按上方约定各自持有），超限抛出后由本函数既有 except 记 debug
+        # 「请求异常」回 ""，与「取不到官方哈希」既有降级口径同流。
+        raw_text = _read_small_document_capped(response, _OFFICIAL_DOC_MAX_BYTES)
+        if raw_text is None:
+            raise ValueError(f"GitHub API 应答超过 {_OFFICIAL_DOC_MAX_BYTES} 字节上限，已拒绝物化")
+        return _digest_from_assets(_payload_assets(json.loads(raw_text)), _asset_name(asset_url))
     except Exception as e:
         logger.debug(
             i18n.tr(

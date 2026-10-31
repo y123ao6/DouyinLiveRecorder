@@ -100,13 +100,14 @@ class TestVvxqiu:
         assert result["is_live"] is False
         assert "record_url" not in result
 
-    # 房间号缺失时直接判未直播，且不得再发 m3u8 探测请求（省一次网络，也避免对无效房间误判开播）
+    # 房间号缺失时直接判未直播。[2026-10-31 L-01] 判空已前移到首发请求之前：旧中间态
+    # 「banner 仍发 1 次、m3u8 不发」（await_count==1）收紧为一次请求都不发（await_count==0）。
     async def test_missing_room_id_not_live_no_extra_request(self) -> None:
         raw = _unwrap(sp.get_vvxqiu_stream_url)
         with patch.object(sp, "async_req", new=AsyncMock(return_value='{"data": {"anchorName": "N"}}')) as mock:
             result = await raw("https://h5p.vvxqiu.com/live")
         assert result["is_live"] is False
-        assert mock.await_count == 1  # 房间号缺失时不再请求 m3u8
+        assert mock.await_count == 0  # 房间号缺失时 banner 与 m3u8 一次都不发
 
     # 出现 m3u8 即视为有效直播源，判开播并产出 m3u8_url 供后续选源（守护「播放列表解析→开播判定」映射）
     async def test_live_when_playlist_found(self) -> None:

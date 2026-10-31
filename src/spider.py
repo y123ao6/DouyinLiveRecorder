@@ -61,7 +61,7 @@ except ImportError:
     from execjs import ProgramError  # type: ignore[no-redef]
 
 from . import JS_SCRIPT_PATH, http_config, utils, web_config
-from .async_http import async_req
+from .async_http import _build_hop_guard, async_req
 from .config_bool import parse_config_bool
 from .cookie_cache import DEFAULT_TTL as _CREDENTIAL_TTL
 from .cookie_cache import fetch_cookies as _cache_fetch_cookies
@@ -76,9 +76,6 @@ OptionalStr = str | None
 OptionalDict = dict[str, str] | None
 # 花椒接口返回的异构 dict（含 is_live 布尔值），值类型需覆盖 str | bool
 OptionalStreamDict = dict[str, str | bool] | None
-
-# 缓存自动获取的 ttwid，避免重复请求主页（已委托给共享 ttwid.py 模块，保留变量兼容旧引用）
-_cached_ttwid: str = ""
 
 # 模块级预编译正则：原先在解析函数内每次调用都 re.compile（m3u8 带宽提取、抖音 HEVC FLV
 # 提取），平台解析每房间每轮多次触发。预编译后省去重复编译，匹配语义不变。
@@ -172,10 +169,10 @@ def _safe_extract_id(url: str, default: str = "") -> str:
 
 async def _ensure_ttwid(proxy_addr: OptionalStr = None) -> str:
     # 委托给共享 ttwid.py 模块（带 threading.Lock 跨线程去重），
-    # 解决多线程并发时重复拉取 ttwid 触发风控的问题
-    global _cached_ttwid
+    # 解决多线程并发时重复拉取 ttwid 触发风控的问题。
+    # [2026-10-30 L-03] 本模块的 _cached_ttwid 镜像变量已删除：全仓无任何读取点（ttwid.py 自己的
+    # 同名镜像才是真缓存），「兼容旧引用」的原注释为失实陈述。
     result = await _shared_get_ttwid(proxy_addr)
-    _cached_ttwid = result  # 同步本地缓存，兼容可能的外部引用
     return result
 
 
@@ -450,8 +447,9 @@ def _dig_list(data: object, *keys: str | int) -> list[object]:
 # B站清晰度档位的排序键：current_qn 实际响应里是 int，但风控页/降级响应可能给字符串
 # 或缺键；itemgetter 会抛 KeyError/TypeError 并被装饰器吞成「未开播」。统一折算成 int，
 # 取不到按 0，使「解析不出档位」只影响该元素排序、不影响整轮。
-def _qn_sort_key(item: object) -> int:
-    value = _dig(item, "current_qn")
+# [2026-10-30 M-02] 字段名收参后同供 AcFun bitrate 档位排序复用（缺 bitrate 的容错同判据）。
+def _qn_sort_key(item: object, field: str = "current_qn") -> int:
+    value = _dig(item, field)
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, int):
@@ -859,6 +857,9 @@ async def _inject_origin_and_hevc(
                     try:
                         cand_data = cast(dict[str, object], _loads_dict(candidate).get("data") or {})
                     except json.JSONDecodeError, TypeError:
+                        # [2026-10-30 L-01 备案] JSONDecodeError 分支是死防御：_loads_dict 内部已捕获
+                        # JSONDecodeError 并回 {}（见其函数头注释），本处永远不会收到该异常——不得把
+                        # 本分支解读为「此处有 JSON 解析防线」；TypeError 兜 candidate 非 str 的残余面。
                         continue
                     if "origin" not in cand_data:
                         continue
@@ -872,6 +873,8 @@ async def _inject_origin_and_hevc(
                         )
                         codec = codec_val if isinstance(codec_val, str) else ""
                     except json.JSONDecodeError, KeyError, TypeError:
+                        # [2026-10-30 L-01 备案] JSONDecodeError 分支是死防御（同上：_loads_dict 已内捕），
+                        # KeyError/TypeError 才是本处的真实防御面。
                         codec = ""
                     if "h265" in codec.lower() or "hevc" in codec.lower():
                         hevc_candidate = candidate
@@ -1245,7 +1248,9 @@ async def get_kuaishou_stream_data(
             if not play_url_list:
                 # 已判有 liveStream/playUrls 却拿不到任何候选（键改名/结构改版/风控降级）：
                 # 按无源返回并留线索，不再静默当成「未开播」。
-                _warn_api_abnormal(json.dumps(play_urls_dict, ensure_ascii=False), "快手 playUrls", codec_key, {})
+                # [2026-10-30 L-01] 归因字段名不再用循环变量 codec_key（循环走完恒为 "h265"，
+                # 对「两个键都不存在/均空」的场景是失真归因），改为点名整张 playUrls 表。
+                _warn_api_abnormal(json.dumps(play_urls_dict, ensure_ascii=False), "快手 playUrls", "h264/h265", {})
                 return result
         else:
             # 旧版 playUrls 列表形态：上游已不再下发（实测取不到流），代码保留未删，
@@ -2033,8 +2038,11 @@ async def get_bilibili_stream_data(
         if not url_info:
             return None
         url_info_list = cast(list[dict[str, object]], url_info)
-        host = cast(str, url_info_list[0].get("host", ""))
-        extra = cast(str, url_info_list[0].get("extra", ""))
+        # 2026-10-30（M-03）：.get(key, "") 只挡「缺键」不挡「显式 null」——url_info[0] 任一字段为
+        # null 时 str + None 抛 TypeError 被装饰器吞成「未开播」，绕过本函数其余位置统一的
+        # _dig_str 归因口径（同文件快手分支注释亦证显式 null 形态真实存在）。
+        host = _dig_str(url_info_list[0], "host")
+        extra = _dig_str(url_info_list[0], "extra")
         m3u8_url = host + base_url + extra
         current_qn = str(stream_data.get("current_qn", qn))
         accept_qn = [str(s.get("current_qn")) for s in sorted_stream_list]
@@ -2411,7 +2419,12 @@ _XHS_ALLOWED_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhscdn.com")
 def _xhs_is_allowed_host(url: str) -> bool:
     # 落地页 host 是否落在 XHS 域族内。用「精确等于或 . 后缀」判定，防 evil-xiaohongshu.com
     # 这类后缀伪装（endswith 裸判定会把 notxiaohongshu.com 也放行）。
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    # [2026-10-30 L-01] urlparse 对畸形 authority（畸形 IPv6 字面量等）会抛 ValueError——
+    # 对齐孪生实现 _shopee_is_allowed_host 的防护：解析失败一律按「不在白名单」处理。
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
     if not host:
         return False
     return any(host == suffix or host.endswith("." + suffix) for suffix in _XHS_ALLOWED_HOST_SUFFIXES)
@@ -3453,9 +3466,11 @@ async def get_pandatv_stream_data(
     if bj_info is None:
         _warn_api_abnormal(json_str, "PandaTV member/bj", "bjInfo", json_data)
         raise RuntimeError(cast(str, json_data.get("message", "Unknown error")))
+    # [2026-10-30 L-01] _dig 缺键回 None 时主播名会落成字面量 "None-None"/"Nick-None"；
+    # 用 or '' 兜底（保 int id 的既有渲染，不改类型口径）。
     anchor_id = _dig(bj_info, "id")
     anchor_nick = _dig(bj_info, "nick")
-    anchor_name = f"{anchor_nick}-{anchor_id}"
+    anchor_name = f"{anchor_nick or ''}-{anchor_id or ''}"
     result["anchor_name"] = anchor_name
     # PandaTV 用 "media" 字段是否存在来表示是否在播：有 media 才是开播态，否则只是离线主播页。
     live_status = "media" in json_data
@@ -3575,9 +3590,10 @@ async def get_winktv_bj_info(
     if bj_info is None:
         _warn_api_abnormal(json_str, "WinkTV member/bj", "bjInfo", json_data)
         raise RuntimeError(cast(str, json_data.get("message", "Unknown error")))
+    # [2026-10-30 L-01] 同 PandaTV：_dig 缺键回 None 时名字会落成 "None-None"，用 or '' 兜底。
     anchor_id = _dig(bj_info, "id")
     anchor_nick = _dig(bj_info, "nick")
-    anchor_name = f"{anchor_nick}-{anchor_id}"
+    anchor_name = f"{anchor_nick or ''}-{anchor_id or ''}"
     return anchor_name, live_status
 
 
@@ -3835,7 +3851,8 @@ async def get_flextv_stream_data(
                 )
                 raise ValueError("Failed to get FlexTV owner data")
             anchor_nick = _dig(channel_data, "owner", "nickname")
-            anchor_name = f"{anchor_nick}-{anchor_id}"
+            # [2026-10-30 L-01] nickname 缺键回 None 时名字会落成 "None-<id>"，用 or '' 兜底。
+            anchor_name = f"{anchor_nick or ''}-{anchor_id}"
             result["anchor_name"] = anchor_name
             play_url = await get_flextv_stream_url(url=url, proxy_addr=proxy_addr, cookies=cookies)
             if play_url:
@@ -4023,7 +4040,15 @@ async def login_popkontv(
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=20, verify=http_config.ssl_verify) as client:
+        # M-04（2026-10-30）：直建点必须挂与 async_http._build_client 同一逐跳复检钩子——
+        # 直建 AsyncClient 的 SSRF 防线原本只靠前置闸门，「响应头到达后才触发」的形态让
+        # 「公网 → 302 → 内网/元数据」的跳转落点不被复检；挂钩后本点与主线两个合法接线点同判据。
+        async with httpx.AsyncClient(
+            proxy=proxy_addr,
+            timeout=20,
+            verify=http_config.ssl_verify,
+            event_hooks={"response": [_build_hop_guard(proxy_addr)]},
+        ) as client:
             response = await client.post(url, json=data, headers=headers)
             response.raise_for_status()
 
@@ -5507,7 +5532,11 @@ async def get_acfun_stream_data(
             )
             result["is_live"] = False
             return result
-        play_url_list = sorted(play_url_list, key=itemgetter("bitrate"), reverse=True)
+        # 2026-10-30（M-02）：排序键收口与 B站 _qn_sort_key 同判据——representation 任一元素缺
+        # bitrate（风控降级响应）时，裸 itemgetter 会让已确认开播的取流整轮被装饰器吞成
+        # 「未开播」且无 _warn 归因。取不到按 0 排到最后，只影响该元素排序；上方「按
+        # itemgetter("bitrate") 排序」的注释契约由本容错键承接。
+        play_url_list = sorted(play_url_list, key=lambda item: _qn_sort_key(item, "bitrate"), reverse=True)
         result |= {"play_url_list": play_url_list, "title": live_title}
     return result
 
@@ -5714,7 +5743,12 @@ def _zhihu_is_allowed_host(url: str) -> bool:
     # 双重判据：① host 落在知乎域族白名单；② 不得解析到内网/回环/云元数据（复用
     # web_config._host_internal_reason，与 XHS/Shopee 两道闸保持一致）。userinfo（`u:p@host`）
     # 形态一律拒绝——那会让「看起来是知乎域」的地址实际连到别的主机。
-    parsed = urllib.parse.urlparse(url)
+    # [2026-10-30 L-01] urlparse 对畸形 authority 会抛 ValueError——对齐 XHS/Shopee 孪生闸：
+    # 解析失败按「不可信」处理（与函数尾 DNS 判定失败的口径一致）。
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
     if parsed.username or parsed.password:
         return False
     if parsed.scheme not in ("http", "https"):
@@ -5977,6 +6011,11 @@ async def get_vvxqiu_stream_url(
         headers["Cookie"] = cookies
 
     room_id = get_params(url, "roomId")
+    # [2026-10-30 L-01] 判空提前到首发请求之前：roomId 缺失时旧实现仍会先发一次 roomId 空值的
+    # banner 请求（与函数头「无 roomId 不探测」的自述相悖），白耗一次出站。
+    if not room_id:
+        result: dict[str, object] = {"anchor_name": "", "is_live": False}
+        return result
     api_1 = f"https://h5p.vvxqiu.com/activity-center/fanclub/activity/captain/banner?roomId={room_id}&product=vvstar"
     json_str = await async_req(api_1, proxy_addr=proxy_addr, headers=headers)
     json_str = _get_str_response(json_str)
@@ -6005,10 +6044,10 @@ async def get_vvxqiu_stream_url(
         json_data = _loads_dict(json_str)
         anchor_name = _dig_str(json_data, "data", "memberVO", "memberName")
 
-    result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
-    # 房间号缺失时不再探测 m3u8（拼不出有效地址，请求必然无意义）
-    if not room_id:
-        return result
+    # [2026-10-30 L-01] 注解已随判空前移至函数首个 result 绑定处，此处为普通赋值（mypy no-redef）。
+    result = {"anchor_name": anchor_name, "is_live": False}
+    # [2026-10-30 L-01] roomId 判空已前移到首发请求之前（见 get_params 下方）；此处旧迟到判空
+    # （「房间号缺失时不再探测 m3u8」）随之删除——判空后 banner 请求已不会发出。
     # 地址是固定 CDN 模板：1400442770 写死前缀 + room_id + room_id[2:] 后缀（取除前两位外的部分），
     # 整条地址由平台约定拼接，缺失/错拼任何一段都只会拿到 "Not Found"。
     m3u8_url = f"https://liveplay-pro.wasaixiu.com/live/1400442770_{room_id}_{room_id[2:]}_single.m3u8"

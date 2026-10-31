@@ -15,6 +15,8 @@
 #   **等价性并不完整**，逐条差异见 PlatformBreaker 类注释。漂移的机检面：
 #   tests/test_regression_standalone.py、tests/test_ffmpeg_reconnect_args.py、
 #   tests/test_ffmpeg_path_preference.py。
+#   [2026-10-30] http_request 响应体上限（_MAX_RESPONSE_BYTES=8MiB）已与主线 sync_http/async_http
+#   同值收敛（CODE_REVIEW_2026-10-30 M-14）；网络层异常文本内嵌的 url 已统一 strip_query（M-13）。
 # * **语法基线 Python >= 3.14**：本仓统一使用 PEP 758 无括号多异常写法(except A, B:)，
 #   该语法 3.14 起才合法——请勿用 3.13 及以下版本运行本文件。
 # * **保留原工程的核心正确性约定**(原工程踩坑后的结论，单文件版一律继承)：
@@ -245,6 +247,14 @@ def _build_opener(proxy: str | None) -> urllib.request.OpenerDirector:
     return opener
 
 
+# 2026-10-30（M-14）：响应体读取上限，与主线 src/sync_http.py / src/async_http.py 的
+# _MAX_RESPONSE_BYTES 同值。消费面（_probe_hls_segment_lite 等）拉取的是 CDN 控制的播放列表
+# 正文，属不可信输入面（见下方「不可信流地址候选」节）；无上限的 resp.read() 可被异常/被劫持
+# 源把长跑进程内存打爆。单次 read(limit+1)：http.client 的 read(amt) 会阻塞读满 amt 或到 EOF，
+# 长度超限即抛——调用侧既有「请求失败」分支按不可达处理，与主线「超限即拒绝该响应」同形。
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
 def http_request(
     url: str,
     *,
@@ -256,10 +266,15 @@ def http_request(
     # 发起一次 HTTP 请求，返回 HttpResponse；网络层失败时抛出 RuntimeError(带 URL 与异常类型)。
     # 注意(原工程踩坑)：Windows 下 socket.timeout 的 str() 为空字符串，
     # 异常信息必须携带 type(e).__name__ 与 url，否则日志只有一行无意义的空白。
+    # 2026-10-30（M-13）：url 内嵌前经 strip_query——异常对象会被上层原样写进日志（流地址校验
+    # 异常路径等），完整 URL 含 wsSecret/anti_code 等签名 token，明文落盘违反「写入日志前必须
+    # 脱敏」红线；保留 host+path 已足够定位。
     req = urllib.request.Request(url, data=data, headers=headers or {})
     try:
         with _build_opener(proxy).open(req, timeout=timeout) as resp:
-            raw = resp.read()
+            raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > _MAX_RESPONSE_BYTES:
+                raise RuntimeError(f"响应体超过 {_MAX_RESPONSE_BYTES} 字节上限 | url={strip_query(url)}")
             head = {k.lower(): v for k, v in resp.headers.items()}
             charset = "utf-8"
             ctype = head.get("content-type", "")
@@ -270,13 +285,17 @@ def http_request(
     except urllib.error.HTTPError as e:
         # HTTPError 也是响应(4xx/5xx)，读取 body 后按正常响应返回，便于上层判定
         try:
-            body = e.read().decode("utf-8", errors="replace")
+            err_raw = e.read(_MAX_RESPONSE_BYTES + 1)
+            if len(err_raw) > _MAX_RESPONSE_BYTES:
+                raise RuntimeError(f"错误响应体超过 {_MAX_RESPONSE_BYTES} 字节上限 | url={strip_query(url)}")
+            body = err_raw.decode("utf-8", errors="replace")
         except Exception:
+            # 错误体读不出/超限一律按空 body 降级：上层只做状态码与内容判定，不依赖错误体原文
             body = ""
         err_headers = {k.lower(): v for k, v in (e.headers or {}).items()}
         return HttpResponse(e.code, err_headers, body)
     except Exception as e:
-        raise RuntimeError(f"HTTP 请求失败: {type(e).__name__}: {e} | url={url}") from e
+        raise RuntimeError(f"HTTP 请求失败: {type(e).__name__}: {e} | url={strip_query(url)}") from e
 
 
 def http_probe(
@@ -297,7 +316,7 @@ def http_probe(
     except urllib.error.HTTPError as e:
         return ProbeResult(int(e.code), {k.lower(): v for k, v in (e.headers or {}).items()})
     except Exception as e:
-        raise RuntimeError(f"探针失败: {type(e).__name__}: {e} | url={url}") from e
+        raise RuntimeError(f"探针失败: {type(e).__name__}: {e} | url={strip_query(url)}") from e
 
 
 # ===== 2. 工具函数(文件名清洗 / JSON 安全取值 / host 提取 / 协议 MD5) =====

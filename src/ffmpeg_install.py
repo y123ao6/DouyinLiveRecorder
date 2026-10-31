@@ -43,6 +43,10 @@ from src.ffmpeg_master_download import download_ffmpeg_master
 
 # 应用根目录复用 src.logger 公开导出的 script_path（等价原私有 _app_root() 的返回值）
 from src.logger import script_path
+
+# 官方哈希小文档的「按字节限长读取」判据（M-12）：单点住在 node_install（S-12② 已抽成唯一函数），
+# ffmpeg 两条文档链直接复用，避免第三份拷贝再漂移。node_install 不 import 本模块，单向引入无环。
+from src.node_install import _read_small_document_capped
 from src.utils import unzip_file
 
 # FFmpeg 自动安装模块 - 跨平台 FFmpeg 自动检测与安装
@@ -460,6 +464,10 @@ _OFFICIAL_DOC_SUFFIX = ".sha256"
 # 哈希文档只有 64 字节，用与 300MB 压缩包相同的 30s 超时会在上游故障时把启动拖慢一倍；
 # 取不到即降级为 TOFU，不值得为它多等。
 _OFFICIAL_DOC_TIMEOUT_SECONDS = 15
+# 官方哈希小文档的读取上限（M-12）：下载**主链路**有 512MiB 上限，文档链此前无任何上限——
+# TLS 被拦截/恶意代理前提下，64 字节端点回 GB 级 200 响应可在启动期耗尽内存。与 node 侧
+# _NODE_VERSION_PAGE_MAX_BYTES 同值（2MiB，比真实文档宽一个数量级以上，宁可放宽不误杀）。
+_OFFICIAL_DOC_MAX_BYTES = 2 * 1024 * 1024
 # 官方文档的合法形态：整篇剥掉空白后必须**正好**是 64 位小写十六进制。
 # 判据必须严格：gyan.dev 在前置代理/WAF 介入时会回 200 + 一段 HTML 挑战页，
 # 「长度看着像」的宽松判定会把挑战页当成期望哈希，从而把可用源判成篡改。
@@ -483,7 +491,11 @@ def _fetch_official_sha256(doc_url: str) -> str:
     try:
         with requests.get(doc_url, timeout=_OFFICIAL_DOC_TIMEOUT_SECONDS) as response:
             response.raise_for_status()
-            text = response.text
+            # M-12：官方哈希小文档按字节限长读取（判据复用 node_install._read_small_document_capped）。
+            # 超限返回 None → 置空串，落进下方「内容不合法」既有降级口径走 TOFU，不新增 fatal 形态。
+            text = _read_small_document_capped(response, _OFFICIAL_DOC_MAX_BYTES)
+            if text is None:
+                text = ""
     except Exception as e:
         logger.warning(
             i18n.tr(

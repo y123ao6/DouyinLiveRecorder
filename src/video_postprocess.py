@@ -26,6 +26,9 @@ from src import utils
 # stderr，随即被 display_info 的 "\033[2J" 清屏刷掉，房间状态照旧显示「正在录制」——即静默死亡。
 # 故本模块的循环体/写盘路径必须就地捕获，不能指望全局兜底；也不在本模块另装 hook（跨进程归属
 # 决策留给主会话，再补一个只会形成第二份 hook）。
+# [2026-10-30 L-07 更正] 上段「segment_video 由 _submit_postprocess 投进后处理线程池」已失实：
+# segment_video 现为 main.py:148-149 注释登记的刻意死代码（无调用方），并未进线程池；converts_*
+# 仍由 _submit_postprocess 投递。原句保留作历史口径，以本注为准。
 
 # 转码超时按源文件体积线性放大（秒/MB）。固定 600s 对「1800s 分段 + libx264 veryfast
 # 重编码」在中低端机上根本不够：一段 1800s/4Mbps 的 1080p 分段约 900 MB，40~80 fps 的机器要

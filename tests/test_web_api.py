@@ -2394,6 +2394,36 @@ class TestRecordingToggle:
         assert resp.status_code == 200, resp.text
         assert calls == [True]
 
+    def test_toggle_indented_comment_line_semantics(
+        self, app_env: types.SimpleNamespace, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 2026-10-30（M-09）：手编辑产生的缩进注释行（「  # url」）点「启用」必须真的取消注释。
+        # 旧实现对缩进注释行假成功：lstrip("#") 剥不动前导空白，写回仍是注释行却回 enabled:true
+        # （写后只比 raw_line 文本相等，验证不了语义）；disable 则写出「# # url」双注释。
+        from src import config_io
+
+        # 端点内 `import main as _main` 命中的是本 fixture 注入的假 main；update_file 用真实现
+        # （它只依赖 fake 上已存在的 file_update_lock / text_encoding / ini_URL_content）。
+        monkeypatch.setattr(fake_main, "update_file", config_io.update_file, raising=False)
+        url_cfg: Path = app_env.url_cfg
+        url_cfg.write_text("# 纯注释行\n  # https://live.example.com/9\n", encoding="utf-8")
+        token = _login(app_env.client)
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = app_env.client.post(
+            "/api/rooms/toggle", json={"url": "https://live.example.com/9", "enable": True}, headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["enabled"] is True
+        lines = url_cfg.read_text(encoding="utf-8").splitlines()
+        assert "https://live.example.com/9" in lines, lines
+        # 再禁用：写回必须是单层注释（不得出现「# # url」双注释）
+        resp = app_env.client.post(
+            "/api/rooms/toggle", json={"url": "https://live.example.com/9", "enable": False}, headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        lines = url_cfg.read_text(encoding="utf-8").splitlines()
+        assert "# https://live.example.com/9" in lines, lines
+
 
 class TestDangerousKeys:
     # 守护危险配置键护栏：即便认证禁用，自定义脚本执行命令等危险键仍须 403 阻断，
@@ -2429,6 +2459,10 @@ class TestDangerousKeys:
             ("Web", "web_trusted_proxy", "9.9.9.9"),
             ("Web", "web_allowed_hosts", "evil.example.com"),
             ("Web", "WEB_ALLOWED_HOSTS", "evil.example.com"),
+            # 2026-10-30（M-08）：该键是免鉴权 /favicon.ico 的图标路径源，经面板写成任意绝对路径
+            # 即构成「写路径 → 免鉴权读回原文」的任意文件读链（raw config.ini 的 Cookie/口令整条
+            # 绕开 '***' 掩码），入黑名单与另四键同级。
+            ("Web", "web_tray_icon", r"C:\Windows\win.ini"),
         ],
     )
     def test_m64_script_flag_and_safety_keys_blocked_when_auth_disabled(
@@ -3019,3 +3053,16 @@ class TestIconEndpoints:
         # 打断「仓库内置图标」兜底，验证「真没有」时是 404 而不是空 200
         monkeypatch.setattr(app_env.wa, "current_icon_path", lambda _root, _configured: None)
         assert app_env.client.get("/favicon.ico").status_code == 404
+
+    def test_favicon_rejects_non_ico_configured_path(self, app_env: types.SimpleNamespace) -> None:
+        # 2026-10-30（M-08）读取侧防线：web_tray_icon 指向的文件在回读前必须复验 ICO 魔数。
+        # config.ini 可被绕过面板的手段写入任意绝对路径（手编辑/旧版本面板写入），免鉴权路由
+        # 若照单 FileResponse 等于任意文件读——'***' 掩码只作用于 /api/config 读侧，对响应体不生效。
+        secret_file = Path(app_env.cfg).parent / "secret.txt"
+        secret_file.write_text("COOKIE=leak", encoding="utf-8")
+        cfg: Path = app_env.cfg
+        cfg.write_text(cfg.read_text(encoding="utf-8-sig") + f"web_tray_icon = {secret_file}\n", encoding="utf-8-sig")
+        _ = app_env.wa._invalidate_web_cfg_cache()
+        resp = app_env.client.get("/favicon.ico")
+        assert resp.status_code == 404
+        assert b"COOKIE" not in resp.content

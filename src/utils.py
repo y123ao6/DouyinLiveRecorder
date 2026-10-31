@@ -356,6 +356,10 @@ async def run_node_script_async(script_path: str, *args: str, timeout: float = 3
     # ② 外层 asyncio.wait_for 管 await 侧——线程不可取消，① 一旦不生效（管道被孙进程拖住、有人把
     #    执行方式改回不带超时的形态、Popen 构造本身阻塞）await 就永久挂住。
     # 外层预算刻意与内层同值：调用方拿到的最坏等待就是 timeout。两类超时异常一律**上抛**。
+    # [2026-10-31 L-11 注] 本函数刻意走 asyncio.to_thread 默认池而非 _JS_EXECUTOR 自有池：
+    # 与 run_js_async 的差异在于本函数内层 communicate 必带 timeout 且超时即回收进程树
+    # （_kill_node_process_tree），线程不会被无限拖死，自有池防的「shutdown_default_executor
+    # 300s join」形态在此不成立；两函数为何不同池，以本注为准。
     return await asyncio.wait_for(asyncio.to_thread(_sync_run), timeout=timeout)
 
 
@@ -1071,6 +1075,11 @@ _SECRET_KEYS: tuple[str, ...] = (
     "密钥",
     "秘钥",
     "会话",
+    # 2026-10-30（M-10）：推送接口链接（钉钉/微信/bark）的值是含个人 key 的 URL——bark 形态把
+    # key 放在路径段（https://api.day.app/<key>/…），无 key=value 可匹配，四形态全逃逸；消费点
+    # 虽有 msg_push._mask_url(mask_last_segment=True) 补掩，但新消费点若只依赖 mask_credentials
+    # 即漏。键名入表后由 ini 行形态整行掩值（复核语料 tests/test_utils.py::TestMaskCredentialsCoverage）。
+    "接口链接",
 )
 # 长名排在前面：交替式虽会回溯，但「先试长名」明显减少无谓回溯（sid/sid_guard、token/access_token）。
 # 短名（tk/key/nonce）不得把长名切碎——长名优先 + 右侧紧随的 `=`/`:`/`"` 字面量共同保证「先配长名」，
@@ -1160,7 +1169,13 @@ _SECRET_JSON_RE = re.compile(r'(?i)("(?:' + _SECRET_KEY_ALT + r')"\s*:\s*)("[^"]
 #   · 锚定行首 `^` 且前缀限定为「不含 = 与 : 的短串」（≤40 字符），避免跨语句把日志后半段整段吞掉；
 #   · 值后无分隔符约束（`.+` 到行尾），因为 ini 值允许空格。
 # 该形态必须排在查询串之后：查询串已把 URL 里的 key=value 抹成 *** 时，本形态再抹一次是幂等的。
-_SECRET_INI_LINE_RE = re.compile(r"(?im)^([ \t]*[^\r\n=:]{0,40}?(?i:(?:" + _SECRET_KEY_ALT + r"))\s*=\s*)[^\r\n]*")
+_SECRET_INI_LINE_RE = re.compile(
+    r"(?im)^([ \t]*[^\r\n=:]{0,40}?(?i:(?:" + _SECRET_KEY_ALT + r"))(?:[(（][^\r\n=:]{0,20}[)）])?\s*=\s*)[^\r\n]*"
+)
+# ⑤（CODE_REVIEW_2026-10-30 M-10）：键名判据原先要求凭据词后紧跟 `\s*=`，基线模板真实键
+# 「发件人密码(授权码)」（main.py 读取、SMTP 授权码）因「密码」后有括号尾缀整体逃逸（探针实测
+# 原样返回）。现允许「凭据词 + 至多一段括号注释」再接 =。刻意不放开任意尾缀：那样 presigned=1
+# （sign + 尾缀 "ed"）会被误抹，破坏 tests/test_utils.py 反向棘轮（test_lookalike_keys_are_not_swallowed）。
 # 代理凭据：scheme://user:pass@host 与无 scheme 的 user:pass@host:port（配置项「代理地址」允许两种
 # 写法，后者要过 handle_proxy_addr 才补前缀，故日志里常是裸串）
 _PROXY_CREDENTIAL_RE = re.compile(r"(?i)(://)[^/@\s]+@")

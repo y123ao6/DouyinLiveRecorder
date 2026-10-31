@@ -231,6 +231,9 @@ def display_info() -> None:
                     )
 
                 print("x" * 60)
+                # [2026-10-30 L-03] main.start_display_time 当前无任何生产读取点（仅本处每 5s 回写；
+                # recorder_status 的 uptime 判据已改用 process_start_time，见本文件 get_status 注释）。
+                # 保留写入是为维持 main 模块级状态契约（外部诊断/历史脚本可能读取），删除前须全仓 grep 复核。
                 main.start_display_time = now_time
             consecutive_failures = 0
         except Exception as e:

@@ -57,7 +57,9 @@ def extract_main_version() -> str | None:
     # 故本函数不可能、也不需要报出具体版本号——比对由 pyproject.toml 单点承担。
     # 返回 "HARDCODED" 表示有人把版本又写回了源码；返回 None 表示已是动态读取、无需比对。
     text = _read_text(ROOT / "main.py")
-    if re.search(r'^version:\s*str\s*=\s*["\']v?\d', text, re.MULTILINE):
+    # [2026-10-31 L-11] 锚点原先只匹配带注解形态（^version: str = "…"），裸赋值形态
+    # （^version = "…"）的硬编码版本会整体漏检。注解段改为可选，两种形态都钉。
+    if re.search(r'^version(?:\s*:\s*str)?\s*=\s*["\']v?\d', text, re.MULTILINE):
         return "HARDCODED"  # 标记为仍有硬编码
     return None
 

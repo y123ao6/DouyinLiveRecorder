@@ -2057,6 +2057,12 @@ msgstr "写入 SHA256 缓存失败（不影响本次安装）: {e}"
 msgid "读取 SHA256 缓存失败，跳过校验: {e}"
 msgstr "读取 SHA256 缓存失败，跳过校验: {e}"
 
+msgid "Node.js 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制（请人工核对或删除 {hash_file} 后重试）: {type_name}: {e}"
+msgstr "Node.js 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制（请人工核对或删除 {hash_file} 后重试）: {type_name}: {e}"
+
+msgid "脱敏依赖导入失败，本次备份按原文返回（未脱敏）: {type_name}: {e}"
+msgstr "脱敏依赖导入失败，本次备份按原文返回（未脱敏）: {type_name}: {e}"
+
 # P-1/P-1b（2026-09-22 运行期自动安装的官方哈希优先校验）：src/ffmpeg_install.py 与 src/node_install.py 的新增文案。
 # 占位符集合与调用方关键字实参逐字对齐（masked_url / type_name / err / official / actual / file_name / env）
 msgid "未取得 ffmpeg 官方 SHA256 文档: {masked_url} - {type_name}: {err}"

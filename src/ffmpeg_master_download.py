@@ -861,5 +861,9 @@ if __name__ == "__main__":
     # 目录里带占位符的 msgid 永远匹配不上，翻译会静默退化为原文）。
     print(i18n.tr("detected arch: {a}", a=a))
     for u in _candidate_urls(a):
-        status, _ = _probe(u)
+        status, resp = _probe(u)
         print(f"  [{status}] {u}")
+        # [2026-10-31 L-11] _probe 以 stream=True 发请求：自测块丢弃 ok 响应等于把连接留到 GC，
+        # 连续探测多条候选会占满连接池；用完即关。
+        if resp is not None:
+            resp.close()

@@ -134,6 +134,8 @@ class AdvancedSettingsDialog(QDialog):
                 read_config_snapshot(self.config_file) if os.path.exists(self.config_file) else (None, None)
             )
         except OSError:
+            # [2026-10-30 L-03 备案] read_config_snapshot（gui_qt/shared.py）内部已吞全部 OSError
+            # （以 None 哨兵表示「当时没读到」），本分支按现契约不可达；保留作实现变更时的兜底。
             self._disk_snapshot = None
         self._conflict_hint_shown = False
         self.hint_label.setText("")

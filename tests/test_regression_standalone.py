@@ -371,6 +371,54 @@ class TestWhitelistOpener:
             SA.http_probe("file:///etc/passwd")
 
 
+class TestHttpRequestBodyCapAndMaskedErrors:
+    # M-14/M-13（2026-10-30）：① http_request 响应体读取必须有上限（对齐主线 8MiB）——异常/被劫持
+    # 源不得把长跑进程内存打爆；② 网络层异常文本内嵌的 url 必须 strip_query——RuntimeError 会被
+    # 上层原样写进日志，完整 URL 含 wsSecret 等签名 token，明文落盘违反「写入日志前必须脱敏」红线。
+
+    class _FakeResp:
+        status = 200
+        headers = {"Content-Type": "text/plain"}
+
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        # read(amt) 刻意忽略 amt 一次性全量返回：模拟「对端给多少就读多少」的旧形态，
+        # 上限读取必须靠长度判定拦下，而不是靠分块。
+        def read(self, amt: int = -1) -> bytes:
+            return self._payload
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+    def test_response_body_over_limit_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        big = b"x" * (SA._MAX_RESPONSE_BYTES + 1)
+        monkeypatch.setattr(
+            SA,
+            "_build_opener",
+            lambda proxy=None: types.SimpleNamespace(open=lambda req, timeout=0.0: self._FakeResp(big)),
+        )
+        with pytest.raises(RuntimeError, match="响应体超过"):
+            SA.http_request("https://cdn.example/live.flv?wsSecret=SECRET")
+
+    def test_error_and_probe_texts_do_not_leak_url_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(req: Any, timeout: float = 0.0) -> Any:
+            raise OSError("connection reset")
+
+        monkeypatch.setattr(SA, "_build_opener", lambda proxy=None: types.SimpleNamespace(open=_boom))
+        with pytest.raises(RuntimeError) as req_err:
+            SA.http_request("https://cdn.example/live.flv?wsSecret=SECRET&wsTime=1")
+        assert "wsSecret" not in str(req_err.value)
+        assert "url=https://cdn.example/live.flv" in str(req_err.value)
+        with pytest.raises(RuntimeError) as probe_err:
+            SA.http_probe("https://cdn.example/live.flv?wsSecret=SECRET")
+        assert "wsSecret" not in str(probe_err.value)
+        assert "url=https://cdn.example/live.flv" in str(probe_err.value)
+
+
 class TestRedirectHopGuard:
     # SR-02（2026-10-02）：探针 opener 不得自动跟随重定向且每跳不复检——公网候选 302 到内网/
     # 云元数据时，旧裸 HTTPRedirectHandler 会把跳转请求真的发出去，末位候选的告警放行再把地址

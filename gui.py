@@ -4074,13 +4074,17 @@ class LiveRecorderGUI:
 
         # 剥离 loguru 前缀（控制台格式 "{time} | {level} - {message}"，
         # 文件格式 "{time} | {level} | {module}:{func}:{line} - {message}"）。
-        # 找到最后一个 " | " 后的 " - "，取其后内容作为 message。
+        # [2026-10-31 L-08] 旧实现 rfind(" | ")：主播名/消息含 " | " 时最后一个分隔符落在消息
+        # 内部，" - " 定位随之失配，该房间从画质监控表静默消失且无降级日志。改按字段切分：
+        # 文件行取第三段、控制台行取第二段，再在段内找**首个** " - "——消息内容即便再含
+        # " | "/" - " 也不再参与分隔符定位。
         msg = line
         if " | " in line:
-            pipe_idx = line.rfind(" | ")
-            dash_idx = line.find(" - ", pipe_idx)
+            parts = line.split(" | ", 2)
+            segment = parts[2] if len(parts) == 3 else parts[1]
+            dash_idx = segment.find(" - ")
             if dash_idx > 0:
-                msg = line[dash_idx + 3 :]
+                msg = segment[dash_idx + 3 :]
 
         patterns = _status_patterns()
         # 译稿写坏导致某条模板拼不出可用正则时，语言码变了才重算、才可能出新的 problems，

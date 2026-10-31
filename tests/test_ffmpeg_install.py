@@ -478,7 +478,11 @@ class _Resp:
     ) -> None:
         self.status_code = status_code
         self.text = text
-        self._content = content
+        # M-12：官方哈希文档的读取改走 iter_content 限长分块（不再读 .text）。text 形态的响应必须
+        # 把正文同步给流式通道，否则 doc-200 用例会静默降级成 TOFU（假绿）；encoding 供
+        # node_install._read_small_document_capped 解码用。
+        self._content = content if content else text.encode("utf-8")
+        self.encoding = "utf-8"
         self.headers = headers or {}
 
     def __enter__(self) -> "_Resp":
@@ -1543,6 +1547,18 @@ def _doc_and_zip_requests(
         raise AssertionError(f"测试桩未登记的请求 URL: {url}")
 
     return _requests_shim(fake_get), calls
+
+
+class TestOfficialDocReadCap:
+    # M-12（2026-10-30）：官方哈希小文档按字节限长读取（判据复用 node_install 的单点函数）——
+    # TLS 被拦截/恶意代理前提下，64 字节端点回 GB 级 200 响应不得整份物化进内存。超限必须落
+    # 「未取得官方哈希」既有降级口径（回 "" 走 TOFU），而不是异常穿出入口。
+    def test_over_limit_doc_degrades_to_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(ffmpeg_install, "_OFFICIAL_DOC_MAX_BYTES", 16)
+        stub, calls = _doc_and_zip_requests(doc_text=OFFICIAL_SHA)
+        monkeypatch.setattr(ffmpeg_install, "requests", stub)
+        assert ffmpeg_install._fetch_official_sha256(DOC_URL) == ""
+        assert calls == [DOC_URL]
 
 
 class TestOfficialSha256DocParsing:

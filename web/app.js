@@ -121,6 +121,10 @@
         // MIN-2237：判定顺序必须与后端 is_sensitive_item 逐字对齐——后端的例外表只在键名分支内部
         // 生效，即「敏感节」优先于例外。反例：[Cookie] 抖音cookie有效期 这类「敏感节 + 含有效期」的键
         // 后端脱敏、前端若先短路例外则渲染成明文 text 框（值仍是掩码，但用户会误读成「这项没被保护」）。
+        // [2026-10-31 L-07 备案] 「逐字对齐」与现状有两处已知分叉（CODE_REVIEW_2026-10-30 L-07）：
+        // ① 前端 isSensitiveValue 多一道 scheme 门（URL_VALUE_RE 要求 ^scheme://，后端值形态判定无此要求）；
+        // ② SENSITIVE_SECTIONS[section] 节名判定大小写敏感，后端节匹配大小写不敏感。
+        // 两处分叉方向均为「前端更严」，不构成明文渲染面；对齐属后续改造，不在本批展开。
         if (SENSITIVE_SECTIONS[section]) return true;
         if (NOT_SECRET_KEY_RE.test(key)) return false;
         return SENSITIVE_KEY_RE.test(key);

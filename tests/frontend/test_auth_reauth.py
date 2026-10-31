@@ -35,6 +35,7 @@ def test_auth_reauth() -> None:
     assert summary["fail"] == 0, detail
     assert summary["pass"] > 0, f"node --test 收集到 0 个用例（包装层未真正驱动 .mjs）:\n{stdout}"
     # 本文件锁的是「口令随哪些请求下发」这类逐请求断言，用例数一旦掉下去就是整段被删：
-    # 按既有 13 条设下限（新增用例不必同步本行，删用例才会红）。
-    assert summary["pass"] >= 13, f"认证复验用例数异常偏少（{summary['pass']}），疑似整段丢失:\n{stdout}"
+    # 按既有 14 条设下限（新增用例不必同步本行，删用例才会红）。
+    # [2026-10-31 L-07 更正] 原注释/断言写 13，实测 .mjs 用例数为 14（CODE_REVIEW_2026-10-30）。
+    assert summary["pass"] >= 14, f"认证复验用例数异常偏少（{summary['pass']}），疑似整段丢失:\n{stdout}"
     assert summary["tests"] >= summary["pass"], f"汇总计数自相矛盾: {summary}"

@@ -55,11 +55,14 @@ NO_DATA_HINT = (
 # —— 逐模块覆盖率阈值：本表是唯一事实源，AGENTS.md 只链接到此处、不复制数值。
 # 新模块不必登记（未登记的按 GLOBAL_FLOOR 判），要放宽必须走 COVERAGE_DEBT / GATE_EXEMPT_MODULES。
 MODULE_THRESHOLDS: dict[str, float] = {
-    "src/spider.py": 50,
+    # M-15（2026-10-30）：spider/proxy 原登记 50，GLOBAL_FLOOR 2026-10-24 抬到 60 后这两条静默
+    # 变成「无 tracker/无到期/不受条数上限约束的债务基线」（实测当时 spider 77.1% / proxy 84.8%，
+    # 余量充足）。现抬到与全局下限同值；再要放宽必须走 COVERAGE_DEBT。
+    "src/spider.py": 60,
     "src/stream.py": 70,
     "src/utils.py": 80,
     "src/ttwid.py": 85,
-    "src/proxy.py": 50,
+    "src/proxy.py": 60,
 }
 
 # 未显式登记阈值的模块所用下限。取 60.0 与 pyproject
@@ -235,6 +238,21 @@ def _validate_debt_and_exempt(root: Path, today: str | None = None) -> tuple[lis
     if len(GATE_EXEMPT_MODULES) > EXEMPT_CEILING:
         violations.append(f"豁免条目数 {len(GATE_EXEMPT_MODULES)} 超过上限 {EXEMPT_CEILING}")
 
+    # M-15（2026-10-30）：登记阈值 ≥ GLOBAL_FLOOR，否则必须同时登记 COVERAGE_DEBT 条目——
+    # 2026-10-24 GLOBAL_FLOOR 50→60 抬闸后，低于新下限的旧登记会静默变成「无 tracker/无到期/
+    # 不受条数上限约束的债务基线」（当时 spider/proxy=50 即此形态）。属表配置错误（修复动作是
+    # 改表），故归 config_errors（rc=2）而非 violations（rc=1）。
+    below_floor_without_debt = {
+        module: threshold
+        for module, threshold in MODULE_THRESHOLDS.items()
+        if threshold < GLOBAL_FLOOR and module not in COVERAGE_DEBT
+    }
+    if below_floor_without_debt:
+        config_errors.append(
+            f"登记阈值低于 GLOBAL_FLOOR 且未走债务表: {below_floor_without_debt}；"
+            f"要么抬到 ≥ {GLOBAL_FLOOR:.0f}，要么进 COVERAGE_DEBT（带 tracker/review_by）"
+        )
+
     for module, entry in sorted(COVERAGE_DEBT.items()):
         if not entry.reason.strip():
             config_errors.append(f"{module}: 债务基线缺 reason")
@@ -318,6 +336,9 @@ def _get_coverage_json(data_file: str | None, root: Path = ROOT) -> CoverageData
                 encoding="utf-8",
                 errors="replace",
                 timeout=60,
+                # [2026-10-31 L-11] stdin=DEVNULL：与 run_gates.py 同族防线——子进程读 stdin 时
+                # Windows 下会拿到已关闭的管道句柄炸 WinError 6（run_gates.py:311-313 实证）。
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
             print(f"ERROR: coverage json timed out: {' '.join(cmd)}")

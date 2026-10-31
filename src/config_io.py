@@ -42,7 +42,9 @@ def _rewrite_line_by_match(text_line: str, old_str: str, new_str: str) -> str | 
 # 顺带去重相同行；返回实际生效的字符串，「失败」（含 old_str 一行未命中）返回 old_str 且不落盘。
 # 未命中不得返回 new_str：依赖负信号的调用方（main 的 `update_file(...) or url`、web_api 的
 # 「失败返回 old_str」契约）只认返回值，区分不了「未命中」与「替换成功」。
-def update_file(file_path: str, old_str: str, new_str: str, start_str: str | None = None) -> str | None:
+# [2026-10-31 L-11] 返回注解由 `str | None` 收窄为 `str`：全部出口恒返回 str（未命中按
+# 「负信号」契约返回 old_str，见下），None 分支不存在——旧注解逼调用方做多余判空。
+def update_file(file_path: str, old_str: str, new_str: str, start_str: str | None = None) -> str:
     if old_str == new_str and start_str is None:
         return old_str
     with main.file_update_lock:
@@ -382,7 +384,12 @@ def _redact_ini_secrets(text: str) -> str:
     try:
         from src.config_read import tolerant_config_parser
         from src.web_config import _looks_like_secret_value, is_sensitive_item
-    except ImportError:
+    except ImportError as e:
+        # [2026-10-30 L-07] 旧实现静默返回未脱敏原文，违背本函数上方「解析失败必须显式告警」
+        # 的自述——导入失败（打包裁剪/依赖异常）时降级返回原文必须留痕，否则备份侧无法归因。
+        logger.warning(
+            i18n.tr("脱敏依赖导入失败，本次备份按原文返回（未脱敏）: {type_name}: {e}", type_name=type(e).__name__, e=e)
+        )
         return text
     parser = tolerant_config_parser()
     try:

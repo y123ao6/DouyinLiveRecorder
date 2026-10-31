@@ -382,41 +382,66 @@ CREDENTIAL_FILE_NAMES: tuple[str, ...] = ("config.ini", "URL_config.ini")
 def _sanitized_config_text(text: str, *, fallback_header: str = "") -> str:
     # 把 config.ini 文本按「敏感键置空」重写为可分发模板，保留注释与节结构（产物仍是用户可直接编辑的
     # 模板，而非空文件）。敏感判定复用 src/web_config（is_sensitive_item + _looks_like_secret_value），不另写
-    # 一份正则：那会造出第二份「什么算敏感」的事实源，两侧迟早漂移。用 configparser 而非逐行正则：ini 的
-    # section/key 认法（`=` 与 `:` 均可、键名大小写不敏感）与运行时读取完全一致，不会出现「面板认为敏感、
-    # 打包器不认为」的缝。
+    # 一份正则：那会造出第二份「什么算敏感」的事实源，两侧迟早漂移。
+    # [历史注] M-06（2026-10-30）：原实现用 configparser 逐节重建，头注释却承诺「保留注释与节结构」——
+    # 注释不在 parser 模型内，输出 0 注释（实测源 175 行/11 条注释 → 输出 164 行/0 条），发布 zip 里的
+    # 模板成了无注释裸版。现改按行重写（与 _force_loopback_web_host 同手法）；configparser 仍保留一道
+    # **有效性闸门**——损坏/异构 ini 不得按行原样外发（可能含凭据），维持「解析失败回空白模板」的
+    # fail-closed 语义不变。键/节认法仍对齐 configparser 语义：`=`/`:` 均可、全行注释前缀 #/;、
+    # 缩进行视作上一键的值续行（敏感键的续行同样不得外发）。
     import configparser
 
     from src import web_config
 
-    parser = configparser.ConfigParser(interpolation=None)
-    # 保留键名原样大小写，避免写回时把键名改成小写形态。
-    # 类型注记：ConfigParser 里 optionxform 是方法，实例赋值 str 会触发 mypy [method-assign]/[assignment]；
-    # 这是 configparser 的既知惯用法（CPython 文档亦如此演示），故就地标注忽略，而不是绕开该赋值。
-    parser.optionxform = str  # type: ignore[method-assign,assignment]
+    probe = configparser.ConfigParser(interpolation=None)
     try:
-        parser.read_string(text)
+        probe.read_string(text)
     except configparser.Error:
         # 解析不了（损坏/异构 ini）：**不得**退回「原样复制」——那正是本次要堵的形态。
         # 返回只含表头的空模板，宁可让用户重新填，也不外发可能含凭据的原文。
         return fallback_header or "# config.ini 解析失败，已置为空白模板（原文件未分发）\n"
 
-    lines: list[str] = []
-    for section in parser.sections():
-        lines.append(f"[{section}]")
-        for key, value in parser.items(section):
-            # 空值（未启用）本就不含凭据，原样保留；非空且命中敏感判定的一律置空。判定 =
-            # web_config.is_sensitive_item（节白名单 Cookie/账号密码/Authorization + 键名模式：令牌/密码/
-            # 授权码/token/secret/passwd/password/api_key/推送接口链接/推送地址/代理地址）或
-            # _looks_like_secret_value（兜住「键名正常但值里嵌 token」，与面板脱敏同口径）。
-            if value.strip() and (
-                web_config.is_sensitive_item(section, key) or web_config._looks_like_secret_value(value)
-            ):
-                lines.append(f"{key} = ")
+    # 敏感判定与旧实现逐字同源：非空值且命中 is_sensitive_item（节白名单 Cookie/账号密码/
+    # Authorization + 键名模式：令牌/密码/授权码/token/secret/passwd/password/api_key/推送接口链接/
+    # 推送地址/代理地址）或 _looks_like_secret_value（兜住「键名正常但值里嵌 token」）才置空；
+    # 空值（未启用）本就不含凭据，原样保留。
+    section = ""
+    current_key_sensitive = False
+    out: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            out.append(raw_line)
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+            current_key_sensitive = False
+            out.append(raw_line)
+            continue
+        if stripped.startswith("#") or stripped.startswith(";"):
+            # 全行注释（configparser 同款前缀，缩进与否均算）：原样保留——这是「保留注释」承诺的主体
+            current_key_sensitive = False
+            out.append(raw_line)
+            continue
+        if raw_line[:1] in (" ", "\t"):
+            # 缩进行 = 上一键的值续行（configparser 语义）：敏感键的续行同样不得外发
+            out.append("" if current_key_sensitive else raw_line)
+            continue
+        key_match = re.match(r"^([^=:]+)[=:](.*)$", stripped)
+        if key_match:
+            key = key_match.group(1).strip()
+            value = key_match.group(2).strip()
+            if value and (web_config.is_sensitive_item(section, key) or web_config._looks_like_secret_value(value)):
+                current_key_sensitive = True
+                out.append(f"{key} = ")
             else:
-                lines.append(f"{key} = {value}")
-        lines.append("")
-    return "\n".join(lines).rstrip("\n") + "\n"
+                current_key_sensitive = False
+                out.append(f"{key} = {value}")
+            continue
+        # 非键非节非续行的杂散行：原样透传（configparser 容忍的形态按行保留即可）
+        current_key_sensitive = False
+        out.append(raw_line)
+    return "\n".join(out).rstrip("\n") + "\n"
 
 
 def _sanitized_url_config_text() -> str:
@@ -933,20 +958,23 @@ def _run_gpg(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess
         return None
 
 
-def _verify_official_signature(dest: Path, slot: str, desc: str) -> None:
-    # 未登记签名的槽位（gyan.dev 与 BtbN 均不公布 detached 签名文件）直接返回——跳过是显式状态，不是
+def _verify_official_signature(dest: Path, slot: str, desc: str) -> bool:
+    # 未登记签名的槽位（gyan.dev 与 BtbN 均不公布 detached 签名文件）返回 False——跳过是显式状态，不是
     # 「静默通过」：--strict 仍会因该槽位未钉定而拦下发布。官方签名档槽位（macOS 两槽）以本函数为唯一
     # 完整性判据，故那里不可能走到「跳过」：_is_signature_satisfied 已要求该槽确有登记。
+    # M-07（2026-10-30）：返回值改为 bool 并要求调用方接收——本地路径（非发布、非 strict）下
+    # gpg 缺失/签名取不到时 _skip_or_fail 打「核验跳过」后回 False 不抛，调用方若不看返回值，
+    # 控制流会继续落到「官方签名核验通过」的审计行，两行日志自相矛盾、审计线索失真。
     entry = _RUNTIME_GPG_SIGNATURES.get(runtime_slot_key(), {}).get(slot)
     if entry is None:
-        return
+        return False
     sig_url, fingerprint = entry
     print(f"[build] 核验 {desc} 的官方 GPG 签名（指纹 {fingerprint[-16:]}）")
     # 签名文件只活在临时目录里：落到 target_dir 会被 make_zip 一起打进对外分发包。
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="dlr-gpg-") as tmp:
-        _verify_gpg_artifact(dest, Path(tmp) / "artifact.sig", sig_url, fingerprint, desc)
+        return _verify_gpg_artifact(dest, Path(tmp) / "artifact.sig", sig_url, fingerprint, desc)
 
 
 def _verify_gpg_artifact(
@@ -1407,13 +1435,18 @@ def _download_file(url: str, dest: Path, desc: str, *, slot: str) -> None:
     elif signature_mode:
         # 本档没有可比对的公布哈希：**验签本身**就是完整性判据，不能再挂在「哈希已过」的分支里。
         # _verify_gpg_artifact 对 BADSIG/ERRSIG/指纹不在环内一律 SystemExit，发布路径下
-        # 「gpg 不可用」与「取不到签名文件」同样 SystemExit，因此控制流能走到下一行
+        # 「gpg 不可用」与「取不到签名文件」同样 SystemExit，因此 True 分支里控制流能走到打印
         # 就等于这份产物已由钉定指纹那把钥匙（或其子钥）签出并被 GnuPG 判为 GOOD。
-        _verify_official_signature(dest, slot, desc)
+        # M-07（2026-10-30）：返回值必须接收——本地路径下 _skip_or_fail 打「核验跳过」后回 False
+        # 不抛，旧实现无条件落「核验通过」审计行，与跳过日志自相矛盾。
+        signature_ok = _verify_official_signature(dest, slot, desc)
         # 签名档没有可比对的公布哈希：把实测哈希留在构建日志里作事后审计线索（发布产物版本异常时
         # 唯一的可比对记录）。取数点已是 evermeet 版本化直链（ffmpeg-9.0.2.zip），URL 本身即钉住版本——
         # 旧滚动别名端点只钉得住「谁签的」、钉不住「哪个版本」的历史限制不再成立。
-        print(f"[build] {desc} 官方签名核验通过（{slot}），实测 SHA256={actual}")
+        if signature_ok:
+            print(f"[build] {desc} 官方签名核验通过（{slot}），实测 SHA256={actual}")
+        else:
+            print(f"[build][warn] {desc} 官方签名未通过核验或未能核验（产物不得发布），实测 SHA256={actual}")
     else:
         # 仅本地路径可达（发布路径已在下载前终止）：打出实际哈希，供人工核对官方值后钉定
         print(f"[build][warn] {desc} 未钉定 SHA256，请核对官方值后填入 _PINNED_RUNTIME_SHA256：{actual}")
@@ -2059,11 +2092,13 @@ def _kill_tree(proc: subprocess.Popen[str]) -> None:  # pylint: disable=not-call
     # 产生大量 "Terminate orphan process" 噪声；此处连根拔起避免之。
     pid = proc.pid
     if IS_WIN:
-        # taskkill /T 递归终止进程树，/F 强制；进程已退出时忽略错误
+        # taskkill /T 递归终止进程树，/F 强制；进程已退出时忽略错误。
+        # [2026-10-30 L-04] timeout=30：taskkill 是秒级系统命令，无上限在异常环境会挂住收尾线程。
         _ = subprocess.run(
             ["taskkill", "/T", "/F", "/PID", str(pid)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=30,
         )
         return
     # Unix：kill 整个进程组（子进程已是新会话首领，PGID == PID）。
@@ -2202,26 +2237,30 @@ def smoke_web(timeout: int = 90, port: int = 8000) -> None:
     exe = RELEASE_DIR / f"{APP_NAME}-Web{EXE_SUFFIX}"
     hosts = ("127.0.0.1", "localhost")
     print(f"[smoke:web] 启动 {exe}，探活 http://127.0.0.1:{port}/（最长 {timeout}s）...")
+    # M-05（2026-10-30）：补丁的 with 窗口必须包住整个探活循环（至少到子进程被 _finish 终止）。
+    # 原实现只包住 _launch——finally 的按字节还原在 spawn 后毫秒级执行，而冻结 exe 要经解释器启动
+    # + import 链之后才读配置（秒级之后），补丁对子进程从未生效过（当前模板 web_host=127.0.0.1 恰好
+    # 使补丁字节恒等才没显形）；模板一旦改回 0.0.0.0，无认证时子进程会读到还原值触发 C1 闸门拒绝启动。
     with _loopback_web_host():
         proc = _launch(exe)
-    ok = False
-    start = time.time()
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        while time.time() - start < timeout and proc.poll() is None:
-            for host in hosts:
-                try:
-                    with cast(http.client.HTTPResponse, opener.open(f"http://{host}:{port}/", timeout=3)) as resp:
-                        if resp.status == 200:
-                            ok = True
-                            break
-                except Exception:
-                    continue
-            if ok:
-                break
-            time.sleep(1)
-    finally:
-        _finish(proc, "web", expect_alive=True)
+        ok = False
+        start = time.time()
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            while time.time() - start < timeout and proc.poll() is None:
+                for host in hosts:
+                    try:
+                        with cast(http.client.HTTPResponse, opener.open(f"http://{host}:{port}/", timeout=3)) as resp:
+                            if resp.status == 200:
+                                ok = True
+                                break
+                    except Exception:
+                        continue
+                if ok:
+                    break
+                time.sleep(1)
+        finally:
+            _finish(proc, "web", expect_alive=True)
     if not ok:
         raise RuntimeError(f"[smoke:web] {timeout}s 内 HTTP 探活失败（端口 {port} 被占用或启动过慢也会导致此错误）")
     print("[smoke:web] HTTP 探活成功 ✅")

@@ -940,3 +940,27 @@ class TestMin2219InternalTargetGuard:
         # 本模块不得自带第二套 ipaddress/网段常量——那才是真的「两处口径不一致」
         assert "import ipaddress" not in text
         assert "169.254" not in text.split("_internal_stream_target_reason")[0], "内网常量不得在本模块另立"
+
+
+class TestDirectAsyncClientHopGuardWiring:
+    # M-04（2026-10-30）结构锁：src/ 与根目录 .py 里的 `httpx.AsyncClient(` 构造点必须挂
+    # event_hooks（逐跳复检钩子 _build_hop_guard 的载体）。钩子唯一产地是 async_http._build_client
+    # （它自身含 event_hooks，故天然满足）；room.py 两个直建 GET 点与 spider.py 的 popkontv 登录
+    # POST 点经 M-04 接线后同判据——再新增直建点漏挂钩子即本锁转红。
+    def test_every_direct_client_creation_attaches_the_hop_guard(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        targets = [*root.glob("src/**/*.py"), *root.glob("*.py")]
+        offenders: list[str] = []
+        for path in targets:
+            text = path.read_text(encoding="utf-8")
+            search_from = 0
+            while True:
+                match_at = text.find("httpx.AsyncClient(", search_from)
+                if match_at < 0:
+                    break
+                search_from = match_at + 1
+                # 构造参数窗口：直建点均为多行调用，400 字符内必含 event_hooks（_build_client 同样）
+                if "event_hooks" not in text[match_at : match_at + 400]:
+                    line_no = text.count("\n", 0, match_at) + 1
+                    offenders.append(f"{path.name}:{line_no}")
+        assert not offenders, f"直建 AsyncClient 未挂逐跳复检钩子（event_hooks）: {offenders}"

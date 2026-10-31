@@ -41,9 +41,6 @@ DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 )
 
-# 缓存自动获取的抖音 ttwid（已委托给共享 ttwid.py 模块，保留变量兼容旧引用）
-_cached_ttwid: str = ""
-
 
 # 2026-10-21 M-43：调用方头的合并必须以 HEADERS 为**基底逐键补齐**，不得整组替换。
 # 旧判据 `if not headers or all(k.lower() not in ["user-agent", "cookie"] for k in headers)`
@@ -109,10 +106,10 @@ def _outbound_target_reason(url: str, proxy_addr: str | None) -> str | None:
 
 async def _ensure_douyin_ttwid(proxy_addr: str | None = None) -> str:
     # 委托给共享 ttwid.py 模块（带 threading.Lock 跨线程去重），
-    # 解决多线程并发时重复拉取 ttwid 触发风控的问题
-    global _cached_ttwid
+    # 解决多线程并发时重复拉取 ttwid 触发风控的问题。
+    # [2026-10-30 L-03] 本模块的 _cached_ttwid 镜像变量已删除：全仓无任何读取点（ttwid.py 自己的
+    # 同名镜像才是真缓存），「兼容旧引用」的原注释为失实陈述。
     result = await _shared_get_ttwid(proxy_addr)
-    _cached_ttwid = result  # 同步本地缓存
     return result
 
 
@@ -147,7 +144,17 @@ async def get_sec_user_id(
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
         # 必须传 verify=http_config.ssl_verify：原先未传、httpx 默认恒校验，用户在 config.ini
         # 关闭证书校验后，抖音解析链路（sec_user_id / unique_id / web_rid）仍会因证书问题失败
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15, verify=http_config.ssl_verify) as client:
+        # M-04（2026-10-30）：直建点必须挂与 async_http._build_client 同一逐跳复检钩子——
+        # follow_redirects=True 下「公网短链 → 302 → 内网/元数据」的跳转落点原本不被复检。
+        # 函数内 import：与上方 _outbound_target_reason 同理由（本模块不做 async_http 模块级依赖）。
+        from .async_http import _build_hop_guard
+
+        async with httpx.AsyncClient(
+            proxy=proxy_addr,
+            timeout=15,
+            verify=http_config.ssl_verify,
+            event_hooks={"response": [_build_hop_guard(proxy_addr)]},
+        ) as client:
             response = await client.get(url, headers=headers, follow_redirects=True)
             redirect_url = response.url
             if "reflow/" in str(redirect_url):
@@ -253,7 +260,16 @@ async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict[s
 
     try:
         proxy_addr = utils.handle_proxy_addr(proxy_addr)
-        async with httpx.AsyncClient(proxy=proxy_addr, timeout=15, verify=http_config.ssl_verify) as client:
+        # M-04（2026-10-30）：逐跳复检钩子与 get_sec_user_id 同批接线（理由见彼处注释）；
+        # follow_redirects=True 的跳转落点必须逐跳复检。
+        from .async_http import _build_hop_guard
+
+        async with httpx.AsyncClient(
+            proxy=proxy_addr,
+            timeout=15,
+            verify=http_config.ssl_verify,
+            event_hooks={"response": [_build_hop_guard(proxy_addr)]},
+        ) as client:
             # 快速路径：网页端主页链接的 sec_user_id 已在路径中，无需发请求跟随重定向，
             # 可省去一次约 70KB 的主页 HTML 下载。
             sec_user_id = extract_sec_user_id(url) if is_user_homepage_url(url) else ""

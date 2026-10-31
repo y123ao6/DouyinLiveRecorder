@@ -15,6 +15,7 @@
 
 import hashlib
 import io
+import json
 import os
 import platform
 import stat
@@ -103,14 +104,23 @@ def _tar_xz(members: dict[str, bytes], *, mode: int = 0o755) -> bytes:
 
 def _digest_resp(digest: str | None) -> Any:
     # digest=None → 模拟 API 不可达（403 限流是本模块降级分支最常见的真实成因）。
+    payload = {"assets": [{"name": fld._asset_name(LINUXARM64_URL), "digest": f"sha256:{digest}"}]}
+
     class _Resp:
         status_code = 200 if digest is not None else 403
+        encoding = "utf-8"
 
         @staticmethod
         def json() -> dict[str, Any]:
             # asset 名必须经 fld._asset_name 现取、不得手写常量：被测实现拿 URL basename 比对 name，
             # 测试里另抄一份名字就会变成「名字对不上 → 恒回 ""」的同源假绿。
-            return {"assets": [{"name": fld._asset_name(LINUXARM64_URL), "digest": f"sha256:{digest}"}]}
+            return payload
+
+        @staticmethod
+        def iter_content(chunk_size: int) -> Any:
+            # M-12：生产读取改走「限长分块」（_read_small_document_capped），替身同步提供分块形态：
+            # 单块交出全部字节（≤ 上限的常规形态；超限形态由 TestApiDocCap 另钉）。
+            return iter([json.dumps(payload).encode("utf-8")])
 
     return _Resp()
 
@@ -170,12 +180,21 @@ def _requests_shim(get_fn: Any) -> Any:
 def _json_resp(status_code: int, payload: Any) -> Any:
     # 可配「状态码 + 任意 JSON 载荷」的 API 响应替身：payload 给非 dict 就是在钉 _payload_assets
     # 的形态归一，给 dict 就是常规 digest 通道；两条都走真实判定链，不伪造返回值。
+    payload_json = json.dumps(payload).encode("utf-8")
+
     class _Resp:
+        encoding = "utf-8"
+
         def __init__(self) -> None:
+            # status_code 必须在 __init__（普通闭包函数体）里赋值：类体内的 LOAD_NAME 看不到外层形参
             self.status_code = status_code
 
         def json(self) -> Any:
             return payload
+
+        def iter_content(self, chunk_size: int) -> Any:
+            # M-12：生产读取改走限长分块，替身同步提供分块形态（单块交出全部字节）。
+            return iter([payload_json])
 
     return _Resp()
 
@@ -353,10 +372,22 @@ class TestUrlParityWithBuildExe:
 
         class _Resp:
             status_code = 200
+            encoding = "utf-8"
 
             @staticmethod
             def json() -> dict[str, Any]:
                 return {"assets": [{"name": fld._asset_name(LINUXARM64_URL), "digest": f"sha256:{pinned}"}]}
+
+            @staticmethod
+            def iter_content(chunk_size: int) -> Any:
+                # M-12：生产读取改走限长分块，替身同步提供分块形态（单块交出全部字节）。
+                return iter(
+                    [
+                        json.dumps(
+                            {"assets": [{"name": fld._asset_name(LINUXARM64_URL), "digest": f"sha256:{pinned}"}]}
+                        ).encode("utf-8")
+                    ]
+                )
 
         monkeypatch.setattr(fld, "requests", _requests_shim(lambda *a, **kw: _Resp()))
         assert fld._fetch_asset_digest(LINUXARM64_URL) == pinned
@@ -432,6 +463,17 @@ class TestDigestPayloadShape:
         assert baseline.is_file()
         # 基准记的必须是**实算**哈希；响应里那条 b*64 若被当成期望值或基准，下一轮就自证合法了。
         assert baseline.read_text(encoding="ascii") == hashlib.sha256(payload).hexdigest()
+
+
+class TestApiDocCap:
+    # M-12（2026-10-30）：GitHub API 应答必须按字节限长读取（判据复用 node_install 的单点函数）——
+    # 被投毒的超大应答不得整份物化。超限必须落「取不到官方哈希」既有降级口径（回 ""），而不是
+    # 把异常穿出入口（那会被入口 catch-all 偷换成 fatal）。
+    def test_over_limit_response_degrades_to_empty_digest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(fld, "_OFFICIAL_DOC_MAX_BYTES", 16)
+        body = {"assets": [{"name": fld._asset_name(LINUXARM64_URL), "digest": "sha256:" + "d" * 64}]}
+        monkeypatch.setattr(fld, "requests", _requests_shim(lambda *a, **kw: _json_resp(200, body)))
+        assert fld._fetch_asset_digest(LINUXARM64_URL) == ""
 
 
 class TestApiStatusGate:

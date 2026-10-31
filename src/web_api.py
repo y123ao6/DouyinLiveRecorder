@@ -72,11 +72,13 @@ from starlette.staticfiles import StaticFiles
 import i18n as i18n_module
 from src.logger import logger
 from src.ui_icons import (
+    MAX_ICON_BYTES,
     WEB_ICON_KEY,
     WEB_SECTION,
     current_icon_path,
     install_icon_bytes,
     load_icon_preference,
+    probe_ico_sizes,
     save_icon_preference,
     validate_icon_bytes,
 )
@@ -321,6 +323,11 @@ _DANGEROUS_CONFIG_KEYS = {
     "是否录制完成后执行自定义脚本",
     "web_trusted_proxy",
     "web_allowed_hosts",
+    # 2026-10-30（M-08）：本键即 favicon 路由（免鉴权）的图标路径源（WEB_ICON_KEY）。经面板写成
+    # 任意绝对路径后，GET /favicon.ico 会把该文件原文回给持会话者——raw config.ini 的 Cookie/口令
+    # 经此整条绕开读侧 '***' 掩码与写侧危险键拦截。正常导入图标走 /api/icon → save_icon_preference
+    # （直写 config，不经 /api/config 守卫），入黑名单不影响该路径。
+    "web_tray_icon",
 }
 # casefold 后的黑名单：行匹配大小写不敏感（re.IGNORECASE），黑名单判定须同等强度，否则 ASCII 键
 # web_* 的大小写变体可绕过。
@@ -1035,7 +1042,11 @@ def create_app(
             for r in rooms:
                 if r["url"] == url:
                     old_raw = cast(str, r["raw_line"]).rstrip("\n").rstrip("\r")
-                    content = old_raw.lstrip("#").strip()
+                    # 2026-10-30（M-09）：缩进注释行（「  # url」）上 lstrip("#") 剥不动前导空白，
+                    # content 仍以 # 开头——enable 写回后仍是注释行却报 enabled:true（假成功，房间
+                    # 永不录制），disable 则写出「# # url」双注释。对齐 web_config._rewrite_quality_field
+                    # 的行首前缀解析：整体剥掉「缩进 + # + 可选空白」。
+                    content = re.sub(r"^\s*#\s*", "", old_raw)
                     new_raw = content if req.enable else "# " + content
                     # 与 update_room 同款——不再无条件回报成功。写入失败（只读/占用/
                     # 磁盘满）时旧实现仍回 {"ok": true}，面板显示状态翻转而文件字节未变。
@@ -1046,7 +1057,10 @@ def create_app(
                     )
                     after = parse_url_config(cast(str, app.state.url_config_file))
                     target = next((rr for rr in after if rr["url"] == url), None)
-                    if target is None or cast(str, target["raw_line"]).rstrip("\n").rstrip("\r") != new_raw:
+                    # 2026-10-30（M-09）：写后验证改为语义判定（重解析出的 enabled 必须等于请求方向）。
+                    # 只比「raw_line == new_raw」文本相等证明不了启用态真的翻转——正是缩进注释行
+                    # 假成功从这道验证漏过的原因。
+                    if target is None or cast(bool, target["enabled"]) != req.enable:
                         _log_internal_error(_ROOM_UPDATE_ERROR_CODE)
                         raise HTTPException(500, _ROOM_UPDATE_ERROR_CODE)
                     return {"ok": True, "enabled": req.enable}
@@ -1252,11 +1266,14 @@ def create_app(
         # 反向边界：其余 Web 键（web_host/web_port/web_allowed_hosts…）与其他节的键一律不受本条影响，
         # 否则「改个端口也要复验」会逼人绕过面板手改文件。
         if is_web_section and key_norm in ("web_auth_enable", "web_password"):
-            if current_cfg is None:
-                current_cfg = dict(_read_web_config_cached(cast(str, app.state.config_file)))
-            if cast(bool, current_cfg["web_auth_enable"]):
+            # L-03（2026-10-30）：旧「current_cfg is None → 改读 _read_web_config_cached」回退分支
+            # 不可达——上方同键集的超集分支（web_auth_enable/web_password/web_host）必然已从磁盘现值
+            # 赋值 current_cfg；且该回退读的是缓存，与「判定基准必须是磁盘现值」的不变量注释矛盾
+            # （回归锁 TestInsecureBindInvariantUsesRealAddress）。现以 cast 收窄替代死分支。
+            _reauth_cfg = cast("dict[str, str | int | bool]", current_cfg)
+            if cast(bool, _reauth_cfg["web_auth_enable"]):
                 _reauth = (req.reauth_password or "").strip()
-                _stored_pwd = str(cast(object, current_cfg["web_password"]) or "")
+                _stored_pwd = str(cast(object, _reauth_cfg["web_password"]) or "")
                 if not _reauth or not verify_web_password(_reauth, _stored_pwd):
                     # 只记键名与失败原因，绝不记口令（logs/ 轮转保留多份＝凭据长期落盘）
                     _log_internal_error(f"auth_reauth_denied: key={key_norm}", level="warning")
@@ -1482,6 +1499,19 @@ def create_app(
         configured = load_icon_preference(config_file, WEB_SECTION, WEB_ICON_KEY)
         resolved = current_icon_path(Path(config_file).parent.parent, configured)
         if resolved is None:
+            raise HTTPException(status_code=404, detail="not_found")
+        # 2026-10-30（M-08）读取侧防线：resolve_icon_path 对绝对路径只做 is_file 判定，而本路由免鉴权。
+        # config.ini 若被绕过面板的手段写入任意路径（手编辑/旧版本面板写入），这里会把该文件原文回给
+        # 请求方——'***' 掩码只作用于 /api/config 读侧，对响应体不生效。回读前复验体积与 ICO 魔数：
+        # 非 ICO 一律 404（浏览器回落默认图标，与「未配置」等价）；上传/导入侧判据仍是 validate_icon_bytes。
+        try:
+            if resolved.stat().st_size > MAX_ICON_BYTES:
+                raise HTTPException(status_code=404, detail="not_found")
+            payload = resolved.read_bytes()
+        except OSError as e:
+            # resolve 与回读之间文件被删/被占：按「无可用图标」404，与上游 None 同形
+            raise HTTPException(status_code=404, detail="not_found") from e
+        if probe_ico_sizes(payload) is None:
             raise HTTPException(status_code=404, detail="not_found")
         # no-cache：图标可被用户随时替换，让浏览器每次回源（前端另加时间戳参数破缓存，
         # 这里是给「直接访问 /favicon.ico」的场景兜底）。

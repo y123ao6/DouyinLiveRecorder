@@ -149,12 +149,12 @@ def split_env_prefix(line: str) -> tuple[dict[str, str], str]:
         rest = rest[m.end() :]
 
 
-def extract_gate_env(agants_path: Path) -> dict[str, str]:
+def extract_gate_env(agents_path: Path) -> dict[str, str]:
     # 收集门禁块里声明的全部行首环境变量（多次声明以最后一次为准）。
     # 与 extract_gate_commands 读同一份围栏，故不会引入第二份事实源。
-    if not agants_path.exists():
+    if not agents_path.exists():
         return {}
-    lines = agants_path.read_text(encoding="utf-8").splitlines()
+    lines = agents_path.read_text(encoding="utf-8").splitlines()
     span = _section_span(lines)
     if span is None:
         return {}
@@ -168,13 +168,13 @@ def extract_gate_env(agants_path: Path) -> dict[str, str]:
     return env
 
 
-def _diagnose_empty_source(agants_path: Path) -> str:
+def _diagnose_empty_source(agents_path: Path) -> str:
     # 当 extract_gate_commands 返回空清单时，给出**具体的章节漂移诊断**。
     # 把「rc=2 但只给一句笼统提示」细化到「哪个解析步骤断了」：文件不存在、章节标题漂移、
     # 缺 bash 围栏、围栏内容为空——四种失败模式各有不同修法，诊断必须指向具体动作。
-    if not agants_path.exists():
-        return f"文件不存在: {agants_path}"
-    lines = agants_path.read_text(encoding="utf-8").splitlines()
+    if not agents_path.exists():
+        return f"文件不存在: {agents_path}"
+    lines = agents_path.read_text(encoding="utf-8").splitlines()
     span = _section_span(lines)
     if span is None:
         # 尝试发现近似标题（如「## 格式化命令」被改成「## 格式化命令表」以外的名字）
@@ -192,12 +192,12 @@ def _diagnose_empty_source(agants_path: Path) -> str:
     return "原因未知：解析函数返回空但章节/围栏/命令行均存在"
 
 
-def extract_gate_commands(agants_path: Path) -> list[str]:
+def extract_gate_commands(agents_path: Path) -> list[str]:
     # 从 AGENTS.md「格式化命令」章节的第一个 bash 代码块逐行提取门禁命令。
     # 返回按原顺序排列的命令字符串列表；章节缺失时返回空列表，交调用方判定 rc=2。
-    if not agants_path.exists():
+    if not agents_path.exists():
         return []
-    lines = agants_path.read_text(encoding="utf-8").splitlines()
+    lines = agents_path.read_text(encoding="utf-8").splitlines()
 
     span = _section_span(lines)
     if span is None:

@@ -610,6 +610,8 @@
 'Node.js zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。': 'Node.js zip SHA256 與上次記錄不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本變更。請刪除 {hash_file} 後重試，或手動下載校驗。'
 '写入 SHA256 缓存失败（不影响本次安装）: {e}': '寫入 SHA256 快取失敗（不影響本次安裝）: {e}'
 '读取 SHA256 缓存失败，跳过校验: {e}': '讀取 SHA256 快取失敗，跳過校驗: {e}'
+'Node.js 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制（请人工核对或删除 {hash_file} 后重试）: {type_name}: {e}': 'Node.js 的 SHA256 基準檔案存在但讀取失敗，拒絕安裝未校驗的二進位檔（請人工核對或刪除 {hash_file} 後重試）: {type_name}: {e}'
+'脱敏依赖导入失败，本次备份按原文返回（未脱敏）: {type_name}: {e}': '脫敏依賴匯入失敗，本次備份按原文返回（未脫敏）: {type_name}: {e}'
 '未取得 ffmpeg 官方 SHA256 文档: {masked_url} - {type_name}: {err}': '未取得 ffmpeg 官方 SHA256 文件: {masked_url} - {type_name}: {err}'
 'ffmpeg 官方 SHA256 文档内容不是合法的 64 位十六进制摘要（上游形态可能已变更）: {masked_url}': 'ffmpeg 官方 SHA256 文件內容不是合法的 64 位十六進制摘要（上游形態可能已變更）: {masked_url}'
 'ffmpeg 官方源 zip 与官方公布的 SHA256 不一致，拒绝安装（官方 {official} vs 实际 {actual}）：{masked_url}。可能是 CDN/中间人替换，或下载期间上游又发了新构建（稍后重试即可）。': 'ffmpeg 官方源 zip 與官方公布的 SHA256 不一致，拒絕安裝（官方 {official} vs 實際 {actual}）：{masked_url}。可能是 CDN/中間人替換，或下載期間上游又發了新構建（稍後重試即可）。'

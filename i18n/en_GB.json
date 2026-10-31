@@ -568,6 +568,8 @@
   "Node.js zip SHA256 与上次记录不一致（{expected} vs {actual}）。可能 CDN 被篡改或版本变更。请删除 {hash_file} 后重试，或手动下载校验。": "Node.js zip SHA256 differs from last record ({expected} vs {actual}). CDN may be tampered or version changed. Please delete {hash_file} and retry, or download manually for verification.",
   "写入 SHA256 缓存失败（不影响本次安装）: {e}": "Failed to write SHA256 cache (does not affect current install): {e}",
   "读取 SHA256 缓存失败，跳过校验: {e}": "Failed to read SHA256 cache, skipping verification: {e}",
+  "Node.js 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制（请人工核对或删除 {hash_file} 后重试）: {type_name}: {e}": "Node.js SHA256 baseline file exists but cannot be read; refusing to install the unverified binary (verify manually or delete {hash_file} and retry): {type_name}: {e}",
+  "脱敏依赖导入失败，本次备份按原文返回（未脱敏）: {type_name}: {e}": "Secret-redaction dependency import failed; this backup is returned as-is (unredacted): {type_name}: {e}",
   "未取得 ffmpeg 官方 SHA256 文档: {masked_url} - {type_name}: {err}": "Failed to obtain the official ffmpeg SHA256 document: {masked_url} - {type_name}: {err}",
   "ffmpeg 官方 SHA256 文档内容不是合法的 64 位十六进制摘要（上游形态可能已变更）: {masked_url}": "The official ffmpeg SHA256 document is not a valid 64-character hexadecimal digest (the upstream format may have changed): {masked_url}",
   "ffmpeg 官方源 zip 与官方公布的 SHA256 不一致，拒绝安装（官方 {official} vs 实际 {actual}）：{masked_url}。可能是 CDN/中间人替换，或下载期间上游又发了新构建（稍后重试即可）。": "The ffmpeg zip from the official source does not match the officially published SHA256; installation refused (official {official} vs actual {actual}): {masked_url}. The CDN may have been replaced by a man-in-the-middle, or upstream published a new build while we were downloading (just retry later).",

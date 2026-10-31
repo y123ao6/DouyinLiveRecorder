@@ -45,7 +45,6 @@ from .utils import is_valid_zip, unzip_file
 
 current_platform = platform.system()
 execute_dir = script_path  # 冻结后指向 _internal/，与 __file__ 定位的资源收敛到同一处
-current_env_path = os.environ.get("PATH", "")
 
 
 # 分块计算文件 SHA256（二进制下载完整性校验用）。实现已下沉到 src.utils.sha256_of_file，此处为薄封装。
@@ -217,11 +216,29 @@ def _check_or_record_zip_sha256(zip_path: Path, official_hash: str = "", source_
         )
     )
     if hash_file.exists():
+        # M-11（2026-10-30）：与 ffmpeg 三链的 fail-closed 裁决对齐（ffmpeg_install 同分支 L-44 已
+        # 统一口径）。基准**存在**却读不出来 = 本机那份可信基准处于不可信状态，必须删包拒装；旧实现
+        # warning 后 return True 放行——官方文档不可达时 TOFU 是最后一道完整性检查，磁盘异常令其
+        # 静默失效。UnicodeDecodeError 必须并捕：ascii 解码失败旧实现穿到外层 catch-all 被归成泛化
+        # 「安装失败」，fail-closed 分支整个被跳过、用户失去自救入口。需要 as 绑定取 type(e)/e，
+        # 按 AGENTS except 约定回退加括号形态。
         try:
             expected = hash_file.read_text(encoding="ascii").strip().lower()
-        except OSError as e:
-            logger.warning(i18n.tr("读取 SHA256 缓存失败，跳过校验: {e}", e=e))
-            return True
+        except (OSError, UnicodeDecodeError) as e:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+            logger.error(
+                i18n.tr(
+                    "Node.js 的 SHA256 基准文件存在但读取失败，拒绝安装未校验的二进制"
+                    "（请人工核对或删除 {hash_file} 后重试）: {type_name}: {e}",
+                    hash_file=str(hash_file),
+                    type_name=type(e).__name__,
+                    e=e,
+                )
+            )
+            return False
         if expected != current_hash:
             logger.error(
                 i18n.tr(
@@ -341,7 +358,10 @@ def install_nodejs_windows() -> bool:
         # 仅当解压出的原目录存在、且目标 "node" 目录尚不存在时才重命名；已存在则走下方验证分支（避免覆盖/重复）。
         if Path(extract_dir_path).exists() and not Path(new_extract_dir_path).exists():
             os.rename(extract_dir_path, new_extract_dir_path)
-            os.environ["PATH"] = os.path.join(execute_dir, "node") + os.pathsep + current_env_path
+            # [2026-10-31 L-11] PATH 注入改现读现拼：导入期快照（原 current_env_path）会把
+            # 「导入之后、安装之前」其他组件对 PATH 的修改（如 ffmpeg 侧 prepend_to_path_env
+            # 已收口的同族形态）整段覆盖丢失。
+            os.environ["PATH"] = os.path.join(execute_dir, "node") + os.pathsep + os.environ.get("PATH", "")
             # M-29 partial（2026-10-21）：execute_dir\node 是**用户可写目录**，前置进 PATH 后按裸名
             # "node" 调用要靠 PATH 的延迟解析——谁能在调用前一刻改写该目录/PATH，复核目标就被换掉。
             # 本轮只做有界的一半：前置之后立刻用 shutil.which **一次性**解析出绝对路径并按它调用，

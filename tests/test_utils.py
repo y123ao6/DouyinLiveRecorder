@@ -574,6 +574,12 @@ class TestMaskCredentialsCoverage:
             ('{"sign": 1}', ": 1"),
             # ④：中文凭据键
             ("密码=abcdef", "abcdef"),
+            # ⑤（2026-10-30 M-10）：凭据词带括号注释尾缀——基线模板真实键「发件人密码(授权码)」，
+            # 「密码」后有 "(授权码)" 尾缀，旧判据要求凭据词紧跟 = 整体逃逸（探针实测原样返回）
+            ("发件人密码(授权码) = SMTP_SECRET_PASS", "SMTP_SECRET_PASS"),
+            # ⑤：推送接口链接的值是含个人 key 的 URL，bark 形态 key 在路径段、无 key=value 可匹配，
+            # 键名入表后由 ini 行形态整行掩值
+            ("bark推送接口链接 = https://api.day.app/BARKKEY/ti", "BARKKEY"),
         ],
     )
     def test_s07_ini_short_key_and_json_numeric_forms_are_masked(self, raw: str, secret: str) -> None:

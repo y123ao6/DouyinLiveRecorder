@@ -12,7 +12,7 @@ body:
     attributes:
       label: ⚠️ 搜索是否存在类似issue
       description: >
-        🔍 [点击这里搜索历史issue](https://github.com/ihmily/DouyinLiveRecorder/issues?q=is%3Aissue) 使用关键词搜索，确保没有重复的issue。
+        🔍 [点击这里搜索历史issue](https://github.com/y123ao6/DouyinLiveRecorder/issues?q=is%3Aissue) 使用关键词搜索，确保没有重复的issue。
       options:
         - label: 我已经搜索过issues，没有发现相似issue
           required: true

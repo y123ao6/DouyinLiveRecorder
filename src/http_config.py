@@ -3,6 +3,9 @@
 
 # 控制面 SSL 证书验证开关：登录 / 取 Cookie / 推送 token / 平台 API 等非拉流请求，默认启用。
 # 由 async_http / sync_http / spider 在发起请求时按属性读取，改写走 set_ssl_verify()。
+# [2026-10-31 L-07 更正] 上句消费方清单与现状不符（2026-10-31 grep 实测）：生产读侧为
+# async_http / stream_select / main；spider 不直接 import 本模块（经 async_http 间接生效）；
+# sync_http 虽仍 import 但该模块自身已无生产 importer（仅测试引用）。
 # 安全边界：**不与**「是否启用https录制」联动——否则一个拉流选项会放大成全站 TLS 降级
 # （含登录与凭据推送）；拉流豁免只落在 stream_ssl_verify。
 # [历史注] 旧实现正是 set_ssl_verify(not enable_https_recording) 的联动写法。
