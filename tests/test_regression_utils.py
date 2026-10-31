@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 2026-09-22 审查报告 / 组 C（src/utils.py + src/web_config.py + src/config_io.py + msg_push.py）回归锁。
+# 组 C（src/utils.py + src/web_config.py + src/config_io.py + msg_push.py）回归锁。
 #
 # 判据一律落在「失效形态本身」，而不是「调用了某个函数」：
 #   SEV-2210  mask_credentials() 对 camelCase / 全小写复合凭据键必须让**原值消失**，并给出变异判据；
@@ -36,7 +36,6 @@ from src.utils import _SECRET_KEYS, mask_credentials
 
 # ────────────────────────────────────────────────────────────
 # SEV-2210：camelCase / 全小写复合凭据键的掩码覆盖
-# ────────────────────────────────────────────────────────────
 
 # (原文, 必须消失的凭据值)。每条都对应一个曾经的漏抹路径：
 #   · 驼峰复合键（accessToken / wsAuth / msToken / verifyFp / idToken / refreshToken / tk）
@@ -59,14 +58,12 @@ _CAMEL_LEAK_CASES: list[tuple[str, str]] = [
     ("https://p.example/a.flv?csrfToken=LEAKCSRF&t=1", "LEAKCSRF"),
     # 请求头形态的驼峰键（Authorization 已覆盖，这里锁 wsAuth 的 header 写法）
     ("wsAuth: LEAKHEADERWSAUTH", "LEAKHEADERWSAUTH"),
-    # M-17（2026-09-30）：header 形态、整段键名不在 _SECRET_KEYS 黑名单、只能靠驼峰边界分支
-    # 命中的复合键。修复前 _SECRET_HEADER_RE 的 guard 错挂在驼峰分支上（与 (?<=[a-z]) 同位置
-    # 互斥、分支恒死），这三条全部明文落日志；修复后值必须消失。
+    # header 形态、整段键名不在 _SECRET_KEYS 黑名单：只能靠驼峰边界分支命中的复合键；修复后值必须消失。
+    # [历史注] 修复前 _SECRET_HEADER_RE 的 guard 错挂在驼峰分支上（与 (?<=[a-z]) 同位置互斥、分支恒死），三条曾明文落日志。
     ("myToken: LEAKHEADERMYTOK", "LEAKHEADERMYTOK"),
     ("sessionKey: LEAKSESSKEY", "LEAKSESSKEY"),
     ("newCamelKey: LEAKNEWCAMELHDR", "LEAKNEWCAMELHDR"),
-    # M-17 配套边界（2026-09-30）：shell 命令串里的带引号 header——键名前恰是引号，
-    # 独立参数分支不得加 quote 排除（排除即此形态重新漏抹，tests/test_notify_script_guard.py 全组同证）
+    # 配套边界：shell 命令串里的带引号 header——键名前恰是引号，独立参数分支不得加 quote 排除（排除即此形态重新漏抹，tests/test_notify_script_guard.py 全组同证）
     ('--header "Authorization: Bearer LEAKQUOTEDBEARER"', "LEAKQUOTEDBEARER"),
     # JSON 体形态的驼峰键：键名整体被引号包裹、边界由闭合引号给出（(?i) 下 "accessToken" 与
     # "accesstoken" 同形）——与下面 _PUBLIC_UNTOUCHED 的反向棘轮分属两条判据，改任一侧须两边同看。
@@ -136,7 +133,6 @@ class TestCamelCaseCredentialLeak:
 
 # ────────────────────────────────────────────────────────────
 # SEV-2211：面板配置写入必须是 utils.atomic_write_text 的薄封装
-# ────────────────────────────────────────────────────────────
 
 
 class TestWebConfigDelegatesToUtilsAtomicWrite:
@@ -155,8 +151,7 @@ class TestWebConfigDelegatesToUtilsAtomicWrite:
         original = wc.atomic_write_text
         wc.atomic_write_text = _spy  # type: ignore[assignment]
         try:
-            # 只验证「调用被转发」：用不存在的路径，spy 返回 True 且真实实现不会被触达，
-            # 故本用例不落任何文件（旧写法用 src/ 下的固定名会污染工作区）。
+            # 只验证「调用被转发」：用不存在的路径，spy 返回 True 且真实实现不会被触达，故本用例不落任何文件（旧写法用 src/ 固定名会污染工作区）。
             target = Path("__never_written_by_regression_test__.ini")
             assert wc._atomic_write_text(target, "payload") is True
         finally:
@@ -220,7 +215,7 @@ class TestWebConfigDelegatesToUtilsAtomicWrite:
             t.start()
         for t in threads:
             t.join(timeout=10)
-        # 审查 7.11（2026-10-18）：join(timeout=10) 超时是静默返回的，此时目标文件可能恰好还留着
+        # join(timeout=10) 超时是静默返回的，此时目标文件可能恰好还留着
         # 上一轮的完整内容，下一条「读回来 in payloads」照样通过——挂死的写线程根本不会被发现。
         alive = [t.name for t in threads if t.is_alive()]
         assert not alive, f"原子写线程未在 10s 内退出（疑似 os.replace/mkstemp 链挂死）：{alive}"
@@ -229,7 +224,6 @@ class TestWebConfigDelegatesToUtilsAtomicWrite:
 
 # ────────────────────────────────────────────────────────────
 # SEV-2212：send_email 两条 TLS 路径都必须收到校验证书的 context
-# ────────────────────────────────────────────────────────────
 
 
 class _FakeSMTPSSL:
@@ -274,18 +268,16 @@ class _FakeSMTP:
 _SSL_CALLS: list[ssl.SSLContext | None] = []
 _STARTTLS_CALLS: list[ssl.SSLContext | None] = []
 # 反向见证基准：在**任何替身窗口之前**（模块导入期）记下 stdlib 本体里这两个建连类的原对象。
-# 旧写法（容器为 msg_push.smtplib 即本体）会把它们就地换掉；shim 之后两者已不同对象，
-# 只比「当前引用位上是什么」看不见本体侧的漂移。
+# [历史注] 旧写法（容器为 msg_push.smtplib 即本体）会把它们就地换掉——只比「当前引用位上是什么」看不见本体侧的漂移。
 _REAL_SMTP_CLS = smtplib.SMTP
 _REAL_SMTP_SSL_CLS = smtplib.SMTP_SSL
 
 
 def _smtplib_shim(**overrides: Any) -> types.SimpleNamespace:
-    # MT-10（CODE_REVIEW_2026-10-18）：msg_push.py 顶层 `import smtplib`，故 `msg_push.smtplib` 就是
-    # 全进程唯一的 stdlib 模块本体——旧写法改的正是本体，替身窗口内同会话其它线程/库（loguru 边车、
-    # 别的推送渠道）拿到的 SMTP/SMTP_SSL 会被一并换掉。按 shim 口径：浅拷贝命名空间（其余符号按
-    # **原对象**复制，故 `except smtplib.SMTPException` 的异常类同一性不变）、只覆盖建连的两个类，
-    # 再把替身绑到 msg_push 自己的 smtplib 引用上。
+    # [历史注] MT-10：msg_push.py 顶层 `import smtplib`，`msg_push.smtplib` 即全进程唯一的 stdlib 模块
+    # 本体——旧写法改的正是本体，替身窗口内同会话其它线程/库（loguru 边车、别的推送渠道）拿到的
+    # SMTP/SMTP_SSL 会被一并换掉。shim 口径：浅拷贝命名空间（其余符号按**原对象**复制，故
+    # `except smtplib.SMTPException` 异常类同一性不变）、只覆盖建连两个类，替身绑到 msg_push 自己的引用上。
     shim = types.SimpleNamespace(**vars(smtplib))
     for name, value in overrides.items():
         setattr(shim, name, value)
@@ -309,8 +301,7 @@ def _no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
 def _send(monkeypatch: pytest.MonkeyPatch, *, open_ssl: bool, port: str) -> None:
     _SSL_CALLS.clear()
     _STARTTLS_CALLS.clear()
-    # 只替换 msg_push 模块内的 smtplib 引用（不碰 stdlib 模块对象本身）。[历史注] 2026-10-18 之前
-    # 本句与实现相反：当时两处 setattr 的容器是 msg_push.smtplib（即 stdlib 本体）。
+    # 只替换 msg_push 模块内的 smtplib 引用（不碰 stdlib 模块对象本身）。[历史注] 2026-10-18 前两处 setattr 的容器是 msg_push.smtplib（即 stdlib 本体）。
     monkeypatch.setattr(msg_push, "smtplib", _smtplib_shim(SMTP_SSL=_FakeSMTPSSL, SMTP=_FakeSMTP))
     # 反向见证：打桩只落在 msg_push 的引用位上——stdlib 本体必须逐字仍是导入期记下的那两个原类。
     # 判据取「与导入期原对象同一」而不是「不是本次的替身」：后者看不见本体被别处换过（变异实测）。
@@ -377,7 +368,6 @@ class TestSmtpBothPathsVerifyCertificates:
 
 # ────────────────────────────────────────────────────────────
 # MID-2251 / MID-2252 / MIN-2251：同文件内同族的历史缺陷（本轮一并锁死）
-# ────────────────────────────────────────────────────────────
 
 
 class TestMsgPushMaskingAndCleanup:
@@ -406,7 +396,7 @@ class TestMsgPushMaskingAndCleanup:
         assert "mytopic" in msg_push._mask_url("https://ntfy.sh/mytopic", mask_last_segment=False)
 
     def test_send_email_quit_timeout_does_not_replace_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # MID-2252：finally 只吞 SMTPException，而 quit() 等 221 响应超时抛 socket.timeout（OSError
+        # finally 只吞 SMTPException，而 quit() 等 221 响应超时抛 socket.timeout（OSError
         # 子类）→ 在 finally 里抛出会替换掉已算好的成功返回值，用户重复收到同一封通知。
         class _QuitTimeoutSSL(_FakeSMTPSSL):
             def quit(self) -> tuple[int, bytes]:
@@ -446,7 +436,6 @@ class TestMsgPushMaskingAndCleanup:
 
 # ────────────────────────────────────────────────────────────
 # SEV-2209：run_js_async 的超时预算（运行时侧 + await 侧双保险）
-# ────────────────────────────────────────────────────────────
 
 
 class _JsCtxAcceptingTimeout:
@@ -542,8 +531,7 @@ class TestRunJsAsyncTimeoutBudget:
 
     @pytest.mark.asyncio
     async def test_legacy_runtime_without_timeout_kwarg_is_not_broken(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 兼容闸的反向锁：旧版 PyExecJS 的 call() 不收 timeout，透传即 TypeError
-        # → 该环境下所有 JS 签名平台瞬间全废。此处必须正常返回、且不带多余关键字。
+        # 兼容闸的反向锁：旧版 PyExecJS 的 call() 不收 timeout，透传即 TypeError → 该环境下所有 JS 签名平台瞬间全废。此处必须正常返回、且不带多余关键字。
         ctx = _JsCtxLegacyPyExecJS()
         monkeypatch.setattr(utils_module, "get_compiled_js", lambda _js_path: ctx)
         assert await utils_module.run_js_async("x.js", "sign", "query") == "legacy-ok"
@@ -576,7 +564,7 @@ class TestRunJsAsyncTimeoutBudget:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
-        # M-22（2026-10-19）：阻塞段不再走 asyncio.to_thread 的**默认**线程池——默认池由 asyncio
+        # 阻塞段不再走 asyncio.to_thread 的**默认**线程池——默认池由 asyncio
         # 自己管，asyncio.run 收尾会 shutdown_default_executor() 并给 300 秒 join 超时，内层超时
         # 失效时房间线程整整停摆 5 分钟。改为自有 _js_executor() + run_in_executor。
         assert {"wait_for", "run_in_executor"} <= attrs, "超时双保险被拆成单层"
@@ -585,7 +573,6 @@ class TestRunJsAsyncTimeoutBudget:
 
 # ────────────────────────────────────────────────────────────
 # MIN-2244：remove_duplicate_lines 的行尾 / 原始行 / 编码保真
-# ────────────────────────────────────────────────────────────
 
 
 class TestRemoveDuplicateLinesByteFidelity:
@@ -638,9 +625,8 @@ class TestRemoveDuplicateLinesByteFidelity:
         assert target.read_bytes() == b"\xef\xbb\xbfa\r\nb\n"
 
     def test_non_utf8_bytes_round_trip_unchanged(self, tmp_path: Path) -> None:
-        # 真实非 UTF-8 字节（GBK 的「测试」= b2 e2 ca d4，在 UTF-8 下非法 → 必走回退轮）。旧实现
-        # 回退轮按宿主 locale 读、按 utf-8-sig 写 = 一次静默转码；现走 surrogateescape，内容字节原样
-        # 落盘，故本用例不依赖宿主 locale，跨平台稳定。
+        # 真实非 UTF-8 字节（GBK 的「测试」= b2 e2 ca d4，在 UTF-8 下非法 → 必走回退轮）。
+        # [历史注] 旧回退轮按宿主 locale 读、按 utf-8-sig 写 = 一次静默转码；现走 surrogateescape，内容字节原样落盘，不依赖宿主 locale，跨平台稳定。
         target = tmp_path / "URL_config.ini"
         _ = target.write_bytes(b"https://x.example/1\n\xb2\xe2\xca\xd4\n\xb2\xe2\xca\xd4\n")
         utils_module.remove_duplicate_lines(target)

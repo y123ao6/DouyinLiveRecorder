@@ -39,13 +39,11 @@ __all__ = [
 # 改名标记时必须同步两处：gui.py 的设置处与下方 child_process_env。
 GUI_PARENT_ENV = "DLR_GUI_PARENT"
 
-# 当前进程是否为 GUI 父进程：本模块在导入期求值，故 GUI 入口必须先设标记再导入 src
-# M-50（2026-10-21）：判定改走全仓唯一布尔入口 parse_config_bool，不再手写 `== "1"`。
-# 为什么必须换入口：本仓布尔口径（关键约定 #9）认 是/true/t/yes/y/on/1，而原形态只认字符 "1"，
-# 于是 DLR_GUI_PARENT=TRUE / on / 是 一律被判成「不是 GUI 父进程」——GUI 进程照样注册
-# streamget.log 与 PlayURL.log 两个文件 sink，回到本模块头部记录的故障面：与录制子进程双开同一
-# 文件，任一方到轮转阈值即抛 PermissionError(WinError 32)，轮转永不成功、该进程文件日志全量静默
-# 丢失。env 未设置时 parse_config_bool(None, False) 仍返回 False，非 GUI 进程语义逐字不变。
+# 当前进程是否为 GUI 父进程：本模块在导入期求值，故 GUI 入口必须先设标记再导入 src。
+# 判定走全仓唯一布尔入口 parse_config_bool：本仓布尔口径（关键约定 #9）认 是/true/t/yes/y/on/1。
+# [历史注] 原手写 `== "1"` 会把 DLR_GUI_PARENT=TRUE / on / 是 判成「不是 GUI 父进程」，GUI 进程
+# 照样双开录制日志文件，回到 GUI_PARENT_ENV 头注记录的轮转故障面。env 未设置时
+# parse_config_bool(None, False) 仍返回 False，非 GUI 进程语义逐字不变。
 _gui_parent = parse_config_bool(os.environ.get(GUI_PARENT_ENV), False)
 
 
@@ -225,7 +223,6 @@ def remove_file_sinks() -> None:
         try:
             logger.remove(_streamget_sink_id)
         except ValueError:
-            # handler 已不存在（如调用方执行过 logger.remove()）：id 失效，忽略即可
             pass
         _streamget_sink_id = None
     if _playurl_sink_id is not None:
@@ -236,10 +233,10 @@ def remove_file_sinks() -> None:
         _playurl_sink_id = None
 
 
-# 两个录制 sink **逐个独立**注册：原先两处调用点都把 _add_streamget_sink / _add_playurl_sink
-# 放在同一个 try/except OSError 里，第二个失败时已注册成功的 streamget sink 的 handler id 被一并
-# 置 None，该 sink 从此无法经 remove_file_sinks() 关闭（Windows 下其归档改名自此永久
-# PermissionError，日志归档链路对该文件失效）。id 只清各自的；第一个失败不阻止第二个尝试。
+# 两个录制 sink **逐个独立**注册，id 只清各自的；第一个失败不阻止第二个尝试。
+# [历史注] 曾同处一个 try/except OSError，第二个失败会把已注册 streamget 的 handler id 一并置
+# None，该 sink 无法再经 remove_file_sinks() 关闭（Windows 下其归档改名自此永久 PermissionError，
+# 归档链路对该文件失效）。
 def _register_recording_sinks() -> None:
     global _streamget_sink_id, _playurl_sink_id
     if _streamget_sink_id is None:
@@ -260,7 +257,7 @@ def add_file_sinks() -> None:
     global _streamget_sink_id, _playurl_sink_id
     if _gui_parent or not _log_to_file:
         return
-    # MI-14：加异常兜底——本函数由日志归档流程在改名后调用，此处抛错会连带中断归档调用方，
+    # 加异常兜底——本函数由日志归档流程在改名后调用，此处抛错会连带中断归档调用方，
     # 且失败原因只会出现在 stderr。OSError 的逐 sink 处理见 _register_recording_sinks。
     try:
         _register_recording_sinks()
@@ -287,7 +284,7 @@ except Exception:
     # 任何读取异常都不应影响日志模块初始化
     pass
 
-# MI-14：文件 sink 注册加异常兜底。logger.add(..., sink=路径) 在 delay=False（默认）时立即创建并
+# 文件 sink 注册加异常兜底。logger.add(..., sink=路径) 在 delay=False（默认）时立即创建并
 # 打开目标文件，logs/ 不可写（只读挂载、杀软占用、权限不足、路径被占为文件）时会在导入期直接抛
 # OSError——而本模块经 src.utils 等被极早导入，等于**程序在导入阶段崩溃且没有任何日志可查**。
 # 与上方「任何读取异常都不应影响日志模块初始化」同口径：失败时降级为仅控制台。
@@ -312,5 +309,5 @@ if _log_to_file:
             _log_to_file = False
     else:
         # 两个录制文件 sink 分档注册（INFO 与其余级别的口径见上方两个 _add_*_sink）
-        # M-13：逐 sink 独立注册（原因见 _register_recording_sinks 注释）
+        # 逐 sink 独立注册（原因见 _register_recording_sinks 注释）
         _register_recording_sinks()

@@ -32,7 +32,7 @@
 #   python scripts/check_runtime_pins.py --strict     # 发布检查（build-release.yml prepare）
 #   python scripts/check_runtime_pins.py --emit-env   # 打印 DLR_RUNTIME_SHA256 的 JSON 值（CI 注入用）
 #
-# --emit-env 与 --strict 可叠加（M-92，2026-10-21）：导出通道**先跑与默认模式同一套结构校验**，
+# --emit-env 与 --strict 可叠加：导出通道**先跑与默认模式同一套结构校验**，
 #   校验不过就拒绝导出并按 check() 的分级返回（2 结构缺陷 / 1 --strict 下的未钉定项）。
 #   stdout 只允许出现 JSON 一行（build-release.yml 用 pins=$(... --emit-env) 取用），报告走 stderr。
 #
@@ -82,10 +82,9 @@ def _load_build_exe() -> Any:
     try:
         spec.loader.exec_module(module)
     except (OSError, ValueError, TypeError, ImportError, SyntaxError, AttributeError) as exc:
-        # M-93（2026-10-21）：build_exe.py 是**门禁自己的输入**，它读不出来 / 语法坏 / 顶层
-        # import 失败时，旧形态是一条 Traceback + rc=1。而本文件头把 rc=1 明确留给
-        # 「--strict 查到未钉定项」（= 发布链真的有问题），rc=2 才是「门禁本身失效」。
-        # 取不到表就没有任何判定发生，必须走 rc=2，否则排障方向整体错掉。
+        # build_exe.py 是**门禁自己的输入**：它读不出来 / 语法坏 / 顶层 import 失败 = 取不到表，
+        # 没有任何判定发生。本文件头把 rc=1 明确留给「--strict 查到未钉定项」（= 发布链真的有问题），
+        # rc=2 才是「门禁本身失效」，必须走 rc=2，否则排障方向整体错掉。
         print(
             f"ERROR: 门禁自身失效：加载 {path} 失败 - {type(exc).__name__}: {exc}\n"
             "       钉定表取不到 = 「门禁没跑」，按 rc=2 处理；不要把它读成「发布链有未钉定项」。",
@@ -136,8 +135,7 @@ def _runtime_matrix_keys() -> list[str]:
     try:
         text = _WORKFLOW.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        # M-93 同族：workflow 读不出来时旧形态是 rc=1 + Traceback，而「读不到矩阵」等于
-        # 覆盖面无从核对 —— 与文件头「取不到表 → rc=2」同档。
+        # 「读不到矩阵」= 覆盖面无从核对，与文件头「取不到表 → rc=2」同档。
         print(
             f"ERROR: 门禁自身失效：读取 {_WORKFLOW} 失败 - {type(exc).__name__}: {exc}\n"
             "       矩阵读不到就没有做过覆盖关系核对，按 rc=2 处理。",

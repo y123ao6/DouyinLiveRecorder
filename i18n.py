@@ -87,7 +87,6 @@ def normalize_language(value: str | None) -> str:
     low = v.lower().replace("_", "-")
     if low in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[low]
-    # 前缀匹配：zh_CN.UTF-8 / en_US.UTF-8 等带编码后缀的写法
     prefix = low.split(".")[0].split("@")[0]
     if prefix in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[prefix]
@@ -267,10 +266,10 @@ def _load_translations(locale_dir: str | Path, lang: str) -> dict[str, str] | No
     return _load_yaml_catalog(base / f"{lang}.yaml")
 
 
-# [历史注] 已彻底删除 init_gettext(locale_dir, locale_name)：其返回值绑死传入的 locale_name、不随
-# set_language() 重读 _tr（切换后静默退回旧语言），且 gettext.bindtextdomain/textdomain 是进程级全局
-# 副作用，会经 gui.py 的 env 传染整个录制子进程树。不保留兼容壳——加载目录一律走 _load_translations /
-# _build_translator（唯一的翻译函数构建入口）。
+# 加载目录一律走 _load_translations / _build_translator（唯一的翻译函数构建入口），不保留兼容壳：
+# [历史注] init_gettext 已删除——返回值绑死传入的 locale_name、不随 set_language() 重读 _tr
+# （切换后静默退回旧语言），且 gettext.bindtextdomain/textdomain 是进程级全局副作用，
+# 会经 gui.py 的 env 传染整个录制子进程树。
 
 
 # 构建某语言的翻译函数：加载翻译目录，命中返回译文、未命中回退原文

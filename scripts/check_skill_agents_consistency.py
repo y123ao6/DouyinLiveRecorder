@@ -11,8 +11,8 @@
 #   3. SKILL.md 必须声明 AGENTS.md 为约束事实源
 #   4. SKILL.md 引用的 AGENTS.md 章节标题必须实际存在
 #   5. .agents/skills/ 下存在但未被 AGENTS.md 表登记的项目级 Skill 目录（硬失败）
-#      2026-10-29 由「只告警 rc=0」升为硬失败：告警形态在真实漂移（三个已合并删除的旧 Skill
-#      目录随坏提交回流）面前仍返回 0，等于同源锁不自证——违 AGENTS「告警即失败」同回路判定。
+#      曾为「只告警 rc=0」：告警形态在真实漂移（三个已合并删除的旧 Skill 目录随坏提交回流）
+#      面前仍返回 0，等于同源锁不自证——违 AGENTS「告警即失败」同回路判定。
 #
 # 用法：
 #   python scripts/check_skill_agents_consistency.py

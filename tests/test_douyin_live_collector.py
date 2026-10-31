@@ -86,7 +86,7 @@ def main() -> None:
     for f in os.listdir(base_dir):
         if f.startswith("Douyin弹幕验证"):
             stale = os.path.join(base_dir, f)
-            # R7④（2026-09-30）补 isfile 判定：listdir 里混进子目录时 os.remove 直接抛
+            # R7④ 补 isfile 判定：listdir 里混进子目录时 os.remove 直接抛
             # IsADirectoryError/PermissionError，真机验证会卡在清理阶段。
             if os.path.isfile(stale):
                 os.remove(stale)

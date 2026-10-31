@@ -1,4 +1,4 @@
-# WsClient 断连后悬挂引用与后台发送任务回归（CODE_REVIEW_2026-09-20 的 / ）。
+# WsClient 断连后悬挂引用与后台发送任务回归（CODE_REVIEW_2026-09-20）。
 #
 # 全部离线：websockets.connect 被替换为假上下文管理器，不发任何真实网络请求。
 #
@@ -10,7 +10,7 @@
 #      任务）、异常无人取走、_send_lock 被占时无界堆积。现走 base.spawn_danmaku_task
 #      + _pending 集合 + 上限。
 #
-# 2026-09-22 追加（CODE_REVIEW_2026-09-22）：
+# 追加（CODE_REVIEW_2026-09-22）：
 #   ③ ：on_close / on_reconnect 的文案必须已脱敏——websockets 的 InvalidProxy
 #      文本自带代理原串（含 user:pass@host），而 reason 会一路进轮转日志与监控枢纽。
 #   ④ ：重连计数不得「连上即重置」，否则「握手成功即被断开」的形态让
@@ -207,7 +207,7 @@ async def test_send_still_works_without_state_attribute(monkeypatch: pytest.Monk
 
 
 # ---------------------------------------------------------------------------
-# 2026-09-22 追加：（回调文案脱敏）与（重连计数「连上即重置」）
+# 追加：（回调文案脱敏）与（重连计数「连上即重置」）
 # ---------------------------------------------------------------------------
 
 

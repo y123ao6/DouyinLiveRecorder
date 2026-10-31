@@ -76,7 +76,7 @@ class _FakeEnv:
         self.lock_rc = lock_rc
         self.probe_exc = probe_exc
         self.lock_exc = lock_exc
-        # M-94（2026-10-21）新增两个超时形态开关：TimeoutExpired 不是 OSError 子类，
+        # M-94 新增两个超时形态开关：TimeoutExpired 不是 OSError 子类，
         # 不能复用 *_exc 通道（那条锁的是「无法启动 → 本段 WARN 降级」，语义完全不同）。
         self.lock_timeout = lock_timeout
         self.egg_timeout = egg_timeout
@@ -253,7 +253,7 @@ class TestSyncMetadataUvDegradation:
     def test_unreadable_artifact_exits_two_without_traceback(
         self, monkeypatch: pytest.MonkeyPatch, capsys: Any, tmp_path: Path
     ) -> None:
-        # 2026-10-29 审查：产物「存在但不可读」是「没跑成」（rc=2，同 _RC_TIMEOUT 分档），
+        # 产物「存在但不可读」是「没跑成」（rc=2，同 _RC_TIMEOUT 分档），
         # 不是「元数据漂移」（rc=1），更不是裸栈崩穿——两者排障方向相反。用同名目录替身触发
         # IsADirectoryError（exists() 为真、read_text 必抛 OSError），比真实 chmod 稳
         # （Windows 管理员下只读位不拦截读）。
@@ -300,14 +300,14 @@ MALFORMED_CONFIGS: list[tuple[object, str, str]] = [
     ({"checks": [{"path": "/", "headers": ["Referer"]}]}, "headers", "object"),
     ({"checks": [{"path": "/", "expect_json": ["status"]}]}, "expect_json", "object"),
     ({"checks": [{"path": "/", "expect_contains": "欢迎"}]}, "expect_contains", "array"),
-    # L-31（2026-10-18）：容器形态对、元素形态错同样属畸形。run_check 的 `token in content`
+    # L-31：容器形态对、元素形态错同样属畸形。run_check 的 `token in content`
     # 对数字/对象元素抛 TypeError 并穿透 main()（只接 OSError/ValueError）→ rc=1 崩溃栈，
     # 被 .github/actions/retry 读成「面板接口挂了」。needle 带下标，定位到具体那一个元素。
     ({"checks": [{"path": "/", "expect_contains": ["ok", 200]}]}, "expect_contains[1]", "string"),
     ({"checks": [{"path": "/", "expect_contains": [{"k": "v"}]}]}, "expect_contains[0]", "string"),
     ({"checks": [{"path": "/", "expect_contains": [None]}]}, "expect_contains[0]", "string"),
     ({"checks": [{"path": "/"}], "base_url": 8000}, "base_url", "string"),
-    # 2026-10-29 审查：expected_status 标量畸形同样必须前置挡住——run_check 里
+    # expected_status 标量畸形同样必须前置挡住——run_check 里
     # `300 <= expected_status < 400` 的重定向开关判定在 try 之外，字符串/ null 会以 TypeError
     # 穿透 main() 的 except (OSError, ValueError) → rc=1 崩溃栈，与上面 expect_contains 元素检同族。
     # bool 显式单列一条：bool 是 int 子类，isinstance(value, (int, float)) 会放行 true/false。
@@ -352,7 +352,7 @@ class _FakeResponse:
 
     def read(self, size: int = -1) -> bytes:
         # size 形参对齐真实 http.client.HTTPResponse.read(amt)：run_check 现按 _SMOKE_BODY_LIMIT
-        # 传 size 上限（2026-10-29 审查），替身不忠实会在合法路径抛 TypeError。
+        # 传 size 上限，替身不忠实会在合法路径抛 TypeError。
         body = self._body.encode("utf-8")
         return body if size < 0 else body[:size]
 

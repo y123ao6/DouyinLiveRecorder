@@ -7,7 +7,7 @@
 #                     [历史注] FastAPI 依赖移除后检查对象同步换成 importlib.metadata，fail-closed 语义保留
 #   - Dockerfile      经 APP_VERSION 构建参数注入；另校验「ARG APP_VERSION 声明行早于使用它的
 #                     指令行」（——顺序颠倒时标签被固化成空串，只看字面的检查查不出来）
-#   - i18n/zh_CN.po   不再携带版本号
+#   - i18n/zh_CN/LC_MESSAGES/zh_CN.po   不再携带版本号
 # README.md / CODE_WIKI.md 是文档、版本由人工维护，刻意不在校验范围内。
 # 退出码：0 一致；1 任一消费方写死/消失；2 连基准都取不到（pyproject.toml 无 version 字段）
 #         ——「门禁没有可判定的数据」，与 run_gates.py 同口径，不得与「代码不合格」混为一谈。
@@ -57,8 +57,8 @@ def extract_main_version() -> str | None:
     # 故本函数不可能、也不需要报出具体版本号——比对由 pyproject.toml 单点承担。
     # 返回 "HARDCODED" 表示有人把版本又写回了源码；返回 None 表示已是动态读取、无需比对。
     text = _read_text(ROOT / "main.py")
-    # [2026-10-31 L-11] 锚点原先只匹配带注解形态（^version: str = "…"），裸赋值形态
-    # （^version = "…"）的硬编码版本会整体漏检。注解段改为可选，两种形态都钉。
+    # 锚点必须同时覆盖带注解（^version: str = "…"）与裸赋值（^version = "…"）两种写死形态，
+    # 只匹配前者会让裸赋值形态的硬编码版本整体漏检。注解段为可选，两种形态都钉。
     if re.search(r'^version(?:\s*:\s*str)?\s*=\s*["\']v?\d', text, re.MULTILINE):
         return "HARDCODED"  # 标记为仍有硬编码
     return None
@@ -142,7 +142,7 @@ def extract_webapi_version() -> str | None:
 
 
 def extract_po_version() -> str | None:
-    # i18n/zh_CN.po 不再携带版本号（Project-Id-Version 不带版本、`# 版本:` 注释已删），
+    # i18n/zh_CN/LC_MESSAGES/zh_CN.po 不再携带版本号（Project-Id-Version 不带版本、`# 版本:` 注释已删），
     # 版本以 pyproject.toml 为唯一事实源。
     # 返回:
     #   字面版本号  -> 仍写死版本（应移除）
@@ -170,7 +170,7 @@ def main() -> int:
     if docker_status == "DYNAMIC":
         print("  [OK]   Dockerfile: 版本号经 APP_VERSION 构建参数从 pyproject.toml 动态注入")
     elif docker_status is None:
-        # 2026-09-23：None 原样打印 [OK] 属「检查对象消失即通过」——把 `LABEL version=...` 整块删掉
+        # None 原样打印 [OK] 属「检查对象消失即通过」——把 `LABEL version=...` 整块删掉
         # 是本项最省事的破坏方式，删完门禁反而更绿。与 sync_version.py::check_all 的
         # 「先判命中再判等」同构：未命中一律判失败。
         errors.append("  [FAIL] Dockerfile: 未找到任何 version 标签（检查对象消失，不得当作通过）")
@@ -185,7 +185,7 @@ def main() -> int:
     else:
         errors.append(f"  [FAIL] Dockerfile: {docker_order}")
 
-    # i18n/zh_CN.po：不应携带版本号（pyproject.toml 为唯一事实源）
+    # i18n/zh_CN/LC_MESSAGES/zh_CN.po：不应携带版本号（pyproject.toml 为唯一事实源）
     po_status = extract_po_version()
     if po_status is None:
         print("  [OK]   i18n/zh_CN.po: 未携带版本号（动态，pyproject.toml 为事实源）")
@@ -204,7 +204,7 @@ def main() -> int:
     if web_status == "DYNAMIC":
         print("  [OK]   src/web_api.py: 版本号经 importlib.metadata 动态读取")
     elif web_status is None:
-        # 2026-09-23：把动态读取整段删掉即可让本项从「检查」变成「跳过」，属最省事的破坏。
+        # 把动态读取整段删掉即可让本项从「检查」变成「跳过」，属最省事的破坏。
         # 要求检查对象存在，确需放行时显式加开关，不得默认放行消失态。
         errors.append(
             "  [FAIL] src/web_api.py: 未找到版本号动态读取形态（importlib.metadata）（检查对象消失，不得当作通过）"

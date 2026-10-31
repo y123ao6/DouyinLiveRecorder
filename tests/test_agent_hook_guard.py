@@ -7,7 +7,8 @@
 #      [M-95 2026-10-21 增] 同一条 1) 现还要覆盖「不带删除动词的销毁形态」——find|xargs rm、mv、
 #      truncate、`> 已存在文件` 的截断重定向、git checkout/restore/reset 的宽目标丢弃，
 #      以及「长排除段落里的受保护目录名仍是白名单」这半边（排除式段落定位改成整条 statement）。
-#   2) PostToolUse 三条「对门禁三面隐形」的即时反馈（MUTATION 残留 / 行尾形态混存 / .mjs 未登记）；
+#   2) PostToolUse 三条「对门禁三面隐形」的即时反馈（MUTATION 残留 / 行尾形态混存 / .mjs 未登记）
+#      + DeleteFile 路径级受保护目录检查（文件已删除、内容检查不适用，仅做路径判定）；
 #   3) 触发条件与 AGENTS.md 的**一致性锁**：受保护目录集合须与文档「运行期产物目录」枚举逐项相等，
 #      改一侧不改另一侧即红；
 #   4) CLI 契约（stdin JSON → 出口按事件能力双轨）：Pre 命中 = exit 2 + stderr 阻断；Post 非阻断
@@ -383,6 +384,53 @@ def test_cli_contract_allows_and_stays_silent() -> None:
     proc = _run_hook({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git status"}})
     assert proc.returncode == 0
     assert proc.stderr == b""
+
+
+def test_cli_contract_deletefile_protected_path_reports_feedback(tmp_path: Path) -> None:
+    # DeleteFile 的 PostToolUse 契约：文件已被删除、无法读内容，但路径级受保护目录检查仍须
+    # 走文档化通道（exit 0 + stdout JSON feedback）回传即时反馈
+    for protected in ("downloads", "logs", "recordings", "backup_config", "scripts"):
+        proc = _run_hook(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "DeleteFile",
+                "tool_input": {"file_path": str(tmp_path / protected / "some_file.txt")},
+            }
+        )
+        assert proc.returncode == 0, f"DeleteFile Post 分支不得以 exit 2 冒充阻断（{protected}）"
+        payload = json.loads(proc.stdout.decode("utf-8"))
+        specific = payload["hookSpecificOutput"]
+        assert specific["hookEventName"] == "PostToolUse"
+        assert "R-CLEAN-SCOPE" in specific["feedback"], f"受保护目录 {protected} 未触发 R-CLEAN-SCOPE"
+
+
+def test_cli_contract_deletefile_safe_path_is_silent(tmp_path: Path) -> None:
+    # DeleteFile 放行面：非受保护目录的删除操作不得产生任何 feedback/stderr 噪声
+    proc = _run_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "DeleteFile",
+            "tool_input": {"file_path": str(tmp_path / "safe_dir" / "temp_file.txt")},
+        }
+    )
+    assert proc.returncode == 0
+    assert proc.stdout == b""
+    assert proc.stderr == b""
+
+
+def test_deletefile_protected_path_is_reported(tmp_path: Path) -> None:
+    # check_deleted_file 单元测试：受保护目录内的删除目标必须触发 R-CLEAN-SCOPE
+    for protected in ("downloads", "logs", "recordings", "backup_config", "scripts"):
+        path = tmp_path / protected / "some_file.txt"
+        verdict = guard.check_deleted_file(path)
+        assert verdict is not None, f"受保护目录 {protected} 未被 check_deleted_file 拦下"
+        assert verdict[0] == "R-CLEAN-SCOPE"
+
+
+def test_deletefile_safe_path_is_allowed(tmp_path: Path) -> None:
+    # check_deleted_file 放行面：非受保护目录的删除目标不得误报
+    path = tmp_path / "safe_dir" / "temp_file.txt"
+    assert guard.check_deleted_file(path) is None
 
 
 def test_cli_contract_fails_open_on_unparsable_event() -> None:

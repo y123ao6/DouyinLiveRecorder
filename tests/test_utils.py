@@ -1,4 +1,4 @@
-# 2026-10-19：src/utils.py 工具函数的回归锁：Cookie 拼装、MD5/磁盘查询、配置读写、URL 与代理归一、去重与 emoji 清理、JSONP 解包、节点脚本执行与异常兜底。
+# src/utils.py 工具函数的回归锁：Cookie 拼装、MD5/磁盘查询、配置读写、URL 与代理归一、去重与 emoji 清理、JSONP 解包、节点脚本执行与异常兜底。
 
 import ast
 import builtins
@@ -180,7 +180,7 @@ class TestUpdateConfig:
 
 
 class TestDuplicateKeyWriteback:
-    # 2026-10-19：src/utils.py 的两处解析器改走 config_read.tolerant_config_parser。
+    # src/utils.py 的两处解析器改走 config_read.tolerant_config_parser。
     # 旧形态 configparser.ConfigParser(interpolation=None) 的 strict 默认为 True，遇到「同一节内
     # 两行同名键」（2026-10-17 在本仓 config/config.ini 的 [录制设置] 实测到过）时在 read() 就抛
     # DuplicateOptionError → read_ini_value 吞成 warning 返 None、update_config 更早退，
@@ -338,7 +338,7 @@ class TestReplaceUrl:
         assert "https://new.com/stream" in content
 
     def test_replace_segment_in_config_line(self, tmp_path: Path) -> None:
-        # 2026-09-30：URL_config.ini 的真实行形态是逗号分段，URL 段须整段替换。
+        # URL_config.ini 的真实行形态是逗号分段，URL 段须整段替换。
         # [历史注] 本用例原为 `url = <url>` 行内子串替换形态（test_replace_inline），
         # 那正是该判定要移除的无边界子串行为。
         f = tmp_path / "URL_config.ini"
@@ -557,7 +557,7 @@ class TestMaskCredentialsCoverage:
     @pytest.mark.parametrize(
         ("raw", "secret"),
         [
-            # 2026-10-21：①：ini 行形态「键空格 = 空格值」，值到行尾（可含空格）
+            # ①：ini 行形态「键空格 = 空格值」，值到行尾（可含空格）
             ("Authorization = Bearer abcdef123456", "abcdef123456"),
             ("token = abcdef123456", "abcdef123456"),
             # 带中文前缀的 Cookie 键（[Cookie] 节的真实写法）
@@ -574,7 +574,7 @@ class TestMaskCredentialsCoverage:
             ('{"sign": 1}', ": 1"),
             # ④：中文凭据键
             ("密码=abcdef", "abcdef"),
-            # ⑤（2026-10-30 M-10）：凭据词带括号注释尾缀——基线模板真实键「发件人密码(授权码)」，
+            # ⑤（M-10）：凭据词带括号注释尾缀——基线模板真实键「发件人密码(授权码)」，
             # 「密码」后有 "(授权码)" 尾缀，旧判据要求凭据词紧跟 = 整体逃逸（探针实测原样返回）
             ("发件人密码(授权码) = SMTP_SECRET_PASS", "SMTP_SECRET_PASS"),
             # ⑤：推送接口链接的值是含个人 key 的 URL，bark 形态 key 在路径段、无 key=value 可匹配，
@@ -636,7 +636,7 @@ class TestMaskCredentialsCoverage:
     @pytest.mark.parametrize(
         ("raw", "secret"),
         [
-            # 2026-10-02：B 站主会话凭据与 CSRF 键、抖音 Cookie 会话键——修复前四键
+            # B 站主会话凭据与 CSRF 键、抖音 Cookie 会话键——修复前四键
             # 整体逃逸（query 形态实测原样返回）。判据是「值确实消失」，不只断言调用了过码。
             ("https://api.bilibili.com/x?SESSDATA=SESSVALUE123", "SESSVALUE123"),
             ("https://api.bilibili.com/x?bili_jct=JCTVALUE456", "JCTVALUE456"),
@@ -707,7 +707,7 @@ class TestAtomicWriteTextDurability:
             t.start()
         for t in threads:
             t.join(timeout=10)
-        # 审查 7.11（2026-10-18）：join 超时是静默返回的，seen 收满 4 条也不代表 4 条写线程都跑完
+        # join 超时是静默返回的，seen 收满 4 条也不代表 4 条写线程都跑完
         # （replace 之后还有返回/清理路径），挂死形态必须显式判出来而不是留给下一条断言碰运气。
         alive = [t.name for t in threads if t.is_alive()]
         assert not alive, f"4 条并发写线程未在 10s 内退出（疑似原子写链挂死）：{alive}"
@@ -900,7 +900,7 @@ class TestRunNodeScriptNoToctou:
         # 旧实现「读文件算哈希 → 把**路径**交给 node」：node 会独立二次读盘，
         # 两步之间换掉文件内容即绕过钉定表（check-then-use）。
         # 现改为把校验过的那一份字节经 stdin 交给 node（argv 位置保持不变）。
-        # [ 2026-10-19 适配] 执行原语从 subprocess.run 换成自管 Popen + communicate(input=…)，
+        # [适配] 执行原语从 subprocess.run 换成自管 Popen + communicate(input=…)，
         # 「把校验过的字节交给 node」这条契约因此落在 communicate 的 input 实参上（旧形态落在
         # run 的 input 关键字上），argv 与篡改时序的断言逐字保留、不改松。
         script = tmp_path / "sign.js"
@@ -962,7 +962,7 @@ class TestRunNodeScriptNoToctou:
         assert "require(" not in text
 
 
-# ── （2026-10-19）：run_node_script_async 的超时预算与进程树回收 ──
+# ── run_node_script_async 的超时预算与进程树回收 ──
 # 锁两层，缺一层就退化成「静默挂死」：
 #   ① 内层 communicate(timeout=) —— 唯一能真正回收 node 进程树的一层；超时后必须收**整棵树**
 #      （POSIX start_new_session + killpg / Windows taskkill /T /F），且**绝不再读一次管道**
@@ -1262,7 +1262,7 @@ class TestJsPinTable:
         assert sum(1 for line in log_capture if name in line) == 1, log_capture
 
 
-# ── / 该回归锁（src/utils.py 两处 decode 站点注释引用的正是本类）──
+# ── 该回归锁（src/utils.py 两处 decode 站点注释引用的正是本类）──
 # 立规背景：两处 `decode("utf-8")` 原本不带 errors，非 UTF-8 字节直接抛 UnicodeDecodeError——
 #   ① get_compiled_js：签名脚本被用户手工编辑存成 GBK / 编辑器插入坏字节 → 异常穿出本函数，
 #      被 76 处平台解析的 trace_error_decorator 归成「JS 执行环境异常」，把一个文件编码问题

@@ -119,12 +119,10 @@ def test_missing_source_exits_nonzero(tmp_path: Path, monkeypatch: pytest.Monkey
     assert run_gates.main(["--list"]) == 2
 
 
-# ---------------------------------------------------------------------------
 # _diagnose_empty_source 用例：章节标题漂移的具体诊断提示
 #
 # 诊断函数把四种失败模式（文件不存在、章节标题漂移、缺 bash 围栏、围栏内容为空）拆开，
 # 每种给出具体修法和近似标题发现——否则 rc=2 只给一句笼统「无法解析」，用户无从定位坏在哪。
-# ---------------------------------------------------------------------------
 
 
 def test_diagnose_file_not_found() -> None:
@@ -185,7 +183,6 @@ def test_main_error_output_includes_diagnostic_hint(
     assert "## 格式化命令" in captured.err, f"诊断必须指出期望的章节标题: {captured.err}"
 
 
-# ---------------------------------------------------------------------------
 # run_command / ensure_utf8_streams 用例（AGENTS.md「完成定义」点名的缺口）
 #
 # 一律驱动 tmp_path 下的一次性子进程脚本，不跑任何真实门禁命令；被测面按 run_gates 的
@@ -193,7 +190,6 @@ def test_main_error_output_includes_diagnostic_hint(
 # ② stderr 边转发边扫描（不得吞输出，也不得只看 rc —— 该假绿形态）；
 # ③ 子进程环境分层（GATE_CHILD_ENV 硬默认 > 父环境，extra_env 再覆盖）与解释器换绑；
 # ④ 本进程输出流必须先 UTF-8 化，否则门禁会因转发 emoji 而自炸（2026-09-21 实测）。
-# ---------------------------------------------------------------------------
 
 
 def _child_script(tmp_path: Path, name: str, body: str) -> Path:
@@ -321,7 +317,6 @@ def test_run_command_missing_gate_cwd_raises_not_silently_zero(tmp_path: Path, m
         run_gates.run_command("python -c pass")
 
 
-# ---------------------------------------------------------------------------
 # 门禁命令的执行形态
 #
 # 判据：能按参数列表表达的命令一律 shell=False；拆不了的（含 shell 结构符、行首是 .bat/.cmd）
@@ -329,7 +324,6 @@ def test_run_command_missing_gate_cwd_raises_not_silently_zero(tmp_path: Path, m
 # [历史注] 旧 shell=True 把命令交 cmd.exe /c，依赖其「首尾引号成对就剥一层」的实现细节：
 # `"C:\My Tools\venv\Scripts\python.exe" -m black ...` 能否解析取决于引号层数（venv 装在带空格
 # 路径上是常态，本机实测虽未复现失败，但这条依赖本身不可复核）。
-# ---------------------------------------------------------------------------
 
 
 def _stub_popen(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, dict[str, Any]]]:
@@ -518,7 +512,6 @@ def test_check_executables_accepts_module_fallback_without_path_scripts(monkeypa
     assert run_gates._module_unavailable("json") is False
 
 
-# ---------------------------------------------------------------------------
 # gate_pytest_warnings_summary 用例
 #
 # 三条 fail-closed 判据，各拦一种原「丢 rc + 吞 stderr + 只看 stdout 汇总行」的假绿形态：
@@ -528,7 +521,6 @@ def test_check_executables_accepts_module_fallback_without_path_scripts(monkeypa
 #   测试面自我证明整个失效。
 # 全部离线：subprocess 只替换 run_gates 模块全局引用（SimpleNamespace 副本），不改 stdlib 本体
 #   （AGENTS.md「patch main.py 的 subprocess 必须替换全局引用」同源约束，tests/ 卫生门禁 R1 会把改本体判红）。
-# ---------------------------------------------------------------------------
 
 
 class _StubCompleted:
@@ -651,14 +643,12 @@ def test_pytest_rc_semantics_table_covers_documented_codes() -> None:
         assert rc in run_gates.PYTEST_RC_SEMANTICS, f"缺少 rc={rc} 的语义说明"
 
 
-# ---------------------------------------------------------------------------
 # 跨文件同源锁：scripts/check_annotations.py 的 EXCLUDE_DIRS
 #
 # 为什么放在本文件：check_annotations.py 是「格式化命令」门禁块里的一条（run_gates 逐字
 # 执行该块），它的扫描面就是这条门禁的覆盖面；清单漂移会让「被删符号的残留调用点」
 # 被判成「全仓有绑定」而漏报（check_dangling_symbols 经 iter_source_files 聚合 global_bound）。
 # 方向刻意只做「pyproject 有、清单必须也有」——反向（清单更严）是允许的保守侧。
-# ---------------------------------------------------------------------------
 
 _BLACK_COMMENT_OR_REGEX_ONLY = (".pyc",)  # black 的 `\.pyc` 是文件后缀模式，不是目录名
 _DIRNAME_OK = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -748,7 +738,6 @@ def test_check_annotations_scan_face_still_includes_tests_and_src() -> None:
     assert any(p.suffix == ".js" for p in files), "web/ 前端资源不在扫描面内"
 
 
-# ---------------------------------------------------------------------------
 # [tool.mypy].exclude 失明回归锁
 #
 # mypy 的 exclude 是 re.search 对「相对路径 + 正斜杠归一、目录补尾 /」的子串匹配：裸目录名

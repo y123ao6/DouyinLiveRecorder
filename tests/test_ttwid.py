@@ -220,7 +220,7 @@ class TestFetchTtwidException:
 #   复用结果）保证并发 N 个 get_ttwid 只打一次 _fetch_ttwid、且所有调用方拿到同一份结果
 #   （原实现用 _ttwid_lock 跨 await 持锁达到同一效果，代价是跨房间阻塞事件循环）。
 #   若 singleflight 退化成各自拉取，fetch 次数会 >1，用例失败。
-# [历史注 2026-09-12 审查 ] 早先以「假锁 acquire 恒 False」模拟锁竞争来覆盖兜底分支，
+# [历史注] 早先以「假锁 acquire 恒 False」模拟锁竞争来覆盖兜底分支，
 #   改用 singleflight 后「锁竞争」场景不存在、该旧断言已随之移除。
 class TestGetTtwidSingleflight:
     @pytest.mark.asyncio

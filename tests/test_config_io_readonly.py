@@ -108,7 +108,7 @@ def test_read_config_value_delimiter_key_then_normal_key_still_writes(tmp_path: 
 
 def test_main_huya_old_key_compat_missing_only_reads(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     # main.py 兼容旧键在缺键时仅读取、绝不写回——缺失时不进入写回路径。
-    # 2026-09-17：解析改用统一的 config_io.read_config_bool（旧用例复刻的是已废弃的
+    # 解析改用统一的 config_io.read_config_bool（旧用例复刻的是已废弃的
     # options 字典查表，会让测试继续背书已删实现，故同步到真实现口径）。
     parser = config_io.configparser.RawConfigParser()
     parser.read_string("[录制设置]\n禁用SSL证书验证的平台(逗号分隔)=抖音直播\n")

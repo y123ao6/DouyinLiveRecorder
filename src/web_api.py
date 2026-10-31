@@ -268,7 +268,7 @@ _LOGIN_FAILURE_WINDOW = 300.0
 # 下 XFF 可伪造时尤其明显）；Docker 端口映射把真实用户的 client.host 收敛成网关地址，5 次失败即把
 # 所有人锁在登录页外。全局预算只封顶「整站每秒能承受多少次口令校验」、与键粒度无关，故既压住爆破
 # 吞吐，又不会因单键聚合而误伤合法用户到 5 次。
-# 2026-10-21：条目带来源 (失败时刻, client_ip)：纯时间戳形态下「成功登录回收自身份额」无从谈起，持续打错密码会让
+# 条目带来源 (失败时刻, client_ip)：纯时间戳形态下「成功登录回收自身份额」无从谈起，持续打错密码会让
 # 全局预算把所有合法用户 429 到窗口滑完（旧口径见 login 成功分支的 [历史注]）。判定与预算语义不变
 # ——仍是跨来源合计 40 次/300 秒，窗口滑出回收逻辑逐字不变。
 _GLOBAL_LOGIN_FAILURES: deque[tuple[float, str]] = deque(maxlen=512)
@@ -282,7 +282,7 @@ _LOGIN_GLOBAL_MAX_FAILURES = 40
 # 映射下真实用户收敛到同一网关地址，全局预算会集体误伤。
 _PUBLIC_BUDGET_WINDOW = 60.0
 _PUBLIC_BUDGET_MAX = 240
-# 2026-10-21：键集合上限（同 _DENIED_HOSTS_SEEN_MAX 形态）：窗口回收只清「最后一条已出窗」的键，持有 IPv6 /32
+# 键集合上限（同 _DENIED_HOSTS_SEEN_MAX 形态）：窗口回收只清「最后一条已出窗」的键，持有 IPv6 /32
 # 前缀的攻击者可轮换源地址让 dict 无界增长；到限整表清空（预算重置）换取有界内存，接受这一宽松化。
 _PUBLIC_BUDGET_MAX_KEYS = 64
 _PUBLIC_BUDGET_PATHS = frozenset(("/api/auth/status", "/health"))
@@ -323,7 +323,7 @@ _DANGEROUS_CONFIG_KEYS = {
     "是否录制完成后执行自定义脚本",
     "web_trusted_proxy",
     "web_allowed_hosts",
-    # 2026-10-30（M-08）：本键即 favicon 路由（免鉴权）的图标路径源（WEB_ICON_KEY）。经面板写成
+    # 本键即 favicon 路由（免鉴权）的图标路径源（WEB_ICON_KEY）。经面板写成
     # 任意绝对路径后，GET /favicon.ico 会把该文件原文回给持会话者——raw config.ini 的 Cookie/口令
     # 经此整条绕开读侧 '***' 掩码与写侧危险键拦截。正常导入图标走 /api/icon → save_icon_preference
     # （直写 config，不经 /api/config 守卫），入黑名单不影响该路径。
@@ -337,7 +337,7 @@ _DANGEROUS_CONFIG_KEYS_FOLDED = {k.casefold() for k in _DANGEROUS_CONFIG_KEYS}
 # 多线程 uvicorn 下并发 POST 同一 URL 时只允许一条成功
 _rooms_config_lock = threading.Lock()
 
-# ─── ：对外错误契约 ─────────────────────────────────────────────────────
+# ─── 对外错误契约 ─────────────────────────────────────────────────────
 # 内部异常原文（Windows 绝对路径、Errno 13、loguru 句柄冲突细节）不得进 {"detail": ...}：前端会
 # 原样弹成 toast，等于向任何能访问面板的人泄露安装路径与 OS 细节（认证关闭时对局域网可见）。
 # 对外只给固定 code，细节进日志。
@@ -351,7 +351,7 @@ _ROOM_UPDATE_ERROR_CODE = "room_update_failed"
 _QUALITY_WRITE_ERROR_CODE = "quality_write_failed"
 _HOST_DENIED_DETAIL = "host_not_allowed"
 
-# ─── ：web_token_expiry 的目标态夹取 ─────────────────────────────────
+# ─── web_token_expiry 的目标态夹取 ─────────────────────────────────
 # 该键经 PUT /api/config 可写，且因命中 _KEY_NOT_SECRET_PATTERN 的 expiry 例外而不受敏感键守卫，
 # 既无上下界也无「不得清空」保护。两条失效形态：① 写成 0/负数 → 登录拿到的 exp = now，中间件判
 # exp > time.time() 立即为假 → 所有 /api/*（含再次 PUT 修正自身）一律 401，只能手改 config.ini；
@@ -374,7 +374,7 @@ def _clamp_token_expiry(raw: object) -> float:
     return max(_TOKEN_EXPIRY_MIN_SECONDS, min(_TOKEN_EXPIRY_MAX_SECONDS, value))
 
 
-# ─── ：状态快照的 TTL 缓存 + 单飞 ───────────────────────────────────────
+# ─── 状态快照的 TTL 缓存 + 单飞 ───────────────────────────────────────
 # get_status() 在录制进程里持 record_state_lock / max_request_lock，并调 check_disk_capacity →
 # shutil.disk_usage：录制盘是 UNC/网络盘/可移动盘且已挂起时该调用可达数十秒，放在 async def 里
 # 直接执行即一次挂起停摆整个面板。现在 ① 采样在专用线程里跑；② 结果按 TTL 复用；③ 同一时刻只
@@ -511,7 +511,7 @@ def _read_app_version() -> str:
 _APP_VERSION = _read_app_version()
 
 
-# 2026-10-21：日志尾读的字节预算：deque(maxlen=lines) 只限保留条数，数百 MB 的 streamget.log 仍会被逐行读完；
+# 日志尾读的字节预算：deque(maxlen=lines) 只限保留条数，数百 MB 的 streamget.log 仍会被逐行读完；
 # 本端点是同步 def、占 anyio 线程池（默认 40 槽）一格，几条并发轮询即可耗尽线程池、拖死整个面板。
 # 从 EOF 反向按块读，成本 O(max_bytes) 而非 O(文件大小)。
 _LOG_TAIL_MAX_BYTES = 1024 * 1024
@@ -562,7 +562,7 @@ def create_app(
     app = Starlette()
 
     # Starlette 内建 handler 回 PlainTextResponse(detail)——正文变成裸字符串，前端 apiError() 读不到
-    # 2026-10-21：detail 键。这里按 FastAPI 语义显式注册 JSON handler；headers 透传保留 raise 时附带的
+    # detail 键。这里按 FastAPI 语义显式注册 JSON handler；headers 透传保留 raise 时附带的
     # Retry-After（限流路径在用）。
     async def _http_exception_to_json(request: Request, exc: Exception) -> JSONResponse:
         # Starlette 异常处理协议要求形参收宽为 Exception；按注册键分发，运行期必为 HTTPException
@@ -648,7 +648,7 @@ def create_app(
             or path == "/health"
             or path == "/"
             or path.startswith("/web/")
-            # 2026-10-18：无尾斜杠的 `/web` 也必须免鉴权。本中间件由 BaseHTTPMiddleware 包在 StaticFiles 之外，
+            # 无尾斜杠的 `/web` 也必须免鉴权。本中间件由 BaseHTTPMiddleware 包在 StaticFiles 之外，
             # StaticFiles 自己那条「/web → /web/」的 307 还没机会执行就被这里判死，于是认证开启时
             # GET /web 拿到 401 {"detail":"unauthorized"}（auth=true 带 token 或 auth=false 才是 307，
             # /web/ 恒 200），症状是「新开标签输 http://<host>:8000/web 只见一串 unauthorized」。
@@ -731,7 +731,7 @@ def create_app(
                 _ = _GLOBAL_LOGIN_FAILURES.popleft()
             if len(_GLOBAL_LOGIN_FAILURES) >= _LOGIN_GLOBAL_MAX_FAILURES:
                 raise HTTPException(429, i18n_module.tr("登录失败次数过多，请稍后再试"))
-            # 顺带全表清理窗口外条目（2026-09-12 审查 6.6）：仅成功登录才 pop 的话，
+            # 顺带全表清理窗口外条目：仅成功登录才 pop 的话，
             # IPv6 前缀轮换爆破可让键集合无界增长（内存泄漏面）
             for ip in [ip for ip, ts in _FAILED_LOGINS.items() if not any(now - t < _LOGIN_FAILURE_WINDOW for t in ts)]:
                 _FAILED_LOGINS.pop(ip, None)
@@ -757,7 +757,7 @@ def create_app(
             # 那一份；上面的浅拷贝只把污染限制在单次请求内，不能替缓存补上这次写入。
             _invalidate_web_cfg_cache()
             cfg["web_password"] = hashed
-        # 2026-09-30：登录比对统一 strip。写入侧以 strip 后的值哈希（/api/config），
+        # 登录比对统一 strip。写入侧以 strip 后的值哈希（/api/config），
         # reauth 复验也用 strip 后的值；登录侧若仍用原文，设置时粘贴带出的首尾
         # 空格会重现「能登录、不能 reauth」的口径分叉，进而变成认证配置经面板自锁。
         if not verify_web_password(req.password.strip(), cast(str, cfg["web_password"])):
@@ -926,7 +926,7 @@ def create_app(
             existing = parse_url_config(cast(str, app.state.url_config_file))
             if any(r["url"] == url for r in existing):
                 raise HTTPException(409, i18n_module.tr("直播间已存在"))
-            # 2026-09-22：追加前必须补末行换行：URL_config.ini 末行可能无 \n（编辑器删掉尾回车、或 delete_line 后
+            # 追加前必须补末行换行：URL_config.ini 末行可能无 \n（编辑器删掉尾回车、或 delete_line 后
             # 本就无尾换行），直接 open(...,"a") 会让新房间粘到上一条之后变成
             # `https://…111https://…222`，两个房间同时坏掉。手法与 append_config_line 一致：先读末
             # 字节，缺则先写一个 \n。
@@ -945,7 +945,7 @@ def create_app(
                 _is_fresh_file = True  # 尚不存在：由本次追加建文件，须带文件头 BOM
             except OSError:
                 # 被锁/权限异常：交给下面的写入本身报错，也不猜 BOM（_is_fresh_file 保持 False）。
-                # 2026-10-21：但 _needs_newline 必须保守置 True——Windows 上录制进程正持有
+                # 但 _needs_newline 必须保守置 True——Windows 上录制进程正持有
                 # URL_config.ini 时 sharing violation 属常态，旧分支判不出末字节仍按「有换行」追加，
                 # 恰好重开该「新房间粘上末行、两个房间同时坏掉」；补一个多余 \n 无害
                 _needs_newline = True
@@ -962,9 +962,9 @@ def create_app(
 
     @_route(app, ["PUT"], "/api/rooms")
     def update_room(req: RoomUpdate) -> dict[str, object]:
-        # 主修复：本端点此前**完全不做**房间校验（POST 与 PUT/quality 都做），于是成为绕过
-        # SSRF/任意 scheme/画质白名单的第二条写入口。校验已下沉进 format_url_line（唯一写入口），
-        # 这里再显式调用一次，使顺序与其它写端点一致，并让 ValueError 统一转 422。
+        # 校验已下沉进 format_url_line（唯一写入口），这里再显式调用一次，使顺序与其它写端点
+        # 一致，并让 ValueError 统一转 422。[历史注] 本端点曾**完全不做**房间校验（POST 与
+        # PUT/quality 都做），成为绕过 SSRF/任意 scheme/画质白名单的第二条写入口。
         old_url = normalize_url(req.old_url)
         try:
             validate_room_target(req.url, req.quality, req.name)
@@ -975,7 +975,7 @@ def create_app(
             raise HTTPException(422, str(e)) from e
         import main as _main
 
-        # 2026-09-12 审查 6.6：与 add_room 同款双锁保护读改写窗口——无锁时并发「改房间/删房间/
+        # 与 add_room 同款双锁保护读改写窗口——无锁时并发「改房间/删房间/
         # 切开关」可 TOCTOU 静默失败或改错行
         replaced = False
         with _rooms_config_lock, _main.file_update_lock:
@@ -1014,7 +1014,7 @@ def create_app(
         url = normalize_url(url)
         import main as _main
 
-        # 2026-09-12 审查 6.6：与 add_room 同款双锁保护「查行 + 删行」窗口
+        # 与 add_room 同款双锁保护「查行 + 删行」窗口
         with _rooms_config_lock, _main.file_update_lock:
             rooms = parse_url_config(cast(str, app.state.url_config_file))
             for r in rooms:
@@ -1036,13 +1036,13 @@ def create_app(
         url = normalize_url(req.url)
         import main as _main
 
-        # 2026-09-12 审查 6.6：与 add_room 同款双锁保护「查行 + 改注释前缀」窗口
+        # 与 add_room 同款双锁保护「查行 + 改注释前缀」窗口
         with _rooms_config_lock, _main.file_update_lock:
             rooms = parse_url_config(cast(str, app.state.url_config_file))
             for r in rooms:
                 if r["url"] == url:
                     old_raw = cast(str, r["raw_line"]).rstrip("\n").rstrip("\r")
-                    # 2026-10-30（M-09）：缩进注释行（「  # url」）上 lstrip("#") 剥不动前导空白，
+                    # 缩进注释行（「  # url」）上 lstrip("#") 剥不动前导空白，
                     # content 仍以 # 开头——enable 写回后仍是注释行却报 enabled:true（假成功，房间
                     # 永不录制），disable 则写出「# # url」双注释。对齐 web_config._rewrite_quality_field
                     # 的行首前缀解析：整体剥掉「缩进 + # + 可选空白」。
@@ -1057,7 +1057,7 @@ def create_app(
                     )
                     after = parse_url_config(cast(str, app.state.url_config_file))
                     target = next((rr for rr in after if rr["url"] == url), None)
-                    # 2026-10-30（M-09）：写后验证改为语义判定（重解析出的 enabled 必须等于请求方向）。
+                    # 写后验证改为语义判定（重解析出的 enabled 必须等于请求方向）。
                     # 只比「raw_line == new_raw」文本相等证明不了启用态真的翻转——正是缩进注释行
                     # 假成功从这道验证漏过的原因。
                     if target is None or cast(bool, target["enabled"]) != req.enable:
@@ -1125,7 +1125,7 @@ def create_app(
         # 写失败不能再返回 {"ok": true}。write_quality_options 在 config.ini 缺失 / 节缺失 /
         # 原子写失败时返回 None——旧实现丢弃写结果，前端显示「已保存」而磁盘未变。
         if options is None:
-            # 2026-10-21：detail 用固定 code，绝对路径只经 _log_internal_error 进日志
+            # detail 用固定 code，绝对路径只经 _log_internal_error 进日志
             # （旧写法把 config_file 拼进 tr 模板，是本文件唯一一处「对外不回显内部路径」违例）
             _log_internal_error(f"{_QUALITY_WRITE_ERROR_CODE} config_file={cast(str, app.state.config_file)}")
             raise HTTPException(500, _QUALITY_WRITE_ERROR_CODE)
@@ -1266,7 +1266,7 @@ def create_app(
         # 反向边界：其余 Web 键（web_host/web_port/web_allowed_hosts…）与其他节的键一律不受本条影响，
         # 否则「改个端口也要复验」会逼人绕过面板手改文件。
         if is_web_section and key_norm in ("web_auth_enable", "web_password"):
-            # L-03（2026-10-30）：旧「current_cfg is None → 改读 _read_web_config_cached」回退分支
+            # 旧「current_cfg is None → 改读 _read_web_config_cached」回退分支
             # 不可达——上方同键集的超集分支（web_auth_enable/web_password/web_host）必然已从磁盘现值
             # 赋值 current_cfg；且该回退读的是缓存，与「判定基准必须是磁盘现值」的不变量注释矛盾
             # （回归锁 TestInsecureBindInvariantUsesRealAddress）。现以 cast 收窄替代死分支。
@@ -1428,7 +1428,7 @@ def create_app(
         target = os.path.realpath(os.path.join(root, path))
         if not _is_within(target, root) or not os.path.isfile(target):
             raise HTTPException(400, i18n_module.tr("非法路径或文件不存在"))
-        # 2026-10-21：磁盘文件名过去原样交给 FileResponse(filename=...) 拼进
+        # 磁盘文件名过去原样交给 FileResponse(filename=...) 拼进
         # Content-Disposition——Linux 文件名可含 CR/LF/引号，足以注入额外响应头或撕裂
         # quoted-string（Windows 命名规则恰好挡得住，属「靠平台侥幸」而非防护）
         return FileResponse(target, filename=_safe_download_filename(os.path.basename(target)))
@@ -1500,7 +1500,7 @@ def create_app(
         resolved = current_icon_path(Path(config_file).parent.parent, configured)
         if resolved is None:
             raise HTTPException(status_code=404, detail="not_found")
-        # 2026-10-30（M-08）读取侧防线：resolve_icon_path 对绝对路径只做 is_file 判定，而本路由免鉴权。
+        # 读取侧防线：resolve_icon_path 对绝对路径只做 is_file 判定，而本路由免鉴权。
         # config.ini 若被绕过面板的手段写入任意路径（手编辑/旧版本面板写入），这里会把该文件原文回给
         # 请求方——'***' 掩码只作用于 /api/config 读侧，对响应体不生效。回读前复验体积与 ICO 魔数：
         # 非 ICO 一律 404（浏览器回落默认图标，与「未配置」等价）；上传/导入侧判据仍是 validate_icon_bytes。
@@ -1585,7 +1585,7 @@ async def _get_status_snapshot() -> tuple[dict[str, object], bool]:
     # 注：3.11 起 asyncio.TimeoutError 即内建 TimeoutError，故只捕一个（本仓下限 3.14）。
     global _status_inflight, _status_inflight_since
     now = time.monotonic()
-    # 2026-10-21：租约令牌就在下面的临界区里赋给 _status_inflight_since，其值即 now；
+    # 租约令牌就在下面的临界区里赋给 _status_inflight_since，其值即 now；
     # 传出时**直接复用 now**，不再「释锁后另起一段持锁从全局读回」。旧写法在两步之间若正好
     # 跨过租约到期，第二个采样会把 _status_inflight_since 覆盖成自己的 now，第一个采样读回的
     # fetch_since 就变成第二位的令牌 → 两个在飞采样共享同一令牌、任一回程即开门（单飞退化）

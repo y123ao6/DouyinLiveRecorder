@@ -100,7 +100,7 @@ def _run_end_to_end(out_dir: str) -> None:
         assert got[0].user_name == "测试用户"
         print(f"=== 帧解析通过: {got[0].user_name}: {got[0].message} ===")
     finally:
-        # （2026-10-18 审查）：旧形态只有顺序执行的 loop.close()——中间任一条断言转红时
+        # 旧形态只有顺序执行的 loop.close()——中间任一条断言转红时
         # 循环既不关闭也不复位；即便跑到底也只 close 不 set_event_loop(None)，于是「已关闭的
         # 循环」被留在当前线程 policy 上跨用例残留，后续取当前循环的代码拿到的都是死循环，
         # 报错形态与被测逻辑无关。3.14 起 get_event_loop() 不再隐式新建循环，复位成 None 才是

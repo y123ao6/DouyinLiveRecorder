@@ -10,12 +10,10 @@
 #   ① 输出重定向到临时文件 + Popen/wait，不用管道：node --test 会派生 worker 子进程，超时只杀
 #      直接子进程，run() 内补跑的 communicate() 仍被孙进程持有的写端阻塞，timeout 根本不是上界。
 #      没有管道就没有可被孙进程挂住的读端，wait(timeout=) 才是真上界。
-#   ② 一律二进制捕获后显式按 UTF-8 解码，不用 text=True：text 走 locale 编码（中文 Windows 为
-#      GBK），node 报告里的 UTF-8 字符会让 reader 线程抛 UnicodeDecodeError
-#      （PytestUnhandledThreadExceptionWarning，违反本仓「0 警告」口径）。
-# 超时后仍须回收整棵进程树（Windows 无 killpg → taskkill /F /T；POSIX 用进程组），否则孤儿
-# node worker 长期占着输出文件与连接。这两条性质由
-# test_node_test_timeout_bounds_wait_and_reaps_tree 锁住。
+#   ② 一律二进制捕获后显式按 UTF-8 解码，不用 text=True：text 走 locale 编码（中文 Windows 为 GBK），
+#      node 报告里的 UTF-8 字符会让 reader 线程抛 UnicodeDecodeError（PytestUnhandledThreadExceptionWarning，违反本仓「0 警告」口径）。
+# 超时后仍须回收整棵进程树（Windows 无 killpg → taskkill /F /T；POSIX 用进程组），否则孤儿 node worker
+# 长期占着输出文件与连接。这两条性质由 test_node_test_timeout_bounds_wait_and_reaps_tree 锁住。
 #
 # 本文件必须能在 `pytest tests/test_frontend_quality_ui.py` 独立运行下全绿，不得依赖同会话内
 # 其他用例先把控制台码页切成 UTF-8（main.py 的 SetConsoleOutputCP(65001) 曾让「全量绿、单跑红」）。
@@ -56,7 +54,7 @@ def _popen_session_kwargs() -> dict[str, Any]:
 def _kill_process_tree(proc: "subprocess.Popen[Any]") -> None:
     # 回收 node --test 及其 worker 孙进程。整棵树杀不掉时只忽略不抛错——
     # 用例此时已经判定失败，收尾异常会掩盖真正的断言输出。
-    if sys.platform == "win32":  # 平台门控一律用 sys.platform 字面量（mypy 跨平台门禁要求）
+    if sys.platform == "win32":
         try:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
@@ -127,7 +125,7 @@ def _pid_alive(pid: int) -> bool:
     # 跨平台存活判定。Windows 上不能用 os.kill(pid, 0)——CPython 在 nt 下会把它翻译成
     # TerminateProcess(handle, 0)，即「杀掉它」而不是「探一下」。
     #
-    # 为什么按**字节**判定而不是 text=True 解码（MID-64 ② 的补集，2026-09-22 实测）：
+    # 为什么按**字节**判定而不是 text=True 解码（MID-64 ② 的补集，实测）：
     # 中文 Windows 上 tasklist 对「无匹配任务」输出 GBK 消息（首字节 b'\xd0\xc5\xcf\xa2'），
     # 而门禁口径要求 PYTHONUTF8=1 → UTF-8 模式下 text=True 按 utf-8 解码该字节流，subprocess 的
     # reader 线程直接抛 UnicodeDecodeError，communicate() 返回 stdout=None，`str(pid) in None` 即
@@ -135,7 +133,7 @@ def _pid_alive(pid: int) -> bool:
     # 该缺陷只在单独跑本文件时显现：全量跑时 main.py 的模块级 SetConsoleOutputCP(65001) 已把码页
     # 切成 UTF-8，tasklist 改吐 UTF-8 而侥幸可解（即「全量绿、单跑红」）。字节包含判定与码页
     # 彻底解耦：PID 出现在 tasklist 表格里 ⟺ 进程存活，与消息语言无关。
-    if sys.platform == "win32":  # 平台门控一律用 sys.platform 字面量（mypy 跨平台门禁要求）
+    if sys.platform == "win32":
         probe = subprocess.run(
             ["tasklist", "/FI", "PID eq %d" % pid, "/NH"],
             stdin=subprocess.DEVNULL,
@@ -204,7 +202,7 @@ def test_node_test_timeout_bounds_wait_and_reaps_tree() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _pid_alive 回归锁（MID-64 ② 的补集，2026-09-22）：进程存活检测必须与码页/语言解耦。
+# _pid_alive 回归锁（MID-64 ② 的补集）：进程存活检测必须与码页/语言解耦。
 # 三条一起用，缺一不可：
 #   · test_pid_alive_survives_gbk_tasklist_output —— 把 tasklist 载荷钉成事故里的 GBK 字节，
 #     与宿主当前码页无关（全量跑时码页已被 main 切成 UTF-8，只跑真进程反而测不到红点）；
@@ -212,7 +210,6 @@ def test_node_test_timeout_bounds_wait_and_reaps_tree() -> None:
 #   · test_no_subprocess_call_in_this_module_decodes_output —— 源码级锁，覆盖本文件全部
 #     子进程调用点（_pid_alive 的存活探针 + _kill_process_tree 的 taskkill + _run_node 的 Popen），
 #     防止有人「顺手加个 text=True」把三类形态一起退回。
-# ---------------------------------------------------------------------------
 
 # 实测抓取自中文 Windows 上 `tasklist /FI "PID eq <已退出的 pid>" /NH` 的原始字节
 # （GBK 的「信息: 没有运行的任务匹配指定标准。」，正是让 text=True 崩掉的载荷）。

@@ -85,7 +85,7 @@ def _is_tr_call(node: ast.AST) -> TypeGuard[ast.Call]:
 
 
 def _interpolated_fstrings(node: ast.AST) -> list[ast.JoinedStr]:
-    # MID-68（2026-09-21）：判据由「首参**直接是** JoinedStr」收紧为「首参**子树里**有带
+    # MID-68：判据由「首参**直接是** JoinedStr」收紧为「首参**子树里**有带
     # FormattedValue 的 JoinedStr」。旧判据看不见 `f"A" + (f"B" if x else "") + f"C"` 这类
     # ast.BinOp 形态，「先插值、后查目录」的违规整类逃逸（实测 6 处真实违规从此漏过：
     # 斗鱼降级链、画质降级告警、磁盘空间提示等）。
@@ -252,7 +252,7 @@ def _blindspot_fstring_offenders(src: str) -> list[int]:
 
 def test_no_valuable_fstring_in_print_colored_or_messagebox() -> None:
     # ④ 盲区①②实参位禁插值 f-string：翻译须 tr(常量模板, **kw) 预格式化后整体传入。
-    # 全仓扫描：2026-09-30 起全部调用点已迁移（main/notify 的 print_colored 与 gui 的
+    # 全仓扫描：全部调用点已迁移（main/notify 的 print_colored 与 gui 的
     # messagebox），任何一处改回 f-string 直传都会让对应目录词条静默失效。
     offenders: list[str] = []
     for path in _iter_files():

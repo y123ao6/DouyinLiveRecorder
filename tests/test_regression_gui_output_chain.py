@@ -1,4 +1,4 @@
-# tests/test_regression_2026_10_18_gui_output_chain.py — CODE_REVIEW_2026-10-18 的 //该行为锁。
+# tests/test_regression_gui_output_chain.py — CODE_REVIEW_2026-10-18 的行为锁。
 #
 # 为什么单独成文件：test_gui_qt_units.py / test_gui_qt_window.py 钉的是「模块单元」与「窗口外观/
 # 接线」，而这三条都是**跨线程投递与模态重入**的通路锁，必须同时持有真窗（MainWindow）与真子进程。
@@ -149,7 +149,7 @@ def test_queue_log_from_worker_thread_flushes_by_itself(app: QApplication, windo
     thread = threading.Thread(target=_worker, name="worker-queue-log")
     thread.start()
     thread.join(timeout=5.0)
-    # 审查 7.11（2026-10-18）：join(timeout=5.0) 返回不等于线程已退出。本用例锁的正是「工作线程只
+    # 审查 7.11：join(timeout=5.0) 返回不等于线程已退出。本用例锁的正是「工作线程只
     # 入队、不跨线程动 QTimer」——入队路径若改成同步等待主线程，线程会挂在 _queue_log 里，而 caught
     # 仍为空、后面的 flush 判据也可能被主线程别的路径替它满足，形成假绿。
     assert not thread.is_alive(), "worker-queue-log 未在 5s 内退出：_queue_log 阻塞在非 GUI 线程上，不得判绿"

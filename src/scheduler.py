@@ -482,7 +482,7 @@ class ConcurrencyScheduler:
 
     def _push_global_error(self, failed: int) -> None:
         # 入队一个全局样本并同步维护计数（调用方须已持 _lock）。
-        # deque 达 maxlen 时 append 会挤出最旧样本，需扣减其贡献以保持计数与窗口一致。
+        # 扣减判据同 _push_sample：deque 达 maxlen 时 append 挤出最旧样本，须同步减其贡献。
         if len(self._global_errors) == self._error_window_size:
             self._global_error_count -= self._global_errors[0]
         self._global_errors.append(failed)

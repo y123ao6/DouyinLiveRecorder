@@ -4,21 +4,21 @@
 # - 末位候选（无备选可回退）稳定拒绝也仅告警放行，交由 ffmpeg 定夺；
 # - 非末位候选仍判不可达，由上层回退下一候选。
 # 另覆盖虎牙探针退避：CDN 限流（连续 403）时跳过探针、末位直接放行 ffmpeg。
-# ② 档位与形态（2026-09-20 起补齐）：
+# ② 档位与形态：
 # - MID-19 交给 ffmpeg -i 的地址必须过协议+形态白名单（rtmp 合法、file:///concat:/相对路径/
 #   以 - 开头一律丢弃且不享受末位放行）；
 # - MID-18 record_url 通道同受「HLS 整组剔除」约束（排除平台下 m3u8 record_url 零探针），
 #   且与序列候选同址时复用本轮结论、不重复烧 CDN 连接预算；
 # - MIN-02 分片被拒的退避键必须是播放列表 URL（分片键是永不被读的死条目）；
 # - MIN-03 master playlist 按 BANDWIDTH 探最高变体（顺序不可信，防「证明低档、实拉高档」假绿）。
-# ③ 代理归一与降级（SEV-N05，2026-09-21 起）：
+# ③ 代理归一与降级（SEV-N05）：
 # - 两处 httpx.Client 构造点的 proxy 实参必须经 utils.handle_proxy_addr 归一（裸 ip:port →
 #   http:// 前缀、空串 → None），否则选源每轮抛穿房间线程；
 # - 探针客户端构造失败须降级为「本轮无可用探针客户端」+ 末位放行，不得抛穿、不得放弃本轮；
 # - 同一裸 ip:port 下同步选源与异步 get_response_status 必须得到同一 proxy 结论
 #   （判据用真实 httpx 各构造一次客户端来验契约，全程不发请求，仍不触网）。
 # ④ 机检类锁（不依赖执行）：MID-N32 的 url= 脱敏扫描、SEV-N05 的 proxy 归一 AST 扫描。
-# ⑤ WP-J（2026-09-30，方案 1-A）同步探针内网收口的**接线形态**锁：
+# ⑤ WP-J 同步探针内网收口的**接线形态**锁：
 # - 两处自建探针客户端一律出自 _probe_client 工厂、且都带上恰一支 response 逐跳复检钩子
 #   （行为侧由 _ProxyContractClient 记录实参形状，结构侧由 AST 锁兜住「后来者只接一处」）；
 # - SEV-N05 的 proxy 归一判据随构造点收敛平移到「_probe_client 调用点的 proxy_addr 实参」，
@@ -84,7 +84,7 @@ _PUBLIC_DNS_IP = "93.184.216.34"
 
 @pytest.fixture(autouse=True)
 def _stub_dns_public(monkeypatch: pytest.MonkeyPatch) -> None:
-    # WP-J（2026-09-30，方案 1-A）之后，_validate_stream_url 的探针入口与交付 ffmpeg 前的落地复核
+    # WP-J 之后，_validate_stream_url 的探针入口与交付 ffmpeg 前的落地复核
     # 都会调 web_config._host_internal_reason，而它对**非 IP 字面量**的主机名要走 DNS seam
     # _resolve_host_ips。本文件的用例地址是合成域名（x / a.cdn / dylive.rtmp.douyucdn.cn），真解析在
     # 无外网/无 DNS 的环境里抛 OSError → 「主机名无法解析」→ 候选被判不可达，于是用例把「本机有没有
@@ -106,7 +106,7 @@ class _FakeResponse:
         # HLS 分片层探测需要读取播放列表正文（_probe_hls_segment 解析分片行）；
         # 缺省空串使未显式给出正文的旧用例落回「解析不出分片→保守放行」语义。
         self.text = text
-        # L-11（2026-10-19，CODE_REVIEW_2026-10-18）：探针读取正文改走 _bounded_probe_get 的
+        # L-11：探针读取正文改走 _bounded_probe_get 的
         # 流式形态（带字节上限），本桩因此要能当「流式响应」用（上下文协议 + iter_bytes）。
         # 刻意把正文**整段一次**交出、不在本桩里重实现「读满上限即断」的上界行为——
         # 那条不变量由下方两条 _ChunkCountingStream / 真实 httpx + MockTransport 用例钉
@@ -252,7 +252,7 @@ def test_m3u8_range_get_retry_passes() -> None:
     with patch("src.stream_select.httpx.Client", cls), patch("src.stream_select.time"):
         assert _validate_stream_url(_M3U8_URL) is True
     # 3 次 GET = 2 次 Range-GET（403→206 重试）+ 1 次 HLS 分片层探测的播放列表 GET
-    # （2026-09-13 斗鱼 hw 事故修复：列表 200/206 后必须再探分片，见 _probe_hls_segment）。
+    # （斗鱼 hw 事故修复：列表 200/206 后必须再探分片，见 _probe_hls_segment）。
     # 本用例假客户端未给播放列表正文（_FakeResponse.text 为空），分片探测解析不出分片即保守放行。
     assert cls.get_calls == 3
 
@@ -280,7 +280,7 @@ def test_m3u8_last_resort_released() -> None:
         assert _validate_stream_url(_M3U8_URL, last_resort=True) is True
 
 
-# ---- HLS 分片层探测（2026-09-13 斗鱼 hw CDN 事故回归） ----
+# ---- HLS 分片层探测（斗鱼 hw CDN 事故回归） ----
 # 事故：m3u8 列表层恒 200（CDN 动态合成，列表层无风控），但边缘 slice 节点上所有 .ts
 # 分片 404 —— 旧校验「列表 200 即可达」假绿放行 m3u8，ffmpeg 逐分片 404、零视频产出，
 # 而斗鱼弹幕走独立 WebSocket（只需 room_id）照常落 SRT，生产表现即「只出弹幕、无视频」。
@@ -370,7 +370,7 @@ def test_hls_empty_media_playlist_conservative_pass() -> None:
         assert _validate_stream_url(_M3U8_URL, last_resort=False) is True
 
 
-# ---- S-04（2026-10-19）：正文派生地址的安全拒绝不得被末位放行/同址复用翻回 ----
+# ---- S-04：正文派生地址的安全拒绝不得被末位放行/同址复用翻回 ----
 # 事故形态：被劫持或被 MITM 的播放列表正文写 `http://127.0.0.1:6379/x.ts`（或云元数据地址），
 # 旧实现把安全闸拒绝编码成 `return False`，与「分片 404 不可达」不可区分，于是被两处兜底翻回 True：
 #   ① `_validate_stream_url` 的 last_resort 分支（末位候选「仍交由 ffmpeg 尝试」）；
@@ -561,7 +561,7 @@ def test_select_source_url_hls_with_fallback_not_last_resort() -> None:
 
 def test_select_source_url_h265_flv_hls_is_last_resort() -> None:
     # FLV 为 h265 不可用时，HLS 即最后机会：恒为 last_resort。
-    # 保存格式钉为 FLV（不支持 HEVC 直拷）——TS/MKV/MP4 下 h265 已按 2026-10-01 放宽进常规
+    # 保存格式钉为 FLV（不支持 HEVC 直拷）——TS/MKV/MP4 下 h265 已放宽进常规
     # 序列（见下方放宽矩阵），本用例锁的是「不支持格式下 h265 仍被剔除」的语义
     with (
         patch.object(main, "hls_collection_enabled", True),
@@ -576,7 +576,7 @@ def test_select_source_url_h265_flv_hls_is_last_resort() -> None:
 
 
 def test_select_source_url_h265_flv_falls_back_to_h264_from_list() -> None:
-    # 2026-10-01 抖音原画 hevc 房死锁回归锁（端到端选源）：flv_url 为 h265、保存格式不支持
+    # 抖音原画 hevc 房死锁回归锁（端到端选源）：flv_url 为 h265、保存格式不支持
     # HEVC 直拷（钉 FLV）时被 h265 过滤剔除，stream.py 保留的 h264 原画地址进 flv_url_list。
     # HLS 关闭时 HLS 组与 record_url（m3u8）一并禁用，序列 [h265, h264] 过滤后应选中
     # h264 备选，而不是「本轮无可用源」。
@@ -624,7 +624,7 @@ def test_select_source_url_h265_only_without_fallback_yields_none() -> None:
     assert any("本轮无可用源" in str(c.args[0]) for c in warn.call_args_list)
 
 
-# ---- h265 候选按保存格式放行（2026-10-01 放宽：_h265_copy_format_supported） ----
+# ---- h265 候选按保存格式放行（放宽：_h265_copy_format_supported） ----
 
 
 @pytest.mark.parametrize("fmt", ["TS", "ts", "MKV", "MP4"])
@@ -704,12 +704,12 @@ def test_h265_copy_format_supported_missing_global(monkeypatch: pytest.MonkeyPat
     assert ss._h265_copy_format_supported() is False
 
 
-# ---- HLS 配置静默丢弃的观测（2026-10-01 补观测） ----
+# ---- HLS 配置静默丢弃的观测 ----
 
 
 def test_select_source_url_warns_dropped_hls_when_no_source() -> None:
     # HLS 组被配置静默剔除 + 其余候选全灭 → 无源结论前必须点名「m3u8 被配置丢弃」并给
-    # 恢复开关指引——这是此前唯一零日志的选源成因（2026-10-01 死锁房的排查盲区）
+    # 恢复开关指引——这是此前唯一零日志的选源成因（死锁房的排查盲区）
     with (
         patch.object(main, "hls_collection_enabled", False),
         patch("src.stream_select._validate_stream_url", return_value=False),
@@ -1023,7 +1023,7 @@ def test_non_backoff_platform_keeps_retry_semantics(clear_probe_backoff: None) -
     with patch("src.stream_select.httpx.Client", cls2), patch("src.stream_select.time"):
         assert _validate_stream_url(_M3U8_URL, platform="斗鱼直播", last_resort=False) is True
     # 2 次 GET = 1 次 Range-GET（206 首次即通过）+ 1 次分片层探测的播放列表 GET
-    # （2026-09-13 斗鱼 hw 事故修复新增的一跳，见上方 test_m3u8_range_get_retry_passes）。
+    # （斗鱼 hw 事故修复新增的一跳，见上方 test_m3u8_range_get_retry_passes）。
     assert cls2.get_calls == 2
 
 
@@ -1377,7 +1377,7 @@ def test_malformed_record_url_dropped_without_probe_and_frees_last_resort() -> N
 
 
 def test_excluded_platform_record_url_m3u8_emits_zero_hls_probes() -> None:
-    # 「HLS采集排除平台」的定稿语义是整组剔除、HLS 探针一次都不发（2026-09-05）。
+    # 「HLS采集排除平台」的定稿语义是整组剔除、HLS 探针一次都不发。
     # 抖音/TikTok/网易CC 的 record_url 本身就是 m3u8：原实现在 FLV 校验失败后
     # 仍会对它照发 HEAD/Range-GET/分片探测、且 last_resort=True 拒绝也放行。
     calls: list[str] = []
@@ -1526,7 +1526,7 @@ _HLS_MASTER_ASCENDING = (
 def test_pick_master_variant_prefers_highest_bandwidth() -> None:
     # MIN-03：变体顺序不可信（不少生成器升序列出，最低档在前）。按 BANDWIDTH 取最高档，
     # 与 ffmpeg hls demuxer 的实际起拉档位对齐——否则「证明最低档可取、实际拉最高档」，
-    # 正是 2026-09-13 斗鱼 hw 假绿事故从列表层挪到变体层的形态。
+    # 正是斗鱼 hw 假绿事故从列表层挪到变体层的形态。
     assert _pick_master_variant(_HLS_MASTER_ASCENDING, _M3U8_URL) == "https://high.example.com/1080.m3u8"
     # 降序输入同样取最高（结果与出现顺序无关）
     descending = (
@@ -1559,7 +1559,7 @@ def test_master_playlist_probes_highest_bandwidth_variant() -> None:
 
 
 # ---------------------------------------------------------------------------
-# L-11 探针读取响应体必须有上限（2026-10-19，CODE_REVIEW_2026-10-18）
+# L-11 探针读取响应体必须有上限（CODE_REVIEW_2026-10-18）
 # 事故形态：四处探针此前一律走 client.get()，httpx 会把响应体**一次性读满**才返回。
 # Range: bytes=0-0 只是「请求」，不遵守 Range 的边缘节点会把 .ts 当整段流媒体一直发，
 # 于是每个房间线程每轮选源都能吃进任意大的 body（80+ 房间并发＝无界内存，且零日志线索）。
@@ -1570,7 +1570,6 @@ def test_master_playlist_probes_highest_bandwidth_variant() -> None:
 # tests/test_sync_probe_internal_guard.py::_install_mock_transport：客户端仍由生产工厂
 # _probe_client 造出来、只把最底层 transport 换掉），因为「读到上限即断开」对假客户端
 # 没有可观测后果——假响应的正文是一次交出的整块。测试不重写任何判定规则。
-# ---------------------------------------------------------------------------
 
 _L11_CHUNK = b"z" * 4096
 _L11_ENDLESS_CHUNKS = 4000  # ≈16 MB：模拟「不遵守 Range、永不到头」的边缘节点形态
@@ -1692,7 +1691,7 @@ def test_bounded_probe_get_contract_with_fake_client() -> None:
 
 
 # ---------------------------------------------------------------------------
-# MID-N32 机检回归锁（2026-09-21，CODE_REVIEW_2026-09-21）
+# MID-N32 机检回归锁（CODE_REVIEW_2026-09-21）
 # src/stream_select.py 中 logger.* 调用（含其嵌套的 i18n.tr 模板实参）里所有
 # url=<实参> 关键字都必须包 utils.mask_credentials(...)：流直链的查询侧挂有
 # 斗鱼 wsAuth / 抖音 signature 等凭据，裸传即明文落进 logs/streamget.log
@@ -1701,7 +1700,6 @@ def test_bounded_probe_get_contract_with_fake_client() -> None:
 # 四语 msgid，须由 i18n 侧收口，不在本锁职责内。
 # 结构参照 tests/test_i18n_migration.py::test_gate_predicate_sees_concatenated_fstring：
 # 判据本体抽成函数，全文件扫描与判据自检用例共用，防止门禁自身假绿。
-# ---------------------------------------------------------------------------
 
 _LOGGER_METHODS = {"debug", "info", "success", "warning", "error", "critical", "exception", "trace", "log"}
 _STREAM_SELECT_PATH = Path(__file__).resolve().parent.parent / "src" / "stream_select.py"
@@ -1774,7 +1772,7 @@ def test_mask_gate_predicate_sees_bare_url_kwarg() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SEV-N05 回归锁（2026-09-21，CODE_REVIEW_2026-09-21）
+# SEV-N05 回归锁（CODE_REVIEW_2026-09-21）
 # 两处探针客户端构造（select_source_url 的整轮共用客户端、_validate_stream_url 的自建客户端）
 # 的 proxy 实参必须先经 utils.handle_proxy_addr 归一：配置项「代理地址」允许裸 ip:port 写法
 # （见 src/utils.py handle_proxy_addr 与 _PROXY_CREDENTIAL_RE 注释），且「代理开关打开但地址
@@ -1784,7 +1782,6 @@ def test_mask_gate_predicate_sees_bare_url_kwarg() -> None:
 # 入录制链，并持续向按 host 的熔断器投失败样本。
 # 判据取自 httpx 本体而非本文件自实现：桩在 __init__ 里用真实 httpx 构造一次（不发任何请求），
 # 因此「漏归一」在用例里表现为真抛错，而不是自己写一份 handle_proxy_addr 再断言它自己。
-# ---------------------------------------------------------------------------
 
 _BARE_PROXY = "127.0.0.1:7890"
 _NORMALIZED_PROXY = "http://127.0.0.1:7890"
@@ -1799,7 +1796,7 @@ _REAL_ASYNC_CLIENT = httpx.AsyncClient
 class _ProxyContractClient(_StreamAsGet):
     # 记录每支探针客户端收到的 proxy 实参，并立刻交给真实 httpx 判一次契约（构造后即关闭）。
     # HEAD 200 + mpegurl、正文为空 → _probe_hls_segment 解析不出分片、保守放行，故首候选即通过。
-    # WP-J（2026-09-30）：形参签名必须跟住 src/stream_select.py 的 _probe_client —— 它现在多传一个
+    # WP-J：形参签名必须跟住 src/stream_select.py 的 _probe_client —— 它现在多传一个
     # event_hooks（逐跳复检钩子）。这里既记录钩子条数（供「两处自建都挂上了钩子」的行为锁断言），
     # 也把 event_hooks 一并交给**真实** httpx 构造：桩若把实参形状写错，真 httpx 会当场抛错，
     # 契约仍由 httpx 本体判定、不在本文件自实现。
@@ -1972,7 +1969,7 @@ async def test_bare_proxy_addr_reaches_sync_and_async_probe_with_same_value() ->
 # 运行期断言只覆盖「探针客户端被真的构造」的调用形态；一旦有人把归一行整条删掉、或把某个新
 # 构造点写成裸传，而该路径当前没有运行期用例走到，锁就瞎了。AST 判据不依赖执行，直接把
 # 「每个 httpx.Client 构造点的 proxy= 都经 handle_proxy_addr」钉成机检。
-#   [WP-J 2026-09-30 形态变更] 两处裸 httpx.Client(...) 已收敛为 src/stream_select.py 的 _probe_client
+#   [WP-J 形态变更] 两处裸 httpx.Client(...) 已收敛为 src/stream_select.py 的 _probe_client
 #   工厂（唯一的 httpx.Client 构造点）+ 两个调用点。归一约束随之从「构造点的 proxy=」平移到
 #   「_probe_client 调用点的 proxy_addr 实参」——语义完全等价（值仍必须在同一作用域内、使用之前由
 #   utils.handle_proxy_addr 得到），且工厂自身那次 httpx.Client(proxy=proxy_addr) 的 proxy 来自形参、
@@ -2007,7 +2004,7 @@ def _is_probe_client_call(node: ast.AST) -> bool:
 
 
 # 本模块「发出一次探针请求」的全部形态。
-# L-11（2026-10-19，CODE_REVIEW_2026-10-18）新增 _bounded_probe_get：探针读取正文统一收进
+# L-11 新增 _bounded_probe_get：探针读取正文统一收进
 # 这个带字节上限的流式入口之后，「发探针」在 AST 里不再只表现为 client.head/get/stream 三种
 # 属性调用。判据本体必须跟着形态走——否则下面 (b)/(d) 两条结构锁的扫描面会静默变空
 # （(d) 自带「判据没扫到任何 try 即失效」的反向见证，正是为这种漂移准备的）。

@@ -10,11 +10,11 @@
 #   4) start() 的返回值是「主线程归谁」的契约（True = 交给 Qt 事件循环）。返回 True 却
 #      没把主线程交出去 = 托盘永远是死的；返回 False 却交出去 = 面板彻底失去退出入口。
 #
-# Mock 口径（2026-10-20 由 pystray 迁 Qt 后重写）：PySide6 三个子模块用 sys.modules 桩替换
+# Mock 口径（由 pystray 迁 Qt 后重写）：PySide6 三个子模块用 sys.modules 桩替换
 # （避免真建 QApplication / 真挂图标；offscreen 平台上 isSystemTrayAvailable 恒 False，
 # 真 Qt 反而测不到正常路径）。Win32 DLL 句柄用 SimpleNamespace 桩替换 _get_kernel32/
 # _get_user32 的返回值。生产侧「函数内 import」的 stdlib（ctypes / os）一律经
-# _imported_module_shim 换 sys.modules 条目，不改模块本体（ / ，2026-10-18）。
+# _imported_module_shim 换 sys.modules 条目，不改模块本体。
 #
 # 分支地图：
 #   DLL 句柄缓存的三个入口：已缓存直返 / 非 win32 早返回 / WinDLL 加载失败返 None。
@@ -339,7 +339,7 @@ class TestDllAccessors:
             calls.append(args)
             raise OSError("kernel32 unavailable")
 
-        # 2026-10-18：旧写法 `monkeypatch.setattr(ctypes, "WinDLL", boom)` 改的是全进程唯一的
+        # 旧写法 `monkeypatch.setattr(ctypes, "WinDLL", boom)` 改的是全进程唯一的
         # ctypes 本体——替身窗口内任何其它线程/库的 WinDLL 调用都会一起炸。按 _imported_module_shim
         # 的口径走 sys.modules 条目（生产侧是函数内 import，无模块级引用可绑）。
         real_windll = ctypes.WinDLL
@@ -800,7 +800,7 @@ class TestMenuCallbacks:
 
     def test_on_exit_without_server_hard_exits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         codes: list[int] = []
-        # 2026-10-18：旧写法 `monkeypatch.setattr(os, "_exit", ...)` 改的是全进程唯一的 os 本体，
+        # 旧写法 `monkeypatch.setattr(os, "_exit", ...)` 改的是全进程唯一的 os 本体，
         # 同窗口内任何线程的删除/重命名/退出都会走进这个只记账的替身。生产侧 `_on_exit` 是函数内
         # `import os`，故按 _imported_module_shim 的口径换 sys.modules 条目：真 os 本体逐字不变，
         # 只有本用例窗口内的 import 绑定到替身。

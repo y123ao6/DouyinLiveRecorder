@@ -1,4 +1,4 @@
-# ffmpeg 进程清理链路回归（CODE_REVIEW_2026-09-20 的 / ）。
+# ffmpeg 进程清理链路回归（CODE_REVIEW_2026-09-20）。
 #
 # 全部离线：不启动真实 ffmpeg，进程对象用桩替代。
 #
@@ -7,7 +7,7 @@
 #      （它由 atexit 与面板「停止录制」两处调用）；未确认的进程必须留在注册表，清理线程必须是守护线程；
 #   ② 三段终止等待按剩余预算分摊且永不为 0（timeout//3 == 0 等于跳过优雅退出，MP4 丢 moov）；
 #   ③ Windows 下 stdin 写完即关闭（写失败也要关）。
-#   ④ （2026-10-21）：三级终止全部失败时的兜底必须关闭 stdout/stderr/stdin 三支管道，
+#   ④ 三级终止全部失败时的兜底必须关闭 stdout/stderr/stdin 三支管道，
 #      且逐支独立 best-effort（一支关不上不得拖累其余两支）。
 #
 # ③ 是 Windows 专属形态（POSIX 侧发 SIGINT、根本不碰 stdin，原因见 src/ffmpeg_proc.py
@@ -227,7 +227,7 @@ def test_single_process_cleanup_sets_event_even_on_error(monkeypatch: pytest.Mon
     assert finished.is_set()
 
 
-# ── （2026-10-21）：三级终止全部失败后的管道兜底必须覆盖三支 ──────────
+# ── 三级终止全部失败后的管道兜底必须覆盖三支 ──────────
 # 旧形态只关 proc.stdout。走不到「进程已退出」这一步时，stderr（ffmpeg 的进度与错误输出，
 # 7×24 多房间下每条录制都开着一支）与 stdin 一律留到解释器收尾才回收：清理线程反复启停
 # 就一路攒 fd，而 Windows 上残留句柄还会让 logs/ 与媒体文件的归档改名撞 WinError 32。

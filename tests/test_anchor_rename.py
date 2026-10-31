@@ -13,7 +13,7 @@ import pytest
 
 
 def _os_shim(**overrides: Any) -> types.SimpleNamespace:
-    # 2026-09-29：`monkeypatch.setattr(os, "rename", 替身)` 改的是全进程唯一
+    # `monkeypatch.setattr(os, "rename", 替身)` 改的是全进程唯一
     # 的 os 模块本体，窗口内 loguru 轮转、弹幕边车、其他录制/转码线程的改名会一并被换掉。
     # 按 AGENTS「测试编写强制约定」/ test_test_hygiene.py R1：浅拷贝命名空间 + 只覆盖所需属性，
     # 再把替身绑到**被测模块（main）自己的 os 引用**上。

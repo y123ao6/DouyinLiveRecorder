@@ -948,7 +948,7 @@ _ORIGIN_SCHEME_PORTS: dict[str, int] = {"http": 80, "https": 443}
 
 
 def _running_under_pytest() -> bool:
-    # 2026-10-21：testserver 豁免的环境门。哨兵豁免本是 Starlette TestClient 的 base_url 桩，直接编进生产判定
+    # testserver 豁免的环境门。哨兵豁免本是 Starlette TestClient 的 base_url 桩，直接编进生产判定
     # 时生产进程若收到 Origin: http://testserver（本机 hosts 可把它指到任意处）即免端口放行，
     # 等于测试后门进生产。「pytest 在 sys.modules」由 tests/conftest.py 必然 import pytest 触发，
     # 是测试进程的低成本指纹，非测试环境恒 False
@@ -1181,7 +1181,7 @@ def update_config_line(config_file: str | Path, section: str, key: str, value: s
         in_target = False
         replaced = False
         key_pattern = _key_line_pattern(key)
-        # 2026-10-21：手工编辑产生重复键时拒绝写入——旧实现只替换目标节内**首个**匹配行，写侧返回 True
+        # 手工编辑产生重复键时拒绝写入——旧实现只替换目标节内**首个**匹配行，写侧返回 True
         # 而 configparser 生效值来自另一行（「面板提示已保存、行为未变」）。
         # 判据复用既有失败出口（return False，由 web_api 转 404、write_quality_options 报写失败），
         # 不新增第三种返回形态；重复行留给读侧容错层（src/config_read）点名，写侧不再静默覆盖一半
@@ -1273,7 +1273,7 @@ def append_config_line(config_file: str | Path, section: str, key: str, value: s
         else:
             lines.append(f"[{section}]\n{entry}")
         # 原子写（同 update_config_line）：truncate+write 窗口内读方会看到半写文件。
-        # 2026-10-21：必须回报原子写的布尔结果——补建分支（config.ini 缺 language 键、画质选项首次落盘）
+        # 必须回报原子写的布尔结果——补建分支（config.ini 缺 language 键、画质选项首次落盘）
         # 旧实现无条件 return True，磁盘写失败仍报成功，set_language 的回滚与
         # update_or_append_config_line 的失败判定全部失明
         return _atomic_write_text(path, "".join(lines))

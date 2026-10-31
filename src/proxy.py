@@ -14,7 +14,7 @@ from urllib.parse import quote
 # 直接从此处导入可避免基于 basedpyright 的 "未从 src.utils 导出" 告警。
 from loguru import logger
 
-# MI-20：本模块日志统一走 i18n（原先 5 处为裸英文 + 字符串拼接，
+# 本模块日志统一走 i18n（原先 5 处为裸英文 + 字符串拼接，
 # 在中文/繁体/英式目录下无法翻译，与仓库其它模块的日志口径不一致）
 import i18n
 

@@ -1,6 +1,6 @@
-# WP-J（2026-09-30，方案 1-A）同步流地址探针的内网收口回归锁。
+# 同步流地址探针的内网收口回归锁。
 #
-# 背景（上一轮 M-1 在同步侧的补齐）：逐跳重定向复检当时只接在 src/async_http.py 的 _build_client
+# 背景（同步侧的补齐）：逐跳重定向复检此前只接在 src/async_http.py 的 _build_client
 # 单点上，而 src/stream_select.py 的同步探针自建两支 httpx.Client（_validate_stream_url 的 owns_client
 # 分支、select_source_url 的整轮共用分支），两处都 follow_redirects=True 却都不经 _build_client。
 # 更前面的缺口是：同步侧连**初始 URL** 的内网/回环/云元数据判定都没有——internal_stream_target_reason
@@ -327,7 +327,7 @@ class TestRedirectHopRecheck:
 
     def test_hls_segment_hop_rejection_is_not_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 播放列表 200、分片 302 落到内网：_probe_hls_segment 内层 except 的口径是「探测异常 → 按列表
-        # 可达处理」（2026-09-13 斗鱼 hw 事故定下的保守兜底），内部控制流异常必须原样上抛，否则这条
+        # 可达处理」（斗鱼 hw 事故定下的保守兜底），内部控制流异常必须原样上抛，否则这条
         # 兜底就把内网地址判成可用、末位还放行。摘掉那条 raise 即红。
         def _handler(request: httpx.Request) -> httpx.Response:
             url = str(request.url)

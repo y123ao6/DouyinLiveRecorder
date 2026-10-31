@@ -267,7 +267,7 @@ class TestHostAndLoopbackPolicy:
 
 
 class TestOriginAllowedPolicy:
-    # MID-N42 修复（2026-09-21，CODE_REVIEW_2026-09-21）纯函数侧：Origin 与 Host 从此是两套名单。
+    # MID-N42 修复（CODE_REVIEW_2026-09-21）纯函数侧：Origin 与 Host 从此是两套名单。
     # HTTP 侧（谁被 403）见 tests/test_web_api.py::TestOriginSameHostAndPort；本类锁的是
     # 「期望集合如何由服务端状态推导」，并反向锁住 Host 那套规则没被顺带改掉
     # （合并成一套必然有一侧退化：Host 松了就丢该重绑定防线，Origin 紧了就砍掉反代入口）。
@@ -337,7 +337,7 @@ class TestOriginAllowedPolicy:
         assert not is_origin_allowed("http://192.168.1.47", self._LOCAL, bind_host="127.0.0.1", bind_port=8000)
 
     def test_testserver_exemption_requires_pytest_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # 2026-10-21：哨兵豁免此前在**生产判定**里无条件生效（测试后门进生产——生产
+        # 哨兵豁免此前在**生产判定**里无条件生效（测试后门进生产——生产
         # 进程收到 Origin: http://testserver 即免端口放行）。现加 _running_under_pytest() 环境门：
         # 本用例把门桩成 False 模拟生产进程，豁免必须整体失效；而真实回环 + 正确端口的常规
         # 判定不受该门影响（防止把环境门做成「一切都不放行」）
@@ -371,7 +371,7 @@ class TestOriginAllowedPolicy:
 
 
 class TestOutboundTargetConfigKeys:
-    # MID-N45 修复（2026-09-21，CODE_REVIEW_2026-09-21）纯函数侧：校验挂在
+    # MID-N45 修复（CODE_REVIEW_2026-09-21）纯函数侧：校验挂在
     # validate_config_target（config.ini 写侧唯一入口）上，故「端点忘了调」这一类失效不可能出现
     # ——这也是本类只经 validate_config_target 而不直接调私有实现的原因。
 
@@ -521,7 +521,7 @@ class TestUpdateConfigLine:
         assert update_config_line(tmp_path / "nope.ini", "Web", "web_host", "x") is False
 
     def test_duplicate_key_in_section_refuses_write(self, tmp_path: Path) -> None:
-        # 2026-10-21：手工编辑产生的重复键，旧实现只替换节内**首个**匹配行并返回 True，
+        # 手工编辑产生的重复键，旧实现只替换节内**首个**匹配行并返回 True，
         # 生效值却来自另一行（「面板提示已保存、行为未变」）。现匹配数 >1 → 拒绝写入：
         # 返回 False 且文件逐字不变——复用既有失败出口（web_api 转 404、write_quality_options
         # 报写失败），不新增第三种返回形态。反向半边：同名键在**其他节**出现不得算重复
@@ -546,7 +546,7 @@ class TestUpdateConfigLine:
         assert "web_port = 8100" in cfg.read_text(encoding="utf-8-sig")
 
     def test_hash_in_value_reads_back_as_new_value(self, tmp_path: Path) -> None:
-        # 2026-09-30：读侧 configparser 未开启 inline_comment_prefixes，旧值里的
+        # 读侧 configparser 未开启 inline_comment_prefixes，旧值里的
         # " #" 本就是值的一部分——二次更新后读回值必须**等于新值**，不得被旧尾注污染
         # （旧实现把 " #" 之后当注释拼回新值，平台 Cookie/含井号 token 因此静默失效）。
         parser = configparser.ConfigParser()
@@ -571,7 +571,7 @@ class TestUpdateConfigLine:
 
 
 class TestAppendConfigLineReturn:
-    # 2026-10-21：append_config_line 此前丢弃 _atomic_write_text 的布尔值、无条件
+    # append_config_line 此前丢弃 _atomic_write_text 的布尔值、无条件
     # return True，而 update_config_line 已按该修正——补建分支（config.ini 缺 language 键、
     # 画质选项首次落盘）磁盘写失败仍报成功，set_language 的回滚与 write_quality_options 的
     # 失败回报全部失明。判据走「替换失败→补建」这条真实组合路径，不重新实现任何写入逻辑。
@@ -794,7 +794,7 @@ class TestFindRoomUrlByAnchorName:
 
 
 class TestSensitiveItemCaseInsensitive:
-    # 2026-10-18：「节白名单 + 键名正则」两道判定的强度必须同档——键名侧带
+    # 「节白名单 + 键名正则」两道判定的强度必须同档——键名侧带
     # re.IGNORECASE，节名侧此前是大小写敏感的精确比较，于是把 [Cookie] 写成 [cookie]
     # 就整节跳出白名单（节内键名又不含凭据关键词、值也不是 URL 形态，两道兜底同时落空），
     # 凭据以明文回显给面板并进备份副本。判据取行为（值确实被掩码），不钉源码字面量。
@@ -828,7 +828,7 @@ class TestSensitiveItemCaseInsensitive:
 
 
 class TestRoomUrlCommaRejectedOnWrite:
-    # 2026-10-18：写侧拒绝 URL 段含逗号（半角或全角）。两个读取侧（本模块 parse_url_config
+    # 写侧拒绝 URL 段含逗号（半角或全角）。两个读取侧（本模块 parse_url_config
     # 与 main.py 的房间行解析）都是 `re.split("[,，]")` **先切段再判形**，含逗号的地址一律在首个逗号
     # 处被截断后才进录制链——写侧放行等于「录入一条、生效另一条」，且 DELETE / PUT quality 按规范化
     # URL 精确匹配行，用户既看不出截断也改不动那一行。判据取 ValueError（与既有换行注入同形态）。

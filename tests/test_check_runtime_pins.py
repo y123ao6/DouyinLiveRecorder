@@ -66,7 +66,7 @@ def _fake_module(
         _slot_is_gated=build_exe._slot_is_gated,
         _is_source_build_marker=build_exe._is_source_build_marker,
         SOURCE_BUILD_PROVENANCE=build_exe.SOURCE_BUILD_PROVENANCE,
-        # 2026-09-26 官方签名档：判定与标记常量同样只能取自 build_exe（本脚本不得自定口径）
+        # 官方签名档：判定与标记常量同样只能取自 build_exe（本脚本不得自定口径）
         _is_signature_marker=build_exe._is_signature_marker,
         _is_signature_satisfied=build_exe._is_signature_satisfied,
         OFFICIAL_SIGNATURE_PIN=build_exe.OFFICIAL_SIGNATURE_PIN,

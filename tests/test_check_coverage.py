@@ -95,7 +95,6 @@ def _full_pass_report() -> dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # E) 登记表自身的质量（表空 / 键腐烂都会让「判定面」悄悄缩小）
-# ---------------------------------------------------------------------------
 
 
 def test_registered_threshold_table_is_nonempty_and_points_at_real_modules() -> None:
@@ -128,7 +127,7 @@ def test_global_floor_is_not_looser_than_project_fail_under() -> None:
 
 
 def test_registered_thresholds_never_sit_below_global_floor_without_debt() -> None:
-    # M-15（2026-10-30）：登记表不得存在「阈值 < GLOBAL_FLOOR 且未走 COVERAGE_DEBT」的条目——
+    # M-15：登记表不得存在「阈值 < GLOBAL_FLOOR 且未走 COVERAGE_DEBT」的条目——
     # 那是无 tracker/无到期/不受条数上限约束的债务基线（2026-10-24 抬闸时 spider/proxy=50 曾
     # 静默落入该形态）。运行时同回路机检在 check_coverage._validate_debt_and_exempt（rc=2）。
     below = {
@@ -140,9 +139,7 @@ def test_registered_thresholds_never_sit_below_global_floor_without_debt() -> No
     assert not offenders, f"登记阈值低于 GLOBAL_FLOOR 且未走债务表（须抬值或登记债务）: {offenders}"
 
 
-# ---------------------------------------------------------------------------
 # 本文件的组织口径机检（防「两次判定塞进一个用例」这一族假失败回归）
-# ---------------------------------------------------------------------------
 
 
 def test_each_case_performs_a_single_gate_judgment() -> None:
@@ -185,9 +182,7 @@ def test_subprocess_probes_compare_bytes_not_decoded_text() -> None:
     assert not offenders, f"子进程探测不得让解码参与判定（行 {offenders}）"
 
 
-# ---------------------------------------------------------------------------
 # B) ：未登记模块不再自动豁免
-# ---------------------------------------------------------------------------
 
 
 def test_new_src_module_is_gated_even_without_registered_threshold(tmp_path: Path) -> None:
@@ -233,9 +228,7 @@ def test_exempt_module_does_not_block_the_gate(tmp_path: Path) -> None:
     assert rc == 0, "被豁免模块缺席报告即判失败：豁免名单没起作用"
 
 
-# ---------------------------------------------------------------------------
 # A) / fail-closed：拿不到输入一律 rc=2 + 下一步命令
-# ---------------------------------------------------------------------------
 
 
 def test_empty_files_report_exits_2(capsys: pytest.CaptureFixture[str]) -> None:
@@ -323,9 +316,7 @@ def test_missing_summary_counts_as_zero(tmp_path: Path) -> None:
     assert check_coverage.evaluate_report(report, root) == 1
 
 
-# ---------------------------------------------------------------------------
 # C) 该补：新鲜度
-# ---------------------------------------------------------------------------
 
 
 def _touch(path: Path, mtime: float) -> None:
@@ -413,9 +404,7 @@ def test_fresh_data_file_is_not_flagged(tmp_path: Path) -> None:
     assert check_coverage._data_is_stale(data, root) is None, "数据比源码更新却被判陈旧：门禁无法在正常流程下变绿"
 
 
-# ---------------------------------------------------------------------------
 # D) 审查 6.7 的尾部匹配收紧（防同名顶替）
-# ---------------------------------------------------------------------------
 
 
 def test_find_module_coverage_rejects_tests_only_key(tmp_path: Path) -> None:
@@ -459,9 +448,7 @@ def test_real_src_tree_enumeration_is_populated_and_classified() -> None:
         assert 0 < threshold <= 100, f"{module} 的阈值异常: {threshold} ({source})"
 
 
-# ---------------------------------------------------------------------------
 # F) CLI 出口：三种 rc 都必须原样透出去
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("gate_rc", [0, 1, 2])
@@ -501,11 +488,9 @@ def test_cli_entrypoint_propagates_rc2_for_unusable_data(tmp_path: Path) -> None
     assert b"--cov=src" in proc.stderr, proc.stderr
 
 
-# ---------------------------------------------------------------------------
 # G) 该白名单分层（登记阈值 > 债务基线 > 全局下限；豁免另设机检）
 #    组织口径沿用本文件：一个用例只做一次门禁判定；纯校验器逻辑直接调
 #    _validate_debt_and_exempt(today=…) 注入固定日期，不依赖真实时钟。
-# ---------------------------------------------------------------------------
 
 
 def _debt(floor: float = 20.0, tracker: str = "CODE_REVIEW_2026-09-22_3.md §7-2", review_by: str = "2099-01-01") -> Any:
@@ -526,7 +511,7 @@ def test_debt_baseline_blocks_regression(tmp_path: Path, monkeypatch: pytest.Mon
     # 棘轮的另一半：从基线再往下掉必须红（表只用于记录已知缺口，不是免死金牌）。
     root = _make_root(tmp_path, ("src/debt_mod.py",))
     monkeypatch.setattr(check_coverage, "COVERAGE_DEBT", {"src/debt_mod.py": _debt(20.0)})
-    monkeypatch.setattr(check_coverage, "DEBT_CEILING", 1)  # 抬到 1：让 rc 只反映被测的那条规则，不与条数上限纠缠
+    monkeypatch.setattr(check_coverage, "DEBT_CEILING", 1)
     percents = {module: 100.0 for module in _REGISTERED}
     percents["src/debt_mod.py"] = 10.0
     assert check_coverage.evaluate_report(_report(percents), root) == 1, "低于债务基线仍放行 = 只降不升失效"
@@ -536,7 +521,7 @@ def test_debt_entry_shadowing_a_passing_module_fails(tmp_path: Path, monkeypatch
     # 已达全局下限却仍躺在表里 = 给未来退化预留合法空间，必须红（否则会长期滞留）。
     root = _make_root(tmp_path, ("src/debt_mod.py",))
     monkeypatch.setattr(check_coverage, "COVERAGE_DEBT", {"src/debt_mod.py": _debt(20.0)})
-    monkeypatch.setattr(check_coverage, "DEBT_CEILING", 1)  # 抬到 1：让 rc 只反映被测的那条规则，不与条数上限纠缠
+    monkeypatch.setattr(check_coverage, "DEBT_CEILING", 1)
     percents = {module: 100.0 for module in _REGISTERED}
     percents["src/debt_mod.py"] = 90.0
     assert check_coverage.evaluate_report(_report(percents), root) == 1, "达标模块未从债务表移出却被放行"

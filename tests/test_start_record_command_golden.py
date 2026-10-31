@@ -43,7 +43,7 @@ _GOLDEN_PATH = Path(__file__).resolve().parent / "golden" / "start_record_comman
 
 
 def _regen_enabled(raw: str | None) -> bool:
-    # 2026-09-23：原写法 `bool(os.environ.get("GOLDEN_REGEN"))` 把**非空字符串**
+    # 原写法 `bool(os.environ.get("GOLDEN_REGEN"))` 把**非空字符串**
     # 一律当真——环境里留着 `GOLDEN_REGEN=0` / `=false` 时，20 条比对全部走 `return` 判通过，
     # 并在 session 结束时**用当前实现覆盖基准 JSON**。此后任何命令行错位（例如 `-segment_format`
     # 两值再被互换，正是 09-04 的 P0 形态）都会被固化成「新基准」，黄金快照从此自证。
@@ -101,7 +101,7 @@ def main_mod() -> ModuleType:
 
 
 # 收集 start_record 在某次调用中产出的 ffmpeg 命令 / 直下下载参数
-#   [历史注] 2026-09-23 前这段是类 docstring，与「注释统一 # 行注释、禁三引号 docstring」冲突
+#   [历史注] 这段原是类 docstring，与「注释统一 # 行注释、禁三引号 docstring」冲突
 #   （scripts/check_annotations.py 判违规），改为行注释、语义不变。
 class _Cap:
     def __init__(self) -> None:
@@ -294,7 +294,7 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
     # （看着能跑只是因为反复覆盖同一函数的同一属性），且一旦 _COOKIE_GLOBALS 变空（新增平台忘了
     # 补 cookie 全局量）裁决就静默消失，ts_overseas_https 会以「没有 -tls_verify 0」的形态与基准
     # 不符而看不出成因。
-    #   [历史注] 2026-09-23 该附带修正前正是那种循环内写法。
+    #   [历史注] 该附带修正前正是那种循环内写法。
     monkeypatch.setattr(
         main._http_config,
         "get_effective_ssl_verify",
@@ -432,7 +432,7 @@ def _setup_case(main: ModuleType, monkeypatch: pytest.MonkeyPatch, case: dict[st
 
     # start_record 的 except 会吞掉真实异常、loguru 队列在测试进程里又会卡死，故把
     # logger.error/warning 改为收进 _Cap.errors，断言失败时随消息一并输出。
-    #   [历史注] 2026-09-21 此前落盘到 tests/_exc.log：路径写死盘符、CI/Linux 失效，
+    #   [历史注] 此前落盘到 tests/_exc.log：路径写死盘符、CI/Linux 失效，
     #   且在仓库里留一次性产物（现由 tests/test_test_hygiene.py 的 R4 规则拦住 *.log 残留）。
     def _capture(level: str, msg: object) -> None:
         cap.errors.append(f"[{level}] {msg}\n{traceback.format_exc()}")
@@ -456,7 +456,7 @@ def _actual_of(case: dict[str, Any], cap: _Cap) -> dict[str, Any]:
     return dict(cap.commands[0])
 
 
-# （2026-10-18 审查）：GOLDEN_REGEN=1 与 `-k` / 单条 node id / `--lf` 组合时只跑部分用例，
+# GOLDEN_REGEN=1 与 `-k` / 单条 node id / `--lf` 组合时只跑部分用例，
 # 而 _REGEN_DICT 装的正是「本轮跑到的那几条」——旧实现无条件整份覆写基准 JSON，于是 20 条的黄金
 # 基准当场退化成「一条命令的快照」：此后其余 19 条比对全绿却什么都不证明（黄金快照自证失效，
 # 与该「基准被当前实现覆盖后一切错位都成新基准」同一失效面）。
@@ -558,12 +558,10 @@ def test_start_record_command_golden(
     )
 
 
-# ---------------------------------------------------------------------------
 # 快照自身的质量锁
 #
 # 黄金比对有个天然失效面：基准 JSON 一旦被「当前实现」覆盖，之后所有错位都成为新基准，
 # 20 条用例会全绿地什么都不证明。下面两条把「基准是否还是一份有意义的快照」变成断言。
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

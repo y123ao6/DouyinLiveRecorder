@@ -70,7 +70,6 @@ def test_tr_does_not_match_substituted_form() -> None:
 # 二次异常顶掉原始异常、掩盖真实故障。以下用例是该缺口的回归锁。
 # 注：conftest 的 _pin_identity_translation 把 _tr 钉成恒等映射，故默认路径是「恒等 +
 # 原文都格式化失败 → 返回裸模板」；需要「译文命中」时按本文件惯例临时替换 i18n._tr。
-# ---------------------------------------------------------------------------
 
 
 def test_tr_attribute_error_placeholder_degrades_to_template() -> None:

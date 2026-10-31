@@ -1,4 +1,4 @@
-# tests/test_gui_qt_zero_reference_modules.py — M-102（CODE_REVIEW_2026-10-21）零引用模块补冒烟。
+# tests/test_gui_qt_zero_reference_modules.py — M-102 零引用模块补冒烟。
 #
 # 报告实测：`src/gui_qt/pages/runlog.py` 与 `src/gui_qt/quality_monitor.py` 被 0 个测试文件引用，
 # 于是这两个模块可以整段重写而不触发任何红灯，逐模块覆盖闸又依赖 coverage.json（该文件陈旧即
@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-# 按子模块探测并放宽 exc_type（2026-10-18 CI 实测）：缺 Qt 系统库时失败点在 QtWidgets 的 dlopen，
+# 按子模块探测并放宽 exc_type（CI 实测）：缺 Qt 系统库时失败点在 QtWidgets 的 dlopen，
 # exc_type 缺省的 ModuleNotFoundError 抓不到，会被计成 collection error 并中断整轮。
 pytest.importorskip(
     "PySide6.QtWidgets", exc_type=ImportError, reason="PySide6 / Qt 系统库不可用时跳过 Qt 控件冒烟（环境限制口径）"

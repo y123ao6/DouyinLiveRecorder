@@ -1,4 +1,4 @@
-# tests/test_regression_2026_09_22_gui.py — 2026-09-22 批次（GUI / i18n / 推送）回归锁。
+# tests/test_regression_gui.py — 2026-09-22 批次（GUI / i18n / 推送）回归锁。
 #
 # 覆盖本轮「行为可见」修复的**失效形态**（编号见 CODE_REVIEW_2026-09-22.md 4.7 / 5.4）：
 #   i18n.has_catalog 的判据必须是「真的装载得出非空映射」而非「文件存在」；PyYAML 缺失

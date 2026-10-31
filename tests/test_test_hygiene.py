@@ -1,4 +1,4 @@
-# 静态守卫：全仓 tests/*.py 的「测试可信度」门禁（MID-64/65/66/67 沉淀，2026-09-20）。
+# 静态守卫：全仓 tests/*.py 的「测试可信度」门禁（MID-64/65/66/67 沉淀）。
 #
 # 为什么用 AST 而不是运行时用例：这几类缺陷的共同征兆是「用例全绿但什么都没证明」
 # 或「用一例拖挂整个会话」，征兆只在**别的**用例身上显现（进程级 stdlib 被改写、GC 延迟
@@ -23,14 +23,14 @@
 #   R4 tests/ 目录里不得留下一次性调试产物（MID-64/66 排查期写下的 _exc.log 一类残留）。
 #   R6 手工 pytest.MonkeyPatch() 实例必须配对 undo()：pytest 不会自动还原它们，
 #      漏 undo 的用例**单独运行**永远是对的，只有全量跑才暴露成跨文件假失败。
-#   R7（2026-09-30 新增）真机 collector 脚本 `tests/test_*_live_collector.py` 必须守「双模式模板」四条，
+#   R7 真机 collector 脚本 `tests/test_*_live_collector.py` 必须守「双模式模板」四条，
 #      逐条 AST 判定（不用自然语言子串，改文案不会让门禁失效）：
 #      ① 模块级存在 `if __name__ == "__main__":` 守卫（左右互换写法都算）且守卫体内真的调用 main()；
 #      ② 守卫之外的模块级零副作用（只允许导入 / 常量赋值 / sys.path 注入 / def / class /
 #         导入保护 try / docstring 与注释；表达式调用、循环、with、raise、sys.exit、真机连接一律违例）；
 #      ③ 从 sys.argv 取数值处必须带「非选项」判定（AGENTS「双模式测试脚本须带 int(sys.argv) 守卫」的
 #         机器化——否则 `pytest -q -k xxx` 会把 `-k` 当秒数 int() 掉，当场炸在收集期）；
-#         [2026-09-30 实测后收紧到「数值性判定」] 只判非选项仍挡不住：一次点多个文件时 sys.argv[2] 是
+#         [实测后收紧到「数值性判定」] 只判非选项仍挡不住：一次点多个文件时 sys.argv[2] 是
 #         下一个测试文件的路径，`not startswith("-")` 合规通过、`int(路径)` 当场 ValueError（当时 4 个
 #         兄弟脚本集体 errors during collection）。故本条现在要求 isdigit/isnumeric/isdecimal 这一类
 #         数值性判定，或整段转换包在 `except ValueError`（Exception/BaseException 同认；只捕
@@ -45,7 +45,7 @@
 #
 # 例外表 _SANCTIONED 逐条给出理由：AGENTS.md 亲自规定的跨平台写法（config_io.os.replace 的
 # 「文件只读」用例）与被守卫的形态同形，门禁不得推翻文档级约定。
-# 例外表的键空间（2026-09-30 补）：R1 用「被改模块.属性名」（如 os.replace），R7 用规则标签
+# 例外表的键空间：R1 用「被改模块.属性名」（如 os.replace），R7 用规则标签
 # "R7①"…"R7④"，两套形态天然不相交，共用一张表不会互相放行；R7 现无条目（5 个真机脚本逐条实测
 # 全绿或已修到全绿）。新增条目必须同时写清「为什么这是合规写法」，不得用来掩盖判据自身的误报。
 import ast
@@ -342,7 +342,7 @@ def test_guard_actually_catches_the_patterns() -> None:
     assert not _broad_filterwarnings_calls(good_r2), "R2 误报：精确过滤被拦"
     assert not _fake_kat_funcs(good_r3), "R3 误报：真值 KAT 被拦"
     assert not _fake_kat_funcs(good_r3b), "R3 误报：参数化 KAT 被拦"
-    # R7（2026-09-30 新增）四条判据各喂一段最坏的模块级形态，断言必红；
+    # R7 四条判据各喂一段最坏的模块级形态，断言必红；
     # 「合规不误报」与「只破坏一条时另三条不连坐」的完整见证在
     # test_guard_r7_actually_catches_template_violations / test_guard_r7_accepts_equivalent_compliant_spellings。
     bad_r7 = ast.parse(
@@ -451,7 +451,7 @@ def test_guard_r6_actually_catches_a_leaked_monkeypatch() -> None:
     assert not _manual_monkeypatch_violations(good), "R6 误报：配对 undo() 的合规写法被拦"
 
 
-# ---- R7：真机 collector 脚本的「双模式模板」门禁（2026-09-30 新增，S-2 的跨文件收口）----
+# ---- R7：真机 collector 脚本的「双模式模板」门禁（S-2 的跨文件收口）----
 # 扫描根与 _test_files() 分开：这四条只对 tests/test_*_live_collector.py 生效。普通用例没有
 # 「既被 pytest 收集、又能被 `python <文件> <URL> <秒数>` 直接跑真机」的双重身份，套上去会大面积误报。
 _LIVE_COLLECTOR_GLOB = "test_*_live_collector.py"
@@ -918,7 +918,7 @@ def _r7_offenders(violations: dict[str, list[str]]) -> list[str]:
 
 
 def _r7_good_template_source() -> str:
-    # AGENTS「双模式测试脚本」模板的最小可执行样本（按 5 个真机脚本 2026-09-30 修后的共同形态缩编：
+    # AGENTS「双模式测试脚本」模板的最小可执行样本（按 5 个真机脚本修后的共同形态缩编：
     # 第一步取 argv 并判「非选项」、第二步带 isdigit 数值性判定再转数）。
     # 它同时是「合规形态」的可执行定义：R7 的坏样本全部由它**单点改动**派生，
     # 一次只破坏一条判据，才能证明四条判据各自独立敏感。
@@ -991,7 +991,7 @@ _R7_TWO_STEP_SECONDS_RE = re.compile(
 
 @pytest.mark.parametrize("path", _live_collector_files(), ids=lambda p: p.name)
 def test_live_collector_scripts_follow_the_dual_mode_template(path: Path) -> None:
-    # R7 回归锁（S-2 的模板化收口，2026-09-30）：真机 collector 脚本必须「独立可跑、被收集无副作用」。
+    # R7 回归锁（S-2 的模板化收口）：真机 collector 脚本必须「独立可跑、被收集无副作用」。
     # 本条全程静态（只读源码 + ast.parse），不连平台、不 sleep、不删 tests/_out_live——
     # 由不得用运行时用例证明：运行时判据得先把真机依赖打进桩，等于在用例里重跑一遍被测流程。
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -1185,7 +1185,7 @@ def test_guard_r7_red_when_real_script_body_moves_to_module_level() -> None:
 
 
 def test_guard_r7_red_when_real_script_numeric_guard_is_removed() -> None:
-    # 变异验证 ③（2026-09-30 实测坑）：把真实脚本的两步式退回 AGENTS 样例那种「只判非选项」的一行式，
+    # 变异验证 ③（实测坑）：把真实脚本的两步式退回 AGENTS 样例那种「只判非选项」的一行式，
     # R7③ 必须红、且只红 ③。这一形态就是「`pytest a.py b.py` 一次点多个文件 → 4 errors during
     # collection」的现场，只判 startswith("-") 挡不住下一个文件路径。
     for path in _live_collector_files():
@@ -1215,8 +1215,8 @@ def test_guard_r7_red_when_real_script_cleanup_is_blind() -> None:
         ), f"{path.name}: 只破坏 ④，另三条不应连坐: {violations}"
 
 
-# ─── R8（2026-09-30 新增）：变异验证的一次性改动不得留在盘上 ────────────────
-# 成因（本仓实测，非假想）：2026-09-30 一个并行工作包在 src/stream_select.py 的分片探测分支上做
+# ─── R8：变异验证的一次性改动不得留在盘上 ────────────────
+# 成因（本仓实测，非假想）：一个并行工作包在 src/stream_select.py 的分片探测分支上做
 # 「摘掉 except RedirectHopRejected 的 re-raise」变异，跑到轮次上限中断，把带标记的 pass 原样留在了
 # 生产代码里。后果不是「少一条注释」：seg_resp 因此未赋值 → UnboundLocalError 被外层
 # except Exception 当「探测异常」吞掉 → 末位候选 return True，内网地址被交给 ffmpeg -i。
@@ -1327,7 +1327,7 @@ def test_guard_r8_red_when_marker_survives() -> None:
     assert not _r8_marker_offenders(own, "tests/test_test_hygiene.py"), "R8 自指：守卫自己含完整标记字面量"
 
 
-# ─── R9（2026-10-18 新增）：名为 test_*.py 的文件必须至少产出一条可收集用例 ──────────
+# ─── R9：名为 test_*.py 的文件必须至少产出一条可收集用例 ──────────
 # 立规背景：同轮审查的 MT-02——tests/test_bilibili_danmaku.py 全文没有任何 test_ 函数，
 # pytest 收集 0 条，文件里那些真机断言（token / WS 连通）永不自动执行，可以无限腐烂而不报错。
 # 「整轮全绿」在这里的真实含义是「这个文件什么都没跑」，与假绿同级，且比假绿更难发现——
@@ -1360,7 +1360,7 @@ _R9_ZERO_COLLECTION_SANCTIONED: dict[str, str] = {
 def _r9_collectible_count(tree: ast.Module) -> int:
     # 与 pyproject 的收集口径一致：模块级/嵌套的 test_* 函数，或 Test* 类内的 test_* 方法。
     # 必须先去重再计数：ast.walk 会同时命中类与类内方法，直接两条分支累加会把一个方法数成两次
-    # （本条由 test_guard_r9 的 classed 反向见证在 2026-10-18 实测抓出）。
+    # （本条由 test_guard_r9 的 classed 反向见证实测抓出）。
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -1421,11 +1421,11 @@ def test_guard_r9_red_for_a_module_without_cases() -> None:
     assert _r9_collectible_count(classed) == 1, "R9 失效：Test* 类内方法未被计入（与 pyproject 口径脱钩）"
 
 
-# ─── R10（2026-10-18 新增）：线程 join 之后必须断言该线程已退出 ────────────────────
+# ─── R10：线程 join 之后必须断言该线程已退出 ────────────────────
 # 立规背景：同轮审查的 LT-01/02/03/04 与 MT-04——`t.join(timeout=15)` 既不看返回值也不查
 # is_alive，被测逻辑真死锁时 join 超时返回、收集到的 errors 为空，用例照样全绿；而「死锁」
 # 恰恰是这批并发用例唯一要防的东西。本仓已按同口径修过 5 批（async_http / cookie_cache /
-# concurrency 系），R10 把它固化成零容忍，18 处存量违例于 2026-10-18 全部补齐。
+# concurrency 系），R10 把它固化成零容忍，18 处存量违例全部补齐。
 # 判据粒度取「函数」而不是「文件」：join 与 is_alive 必须落在同一个函数体内，否则别处的一句
 # 断言会替它遮丑（本仓出现过同文件另一条用例里有 is_alive 的形态）。
 # 线程对象识别刻意保守：只认 ① `X = threading.Thread(...)` 直接绑定 ② 由 Thread 构造填充的
@@ -1570,7 +1570,7 @@ def _r10_offenders_from_tree(tree: ast.Module, label: str) -> list[str]:
     return out
 
 
-# ─── R11（2026-10-21 新增，来自 CODE_REVIEW_2026-10-21 S-14）：弱断言棘轮 ────────────────
+# ─── R11（来自 CODE_REVIEW_2026-10-21 S-14）：弱断言棘轮 ────────────────
 # 立规背景：审查实测「14 个测试函数体内无任何判据、17 处只锁调用次数」。这类用例的共同征兆是
 # 「用例名承诺了契约、实现退化后照样绿」——生产代码静默做了错事但不上抛时，它们不会变红，
 # 于是后续所有修复都失去验证能力（报告 §8.1 第 4 条把它列为门禁缺口的根因）。
@@ -1579,7 +1579,7 @@ def _r10_offenders_from_tree(tree: ast.Module, label: str) -> list[str]:
 #   ① 现有存量按「文件 → 条数」登记为债务表，条数只许降不许升；
 #   ② 已修好的文件必须登记为 0，否则「修完又退化」不会被发现；
 #   ③ 债务表里的文件名必须真实存在，删/改名后条目必须同批删除（防表变成僵尸账）。
-#   ④ [2026-10-21 S-14 整改二轮补] 上述 ①②③ 首版只由 `实测 > 表行` **单向**实现，与本注释宣称的
+#   ④ [S-14 整改二轮补] 上述 ①②③ 首版只由 `实测 > 表行` **单向**实现，与本注释宣称的
 #      「双向棘轮」不符（同轮审计实测确认）：一个文件修掉两处违例却不改表时，膨胀的表行原地留着，
 #      等于给它发了一张「可悄悄退化回旧上限」的免费额度，债务表与现实脱钩且无人被告知。
 #      现比较口径改为**逐文件实测条数 == 表行**的双向相等（与 R9 例外表的 `unregistered`/`stale`
@@ -1593,7 +1593,7 @@ def _r10_offenders_from_tree(tree: ast.Module, label: str) -> list[str]:
 #     的契约就是「关且只关一次」，参数不承载语义。故只对「带请求语义的 mock 名」判违例：
 #     get/post/head/put/delete/open/request/write/read/run/call 这一类。
 _R11_NO_ASSERT_DEBT: dict[str, int] = {
-    # S-14 存量（2026-10-21 首次登记，实测值）。条数只许降不许升；修好一个就把该文件计数下调，
+    # S-14 存量（首次登记，实测值）。条数只许降不许升；修好一个就把该文件计数下调，
     # 全部清零时删条目（test_r11_debt_table_files_exist 会拦住「删了用例忘记删条目」的僵尸账）。
     "test_xhs_live_links.py": 6,
     "test_stop_recording_vbs.py": 5,

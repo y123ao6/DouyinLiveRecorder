@@ -16,9 +16,8 @@
 #    2  无 coverage 数据可读（忘了跑 pytest --cov=src、数据文件缺失、JSON 生成失败、数据比源码
 #       陈旧、门禁登记表本身指向不存在的模块）——这一类**不是**「代码不合格」，但也**绝不是**
 #       通过：数据缺失没有理由继续宽容。
-#       [2026-10-21 M-91/M-93 增补] 同属本类的还有三条「门禁自己判不了」：新鲜度比较所需的
-#       stat 读不出来、src/ 或 tests/ 遍历半途失败、报告里的 percent_covered 连 float() 都
-#       吃不下。三者旧形态都是 rc=1 + Traceback（被读成「代码不合格」），现一律收口到本档。
+#       同属本类的还有三条「门禁自己判不了」：新鲜度比较所需的 stat 读不出来、src/ 或 tests/
+#       遍历半途失败、报告里的 percent_covered 连 float() 都吃不下（三处均已收口到本档 rc=2）。
 #
 # 判定面 = src/ 下全部模块（按文件系统枚举），而不是 MODULE_THRESHOLDS 的键集合：只遍历登记表
 #   会让**任何新增的 src/*.py 自动豁免**本门禁，与「新模块必须带测试」相反。未登记阈值的模块
@@ -55,7 +54,7 @@ NO_DATA_HINT = (
 # —— 逐模块覆盖率阈值：本表是唯一事实源，AGENTS.md 只链接到此处、不复制数值。
 # 新模块不必登记（未登记的按 GLOBAL_FLOOR 判），要放宽必须走 COVERAGE_DEBT / GATE_EXEMPT_MODULES。
 MODULE_THRESHOLDS: dict[str, float] = {
-    # M-15（2026-10-30）：spider/proxy 原登记 50，GLOBAL_FLOOR 2026-10-24 抬到 60 后这两条静默
+    # M-15：spider/proxy 原登记 50，GLOBAL_FLOOR 抬到 60 后这两条静默
     # 变成「无 tracker/无到期/不受条数上限约束的债务基线」（实测当时 spider 77.1% / proxy 84.8%，
     # 余量充足）。现抬到与全局下限同值；再要放宽必须走 COVERAGE_DEBT。
     "src/spider.py": 60,
@@ -68,7 +67,7 @@ MODULE_THRESHOLDS: dict[str, float] = {
 # 未显式登记阈值的模块所用下限。取 60.0 与 pyproject
 # [tool.coverage.report] fail_under = 60 同口径——本门禁不得比全库总闸更宽，
 # 否则「新模块零测试」反而能通过逐模块闸。
-# [历史注 2026-10-24] 原为 50.0：全库实测已到 83.9%，50% 对「新建模块几乎没测试」
+# [历史注] 原为 50.0：全库实测已到 83.9%，50% 对「新建模块几乎没测试」
 # 已失去区分力（随便几行被 import 就够）。提到 60% 时全表仅 ui_kit.py（57%）触线，
 # 该缺口以补测（test_ui_kit.py 的纯几何/动效用例）而非债务条目收口——避免白名单记账化。
 GLOBAL_FLOOR = 60.0
@@ -102,7 +101,7 @@ class DebtEntry(NamedTuple):
     review_by: str  # ISO 日期 YYYY-MM-DD；到期后本门禁直接失败
 
 
-# 当前为空（2026-09-23 补测试后无模块低于全局下限）。加条目须同时上调 DEBT_CEILING 并写理由。
+# 当前为空。加条目须同时上调 DEBT_CEILING 并写理由。
 COVERAGE_DEBT: dict[str, DebtEntry] = {}
 
 # 债务基线条数上限（只降不升）
@@ -130,7 +129,7 @@ def _resolve_data_file(data_file: str | None) -> Path:
 
 
 def _traversal_failed(where: str, exc: BaseException) -> NoReturn:
-    # M-93（2026-10-21）：遍历面本身读不出来（权限 / 目录在遍历中被换走 / 符号环）时，
+    # 遍历面本身读不出来（权限 / 目录在遍历中被换走 / 符号环）时，
     # 拿到的模块清单是**残缺**的，而残缺清单照样会打印「PASSED: All N module(s)」——
     # 这与「一个模块都不达标」是两类问题，必须走 rc=2 而不是将错就错地判 0/1。
     print(f"ERROR: 门禁自身失效：{where} 遍历失败 - {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -164,7 +163,7 @@ def _data_is_stale(data_file: Path, root: Path = ROOT) -> tuple[float, Path, flo
     try:
         data_mtime = data_file.stat().st_mtime
     except OSError as exc:
-        # [历史注 2026-10-21 M-91] 原注释「这里真读不到就交给上层同样按 rc=2 处理」是错误结论：
+        # [历史注] 原注释「这里真读不到就交给上层同样按 rc=2 处理」是错误结论：
         # 返回 None 在本函数里的语义是「数据不陈旧」，上层据此**继续判定**，rc=2 从未发生。
         # stat 失败即无法证明新鲜度，与「没有可判定的数据」同类 → 按文件头 MIN-19 一律 rc=2。
         _stale_unreadable(f"无法读取 coverage 数据文件的修改时间: {data_file}", exc)
@@ -174,7 +173,7 @@ def _data_is_stale(data_file: Path, root: Path = ROOT) -> tuple[float, Path, flo
         try:
             mtime = path.stat().st_mtime
         except OSError as exc:
-            # M-91 同族：continue 只会让比较覆盖「读得到的那部分源码」。读不到的那个文件若正好
+            # continue 只会让比较覆盖「读得到的那部分源码」。读不到的那个文件若正好
             # 比数据新，陈旧形态就被漏掉，门禁照样打印 PASSED——是「评已不存在的代码」的另一半。
             _stale_unreadable(f"无法读取源码文件的修改时间: {_rel(root, path)}", exc)
         if mtime > data_mtime and (newest is None or mtime > newest_mtime):
@@ -533,7 +532,7 @@ def _find_module_coverage(coverage_data: CoverageData, module_path: str) -> Cove
     # 第二级（现规则）：**整段模块路径（含 src/）必须出现在报告键的尾部**，分隔符按 POSIX 归一
     # 后再比。这条被收紧过两次，两次都是「同名模块顶掉读数」：① 按纯文件名命中，于是
     # tests/utils.py 能顶掉 src/utils.py；② 去 src/ 前缀 + endswith('/文件名')，tests/utils.py
-    # 照样命中 src/utils.py（本仓两处同名模块真实存在）。故现规则要求整段路径出现在键尾。
+    # 照样命中 src/utils.py（src/utils.py 仍在；tests/utils.py 现已不存在，判据防同名复现）。故现规则要求整段路径出现在键尾。
     module_norm = Path(module_path).as_posix()
 
     def _posix(key: str) -> str:
@@ -560,7 +559,7 @@ def _find_module_coverage(coverage_data: CoverageData, module_path: str) -> Cove
 
 def _percent(file_data: CoverageData) -> float:
     # 取单文件覆盖率；缺 summary / 类型异常一律按 0 处理（保守侧：拿不到读数不得当成满分）
-    # [2026-10-21 M-93] 「按 0 处理」只对**键缺失**成立：percent_covered 若是 float() 拒绝的形态
+    # 「按 0 处理」只对**键缺失**成立：percent_covered 若是 float() 拒绝的形态
     # （list/dict/None），旧写法在这里抛 ValueError/TypeError，进程以 rc=1 + Traceback 结束。
     # 而 rc=1 在本门禁契约里专指「有模块低于阈值」——真相是门禁拿到一份读不了的报告，
     # 排障方向整体错掉（文件头的分级：判不了 → rc=2）。

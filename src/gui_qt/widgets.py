@@ -339,7 +339,11 @@ class TerminalText(QPlainTextEdit):
         super().__init__(parent)
         self.setObjectName("terminal")
         self.setReadOnly(True)
-        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # 换行跟随控件宽度（WidgetWidth）：日志行普遍长于视口（平台状态行 / URL / 掩码占位），
+        # NoWrap 只能横向滚动；WidgetWidth 下 Qt 在控件 resize 时对既有块自动重排折行，
+        # 「窗口拖宽 → 折行变少」无需手动干预。长无空格串的断行点由 QPlainTextEdit 默认
+        # wordWrapMode（WrapAtWordBoundaryOrAnywhere）承担，不必显式再设。
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.setMaximumBlockCount(1000)
         self.setFont(fixed_font(11))
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)

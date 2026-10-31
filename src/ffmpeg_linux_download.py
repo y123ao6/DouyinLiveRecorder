@@ -44,8 +44,8 @@ from loguru import logger
 import i18n
 from src import utils
 
-# 官方哈希文档（GitHub API 应答）的「按字节限长读取」判据（M-12）：单点住在 node_install
-# （S-12② 已抽成唯一函数），此处直接复用避免第三份拷贝再漂移；node_install 不 import 本模块，无环。
+# 官方哈希文档（GitHub API 应答）的「按字节限长读取」判据：唯一实现已抽住在 node_install，
+# 此处直接复用避免第三份拷贝再漂移；node_install 不 import 本模块，无环。
 # 常量仍按上方约定**各自持有**（见 _CONNECT_TIMEOUT 的耦合说明）。
 from src.node_install import _read_small_document_capped
 
@@ -59,11 +59,11 @@ _RETRY_BACKOFF = 2.0
 # 上限同值。下载主链路有 512MiB 上限，文档链此前无任何上限——被投毒的超大应答可在启动期耗尽内存。
 _OFFICIAL_DOC_MAX_BYTES = 2 * 1024 * 1024
 
-# 临时归档的**前缀**（M-44）：保留 ffmpeg_linux_native_temp 这段可识别前缀给既有断言与日志定位，
+# 临时归档的**前缀**：保留 ffmpeg_linux_native_temp 这段可识别前缀给既有断言与日志定位，
 # 随机后缀由内联块 unique_path 追加；实际写入一律走 open_exclusive（O_CREAT|O_EXCL|O_NOFOLLOW）。
 _TEMP_ARCHIVE_PREFIX = "ffmpeg_linux_native_temp"
 _TEMP_ARCHIVE_SUFFIX = ".tar.xz"
-# 单次下载的字节上限（M-49 的第三件事：本模块此前有重试、无量）。BtbN 的 linux*-gpl tar.xz 当前约
+# 单次下载的字节上限（本模块此前有重试、无量）。BtbN 的 linux*-gpl tar.xz 当前约
 # 100MB，取 512MiB 给上游构建增长留余量；与另两条链同值但各存一份，理由见 _CONNECT_TIMEOUT 处注释。
 _MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 
@@ -96,8 +96,8 @@ _LINUX_FFMPEG_URLS: dict[str, str] = {
 # 运行期安装器的落盘纪律原语（M-44 独占创建与目录锁 / M-45 暂存后改名替换 / M-47 PATH 去重前置 /
 # M-48 解包前空间预检）——**内联孪生块**。
 #
-# 2026-10-21 用户要求把原先的 src/download_guard.py 内联回三个安装器，故本块在
-#   ffmpeg_install.py / ffmpeg_master_download.py / ffmpeg_linux_download.py 中**逐字重复**。
+# 本块原是 src/download_guard.py，现内联在 ffmpeg_install.py / ffmpeg_master_download.py /
+#   ffmpeg_linux_download.py 三处**逐字重复**。
 # 三份必须同改：一致性由 tests/test_ffmpeg_install.py::TestInlineInstallGuardParity 机检
 #   （提取 BEGIN/END 标记之间的字节并断言三份相等）。日志前缀刻意保留 "download_guard:" 原文，
 #   以免改动已登记的 15 条 i18n msgid。
@@ -110,8 +110,7 @@ _LINUX_FFMPEG_URLS: dict[str, str] = {
 #      Windows 侧靠「名字不可预测」：随机后缀使攻击者无法在链接位置上等到本次要写的那个名字，
 #      而 O_EXCL 保证「名字已被占用」（占用者是不是链接都一样）时绝不写入、绝不跟随。
 #   3) swap_directories 的「原子」是**两次改名之间的短暂窗口**（先让位、再落位），不是文件系统级原子
-#      替换。取舍在于：窗口期只有毫秒级的「PATH 上暂时少一个 ffmpeg」，而旧实现的
-#      `rmtree → copytree` 窗口是「几百 MB 拷贝的全程」，且中途失败就是永久空壳（M-45 的成因）。
+#      替换；取舍细账（毫秒级窗口 vs 旧实现的全程拷贝窗口）见 swap_directories 函数注释。
 # >>> BEGIN INLINE INSTALL-GUARD BLOCK (keep byte-identical across the three installers)
 # 平台专属符号一律用 `sys.platform` 字面量门控（AGENTS.md「平台专属符号必须 sys.platform 字面量门控」）：
 # mypy 在 --platform win32 / --platform linux 下各只分析其中一支，另一支按常量真值判不可达。
@@ -441,7 +440,7 @@ def _fetch_asset_digest(asset_url: str) -> str:
         # 取 assets 这步必须留在 try 内，且形态归一交给 _payload_assets：原实现把 payload.get("assets")
         # 放在 try **之外**，于是「API 以 200 回数组载荷」这条真实可发生的畸形形态会抛 AttributeError
         # 穿出本函数，被入口 catch-all 归成「直下安装异常」，而「任何异常一律回 ""（= 走降级）」被偷换成 fatal。
-        # M-12（2026-10-30）：response.json() 整份物化无上限——GitHub API 应答被投毒成 GB 级时可在
+        # response.json() 整份物化无上限——GitHub API 应答被投毒成 GB 级时可在
         # 启动期耗尽内存。先按字节限长读取（判据复用 node_install._read_small_document_capped，常量
         # 与另两条文档链同值但按上方约定各自持有），超限抛出后由本函数既有 except 记 debug
         # 「请求异常」回 ""，与「取不到官方哈希」既有降级口径同流。
@@ -599,7 +598,7 @@ def _download(archive_url: str, archive: Path) -> bool:
     # 进不了「不重试」这一支）。回归锁：tests/test_ffmpeg_linux_download.py::TestDownloadRetryPolicy
     # ::test_connection_error_retries_to_max_then_fails / ::test_http_error_is_not_retried
     # ::test_write_oserror_does_not_escape_download（三条都直调 _download，异常一律不得穿出）。
-    # 2026-10-21 评审 M-44 / M-49 的三处收紧，判序逐条对上上面的既有约束：
+    # 下载段三处收紧，判序逐条对上上面的既有约束：
     #   ① 写入走内联块 open_exclusive（O_CREAT|O_EXCL|O_NOFOLLOW），创建点仍排在
     #     `raise_for_status()` **之后**——4xx/5xx 那一支根本不产生文件，那条既有断言逐字不变；
     #   ② 「删半截归档」只对本次真正创建过文件的尝试生效：路径可能被另一个实例或本地攻击者占着，
@@ -635,7 +634,7 @@ def _download(archive_url: str, archive: Path) -> bool:
             )
             return False
         except (requests.RequestException, OSError) as e:
-            # OSError 一并在此并捕（M-44）：独占创建本身就会抛 FileExistsError / PermissionError
+            # OSError 一并在此并捕：独占创建本身就会抛 FileExistsError / PermissionError
             # （路径被占、目录只读），而「换一个名字重写」不是可接受的处置——归一成重试耗尽后的
             # False，才是与「绝不覆盖」一致的出口。
             last_err = e
@@ -713,7 +712,7 @@ def install_ffmpeg_linux_native(dest_dir: str, arch: str | None = None, *, maste
     url = _asset_url(resolved)
     dest = Path(dest_dir)
     ffmpeg_dir = dest / "ffmpeg"
-    # M-44：`ffmpeg_linux_native_temp.tar.xz` 是固定可预测名——两实例并发时互相覆盖并在各自的收尾段里
+    # 旧名 `ffmpeg_linux_native_temp.tar.xz` 是固定可预测名——两实例并发时互相覆盖并在各自的收尾段里
     # unlink 对方的包，能写本目录的本地主体还能预置同名符号链接把几百 MB 引到任意路径。现取
     # 「可识别前缀 + 随机后缀」，创建由 _download 内部的 open_exclusive 完成（存在即失败，不跟随不覆盖）。
     archive = unique_path(dest, _TEMP_ARCHIVE_PREFIX, _TEMP_ARCHIVE_SUFFIX)
@@ -730,7 +729,7 @@ def install_ffmpeg_linux_native(dest_dir: str, arch: str | None = None, *, maste
         if not lock_held:
             logger.warning("Another ffmpeg installer holds this directory; skipping the native download")
             return False
-        # 本轮是否真的拿到了**由自己创建**的归档（M-44 的收尾前提，见下面 finally 的说明）。
+        # 本轮是否真的拿到了**由自己创建**的归档（finally 清理的前提，见下面 finally 的说明）。
         archive_ours = False
         try:
             official = _fetch_asset_digest(url)
@@ -739,7 +738,7 @@ def install_ffmpeg_linux_native(dest_dir: str, arch: str | None = None, *, maste
             archive_ours = True
             if not _verify_archive(archive, official, dest, url, master_allowed):
                 return False
-            # M-48：解包前先看同级还剩多少空间。_install_binaries 刻意把临时目录落在**应用目录内**
+            # 解包前先看同级还剩多少空间。_install_binaries 刻意把临时目录落在**应用目录内**
             #   （不是 %TEMP%），这个选择把 ENOSPC 的风险从 tmpfs 挪到了目标卷，因此预检必须配套补上，
             #   否则「解包解到一半抛异常」会以新的形态回来。判据与两条 Windows 链同一个函数。
             if not has_room_for_unpack(dest_dir, archive.stat().st_size):
@@ -765,7 +764,7 @@ def install_ffmpeg_linux_native(dest_dir: str, arch: str | None = None, *, maste
             )
             return False
         finally:
-            # M-44 的收尾前提：**只删本轮自己创建过的归档**。_download 返 False 时归档要么从没建成
+            # 收尾前提：**只删本轮自己创建过的归档**。_download 返 False 时归档要么从没建成
             # （连接级失败，_download 内部已按 created 收好尾），要么被别的主体占着——后者无差别
             # unlink 正是登记的那条「两实例互删对方的包」。archive_ours 只在 _download 返 True 后置真，
             # 于是这条清理恰好覆盖「我们拿到了产物、之后任何一步失败」的全部出口。
@@ -775,9 +774,8 @@ def install_ffmpeg_linux_native(dest_dir: str, arch: str | None = None, *, maste
                 except OSError:
                     pass
 
-        # M-47：注入走内联块 prepend_to_path_env。此前是「运行时目标目录 + 实时 PATH 直接
-        #   拼接、无去重」，同一路径会被反复叠在 PATH 前面；「本次真正落成的目录 + 去重后的原 PATH」
-        #   这一条口径现在三处（本模块、ffmpeg_install、ffmpeg_master_download）由同一个函数承担。
+        # 注入走内联块 prepend_to_path_env：「本次真正落成的目录 + 去重后的实时 PATH」口径三处
+        #   （本模块、ffmpeg_install、ffmpeg_master_download）由同一个函数承担，不再各自拼接。
         prepend_to_path_env(ffmpeg_dir)
         try:
             probe = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=30)

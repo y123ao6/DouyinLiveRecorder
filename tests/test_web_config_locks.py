@@ -1,4 +1,4 @@
-# src/web_config.py / src/web_api.py「敏感配置不得被空值覆盖」的回归锁（MID-69 补，2026-09-21）。
+# src/web_config.py / src/web_api.py「敏感配置不得被空值覆盖」的回归锁（MID-69 补）。
 #
 # 范围刻意收窄：MID-69 点名的三个符号里，_looks_like_secret_value 与 _validate_room_url_target
 # 已由 tests/test_web_config_secret_mask.py 用**真实函数**的表驱动用例逐条钉死（CR-08/09/10 批次），
@@ -82,7 +82,7 @@ def client(tmp_path: Path, fake_main: types.ModuleType) -> Generator[TestClient,
                 "钉钉推送接口链接 = https://oapi.dingtalk.com/robot/send?access_token=REAL_DING",
                 "推送开关 = 是",
                 "",
-                # M-61（2026-10-21）把「推送配置」整节纳入敏感节后，反向用例需要一个
+                # M-61 把「推送配置」整节纳入敏感节后，反向用例需要一个
                 # 真正不敏感的节来证明守卫没有扩大到普通键。
                 "[录制设置]",
                 "是否跳过代理检测(是/否) = 是",

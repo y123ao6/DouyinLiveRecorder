@@ -60,7 +60,7 @@ def clean_name(input_text: str) -> str:
     # Windows 特殊字符清理：& 在 cmd 中会触发命令分隔，统一替换为下划线
     cleaned_name = cleaned_name.replace("&", "_")
     # 保留设备名改名（CON → CON_），否则 Windows 上无法创建同名目录。
-    # M-25（2026-10-21）：Windows 拒绝的是「基础名 + 任意扩展名」的整个形态（CON.txt 同样建不出来），
+    # Windows 拒绝的是「基础名 + 任意扩展名」的整个形态（CON.txt 同样建不出来），
     # 原实现只在整串末尾加下划线（CON.txt → CON.txt_），基础名仍是保留名、目录创建依旧失败。
     # 故按第一个点切分出基础名，改名后**接回原扩展名**（CON.txt → CON_.txt）。
     reserved_head, dot, reserved_tail = cleaned_name.partition(".")
@@ -283,7 +283,7 @@ clear_ffmpeg_reject = _clear_probe_reject
 
 # 判定流地址是否为 h265 编码：候选过滤、record_url 兜底与 stream.py 的 h264 备选收集
 # 三处共用的单一实现，避免口径漂移。是否可直拷取决于输出容器，见 _h265_copy_format_supported。
-# M-23（2026-10-21）：原实现只认 `codec[0] == "h265"`，而抖音侧（stream.py）用的是大小写不敏感的
+# 原实现只认 `codec[0] == "h265"`，而抖音侧（stream.py）用的是大小写不敏感的
 # 「h265 / hevc 都算」——同一条流两处口径不同：平台下发 `HEVC` / `H265` 时本侧不剔除，保存 FLV/纯音频
 # 仍把 HEVC 候选交付 ffmpeg 直拷，录制失败或产物异常。现收敛为同一判据：小写比较、同时识别 hevc。
 def _is_h265(url: str) -> bool:
@@ -413,7 +413,7 @@ def _bounded_probe_get(
 # 内网 / 本机 / 链路本地目标的判定。只判字面量、不做 DNS 解析：探针每轮对多候选执行，解析既多
 # 一个可被远端操纵的攻击面，也多一段不可控延迟。
 #
-# S-04（2026-10-21）：原实现是「字面量前缀」正则，实测四类写法全部漏网——`2130706433`（整数字面量）、
+# 原实现是「字面量前缀」正则，实测四类写法全部漏网——`2130706433`（整数字面量）、
 # `0177.0.0.1`（八进制）、`::ffff:127.0.0.1`（IPv4-mapped IPv6）、`100.64.0.1`（CGNAT）：它们最终都被
 # 解析成 127.0.0.1 / CGNAT 目标，却没有一个以 `127.` 这类前缀开头。现按结构化判定，就地升级、不新建
 # 模块（判据族仍只有一份事实源）。只保留「本机名」这条名字判定，且改为全等而非前缀——原正则的
@@ -521,7 +521,7 @@ class _DerivedHopRejected(Exception):
         self.reason = reason
 
 
-# 公共后缀表（S-05，2026-10-21）：原实现把「末两段」当注册域，`.co.kr` / `.com.cn` / `.co.uk` /
+# 公共后缀表：原实现把「末两段」当注册域，`.co.kr` / `.com.cn` / `.co.uk` /
 # `.com.br` 这类**公共后缀本身含两段**的域上，`a.example.co.kr` 与 `evil.co.kr` 的「注册域」都是
 # `co.kr`，于是被判同域、沿用原请求头→本机带平台 Cookie 向同公共后缀的任意主机发 GET。本仓覆盖的
 # PandaTV / FlexTV 正是 `.co.kr` 域，该分支极易命中。
@@ -803,7 +803,6 @@ def _confirm_get_ok(
     platform: str | None = None,
 ) -> bool:
     reject_status: int | None = None
-    # 函数内 import 的理由见 _probe_client
     from src.async_http import RedirectHopRejected
 
     for attempt in range(2):
@@ -1121,7 +1120,7 @@ def _validate_stream_url(
                 reason=f"重定向逐跳复检命中: {e.reason}（初始地址 {utils.mask_credentials(url)}）",
             )
         )
-        # S-03（2026-10-21）：与上面两条安全出口一样登记进 security_rejected。只 return False 而不登记
+        # 与上面两条安全出口一样登记进 security_rejected。只 return False 而不登记
         # 时，本地址在 probed 里只是「结论 False」，select_source_url 的 record_url 同址复用分支会把
         # 「CDN 拒绝」的语义套上去、照常交付给 ffmpeg -i——而抖音/TikTok/网易CC 的 record_url 恒等于
         # m3u8_url 或 flv_url，该分支极易命中，等于内网地址带着平台 Cookie 直接连出去。
@@ -1301,7 +1300,7 @@ def select_source_url(
     # 构造失败收敛为 probe_client=None（本轮无可用探针客户端），而不是判成「所有候选不可达」：
     # client=None 会走 _validate_stream_url 既有的自建路径，自建再失败时由该函数记 WARNING 并
     # 按末位语义放行，故本轮恒有地址返回给 ffmpeg；且一个探针都没发出，不写探针退避表。
-    # M-20（2026-10-21）：显式赋 None 而不是只留类型标注。原先构造抛出捕获面之外的异常（ssl.SSLError /
+    # 显式赋 None 而不是只留类型标注。原先构造抛出捕获面之外的异常（ssl.SSLError /
     # OSError 等，见下方 except 的注释）时，probe_client 从未绑定，finally 里的 `if probe_client is not
     # None` 先抛 UnboundLocalError，把原始异常整个吞掉并穿透房间线程——最需要诊断信息的路径反而最没信息。
     probe_client: httpx.Client | None = None
@@ -1313,7 +1312,7 @@ def select_source_url(
         )
     # httpx.InvalidURL 直继 Exception（不是 ValueError 子类）：裸 IPv6 形态的代理会在构造期
     # 抛它，不捕获会每轮抛穿房间线程。归入「本轮无可用探针客户端」，走下方自建降级路径。
-    # 2026-10-29 审查：捕获面补 OSError——httpx.Client 构造期还会用 verify 建 SSL 上下文，
+    # 捕获面补 OSError——httpx.Client 构造期还会用 verify 建 SSL 上下文，
     # 证书库异常以 ssl.SSLError（OSError 子类）形态抛出；上方注释承诺「构造失败收敛为
     # probe_client=None」的本意是覆盖全部构造失败，只捕前三个会把 ssl/OSError 系仍漏回房间线程，
     # 与 1301-1303 的设计承诺互相矛盾。
@@ -1398,7 +1397,7 @@ def select_source_url(
         for idx, (cand, is_hls) in enumerate(usable):
             if prev_kind is not None and is_hls != prev_kind:
                 if prev_kind:
-                    # L-16（2026-10-02）：用户可见回退告警统一走 i18n（原为裸英文常量）
+                    # 用户可见回退告警统一走 i18n（原为裸英文常量）
                     logger.warning(i18n.tr("HLS 候选校验失败，回退 FLV"))
                 else:
                     logger.warning(i18n.tr("FLV 候选校验失败，回退 HLS"))

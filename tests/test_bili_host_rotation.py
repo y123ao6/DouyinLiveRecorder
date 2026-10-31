@@ -1,4 +1,4 @@
-# M-13 回归锁（2026-09-29 审查）：B站弹幕 host 轮换期间不得投「假关闭」事件。
+# M-13 回归锁：B站弹幕 host 轮换期间不得投「假关闭」事件。
 #
 # 被测生产实现：src/platforms/bilibili.py::BilibiliDanmaku 的 _report_close 闸门 + start() 的
 # host 轮换循环（挂在 WsClient.on_close 上的是闸门，不是裸回调）。

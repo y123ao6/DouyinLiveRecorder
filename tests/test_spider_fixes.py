@@ -30,7 +30,7 @@ def _subprocess_shim(run: Any = None, popen: Any = None) -> types.SimpleNamespac
     # harness safe-delete 守卫线程（其 subprocess.run 依赖真 Popen 的上下文管理协议，否则报
     # SAFE_DELETE_BULK_GUARD_ERROR）、loguru enqueue 线程、coverage 全部拿到假实现。
     # vars(subprocess) 浅拷贝保留 PIPE / STDOUT / TimeoutExpired / CalledProcessError 等常量，仅换 run。
-    # [2026-10-19 补] L-19 把 run_node_script_async 的执行原语从 subprocess.run 换成自管
+    # L-19 把 run_node_script_async 的执行原语从 subprocess.run 换成自管
     # Popen + communicate(input=…, timeout=…)（外层再包 asyncio.wait_for，超时回收整棵进程树），
     # 于是本 shim 的「需要换掉的那一位」从 run 变成 Popen；run 位保留给超时回收支路
     # （_kill_node_process_tree 在 Windows 上仍调 subprocess.run 起 taskkill），两者都可选。
@@ -100,7 +100,7 @@ class TestVvxqiu:
         assert result["is_live"] is False
         assert "record_url" not in result
 
-    # 房间号缺失时直接判未直播。[2026-10-31 L-01] 判空已前移到首发请求之前：旧中间态
+    # 房间号缺失时直接判未直播。L-01 判空已前移到首发请求之前：旧中间态
     # 「banner 仍发 1 次、m3u8 不发」（await_count==1）收紧为一次请求都不发（await_count==0）。
     async def test_missing_room_id_not_live_no_extra_request(self) -> None:
         raw = _unwrap(sp.get_vvxqiu_stream_url)
@@ -229,7 +229,7 @@ class TestFaceit:
 
 class TestShopee:
     # shopee 解析：重定向拼接须用完整 TLD 后缀，畸形/重定向失败 URL 须判未直播
-    # SEV-06 修复（2026-09-20）：本用例旧版传 https://shopee.co.id/live——该形态不含
+    # SEV-06 修复：本用例旧版传 https://shopee.co.id/live——该形态不含
     # "live.shopee" 路由键（main.py 永不把这类地址分发到本函数），恰好绕开真实 bug：
     # 剥 live. 前缀那一步曾缺失，可路由形态拼出 https://live.shopee.shopee.co.id
     # （不存在的 host → 永远「未开播」）。断言改用真实会被路由的直链形态。
@@ -343,7 +343,7 @@ class TestCacheLocks:
                 t.start()
             for t in threads:
                 t.join(timeout=10)  # timeout=10 远大于 fake 的 0.05s 睡眠，仅作防死锁兜底
-            # 审查 7.11（2026-10-18）：兜底超时返回不等于线程已退出——挂死时 call_count 停在 1、
+            # 兜底超时返回不等于线程已退出——挂死时 call_count 停在 1、
             # 下一条断言反而「恰好通过」，正是本规则要防的假绿形态。
             alive = [t.name for t in threads if t.is_alive()]
             assert not alive, f"5 条 did 拉取线程未在 10s 内退出（疑似去重锁死锁）：{alive}"
@@ -371,7 +371,7 @@ class TestCacheLocks:
                 t.start()
             for t in threads:
                 t.join(timeout=10)
-            # 审查 7.11（2026-10-18，同上一条 did 用例口径）：client_id 走的是同一把跨 await 的
+            # 同上一条 did 用例口径：client_id 走的是同一把跨 await 的
             # RLock 去重链，挂死时 call_count 同样停在 1 而假绿，必须逐线程确认已退出。
             alive = [t.name for t in threads if t.is_alive()]
             assert not alive, f"5 条 client_id 拉取线程未在 10s 内退出（疑似去重锁死锁）：{alive}"

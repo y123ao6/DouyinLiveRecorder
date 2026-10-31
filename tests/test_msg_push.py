@@ -79,7 +79,7 @@ class TestMaskUrl:
         masked = _mask_url("https://example.com/api/status")
         assert masked == "https://example.com/api/status"
 
-    # S-07（CODE_REVIEW_2026-10-29）：netloc 里的 basic-auth userinfo 此前原样带出，
+    # S-07：netloc 里的 basic-auth userinfo 此前原样带出，
     # 自托管反代的口令因此明文进轮转日志；只剥 userinfo，主机与路径保持可读。
     def test_userinfo_stripped_from_netloc(self) -> None:
         masked = _mask_url("https://user:secretpw@hooks.example.com/services/foo/bar")
@@ -206,11 +206,10 @@ class TestDingtalk:
 
 
 # ------------------------------------------------------------------------------------
-# 2026-10-21：重置向必须逐跳复核，不能只校验首跳。
+# 重置向必须逐跳复核，不能只校验首跳。
 # 攻击模型：推送地址设为攻击者服务器 → 它 302 到 http://169.254.169.254/latest/meta-data/ →
 # 首跳校验通过、落地地址是内网，响应体再经 errmsg/msg 字段写进日志（带回显 SSRF）。
 # 两条互补判据：① 处理器本身拒绝内网落地；② opener 上挂的确实是该守卫子类（裸 handler 不得回归）。
-# ------------------------------------------------------------------------------------
 class TestPushRedirectHopGuard:
     @staticmethod
     def _handler() -> object:

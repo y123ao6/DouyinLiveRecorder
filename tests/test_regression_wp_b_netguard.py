@@ -311,14 +311,14 @@ class TestM2OpenerHandlerWhitelist:
         "HTTPHandler",
         "HTTPSHandler",
         "HTTPDefaultErrorHandler",
-        # S-09（2026-10-21）：裸 HTTPRedirectHandler 换成带逐跳复核的子类——重定向落地地址原先只
+        # S-09：裸 HTTPRedirectHandler 换成带逐跳复核的子类——重定向落地地址原先只
         # 在 abroad 分支被事后核对，直连/代理两条路径可以直接 302 到 127.0.0.1 / 169.254.169.254。
         # 这里钉的是子类名：换成裸 HTTPRedirectHandler 即等于摘掉逐跳闸门，本锁当场变红。
         "_HopGuardRedirectHandler",
         "HTTPErrorProcessor",
         # 注意 ProxyHandler({})「不出现在 handlers 里」不是遗漏：CPython 的 OpenerDirector.add_handler
         # 只登记「贡献了某条协议方法链」的 handler，而空代理表的 ProxyHandler 只有 proxy_open（被当作
-        # coincidental match 跳过）。旧写法 build_opener(no_proxy_handler) 同样是这个形态——正因没有
+        # coincidental match 跳过）。[历史注] 旧写法 build_opener(no_proxy_handler) 同样是这个形态——正因没有
         # 任何 proxy handler 被登记，本地请求才不走系统代理。
     }
 

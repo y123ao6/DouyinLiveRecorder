@@ -142,7 +142,7 @@ class TestSyncReq:
         mock_session = MagicMock()
         mock_session_fn.return_value = mock_session
         mock_response = MagicMock()
-        # 2026-10-19：代理分支改为 stream=True + iter_content 分块计数，响应体不再取
+        # 代理分支改为 stream=True + iter_content 分块计数，响应体不再取
         # .text（requests 会先无上限地全量解码）。替身因此要给 iter_content 供块、并给出
         # headers（上限选择依赖 Content-Encoding）。
         mock_response.headers = {}
@@ -282,7 +282,7 @@ class TestSyncReq:
     def test_http_error_400_oversized_body_hits_read_cap(
         self, mock_opener_fn: MagicMock, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # （2026-10-18 审查）回归锁：400 分支必须与成功路径同走 _read_capped——
+        # 回归锁：400 分支必须与成功路径同走 _read_capped——
         # 原实现 `e.read()` 无参全量读，超大 400 错误体直接威胁进程内存（对端给多少申请多少）。
         # 超限后的失败语义按既有契约收敛为空串 + 脱敏 error 日志（不得抛穿、不得截断放行）。
         # 上限经 monkeypatch 压低（不构造 8MB 真体）；变异验证（把 _read_capped 退回 e.read()）
@@ -318,7 +318,7 @@ class TestSyncReq:
 
         with patch("src.sync_http.logger") as mock_logger:
             result = sync_req("http://example.com")
-            # 2026-10-19：同一次失败现在只落**一条** error（最外层统一失败分支）。
+            # 同一次失败现在只落**一条** error（最外层统一失败分支）。
             # 原实现在内层还有两条「记一条 + 原样上抛」，于是同一次请求固定产生
             # warning + error + error 三条日志；三条都只描述同一件事，纯属浪费轮转容量。
             mock_logger.warning.assert_not_called()
@@ -328,7 +328,7 @@ class TestSyncReq:
 
     @patch("src.sync_http.config")
     @patch("src.sync_http._get_opener")
-    # residual（2026-10-21）：落地复核现在也走 DNS 判定链（_redirect_hop_rejection_reason 内含
+    # residual：落地复核现在也走 DNS 判定链（_redirect_hop_rejection_reason 内含
     # internal_stream_target_reason），故这两条用例统一挂 _public_dns seam，不再依赖本机真实解析——
     # 「redirected.com」这类名字在无外网环境解析失败会被判「主机名无法解析」而拒绝，属判定生效而非回归。
     def test_abroad_request(self, mock_opener_fn: MagicMock, mock_config: MagicMock, _public_dns: None) -> None:
@@ -445,7 +445,7 @@ class TestSslVerifyScoping:
         assert kwargs["verify"] is False
 
 
-# 2026-09-20：代理地址归一必须与异步侧同址同语义。
+# 代理地址归一必须与异步侧同址同语义。
 # 配置项「代理地址」由 read_config_value 原样读入，用户普遍写裸 127.0.0.1:7890；
 # 归一缺失时 requests 抛 InvalidSchema/InvalidURL，被外层 except 吞成空串
 # ——本仓列为最难归因的失败形态（「开代理后 sync 解析全失败、async 正常」）。
@@ -757,7 +757,7 @@ class TestSyncReqRedirectHopGate:
 
 
 # ─────────────────────────────────────────────────────────────
-# （CODE_REVIEW 2026-10-21）：代理分支 stream=True 的响应必须关闭
+# 代理分支 stream=True 的响应必须关闭
 # ─────────────────────────────────────────────────────────────
 # 原先 redirect_url 提前 return / 读体抛错两条出口都不 close()，连接只能等 urllib3 的 GC 收尸。
 # 判据只有一条：无论走哪条出口，响应对象的 close() 都必须被调用一次。
@@ -798,7 +798,7 @@ class TestProxyStreamResponseIsClosed:
 
 
 # ─────────────────────────────────────────────────────────────
-# （CODE_REVIEW 2026-10-21）：json_data 静默退化成 GET
+# json_data 静默退化成 GET
 # ─────────────────────────────────────────────────────────────
 # 原实现只对 dict/list 生效，传 str/int/bool 时请求体被静默丢弃、请求退化成 GET；与 async 侧
 # 「data/json_data 同传显式拒绝」同口径后，编程错误一律在发请求前冒出来（不伪装成网络失败）。
@@ -853,7 +853,7 @@ class TestJsonDataShapeIsRejected:
 
 
 # ─────────────────────────────────────────────────────────────
-# 残余（CODE_REVIEW 2026-10-21）：abroad 分支落地复核升级为与入口/逐跳同一份判据
+# 残余：abroad 分支落地复核升级为与入口/逐跳同一份判据
 # ─────────────────────────────────────────────────────────────
 # _HopGuardRedirectHandler 只挂在本模块自建的两支 opener 上；abroad 分支经进程全局默认 opener，
 # 原判据只有 _reject_unsafe_scheme（协议形态白名单）——公网 URL 302 到 http://169.254.169.254/
@@ -899,7 +899,7 @@ class TestAbroadLandingInternalGate:
 
 
 # ─────────────────────────────────────────────────────────────
-# 残余（CODE_REVIEW 2026-10-21）：直连分支的 JSON 请求体必须带 Content-Type
+# 残余：直连分支的 JSON 请求体必须带 Content-Type
 # ─────────────────────────────────────────────────────────────
 # 代理分支交给 requests 的 json= 序列化并自动补 application/json；直连分支自行 json.dumps，
 # 而 urllib.Request 从不补头——修复前服务端按 form/text 解析 JSON body，与代理分支行为分叉。
@@ -949,7 +949,7 @@ class TestJsonDataContentTypeHeader:
 
 
 # ─────────────────────────────────────────────────────────────
-# 残余（CODE_REVIEW 2026-10-21）：线程级 Session 的有界确定性回收
+# 残余：线程级 Session 的有界确定性回收
 # ─────────────────────────────────────────────────────────────
 # 修复前 Session 只在 atexit 关闭，已结束房间线程的连接池要等 GC（非确定性）；现在 _session()
 # 每次进入先关闭+摘除「所属线程已不再存活」的登记条目，登记表另有硬上限（达上限时新 Session

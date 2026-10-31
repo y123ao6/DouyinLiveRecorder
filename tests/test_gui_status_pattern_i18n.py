@@ -6,7 +6,7 @@
 # AGENTS「关键约定 #13」禁止拿自然语言子串当跨模块契约，比较对象必须取 i18n.tr(...) 后形态。
 #
 # 锁：① 四种受支持语言下三类行都能解析（行为锁）；② 语言热切换后匹配器重算；
-# ③ 2026-09-12 审查 F-06 的解析语义（贪婪 name 段 + [^\]]+ 画质段）不回退；
+# ③ 审查 F-06 的解析语义（贪婪 name 段 + [^\]]+ 画质段）不回退；
 # ④ gui.py 不得再出现裸简中匹配字面量（AST 静态锁）。
 # 修复形态是「消费侧由同 msgid 的 tr() 结果派生匹配串」；#DLRQ| 结构化键值协议属
 # 「待批准长期方案」，要同时改 src/recorder_status.py 与 main.py，不在本包授权范围。
@@ -300,7 +300,7 @@ def test_untranslated_empty_line_still_clears_in_every_language(language: str) -
 
 
 def test_bracketed_anchor_name_keeps_f06_semantics() -> None:
-    # 2026-09-12 审查 F-06：主播名里的 "[...]" 不得被当成画质段边界。
+    # 审查 F-06：主播名里的 "[...]" 不得被当成画质段边界。
     # 派生实现必须逐字保持「贪婪 name 段 + [^\]]+ 画质段」，两种语言都验。
     case = {
         "language": "zh_CN",

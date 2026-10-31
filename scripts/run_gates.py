@@ -81,7 +81,6 @@ GATE_CHILD_ENV: dict[str, str] = {"PYTHONUTF8": "1"}
 # pytest 的 warnings summary 走 stdout，主回路的逐行 stderr 转发覆盖不到它，故由 ci.yml 的
 # "Gate pytest warnings summary" 步骤与下方 gate_pytest_warnings_summary() 单独承担；
 # 该兜底回路自己也接管 pytest 的 stderr 并按本清单判定（rc=0 命中即失败）。
-#   [历史注] 2026-09-23 此前，本处写的是「pytest 兜底不并入本清单的扫描回路」。
 FATAL_STDERR_PATTERNS: tuple[str, ...] = (
     "Unable to parse file",  # isort/black：编码或解析失败的静默跳过（UserWarning，rc=0）
 )
@@ -116,7 +115,7 @@ _BATCH_SUFFIXES: tuple[str, ...] = (".bat", ".cmd")
 
 
 def ensure_utf8_streams() -> None:
-    # 把**本进程**的 stdout/stderr 也换成 UTF-8：该那套语义的另一半，只钉子进程仍会失效。
+    # 把**本进程**的 stdout/stderr 也换成 UTF-8：是那套语义的另一半，只钉子进程仍会失效。
     # GATE_CHILD_ENV 只管得到子进程，而两路输出最终都落在**本进程 stdout** 上——run_command
     # 逐行读子进程 stderr 再写 sys.stdout，black 成功行的 `All done! ✨ 🍰 ✨` 则走子进程 stdout
     # 的直接继承写入。中文 Windows 的 cp936 编不出 U+2728 → UnicodeEncodeError 炸掉门禁自身，
@@ -298,7 +297,7 @@ def run_command(cmd: str, extra_env: dict[str, str] | None = None) -> tuple[int,
     #             ——isort 跳过文件时 rc=0（实测告警确实落在 stderr）。
     # 退出码：rc != 0 一律判失败（由 main() 的 `if rc == 0 and not hits:` 收口），--keep-going
     #         只控制「是否继续跑后续命令」，不影响该判定。
-    #         [2026-10-21 该增补] 新增一个**保留值** GATE_TIMEOUT_RC(124)：它不表示「工具查出了
+    #         **保留值** GATE_TIMEOUT_RC(124)：它不表示「工具查出了
     #         问题」，只表示「这条门禁到点没结束、没给出任何结论」，由 main() 单独记账并让整回路
     #         以 rc=2 收口（本文件头：2＝没跑而非跑过）。同时 stderr 的逐行转发挪进工作线程——
     #         纯阻塞式迭代在主线程里等同于「读端无界」，加在 wait 上的 timeout 也救不回来。
@@ -455,7 +454,7 @@ def check_executables(cmds: list[str]) -> list[str]:
 
 def _module_unavailable(name: str) -> bool:
     # 当前解释器能否以 -m 方式加载该模块（不能→才算真缺失）；同 run_command，不继承 stdin
-    # 2026-10-21：两条配套改动，缺一即本函数不可用：
+    # 两条配套改动，缺一即本函数不可用：
     #   ① capture_output —— 旧形态不接管两路输出，探测子进程的一句 traceback / 告警会直接混进
     #      门禁自己的 stdout，把「工具在不在」这一句结论写在一段陌生输出中间（判定面被污染）。
     #      这里不需要转发（结果只是 rc），所以两路都收进缓冲区、不打印。
@@ -538,7 +537,7 @@ def gate_pytest_warnings_summary() -> tuple[bool, str]:
             cwd=ROOT,
             stdin=subprocess.DEVNULL,
             check=False,
-            # 残留（2026-10-21）：主回路的 Popen 与 _module_unavailable 的 run 都已有上界，
+            # 主回路的 Popen 与 _module_unavailable 的 run 都已有上界，
             # 唯独本条没有。pytest 卡在一条永不返回的用例上时会把整个 run_gates 拖到 job 超时，
             # 而那份红里没有任何一条门禁的结论。超时按「门禁没跑成」返回 False（调用方以 rc=1
             # 收口），绝不伪装成 PASS。

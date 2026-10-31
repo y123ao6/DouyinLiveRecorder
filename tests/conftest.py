@@ -54,7 +54,7 @@ def _clean_credential_caches() -> Generator[None]:
     def _reset() -> None:
         _clear()
         # import 在 fixture 顶部且不做容错：这里出错说明被测模块真的坏了，收集/执行期就该红
-        # （ImportError 不是需要吞掉的环境差异）。[历史注] ④ 前，两个 import 各裹在
+        # （ImportError 不是需要吞掉的环境差异）。[历史注] 早前，两个 import 各裹在
         # `try/except Exception: return` 里，src.spider 导入期抛错（或被摘出 sys.modules）时
         # 四个 `_cached_*` 与其后的 `_cached_ttwid` **全部不重置且不报错**。
         _spider._cached_kuaishou_did = ""

@@ -60,7 +60,7 @@ no_proxy_handler = urllib.request.ProxyHandler({})
 # （协议 + 内网/保留目标，复用 async_http.internal_stream_target_reason）而非只判协议：
 # 公网地址 302 到 http://169.254.169.254/ 时协议合法，只判形不能放行。
 class _HopGuardRedirectHandler(urllib.request.HTTPRedirectHandler):
-    # 2026-10-21：重定向逐跳复核。缺它时「公网 URL 过了入口 scheme 白名单 → 302 到 http://127.0.0.1:6379/
+    # 重定向逐跳复核。缺它时「公网 URL 过了入口 scheme 白名单 → 302 到 http://127.0.0.1:6379/
     # 或 http://169.254.169.254/」会一路放行，落地地址的唯一一道检查只在 abroad 分支上。
     # handler 形态的对标物是 scripts/douyin_live_recorder_standalone.py 的 _HopGuardRedirectHandler
     # （那里按设计不 import src，故本副本复刻同判据）。301/302/303/307/308 与 30x+Location 全部经
@@ -152,7 +152,7 @@ def _resolve_ssl_verify(override: bool | None) -> bool:
 
 def _get_opener(ssl_verify: bool | None = None) -> urllib.request.OpenerDirector:
     # 按「本次请求」的 SSL 验证裁决选择本地请求 opener。
-    # ssl_verify=None 表示跟随全局开关（历史行为）；显式传值时以该次调用为准。
+    # ssl_verify=None 表示跟随全局开关；显式传值时以该次调用为准。
     return _opener_secure if _resolve_ssl_verify(ssl_verify) else _get_insecure_opener()
 
 
@@ -379,8 +379,8 @@ def sync_req(
     # 该覆盖必须同时透传 urllib 与 requests(代理) 两条路径（曾只改一条即出现口径分叉）。
     if headers is None:
         headers = {}
-    # 2026-10-21：json_data 的形态校验必须放在 try **之外**——它是编程错误而非网络故障。
-    # 原实现只在直连分支用 isinstance 判形态，传 str/int/bool 时请求体被**静默丢弃并退化成 GET**，
+    # json_data 的形态校验必须放在 try **之外**——它是编程错误而非网络故障。
+    # 传 str/int/bool 时请求体被**静默丢弃并退化成 GET**，
     # 调用方只看到空响应（与 async 侧「data/json 同传显式拒绝」同一条口径：编程错误不伪装成网络失败）。
     # 代理分支把原值交给 requests 的 json= 会自行序列化，两条分支行为分叉，故同样按本判据收口。
     if json_data is not None and not isinstance(json_data, (dict, list)):
@@ -425,7 +425,7 @@ def sync_req(
             # 自行解压，两道字节上限完全不生效——一小份高压缩比响应就能让进程申请数 GB 内存。
             # iter_content 默认已按 Content-Encoding 解码，累计的是解压后字节，一次覆盖两种形态。
             # redirect_url 分支改读 response.url（stream=True 下同样已完成重定向、不物化正文）。
-            # 2026-10-21：stream=True 的响应**必须**显式关闭——旧写法既不在 with 里、也只在读体成功时释放：
+            # stream=True 的响应**必须**显式关闭——旧写法既不在 with 里、也只在读体成功时释放：
             # redirect_url 提前 return 与读体抛错（超限/解码失败）都漏连接，只能等 urllib3 的 GC 收尸。
             # 包进 with 是 requests 认可的关闭协议（Response.close() 释放连接回池），三条出口一并覆盖。
             response: requests.Response

@@ -31,7 +31,7 @@ WAF_HTML = "<html><head><title>Access Protected</title></head><body>cf-browser-v
 
 
 def _asyncio_shim(**overrides: Any) -> types.SimpleNamespace:
-    # 2026-10-18：旧写法 patch.object(sp.asyncio, "sleep", …) 的容器是全进程唯一
+    # 旧写法 patch.object(sp.asyncio, "sleep", …) 的容器是全进程唯一
     # 的 asyncio **模块本体**，替身窗口内 loguru 边车、pytest-asyncio 循环与其它协程的 sleep 一并被换掉。
     # 按仓库口径改为浅拷贝命名空间 + 只覆盖所需属性，再绑到**被测模块自己的 asyncio 引用**上。
     shim = types.SimpleNamespace(**vars(asyncio))
@@ -76,7 +76,6 @@ def _fake_req(payloads: dict[str, Any], default: str = WAF_HTML) -> AsyncMock:
 
 # ────────────────────────────────────────────────────────────
 # 快手 playUrls 的 codec 键遍历
-# ────────────────────────────────────────────────────────────
 
 
 # 快手页面把 playUrls 内联在 __INITIAL_STATE__ 里：正则 `(\{"liveStream".*?),"gameInfo`
@@ -140,7 +139,6 @@ class TestKuaishouPlayUrlsCodec:
 
 # ────────────────────────────────────────────────────────────
 # 畅聊 / 音播 liveID 判空与 str() 拼接
-# ────────────────────────────────────────────────────────────
 
 
 # 直播间页 var config 片段（get_live_domain 用 _loads_dict 解析后抠 flv/hls 域名），
@@ -220,7 +218,6 @@ class TestChangliaoYinboLiveId:
 
 # ────────────────────────────────────────────────────────────
 # 小红书 xhslink 跳转后的凭据收口
-# ────────────────────────────────────────────────────────────
 
 
 class TestXhsRedirectCredentialContainment:
@@ -291,7 +288,6 @@ class TestXhsRedirectCredentialContainment:
 
 # ────────────────────────────────────────────────────────────
 # B站弹幕 WS host 白名单
-# ────────────────────────────────────────────────────────────
 
 
 class TestBiliDanmakuHostAllowlist:
@@ -372,7 +368,6 @@ class TestBiliDanmakuHostAllowlist:
 
 # ────────────────────────────────────────────────────────────
 # 微博 / Look 单路源判开播
-# ────────────────────────────────────────────────────────────
 
 
 class TestSingleStreamSource:
@@ -428,7 +423,6 @@ class TestSingleStreamSource:
 
 # ────────────────────────────────────────────────────────────
 # 斗鱼 betard 告警的 i18n 形态（AST 判据）
-# ────────────────────────────────────────────────────────────
 
 
 class TestDouyuBetardLogI18n:
@@ -465,7 +459,6 @@ class TestDouyuBetardLogI18n:
 
 # ────────────────────────────────────────────────────────────
 # 斗鱼签名参数容错与 enc_time 上界
-# ────────────────────────────────────────────────────────────
 
 
 class TestDouyuSignHardening:
@@ -521,7 +514,6 @@ class TestDouyuSignHardening:
 
 # ────────────────────────────────────────────────────────────
 # 抖音 HTML 兜底成功后不重复抓取
-# ────────────────────────────────────────────────────────────
 
 
 class TestDouyinNoDuplicateFetch:
@@ -560,7 +552,6 @@ class TestDouyinNoDuplicateFetch:
 
 # ────────────────────────────────────────────────────────────
 # buvid spi 重试前有抖动退避
-# ────────────────────────────────────────────────────────────
 
 
 class TestBiliSpiRetryBackoff:
@@ -582,7 +573,7 @@ class TestBiliSpiRetryBackoff:
             # 不真的睡，避免拖慢用例；记录参数即可判定「有退避」
             return None
 
-        # [ 2026-10-18] 落点由 sp.asyncio 改成 sp 命名空间里的 asyncio 引用位（shim 见文件头）：
+        # 落点由 sp.asyncio 改成 sp 命名空间里的 asyncio 引用位（shim 见文件头）：
         # 旧形态的宿主是全进程唯一的 asyncio 本体，窗口内 loguru 边车与任何其它协程的 sleep 一并被换桩。
         with (
             patch.object(sp, "async_req", new=_fake_req(payloads)),
@@ -600,7 +591,6 @@ class TestBiliSpiRetryBackoff:
 
 # ────────────────────────────────────────────────────────────
 # 百度 data 取稳定键名
-# ────────────────────────────────────────────────────────────
 
 
 class TestBaiduStableKey:
@@ -634,7 +624,7 @@ class TestBaiduStableKey:
 
 
 # ────────────────────────────────────────────────────────────
-# 2026-09-23 追加：CODE_REVIEW_2026-09-22.md §5.1「平台解析与网络层」轻微项（与上文同号条目
+# CODE_REVIEW_2026-09-22.md §5.1「平台解析与网络层」轻微项（与上文同号条目
 # 来自不同分组，故每条在类注释里写明报告出处与失效形态）：
 #   虎牙字母房间号反查须剥引号 + 判 isdigit，非数字一律早抛「请用数字房间号」；
 #   虎牙候选：HLS 地址不得由 FLV 票据裁决（只下发 HLS 票据的房间须给出 HLS 候选）；
@@ -645,7 +635,6 @@ class TestBaiduStableKey:
 #   Faceit 缺 /stream 段须抛可读 ValueError 而非 IndexError；
 #   淘宝 SUCCESS 改判前缀 + data 走 _dig；
 #   ShowRoom 命中 hls_all 但 url 为空不得返回 {is_live: True, m3u8_url: ""}。
-# ────────────────────────────────────────────────────────────
 
 
 def _raw(func: object) -> Any:
@@ -681,7 +670,6 @@ def _huya_req(page_body: str, api_body: str, seen: list[str]) -> AsyncMock:
 
 # ────────────────────────────────────────────────────────────
 # 虎牙小程序接口
-# ────────────────────────────────────────────────────────────
 
 _HUYA_OFF = '{"data": {"profileInfo": {"nick": "虎牙主播"}, "realLiveStatus": "OFF"}}'
 
@@ -806,7 +794,6 @@ class TestHuyaHlsOnlyCandidate:
 
 # ────────────────────────────────────────────────────────────
 # 后半：斗鱼 websec 的 enc_time 缺失/非数值
-# ────────────────────────────────────────────────────────────
 
 
 class TestDouyuWebsecEncTime:
@@ -849,7 +836,6 @@ class TestDouyuWebsecEncTime:
 
 # ────────────────────────────────────────────────────────────
 # SOOP bj_id 的取段
-# ────────────────────────────────────────────────────────────
 
 
 class TestSoopBjIdFromUrl:
@@ -903,7 +889,6 @@ class TestSoopBjIdFromUrl:
 
 # ────────────────────────────────────────────────────────────
 # Shopee 无 session
-# ────────────────────────────────────────────────────────────
 
 
 class TestShopeeMissingSession:
@@ -951,7 +936,6 @@ class TestShopeeMissingSession:
 
 # ────────────────────────────────────────────────────────────
 # 连接直播 videoUrl 无查询串
-# ────────────────────────────────────────────────────────────
 
 
 class TestLianjieQuerylessVideoUrl:
@@ -993,7 +977,6 @@ class TestLianjieQuerylessVideoUrl:
 
 # ────────────────────────────────────────────────────────────
 # Faceit 昵称提取
-# ────────────────────────────────────────────────────────────
 
 
 class TestFaceitNicknameExtraction:
@@ -1018,7 +1001,6 @@ class TestFaceitNicknameExtraction:
 
 # ────────────────────────────────────────────────────────────
 # 淘宝 SUCCESS 分支
-# ────────────────────────────────────────────────────────────
 
 
 class TestTaobaoSuccessParsing:
@@ -1080,7 +1062,6 @@ class TestTaobaoSuccessParsing:
 
 # ────────────────────────────────────────────────────────────
 # ShowRoom 的 hls_all 空 url
-# ────────────────────────────────────────────────────────────
 
 
 class TestShowroomHlsAllEmptyUrl:

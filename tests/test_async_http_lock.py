@@ -46,7 +46,7 @@ class TestClientCacheConcurrency:
     # asyncio.Lock 单例，锁惰性绑定到首个事件循环，后续循环 await 时抛
     # 「bound to a different event loop」，异常被 async_req 的 except 吞成空串，
     # 最终误判为平台风控并级联失败；改按当前循环缓存 threading.Lock 后此路径应无异常。
-    # 不再过滤 RuntimeWarning（2026-09-04 修复）：跨循环一律不创建 aclose 协程后，
+    # 不再过滤 RuntimeWarning：跨循环一律不创建 aclose 协程后，
     # 本用例不应产生任何 "coroutine ... was never awaited" 告警，保留过滤会掩盖回归。
     def test_concurrent_threads_no_cross_loop_error(self) -> None:
         errors: list[Exception] = []
@@ -67,7 +67,7 @@ class TestClientCacheConcurrency:
             for t in threads:
                 t.join(timeout=15)
         assert errors == []
-        # （2026-10-18 审查）：join(timeout=15) **返回**不等于线程已退出——被测逻辑挂死时
+        # join(timeout=15) **返回**不等于线程已退出——被测逻辑挂死时
         # join 超时静默返回、errors 仍空，本用例照绿（线程永不退出正是本文件要防的跨循环锁死
         # 形态）。必须逐线程断言 is_alive 为 False，才钉住「8 线程全部跑完」。
         for t in threads:
@@ -119,7 +119,7 @@ class TestClientCacheConcurrency:
             loop_a.call_soon_threadsafe(loop_a.stop)
             thread_a.join(timeout=15)
             loop_a.close()
-            # 审查 7.11（2026-10-18，与该同口径）：stop() 已投递、join 也已返回，但「join
+            # 审查 7.11（与该同口径）：stop() 已投递、join 也已返回，但「join
             # 返回」不等于「run_forever 退出」——循环没停下来时 thread_a 会一直活着，本用例仍
             # 假绿并留下一个在跑的循环。断言放在 loop_a.close() 之后：判红时资源已回收，
             # 不会因这条断言再漏关一个循环。

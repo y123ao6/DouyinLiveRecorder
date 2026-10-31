@@ -408,7 +408,7 @@ def test_dispatch_survives_null_and_typed_fields(results: dict[str, Any]) -> Non
 
 
 def test_danmaku_render_of_null_ts_still_rearms(results: dict[str, Any]) -> None:
-    # _render_danmaku_stream 里 float(ts) 的确切事故点（文件头 2026-09-12 审查 6.2）。
+    # _render_danmaku_stream 里 float(ts) 的确切事故点。
     # 现在必须：① 渲染出该条（时间显示 --:--:--）② 无条件续期 ③ 不误报异常。
     case = results["render_after_null_ts"]
     assert "--:--:--" in case["text"], case["text"]

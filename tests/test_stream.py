@@ -8,7 +8,7 @@
 # （QUALITY_MAPPING 只有 OD=0…LD=5 的排序索引、不含码率，两者不可混引），用例既锁分段边界也防阈值回归。
 # 通用入口 get_stream_url 的「原样返回」契约用同一性断言 `is`
 # 锁定，杜绝短路路径返回被篡改副本的回归。
-# 2026-09-20 补充（档位语义回归锁）：TestHuyaLegacyTierByRatioValue 锁「虎牙 exsphd 按数值而非
+# 档位语义回归锁：TestHuyaLegacyTierByRatioValue 锁「虎牙 exsphd 按数值而非
 # 出现顺序解释」；TestBilibiliQualityReadback 锁「qn 反向表一对多取更高档 + 表外 qn 不入白名单」；
 # TestKuaishouNumericQuality 锁「数字画质先过 QUALITY_MAPPING 解码再查码率表」；
 # B站用例另用 AsyncMock 桩 src.stream.get_bilibili_stream_data（第二段网络入口）：patch 目标必须是
@@ -159,7 +159,7 @@ class TestPadList:
         assert result == [1, 2, 3, 4]
 
     def test_default_min_length_is_6(self) -> None:
-        # 缺省 min_length=6（2026-09-12 审查 6.5 修复：原 5 让 LD 档（QUALITY_MAPPING 索引 5）越界，
+        # 缺省 min_length=6（原 5 让 LD 档（QUALITY_MAPPING 索引 5）越界，
         # 被下游 min(...) 钳制后退回"未开播"分支，用户选"流畅"画质时部分平台永远录不上）；
         # 非空列表原地补末项、空列表返回 [None] * min_length **新列表**——MID-16 的 TikTok 空 FLV
         # 分支正是被这份「非空即真」的空占位列表骗过，见下方 TestGetTiktokStreamUrl 的 MID-16 注释。
@@ -193,13 +193,13 @@ class TestGetQualityIndex:
         assert idx == QUALITY_MAPPING["HD"]
 
     def test_numeric_string(self) -> None:
-        # "3" → 第一个字符 3 → keys[3] = "HD"
+        # "3" → 整值 3 → keys[3] = "HD"
         name, idx = get_quality_index("3")
         assert name == "HD"
         assert idx == QUALITY_MAPPING["HD"]
 
     def test_numeric_string_out_of_range(self) -> None:
-        # "9" → 第一个字符 9 >= len(keys)=6 → 回退 0 → "OD"
+        # "9" → 整值 9 >= len(keys)=6 → 回退 0 → "OD"
         name, idx = get_quality_index("9")
         assert name == "OD"
 
@@ -209,7 +209,7 @@ class TestGetQualityIndex:
 
     def test_integer_input(self) -> None:
         name, idx = get_quality_index(2)
-        # str(2) → "2" → "2".upper() → "2".isdigit() → int("2"[0])=2 → keys[2]="UHD"
+        # str(2) → "2" → "2".upper() → "2".isdigit() → int("2")=2 → keys[2]="UHD"
         assert name == "UHD"
 
     def test_case_insensitive(self) -> None:
@@ -217,7 +217,7 @@ class TestGetQualityIndex:
         assert name == "HD"
 
     def test_multi_digit_quality_parsed_as_whole_number(self) -> None:
-        # L-04（2026-10-21）：原实现 int(quality_str[0]) 只取首字符，"10" 被当成 1（BD）；
+        # L-04：原实现 int(quality_str[0]) 只取首字符，"10" 被当成 1（BD）；
         # 纯数字串必须按整值解析，越界（>=6）仍按原口径归 0（OD）。
         assert get_quality_index("10")[0] == "OD"
         assert get_quality_index("10")[1] == QUALITY_MAPPING["OD"]
@@ -379,7 +379,7 @@ class TestGetDouyinStreamUrl:
 
     @pytest.mark.asyncio
     async def test_hevc_origin_replaces_flv_but_keeps_h264_in_list(self) -> None:
-        # 2026-10-01 原画 hevc 房死锁回归锁：原画 + hevc_flv_url 时 flv_url 被替换为 h265，
+        # 原画 hevc 房死锁回归锁：原画 + hevc_flv_url 时 flv_url 被替换为 h265，
         # 被替换的 h264 原画地址必须同步进 flv_url_list —— 选源层会剔除一切 codec=h265 候选，
         # 不保留则「HLS 采集关闭 / m3u8 缺席」的原画 hevc 房过滤后零可用候选、永不录制。
         from src.stream import get_douyin_stream_url
@@ -675,7 +675,7 @@ class TestGetDouyuStreamUrl:
         flv_data = {"data": {"rtmp_url": "", "rtmp_live": "", "rate": 0}}
         with patch("src.stream.get_douyu_stream_data", new_callable=AsyncMock, return_value=flv_data):
             result = await get_douyu_stream_url(json_data)
-        # M-26（2026-10-21）：全部档位失败且一格地址都没有时，不再谎报 is_live=True——
+        # M-26：全部档位失败且一格地址都没有时，不再谎报 is_live=True——
         # 旧口径让上层把「开播但无地址」当待录房间、每轮空跑一路 ffmpeg。
         assert result["is_live"] is False
         assert "flv_url" not in result and "m3u8_url" not in result
@@ -1090,7 +1090,7 @@ class TestGetNeteaseStreamUrl:
 
 
 class TestStreamMalformedPayload:
-    # M-21 / M-22（2026-10-21）：平台下发结构畸形时不得被 @trace_error_decorator 吞成「未开播」。
+    # M-21 / M-22：平台下发结构畸形时不得被 @trace_error_decorator 吞成「未开播」。
     # 这些用例一律断言「不抛异常、且不把在播房间谎报成离线」——旧实现在这些形态下抛
     # AttributeError / IndexError / JSONDecodeError，最终都表现为「在播但每轮不录」。
 
@@ -1178,7 +1178,7 @@ class TestStreamMalformedPayload:
 
 
 class TestHuyaAvailableQualities:
-    # M-24（2026-10-21）：蓝光分支的 available_qualities 原实现无条件追加 UHD/LD，
+    # M-24：蓝光分支的 available_qualities 原实现无条件追加 UHD/LD，
     # max_ratio<=0 时对外声称 ["OD","UHD","LD"]，与房间实际档位不符。
 
     @pytest.mark.asyncio

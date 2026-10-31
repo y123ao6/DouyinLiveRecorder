@@ -109,7 +109,7 @@ EXPECTED_ROUTES = {
     ("GET", "/api/files/download"),
     ("GET", "/api/logs"),
     ("GET", "/api/danmaku"),
-    # 2026-10-22 图标：面板上传（走鉴权）+ 标签图标（免鉴权，见中间件白名单）
+    # 图标：面板上传（走鉴权）+ 标签图标（免鉴权，见中间件白名单）
     ("POST", "/api/icon"),
     ("GET", "/favicon.ico"),
     ("GET", "/"),

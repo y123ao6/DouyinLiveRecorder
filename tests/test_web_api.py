@@ -173,7 +173,7 @@ class TestAuthMiddleware:
         assert resp.status_code == 401
 
     def test_static_panel_reachable_without_trailing_slash(self, app_env: types.SimpleNamespace) -> None:
-        # 2026-10-18：行为锁：认证开启时 GET `/web`（无尾斜杠）不得被鉴权拦成 401。
+        # 行为锁：认证开启时 GET `/web`（无尾斜杠）不得被鉴权拦成 401。
         # 中间件由 BaseHTTPMiddleware 包在 StaticFiles **之外**，StaticFiles 自己那条「/web → /web/」
         # 的 307 要等中间件判完才有机会执行，所以 401 落在第一跳而非跳转之后（实测：
         # auth=true 无 token → /web 直接 401 {"detail":"unauthorized"}；带 token 或 auth=false → 307；/web/ 一律 200）。
@@ -457,7 +457,7 @@ class TestLoginRateLimit:
             trusted_proxy="1.1.1.1,1.1.1.2,1.1.1.3",  # 三个「可信代理」→ 三个独立键
         )
         # 直接把全局预算灌满（等价于大量分布式失败，且每个键都没到 5 次）
-        # 2026-10-21：同步：条目形态为 (时刻, 来源)，这里灌的是**别的来源**的条目，
+        # 同步：条目形态为 (时刻, 来源)，这里灌的是**别的来源**的条目，
         # 与 login 侧 test_successful_login_reclaims_only_own_global_entries 构成正反配对
         now = __import__("time").time()
         with wa._FAILED_LOGINS_LOCK:
@@ -467,7 +467,7 @@ class TestLoginRateLimit:
         assert resp.status_code == 429
 
     def test_successful_login_reclaims_only_own_global_entries(self, app_env: types.SimpleNamespace) -> None:
-        # 2026-10-21：全局预算按 (时刻, 来源) 记账后，成功登录只回收**本来源**挣出的条目。
+        # 全局预算按 (时刻, 来源) 记账后，成功登录只回收**本来源**挣出的条目。
         # 两条断言各封一个退化方向：全清 → 攻击者可借自己成功登录重置整站预算；
         # 全不回收 → testclient 自己贡献的份额持续累计，最终把所有合法用户 429 在门外直到窗口滑完。
         import time as _time
@@ -700,7 +700,7 @@ class TestRoomEndpoints:
     def test_add_room_prepends_newline_when_tail_probe_blocked(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 2026-10-21：末字节探测 open(...,"rb") 被 Windows sharing violation 挡住是常态（录制进程
+        # 末字节探测 open(...,"rb") 被 Windows sharing violation 挡住是常态（录制进程
         # 正持有 URL_config.ini），此时必须保守补一个 \n——让 _needs_newline 停在 False 直接追加
         # 会重开该「新房间粘上无尾换行的末行、两个房间同时坏掉」形态。
         # 打桩按「对象+模式」收窄：只对本用例 url_cfg 的二进制读制造失败，其余调用透传真实 open
@@ -981,7 +981,7 @@ class TestPasswordManagement:
         assert "pbkdf2_sha256$" in text
 
     def test_password_with_surrounding_whitespace_not_self_locking(self, app_env: types.SimpleNamespace) -> None:
-        # 2026-09-30：「首尾带空格」的口令在写入/登录/reauth 三处必须同口径 strip——若写入侧用原文哈希
+        # 「首尾带空格」的口令在写入/登录/reauth 三处必须同口径 strip——若写入侧用原文哈希
         # 而 reauth 侧 strip 比对，这类口令（粘贴/输入法尾随空格是常见来源）一旦设置，
         # 此后所有 reauth 永远 403，认证配置经面板永久自锁。
         # 口令值沿用本文件既有夹具取值（拆写拼接），被测行为与口令取值本身无关。
@@ -1189,7 +1189,7 @@ class TestAuthDowngradeRejected:
 
 
 class TestSecurityConfigCacheInvalidation:
-    # 2026-10-18：安全判定键的写入必须让中间件的配置缓存**即时**失效。
+    # 安全判定键的写入必须让中间件的配置缓存**即时**失效。
     # 缓存本会按 mtime+size 自然失效，本类把这条物理前提冻住（web_api 命名空间里的 os.stat 换成
     # 恒返同一 (mtime, size) 的替身），等价于「同秒等长改写 + 粗精度时间戳」那一档病态场景；
     # 于是「改完立刻生效」只剩写侧 _invalidate_web_cfg_cache() 一条路——失效清单里漏掉该键即红。
@@ -2397,7 +2397,7 @@ class TestRecordingToggle:
     def test_toggle_indented_comment_line_semantics(
         self, app_env: types.SimpleNamespace, fake_main: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 2026-10-30（M-09）：手编辑产生的缩进注释行（「  # url」）点「启用」必须真的取消注释。
+        # M-09：手编辑产生的缩进注释行（「  # url」）点「启用」必须真的取消注释。
         # 旧实现对缩进注释行假成功：lstrip("#") 剥不动前导空白，写回仍是注释行却回 enabled:true
         # （写后只比 raw_line 文本相等，验证不了语义）；disable 则写出「# # url」双注释。
         from src import config_io
@@ -2459,7 +2459,7 @@ class TestDangerousKeys:
             ("Web", "web_trusted_proxy", "9.9.9.9"),
             ("Web", "web_allowed_hosts", "evil.example.com"),
             ("Web", "WEB_ALLOWED_HOSTS", "evil.example.com"),
-            # 2026-10-30（M-08）：该键是免鉴权 /favicon.ico 的图标路径源，经面板写成任意绝对路径
+            # M-08：该键是免鉴权 /favicon.ico 的图标路径源，经面板写成任意绝对路径
             # 即构成「写路径 → 免鉴权读回原文」的任意文件读链（raw config.ini 的 Cookie/口令整条
             # 绕开 '***' 掩码），入黑名单与另四键同级。
             ("Web", "web_tray_icon", r"C:\Windows\win.ini"),
@@ -2468,7 +2468,7 @@ class TestDangerousKeys:
     def test_m64_script_flag_and_safety_keys_blocked_when_auth_disabled(
         self, tmp_path: Path, fake_main: types.ModuleType, section: str, key: str, value: str
     ) -> None:
-        # 2026-10-21：翻转「是否录制完成后执行自定义脚本」即启用用户既有脚本命令，等于把
+        # 翻转「是否录制完成后执行自定义脚本」即启用用户既有脚本命令，等于把
         # 「自定义脚本执行命令」黑名单旁路一半；web_trusted_proxy 决定 XFF 是否可信（该换键面）、
         # web_allowed_hosts 决定 Host/Origin 名单，两键被面板写入等于把防线交给写接口。
         # 与既有危险键同口径：认证关闭也 403。第 4 参用大小写变体锁该折叠面（行匹配 IGNORECASE，黑名单同等强度）。
@@ -2895,7 +2895,7 @@ class TestQualityOptionsEndpoints:
     def test_put_write_failure_detail_is_fixed_code_without_path(
         self, app_env: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 2026-10-21：写失败的 500 detail 对外固定 code、路径只进日志（曾直接拼 app.state.config_file
+        # 写失败的 500 detail 对外固定 code、路径只进日志（曾直接拼 app.state.config_file
         # 绝对路径——本文件唯一一处「对外不回显内部路径」违例，认证关闭时对局域网可见）。
         # 变异可见性：还原旧 tr("...: {err}", err=config_file) 写法 → detail 不再是固定 code
         # 且含 tmp 路径，两条断言同时转红
@@ -3055,7 +3055,7 @@ class TestIconEndpoints:
         assert app_env.client.get("/favicon.ico").status_code == 404
 
     def test_favicon_rejects_non_ico_configured_path(self, app_env: types.SimpleNamespace) -> None:
-        # 2026-10-30（M-08）读取侧防线：web_tray_icon 指向的文件在回读前必须复验 ICO 魔数。
+        # M-08 读取侧防线：web_tray_icon 指向的文件在回读前必须复验 ICO 魔数。
         # config.ini 可被绕过面板的手段写入任意绝对路径（手编辑/旧版本面板写入），免鉴权路由
         # 若照单 FileResponse 等于任意文件读——'***' 掩码只作用于 /api/config 读侧，对响应体不生效。
         secret_file = Path(app_env.cfg).parent / "secret.txt"

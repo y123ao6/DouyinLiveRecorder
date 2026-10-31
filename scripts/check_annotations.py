@@ -98,7 +98,7 @@ EXCLUDE_DIRS = (
     ".mimosa",
     ".tmp-dps-extract",
     ".v2c",
-    # SDD/治理式流程技能在仓库内留下的工作区（与 .gitignore/.dockerignore/pyproject 同源登记，2026-10-03）
+    # SDD/治理式流程技能在仓库内留下的工作区（与 .gitignore/.dockerignore/pyproject 同源登记）
     ".superpowers",
 )
 
@@ -194,8 +194,8 @@ def find_docstrings(src: str) -> list[str]:
     return violations
 
 
-# —— 符号可达性检查（2026-09-22 增补）——
-# 起因（同一形态第二次复现，登记于 CODE_REVIEW_2026-09-21.md 补-N04）：删除模块级函数/常量
+# —— 符号可达性检查 ——
+# 起因（同一形态第二次复现，登记单号见下方 DANGLING_HINT）：删除模块级函数/常量
 # 时只删定义、留下调用点，mypy 报 name-defined、basedpyright 报 reportUndefinedVariable、
 # pytest 在触达该分支时抛 NameError；而调用点若在 `and` 右侧
 # （`(not os.path.isdir(...)) and (_deleted(proc))`），短路会在多数场景遮住它，于是「红着的
@@ -346,7 +346,7 @@ def check_conventions(root: Path, min_density: float) -> int:
 
     for path in iter_source_files(root):
         rel = path.relative_to(root).as_posix()
-        # M-93 残留（2026-10-21）：读不动源文件（权限/被占用/设备错误）此前以 rc=1 + Traceback
+        # 读不动源文件（权限/被占用/设备错误）此前以 rc=1 + Traceback
         # 结束，而 rc=1 在 CI 语义里是「代码不符合注释规范」。真相是「这条文件没查」，与
         # check_runtime_pins / check_coverage 的 rc=2 分级契约冲突，故显式退 2 并给出重跑命令。
         try:
@@ -431,7 +431,7 @@ def _reject_dangerous_baseline(baseline: Path) -> str | None:
     # 不放行（否则等于把整棵家目录树声明成「工作区」，把上面两条防线一次让掉）。
     # 位置必须在这里而不是并入 home 那条：Windows 侧的 system_roots 含 `C:\Users`，检出在
     # `C:\Users\<you>\repo` 时其下的快照目录会先被那条 `sr in resolved.parents` 误拒。
-    # S-13（2026-10-21）：这一段原先是「命中即 return None」的放行分支，未命中则继续往下走，
+    # S-13：这一段原先是「命中即 return None」的放行分支，未命中则继续往下走，
     # 末尾还有一条 `return None` —— 于是 cwd 之外的任意绝对路径（`--snapshot D:\OtherRepo`、
     # `/srv/data`、`E:\backup`）落到函数末尾被放行，rmtree 整树删除无关目录。排除式黑名单无法
     # 穷举危险形态（任何用户目录、挂载点、其它仓库都可能被误传），故改为**白名单正向判定**：
@@ -527,7 +527,7 @@ def check_equivalence(root: Path, baseline: Path) -> int:
             old_src = base_file.read_text(encoding="utf-8", errors="replace")
             new_src = current.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            # 纯读路径兜底（2026-10-29 审查）：存在但不可读（权限/占用）按 changed 计——「无法证明
+            # 纯读路径兜底：存在但不可读（权限/占用）按 changed 计——「无法证明
             # 等价」对本门禁同样是红，但要有可读理由而非 rc=1 裸栈冒充「代码不等价」。
             changed.append((rel_posix, f"无法读取（{type(exc).__name__}: {exc}），等价性无法验证"))
             continue

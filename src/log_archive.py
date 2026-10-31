@@ -31,7 +31,7 @@ from src.logger import GUI_PARENT_ENV, add_file_sinks, logger, rebind_console_si
 # PermissionError；web_console 改名后重开失败时回退 os.devnull 并置 pending 标记；web_console
 # 改名前先由 _ConsoleBridge 接管 sys.stdout/sys.stderr，关旧句柄与改名全程标准流都指向可写对象。
 #
-# 归档之后还有一步裁剪（2026-10-21）：见 _prune_archives 的保留策略与三条硬约束——
+# 归档之后还有一步裁剪：见 _prune_archives 的保留策略与三条硬约束——
 # 每个基名只留最新若干份、且删除文件名时间戳已超龄的份，排序取文件名里的 %Y%m%d_%H%M%S 而非 mtime。
 
 
@@ -270,10 +270,9 @@ def _rename_one(path: str, ts: str, archived: list[str]) -> None:
         )
 
 
-# 归档保留策略（2026-10-21）。
-# 为什么必须清理：本模块此前**只改名、从不删除**，而「停止录制」在 7×24 循环监测下每天会发生
-# 数十次（面板停止、GUI 停止、atexit 退出各触发一轮），logs/ 里每个基名下的 _YYYYMMDD_HHMMSS
-# 归档只增不减——全仓 grep 无任何 retention/prune 代码，磁盘占用完全由「启停次数」决定。
+# 归档保留策略。为什么必须清理：「停止录制」在 7×24 循环监测下每天会发生数十次（面板停止、
+# GUI 停止、atexit 退出各触发一轮），logs/ 里每个基名下的 _YYYYMMDD_HHMMSS 归档此前只改名、
+# 从不删除，磁盘占用完全由「启停次数」决定。
 # 两条判据取并集删除：数量上限（每个基名各算各的）与时间上限。
 _ARCHIVE_MAX_KEEP = 50
 _ARCHIVE_MAX_AGE_DAYS = 14
@@ -360,11 +359,10 @@ def archive_runtime_logs(*, reopen_streams: bool = True) -> list[str]:
         with _archive_lock:
             # 测试进程禁用（见 _DISABLE_ENV 注释）；GUI 父进程不持有录制日志句柄，
             # 也绝不能改名录制子进程正在写的日志文件
-            # 2026-10-21：两处手写布尔判定改走 parse_config_bool（口径同 src/logger.py）。
-            # 原形态 `in ("1","true","yes")` 认不出 on/y/t/是，`== "1"` 只认字符 1：
-            # 开发者用 DOUYIN_DISABLE_LOG_ARCHIVE=on 关闭归档时，pytest 退出仍会改名工作副本里
-            # 的真实日志；DLR_GUI_PARENT=TRUE 时 GUI 进程照样参与归档。缺省（env 未设）仍为
-            # False —— 两条守卫的默认行为逐字不变。
+            # 两处布尔判定走 parse_config_bool（口径同 src/logger.py）：手写 `in ("1","true","yes")`
+            # / `== "1"` 认不出 on/TRUE 等取值——开发者用 DOUYIN_DISABLE_LOG_ARCHIVE=on 关闭归档时，
+            # pytest 退出仍会改名工作副本里的真实日志；DLR_GUI_PARENT=TRUE 时 GUI 进程照样参与归档。
+            # 缺省（env 未设）仍为 False——两条守卫的默认行为逐字不变。
             if parse_config_bool(os.environ.get(_DISABLE_ENV), False):
                 return []
             if parse_config_bool(os.environ.get(GUI_PARENT_ENV), False):

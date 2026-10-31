@@ -1,6 +1,6 @@
 # tests/frontend/test_regression_gates.mjs 的 pytest 驱动入口。
 #
-# 该 .mjs 是「组 G（2026-09-22）前端回归锁」的用例本体（SEV-2221 / SEV-2227 / SEV-2228 /
+# 该 .mjs 是「组 G 前端回归锁」的用例本体（SEV-2221 / SEV-2227 / SEV-2228 /
 # MID-2237 / MID-2240 / MID-2241 / MID-2253 / MIN-2237~2241 等），以 node:vm 沙箱驱动
 # web/app.js（IIFE 加载期零副作用），DOM/fetch/定时器桩手工触发事件、经真实事件委托链路断言，
 # 零 npm 依赖。按 AGENTS.md「.mjs 真用例 + .py 包装」双文件结构，本包装让整组锁随 test job 的

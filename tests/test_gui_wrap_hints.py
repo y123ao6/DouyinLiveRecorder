@@ -214,7 +214,7 @@ def _should_apply(current: int, new: int) -> bool:
 
 
 class TestWrapShouldApply:
-    # 迟滞判据（2026-09-29 卡死修复的纯函数面）：滚动条出现/消失使容器宽 ±~11 逻辑像素，
+    # 迟滞判据（卡死修复的纯函数面）：滚动条出现/消失使容器宽 ±~11 逻辑像素，
     # 无迟滞时「折行变高→滚动条翻转→宽度变→再折行」在阈值边界无限互振。
 
     def test_first_apply_always(self) -> None:

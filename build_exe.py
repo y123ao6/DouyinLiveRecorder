@@ -2093,7 +2093,7 @@ def _kill_tree(proc: subprocess.Popen[str]) -> None:  # pylint: disable=not-call
     pid = proc.pid
     if IS_WIN:
         # taskkill /T 递归终止进程树，/F 强制；进程已退出时忽略错误。
-        # [2026-10-30 L-04] timeout=30：taskkill 是秒级系统命令，无上限在异常环境会挂住收尾线程。
+        # timeout=30：taskkill 是秒级系统命令，无上限在异常环境会挂住收尾线程。
         _ = subprocess.run(
             ["taskkill", "/T", "/F", "/PID", str(pid)],
             stdout=subprocess.DEVNULL,
@@ -2291,7 +2291,6 @@ def smoke_test() -> None:
     print("[smoke] 全部冒烟测试通过 ✅")
 
 
-# 将 stdout/stderr 配置为 UTF-8，避免 Windows CI 下中文日志抛 UnicodeEncodeError
 def _ensure_utf8_streams() -> None:
     # Windows CI 的 stdout/stderr 默认 cp1252，输出中文日志会抛 UnicodeEncodeError；重配置为 UTF-8，并让
     # 后续派生的 Python 子进程也用 UTF-8。
@@ -2299,7 +2298,7 @@ def _ensure_utf8_streams() -> None:
     # pytest 进程内被调用时（tests/test_build_exe.py 三条用例经 main() 调用），sys.stdout/stderr 正是 pytest
     # fd 捕获的 EncodedFile（原 errors="replace"），裸调等于把框架资产就地改成 strict，此后任何非 UTF-8 字节
     # 落进捕获文件都会在收尾读回时抛 UnicodeDecodeError，表现为「pytest 整轮无结论 + 无关用例报 FAILED/ERROR」
-    # （2026-09-23 故障根因，见 DIAGNOSIS_2026-09-23_pytest-teardown-crash.md）。与 scripts/run_gates.py 的
+    # （故障根因见 DIAGNOSIS_2026-09-23_pytest-teardown-crash.md）。与 scripts/run_gates.py 的
     # 同款实现同一口径，改一侧须同步另一侧（那里已是 replace）。
     os.environ["PYTHONUTF8"] = "1"
     for s in (sys.stdout, sys.stderr):
@@ -2354,7 +2353,7 @@ def main() -> None:
     dual = cast(bool, args.dual)
     if args.require_pinned and args.allow_unpinned:
         raise SystemExit("[build][FATAL] --require-pinned 与 --allow-unpinned 互斥")
-    # --dual 与 --no-zip 互斥：--dual 分支从不读 no_zip，历史上曾被静默无视、照样压出 lite + full 两个大 zip；
+    # --dual 与 --no-zip 互斥：--dual 分支从不读 no_zip，静默无视会照样压出 lite + full 两个大 zip；
     # 矛盾参数组合必须 fail-fast，而不是让其中一个不起作用。
     if dual and no_zip:
         raise SystemExit("[build][FATAL] --dual 与 --no-zip 互斥（--dual 只产出 lite + full 两个 zip）")

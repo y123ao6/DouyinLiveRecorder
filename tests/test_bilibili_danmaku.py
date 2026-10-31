@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # B站 wbi 签名修复的串联锁：get_bilibili_danmaku_info 返回 token，并能连 WS 收到弹幕。
 #
-# 2026-10-19：本文件原是「只有 main()、没有任何 test_ 函数」的
+# 本文件原是「只有 main()、没有任何 test_ 函数」的
 # 真机脚本——pytest 收集到 0 用例，token / server_host / WS 存活三条断言永不自动执行、可静默腐烂，
 # 而文件名仍在向读者 advertise「B站弹幕已验证」。照 tests/test_bili_e2e.py（ ②）的形态改造：
 # 主体拆成**离线收集型**用例，只打桩网络层（spider.async_req 的四端点 + bilibili.WsClient），
@@ -213,7 +213,7 @@ async def test_danmaku_info_to_ws_chain_delivers_message(monkeypatch: pytest.Mon
 async def test_reject_auth_dispatches_through_spawned_task(monkeypatch: pytest.MonkeyPatch) -> None:
     # ①：_reject_auth 的关停协程必须经 spawn_danmaku_task 投递（带异常落盘的托管调度），
     # 不得退回裸 asyncio.ensure_future——那种写法下 fail() 的异常只在任务被 GC 时以
-    # "Task exception was never retrieved" 打到 stderr，现场零日志（2026-09-12 审查已在 _on_ws_ready
+    # "Task exception was never retrieved" 打到 stderr，现场零日志（审查已在 _on_ws_ready
     # 一侧把同一形态立为禁止）。投递替身换成记账器后，退回裸 ensure_future 一条都记不到。
     recorded: list[Any] = []
 

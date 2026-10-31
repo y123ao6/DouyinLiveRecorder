@@ -16,7 +16,7 @@ MO_PATH = ROOT / "i18n" / "zh_CN" / "LC_MESSAGES" / "zh_CN.mo"
 class TestInitGettext:
     def test_no_lang_env_pollution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 原实现导入即写死 LANG=zh_CN.utf8（macOS 非法 locale），并传染子进程。
-        # （2026-10-18 审查）：判据改为「执行模块体前后取值对比」，旧断言拿**宿主此刻
+        # 判据改为「执行模块体前后取值对比」：旧断言拿**宿主此刻
         # 的取值**当判据——设了 LANG=zh_CN.utf8 的开发机会恒红，宿主未设时又从未检验过真判据。
         # 基线必须先把这一族变量清空再取：本文件顶部的 `import i18n` 已跑过一次模块体，
         # 基线若在那之后取，「导入期写 LANG」会被一并吸收（变异实测：不清空时加回写入语句仍恒绿）。
@@ -37,8 +37,7 @@ class TestInitGettext:
     def test_locale_path_exists(self) -> None:
         assert Path(i18n.locale_path).exists()
 
-    # [历史注] 该删除了 `i18n.init_gettext()` 及其用例：该函数返回绑死 locale_name
-    # 的 gettext、不随 set_language 重读 `_tr`，与本模块热切换契约相反且生产零调用。
+    # [历史注] 已删除 `i18n.init_gettext()` 及其用例：其 gettext 绑死 locale_name、不随 set_language 重读 `_tr`，与本模块热切换契约相反且生产零调用。
 
 
 class TestMoCatalog:
@@ -49,8 +48,7 @@ class TestMoCatalog:
     def test_translation_works_without_lang_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Windows 客户端普遍不设 LANG/LC_*，翻译加载不得依赖它们：清空后直接走本模块的
         # .mo 加载器查表，若实现回退成按环境变量查找的全局 gettext，这里会查不到而失败。
-        # [历史注] 该前本用例经已删除的 `init_gettext()` 走全局 gettext（进程级副作用
-        # 且不随 set_language 生效），意图不变、现改驱 `_load_mo_catalog`。
+        # [历史注] 本用例原经已删除的 `init_gettext()` 走全局 gettext（进程级副作用且不随 set_language 生效），现改驱 `_load_mo_catalog`、意图不变。
         # 必须用 monkeypatch 逐键删除：patch.dict(os.environ) 整体快照写回会撞 Windows
         # 32767 字符上限（见 AGENTS.md 已知坑）。
         for key in [k for k in os.environ if k.startswith(("LANG", "LC_"))]:
@@ -124,8 +122,7 @@ class TestMultiFormatCatalogs:
         assert catalog is not None
         assert catalog.get("The anchor did not start broadcasting.") == "主播并未开播"
         # en_US 命中 JSON
-        # [历史注] 样例条目原为「开始录制」，该串是 f-string 时代孤儿（无任何运行时查表路径），
-        # 已随 2026-10-28 目录清理移除；换用仍活跃的等值样例，本用例验证的三格式优先级不变。
+        # [历史注] 样例条目原为「开始录制」，该串是 f-string 时代孤儿（无任何运行时查表路径），已随目录清理移除；换用仍活跃的等值样例，三格式优先级判据不变。
         en = i18n._load_translations(i18n.locale_path, "en_US")
         assert en is not None
         assert en.get("\r检测直播间中...") == "\rChecking live room..."
@@ -159,8 +156,7 @@ class TestLanguageSwitching:
         _ = i18n.set_language("en_US")
         assert i18n.get_language() == "en_US"
         assert i18n._tr(sample) == sample  # 英文源恒等
-        # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随 2026-10-28 目录清理移除），
-        # 换用仍活跃的「\r检测直播间中...」，验证的热切换语义不变。
+        # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随目录清理移除，首见 TestMultiFormatCatalogs 同注）；换用仍活跃的「\r检测直播间中...」，此处验证的热切换语义不变。
         assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
         _ = i18n.set_language("zh_TW")
         assert i18n._tr(sample) == "主播並未開播"
@@ -187,8 +183,7 @@ class TestLanguageSwitching:
             # get_language() 必须与**实际装载**的翻译器同源，否则调用方无从发现回退
             assert i18n.get_language() == effective
             assert i18n._tr is not original_tr
-            # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随 2026-10-28 目录清理移除），
-            # 换用仍活跃的「\r检测直播间中...」，验证的回退装载语义不变。
+            # [历史注] 样例条目原为「开始录制」（f-string 时代孤儿，已随目录清理移除，首见 TestMultiFormatCatalogs 同注）；换用仍活跃的「\r检测直播间中...」，此处验证的回退装载语义不变。
             assert i18n._tr("\r检测直播间中...") == "\rChecking live room..."
         finally:
             i18n._tr = original_tr

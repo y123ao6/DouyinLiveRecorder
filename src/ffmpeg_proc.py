@@ -44,9 +44,9 @@ _MIN_STAGE_WAIT_SECONDS = 1.0
 #     且不读管道时，写满的缓冲会让 stdin.write **永久阻塞**（进程内无法给管道写加超时），
 #     一个进程就能把整条退出清理链路挂死。
 # 抽成模块级常量而非内联 `os.name == "nt"`：CI 跑在 ubuntu（POSIX），内联的话
-# tests/test_ffmpeg_proc.py 那两条「写失败也要关 stdin」的回归锁进不了分支、断言恒为假
-# （2026-09-26 实测）——它们锁的正是「旧实现把 close() 与 write/flush 放同一个 try，
-# 写失败即跳过 close」。测试侧 monkeypatch 置 True 覆盖 Windows 路径。
+# tests/test_ffmpeg_proc.py 那两条「写失败也要关 stdin」的回归锁进不了分支、断言恒为假——
+# 它们锁的正是「旧实现把 close() 与 write/flush 放同一个 try，写失败即跳过 close」。
+# 测试侧 monkeypatch 置 True 覆盖 Windows 路径。
 _QUIT_VIA_STDIN = os.name == "nt"
 
 
@@ -164,8 +164,8 @@ def _terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = int(
         except Exception:
             pass
 
-        # 最后手段：关掉仍握着的 stdout 句柄
-        # ③（2026-10-21）：兜底必须覆盖三支管道，不能只关 stdout。走到这里意味着三级终止
+        # 最后手段：关掉仍握着的管道句柄
+        # 兜底必须覆盖三支管道，不能只关 stdout。走到这里意味着三级终止
         # 全部没等到进程退出（ffmpeg 卡在不可中断IO / 孙进程握着管道写端），此时 stderr（ffmpeg 的
         # 进度与错误输出，7×24 多房间下每条录制都开着一支）与 stdin 若不关，只能等解释器收尾回收；
         # 反复启停会让清理线程一路攒 fd，且 Windows 上这些句柄还会让日志/媒体文件的归档改名撞
@@ -177,7 +177,6 @@ def _terminate_ffmpeg_process(proc: subprocess.Popen[bytes], timeout: int = int(
                 if pipe:
                     pipe.close()
             except Exception:
-                # 吞没即正确：句柄随进程/解释器回收，此处失败已无可恢复动作
                 pass
 
         return proc.poll() is not None
@@ -207,7 +206,7 @@ def _cleanup_single_ffmpeg_process(
                 )
                 return
         logger.info(i18n.tr("ffmpeg 进程 (PID: {pid}) 已清理", pid=proc.pid))
-        # ②：成功路径才登记「已确认终止」，且必须在 finally 置位 finished **之前**
+        # 成功路径才登记「已确认终止」，且必须在 finally 置位 finished **之前**
         # 写入——否则主线程被唤醒后可能读到尚未落定的结果位，等于又引入了两套事实。
         # isinstance 判定不可省：既有调用方与用例允许传裸 threading.Event。
         if isinstance(finished, _CleanupSignal):

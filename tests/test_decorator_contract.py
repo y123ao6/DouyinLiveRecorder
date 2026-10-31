@@ -98,7 +98,7 @@ def _is_dict_annotation(node: Union[ast.expr, None], aliases: dict[str, ast.expr
 
 def test_trace_error_decorator_contract_across_repo() -> None:
     violations: list[str] = []
-    # 2026-09-23：本用例原本是「扫到了多少」零见证的纯遍历——两个 `except …: continue`
+    # 本用例原本是「扫到了多少」零见证的纯遍历——两个 `except …: continue`
     # 让出问题的文件静默出局，且只断言 violations 为空，于是给两个装饰器改名（含全部调用点）会让
     # 扫描命中数归零、violations 恒空、门禁全绿而该两条防线同时消失。现固定三件见证：
     # 扫描文件数、命中装饰器的函数数、未能读取/解析的文件数。阈值取现实测值的保守下界

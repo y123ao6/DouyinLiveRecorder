@@ -29,9 +29,11 @@
 #   - 脚本自身异常一律放行并打一条 stderr 提示：Hook 坏掉绝不能演变成「agent 什么也做不了」，
 #     那是把工具故障伪装成代码不合格；事件形态不认识时同样放行（fail-open）。真正的质量判定
 #     仍由 run_gates.py / CI 承担。
-#   - 覆盖边界：PostToolUse 的 matcher 是写入类工具（Write|Edit|SearchReplace|MultiEdit），判定
-#     只认 tool_input 的 file_path 类字段；Bash/Shell 内的文件写入不经该事件——已知边界而非漏洞，
-#     相关约束由收尾门禁（R8 全仓扫描 / run_gates.py / CI）在入库前兜底。
+#   - 覆盖边界：PostToolUse 的 matcher 是写入类工具 + DeleteFile（Write|Edit|SearchReplace|MultiEdit|
+#     DeleteFile），判定只认 tool_input 的 file_path 类字段；DeleteFile 触发时文件已不存在，
+#     内容类检查（MUTATION/行尾/钉定表/.mjs 登记）不适用，仅做路径级受保护目录检查；
+#     Bash/Shell 内的文件写入不经该事件——已知边界而非漏洞，相关约束由收尾门禁（R8 全仓扫描 /
+#     run_gates.py / CI）在入库前兜底。
 #   - UTF-8：拒绝理由与反馈都是中文，中文 Windows（cp936）下写 stderr 会抛 UnicodeEncodeError
 #     炸掉 Hook 进程（与 MID-63 同根因），故 stdout/stderr 都要 reconfigure 并显式给 errors。
 #
@@ -503,6 +505,22 @@ def _in_skipped_dir(path: Path) -> bool:
     return any(part.lower() in _SKIP_DIR_NAMES for part in path.parts)
 
 
+def check_deleted_file(path: Path) -> tuple[str, str] | None:
+    # DeleteFile 的 PostToolUse 侧判定：文件已被删除、无法读取内容，因此只做路径级受保护目录检查。
+    # 内容类检查（MUTATION 残留 / 行尾形态 / 运行时钉定 / .mjs 登记）对已删除文件不适用——
+    # 这是 PostToolUse 非阻断事件的已知边界，收尾门禁（R8 / run_gates.py / CI）在入库前兜底。
+    segments = _relative_segments(path)
+    for name in PROTECTED_RUNTIME_DIRS + (PROTECTED_MAINTENANCE_DIR,):
+        if name in segments:
+            return (
+                "R-CLEAN-SCOPE",
+                f"删除目标位于受保护目录 `{name}/`。AGENTS.md 规定收尾清理只限本次任务产生的"
+                " 一次性脚本与 `tests/` 下用例生成的临时输出，运行期产物目录与 `scripts/`"
+                " 下正式维护脚本一律不动。确需删除请交回用户确认。",
+            )
+    return None
+
+
 def check_written_file(path: Path) -> tuple[str, str] | None:
     # PostToolUse 侧判定：写入已发生，这里只做「隐形回归」的即时反馈（非阻断，见模块头双轨口径）。
     if not path.is_file():
@@ -732,14 +750,20 @@ def main() -> int:
                     print(f"[{rule}] {reason}", file=sys.stderr)
                     return 2
         elif name == "PostToolUse":
-            # 非阻断事件：exit 2 的 stderr 注入按官方文档仅对 blockable 事件生效，这里不得依赖它。
-            # 文档化通道是 exit 0 + stdout JSON `hookSpecificOutput.feedback`——即时回传「当场修」，
-            # 撤销写入由收尾门禁（R8 / run_gates.py / CI）在入库前兜底。
-            # file_path 的字段名在不同写入工具间不统一（file_path / path / notebook_path），逐一取。
+            # 非阻断事件：写入/删除已发生、不可撤销，exit 2 的 stderr 注入按官方文档仅对
+            # blockable 事件生效，这里不得依赖它。文档化通道是 exit 0 + stdout JSON
+            # `hookSpecificOutput.feedback`——即时回传「当场修」，撤销由收尾门禁兜底。
+            # file_path 的字段名在不同工具间不统一（file_path / path / notebook_path），逐一取。
             for key in ("file_path", "filePath", "path", "notebook_path"):
                 value = payload.get(key)
                 if isinstance(value, str) and value:
-                    verdict = check_written_file(resolve_path(value))
+                    resolved = resolve_path(value)
+                    tool_name = event.get("tool_name", "")
+                    if tool_name == "DeleteFile":
+                        # 删除操作：文件已不存在，内容类检查不适用，仅做路径级受保护目录检查
+                        verdict = check_deleted_file(resolved)
+                    else:
+                        verdict = check_written_file(resolved)
                     if verdict is not None:
                         rule, reason = verdict
                         print(

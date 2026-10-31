@@ -8,7 +8,7 @@
 # 锁：shared 的数值容错与配置裁决三态；danmaku_monitor 的逐事件防护与 stop_event 随线程
 # 新建；recorder 的 session_id 迟到回调、_stopping 复位早于会话校验、停止/退出单飞；
 # settings_dialog 的 reload/conflict 两条路径；widgets.fixed_font 的单个 family 与首个
-# 命中；TerminalText 高亮器单实例复用（M-16）；M-13/M-14 的真窗语言热切换——本文件
+# 命中；TerminalText 高亮器单实例复用（M-16）与 WidgetWidth 自动换行（resize 随宽重排）；M-13/M-14 的真窗语言热切换——本文件
 # 「不靠真窗」口径的刻意例外：登记表回填与「原地停旧语言」只有真控件树 + 真翻译目录
 # 才测得出来（夹具与 test_gui_qt_window.py 同源，登记表按用例快照还原）。
 
@@ -26,7 +26,7 @@ from typing import Callable, Iterator
 
 import pytest
 
-# 按子模块探测并放宽 exc_type（2026-10-18 CI 实测）：pytest 9.1 起 importorskip 的 exc_type
+# 按子模块探测并放宽 exc_type（CI 实测）：pytest 9.1 起 importorskip 的 exc_type
 # 缺省为 ModuleNotFoundError，而缺 Qt 系统库时失败发生在 QtGui/QtWidgets 的 dlopen、顶层
 # `import PySide6` 仍成功；紧随其后的 import 抛 ImportError 会被计为 collection error 并
 # 中断整轮（实测 4337 collected / 2 errors）。环境没有 Qt 应走 skip，不该带走其余用例。
@@ -41,7 +41,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QSyntaxHighlighter  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QSystemTrayIcon  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPlainTextEdit, QSystemTrayIcon  # noqa: E402
 
 import i18n  # noqa: E402
 from src import ui_i18n  # noqa: E402
@@ -275,12 +275,12 @@ def _controller(tmp_path: Path) -> RecorderController:
 
 
 # ─── recorder：i18n 迁移回归锁（AST 静态判据，零运行时依赖） ───
-# CODE_REVIEW_2026-10-29 M-04 回植：冲突解决时这两条在本文件丢失，而生产实现健在，
-# 录制输出线程的 i18n 与脱敏两条锁一度归零（从 f93c504 取回原用例）。
+# M-04 回植：录制输出线程的 i18n 与脱敏两条锁曾在冲突解决时归零（生产实现健在，
+# 从 f93c504 取回原用例）。
 
 
 def test_recorder_log_messages_route_through_tr() -> None:
-    # Qt 移植曾整批丢失 gui.py 的 tr() 迁移（2026-10-29 回填）：_log 首参一律经 i18n.tr 常量
+    # Qt 移植曾整批丢失 gui.py 的 tr() 迁移（已回填）：_log 首参一律经 i18n.tr 常量
     # 模板（占位符沿用目录登记的归一形态 {pid}/{path}/{err}/{type_name}），裸常量/裸 f-string
     # 在非 zh_CN 语言下永远渲染源文。判据只认「有价值的」首参——装饰线（"━" * 40 是 BinOp）
     # 与转发变量实参（Name）不在判据面内。模板是否登记进目录由 tests/test_i18n_migration.py
@@ -866,7 +866,7 @@ def test_pref_combos_backfilled_from_saved_theme_and_scale(qt_app: QApplication,
 
 def test_terminal_append_line_follows_newest_line(qt_app: QApplication) -> None:
     # M-81：textCursor() 返回副本——只在副本上 movePosition/insertText 而不调 setTextCursor，
-    # 控件的**视口**从不跟随最新行。2026-10-21 offscreen 实测：纯副本写法下文档字符数一路涨、
+    # 控件的**视口**从不跟随最新行。offscreen 实测：纯副本写法下文档字符数一路涨、
     # 内部光标位置因「插入点恰在光标处」的位移记账甚至仍报 atEnd True，但 verticalScrollBar
     # 停在 0（maximum 已到几十）——正是「在录，日志页却定格在开头」的确切形态；补上
     # setTextCursor 后滚动条与 maximum 齐平（与弹幕页 _render_stream 的同场景写法对齐）。
@@ -880,7 +880,7 @@ def test_terminal_append_line_follows_newest_line(qt_app: QApplication) -> None:
         qt_app.processEvents()
         vsb = term.verticalScrollBar()
         assert vsb.maximum() > 1, "视口未产生可滚动余量，用例失去取证面"
-        # 2026-10-21 offscreen 实测：正确形态下 value 落在 maximum-1（末块为空段落，
+        # offscreen 实测：正确形态下 value 落在 maximum-1（末块为空段落，
         # ensureCursorVisible 保证「可见」而非「齐底」）；未修形态 value 恒为 0。
         # 判据取「跟随到近底」而不是逐像素相等，跨 Qt 小版本不脆断。
         assert vsb.value() >= vsb.maximum() - 1, "append_line 后视口未跟随最新行（M-81：副本光标从未写回）"
@@ -1018,6 +1018,31 @@ def test_apply_highlighter_attaches_once_and_only_recolors(
         1,
         1,
     ], "每次切换主题必须且只能触发一次 rehighlight：去掉它旧行停在旧配色，多触发是重复开销"
+
+
+def test_terminal_wraps_at_widget_width_and_rewraps_on_resize(qt_app: QApplication) -> None:
+    # 运行日志自动换行锁（用户语义「折行随窗口大小变化」）：WidgetWidth 下长行按视口宽折行，
+    # 拉宽后 Qt 自动重排。取证面取 document().firstBlock().lineCount()——NoWrap 恒为 1，
+    # 折行后 >1 且随宽度单调下降；判据全用相对断言，不写死绝对行数（offscreen 与真窗共用
+    # 同一套字体度量，具体折行数随字体/字号漂移，写死会在 CI 上脆断）。
+    term = TerminalText()
+    term.resize(240, 300)
+    term.show()
+    qt_app.processEvents()
+    try:
+        assert (
+            term.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth
+        ), "终端折行模式回归为 NoWrap：长行只能横向滚动，不随窗口宽度换行"
+        term.append_line("[2026-10-31 11:48:25] " + "x" * 300)
+        qt_app.processEvents()
+        narrow = term.document().firstBlock().lineCount()
+        assert narrow > 1, "窄视口下长行未折行（lineWrapMode 未生效或退回 NoWrap）"
+        term.resize(1500, 300)
+        qt_app.processEvents()
+        wide = term.document().firstBlock().lineCount()
+        assert wide < narrow, "拉宽视口后折行数未减少（WidgetWidth 的 resize 自动重排失效）"
+    finally:
+        term.close()
 
 
 # ─── M-13/M-14：真窗语言热切换的整窗回填 ─────────────────────────────────
@@ -1163,7 +1188,7 @@ def test_static_labels_and_derived_title_follow_language_switch(qt_app: QApplica
         i18n.tr("界面字体"),
     }, "侧栏偏好说明标签必须随重译登记表换语言（M-14）"
     if win.tray is not None:
-        # 托盘菜单四条动作项随语言切换重取（Qt 版走 TrayIcon.retranslate；2026-10-20 补齐的
+        # 托盘菜单四条动作项随语言切换重取（Qt 版走 TrayIcon.retranslate；补齐的
         # 「隐藏主窗口」「设置」同在此列）。右侧写死 msgid 字面量：只比 i18n.tr() 会在「目录
         # 未生效」时同侧等值而失去区分力。
         assert win.tray.show_action.text() == i18n.tr("显示主窗口") != "显示主窗口"
@@ -1173,7 +1198,7 @@ def test_static_labels_and_derived_title_follow_language_switch(qt_app: QApplica
 
 
 def test_tray_menu_action_items_are_wired_and_fire_in_menu_order(qt_app: QApplication) -> None:
-    # 「隐藏主窗口」「设置」是 2026-10-20 相对旧托盘补齐的两项。只断言 QAction 存在属伪绿：
+    # 「隐藏主窗口」「设置」是相对旧托盘补齐的两项。只断言 QAction 存在属伪绿：
     # 建了却不 connect 就是「点了没反应」，必须逐项 trigger() 看回调真被调到、且与菜单顺序一致。
     #
     # 直接构造 TrayIcon 而不是走 MainWindow._setup_tray()：后者在 isSystemTrayAvailable()
@@ -1228,7 +1253,7 @@ def test_monitor_table_headers_and_filter_sentinel_follow_language_switch(
 def test_config_page_saved_buttons_exposes_both_control_buttons(qt_app: QApplication) -> None:
     # saved_buttons() 的原注释声称「供测试断言按钮可用性（停止流程会禁用控制按钮）」，但 Qt
     # 窗口层的停止流程只禁用 dashboard 的 start/stop，从不触碰本页 reload/save——按原注释
-    # 写断言必然失败，该访问器因此长期零调用方（2026-10-20 死代码清点实测）。注释已改为
+    # 写断言必然失败，该访问器因此长期零调用方（死代码清点实测）。注释已改为
     # 如实描述，本用例锁**真实存在**的契约：按 (reload, save) 顺序交出页面自己持有的按钮对象。
     from src.gui_qt.pages.config import ConfigPage
 

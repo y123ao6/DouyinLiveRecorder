@@ -5,7 +5,7 @@
 #      早先不在枚举内 → 以 pip 入口启动的录制主进程不被匹配，只有它的 ffmpeg 孙进程被杀，
 #      主进程存活并在下一轮重新拉起（正是文件头声称已消除的竞态）；
 #   ② 误杀：ENTRY_SHIM_KEY 曾是裸子串匹配，venv 目录恰好同名时其中任意 python 进程
-#      （编辑器 LSP、pytest）都会被整树杀掉；2026-09-21 进一步由「token 文件名前缀」
+#      （编辑器 LSP、pytest）都会被整树杀掉；进一步由「token 文件名前缀」
 #      收紧为「剥掉启动器后缀后的整名匹配」，以关键字开头的同名数据文件不再定罪；
 #   ③ 静默模式判据过松（Arguments.Count > 0），`/?` 之类误调用即跳过确认框直接强杀。
 #
@@ -43,7 +43,7 @@ def _vbs_text() -> str:
     assert raw[:2] == b"\xff\xfe", "StopRecording.vbs 必须是 UTF-16 LE 且带 FF FE BOM（不得存成 UTF-8）"
     text = raw.decode("utf-16-le")
     assert text.startswith("\ufeff"), "BOM 解码后应为 U+FEFF 首字符"
-    # M-02（2026-10-19 审查修复）：BOM 必须恰好一支——WSH 只剥离流首一个 BOM，第二个 U+FEFF
+    # M-02 审查修复：BOM 必须恰好一支——WSH 只剥离流首一个 BOM，第二个 U+FEFF
     # 会落在语句位置（其后才是注释符 '），cscript/wscript 直接报 800A408「无效字符」，
     # 紧急停录兜底脚本必然解析失败。上一轮双 BOM 事故（ff fe ff fe …）正是只查 raw[:2] 漏掉的。
     assert not text[1:].startswith("\ufeff"), "StopRecording.vbs 不得出现双重 BOM（第二支会打成 Invalid character）"
@@ -137,7 +137,7 @@ def _drive(tmp_path: Path, consts: str, func_name: str, cases: list[tuple[str, b
     assert CSCRIPT is not None
     text = _vbs_text()
     deps = {
-        # L-41（2026-10-02）：IsRecorderPython 的入口命中二次确认调用了 ContainsAtWordBoundary
+        # L-41：IsRecorderPython 的入口命中二次确认调用了 ContainsAtWordBoundary
         "IsRecorderPython": ["HasShimToken", "ContainsAtWordBoundary"],
         "HasShimToken": [],
     }.get(func_name, [])
@@ -169,7 +169,7 @@ class TestRecorderPythonMatching:
         [
             'Const ENTRY_SCRIPTS = "main.py|gui.py|web.py"',
             'Const ENTRY_SHIM_KEY = "douyin-recorder"',
-            # L-41（2026-10-02）：IsRecorderPython 入口名命中后需按程序目录词边界二次确认
+            # L-41：IsRecorderPython 入口名命中后需按程序目录词边界二次确认
             'Const APP_DIR_KEY = "douyinliverecorder"',
         ]
     )
@@ -191,7 +191,7 @@ class TestRecorderPythonMatching:
             # 源码启动：命令行含入口脚本且路径锚定到程序目录（L-41 二次确认后仍命中）
             (r'"C:\venv\x\Scripts\python.exe" D:\douyinliverecorder\main.py', True),
             (r'"C:\venv\x\Scripts\pythonw.exe" "D:\proj\DouyinLiveRecorder\gui.py"', True),
-            # [历史注] L-41（2026-10-02）收窄：入口名命中但命令行不含程序目录 → 不再定罪。
+            # [历史注] L-41 收窄：入口名命中但命令行不含程序目录 → 不再定罪。
             # 旧用例预期 D:\proj\main.py 为 True——那正是「其他项目 main.py 被误杀」的形态。
             (r'"C:\venv\x\Scripts\python.exe" D:\proj\main.py', False),
             # pip 启动器形态：启动器 exe 作为首个 token（shim 分支不受 L-41 影响）
@@ -207,7 +207,7 @@ class TestRecorderPythonMatching:
         # 既有加固不得回退：test_main.py 里的 "main.py" 前面是 '_'，不算入口脚本
         cases = [
             (r"C:\tools\pytest.exe tests/test_main.py", False),
-            # [历史注] L-41（2026-10-02）：入口名命中还需程序目录词边界锚定——
+            # [历史注] L-41：入口名命中还需程序目录词边界锚定——
             # 「--target main.py 且路径无关」的裸命中不再定罪；命令行含程序目录才命中。
             (r"C:\tools\runner.exe --target main.py", False),
             (r"C:\tools\runner.exe --target D:\douyinliverecorder\main.py", True),
@@ -228,7 +228,7 @@ class TestRecorderPythonMatching:
             # 另两个 pip 入口（GUI / Web）的启动器形态
             (r'"C:\venv\x\Scripts\douyin-recorder-gui.exe"', True),
             (r'"C:\venv\x\Scripts\python.exe" C:\venv\x\Scripts\douyin-recorder-web-script.py', True),
-            # 2026-09-21 收紧（MID-60② 的残余误杀面）：以关键字开头的**同名数据文件**
+            # 收紧（MID-60② 的残余误杀面）：以关键字开头的**同名数据文件**
             # 不得定罪——旧的前缀判据会把 python.exe d:\notes\douyin-recorder-guide.pdf
             # 这类进程整树 taskkill 掉（正是本仓「不得误杀编辑器 / 工具进程」的反面）。
             (r"python.exe d:\notes\douyin-recorder-guide.pdf", False),

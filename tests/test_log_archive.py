@@ -199,7 +199,7 @@ class TestArchiveRuntimeLogs:
         assert fake_sink_ops["add"]
 
 
-# M-46（2026-10-21）：归档裁剪。归档只改名不删除时，7×24 循环监测下每天数十次启停会让 logs/
+# M-46：归档裁剪。归档只改名不删除时，7×24 循环监测下每天数十次启停会让 logs/
 # 无界增长；下列用例锁四件事——保留上限、保留窗口、排序一律取文件名时间戳（非 mtime）、
 # 以及「裁剪必须落在全部关句柄步骤之后」（Windows 下句柄未关 os.remove 直接抛 WinError 32）。
 class TestArchivePrune:

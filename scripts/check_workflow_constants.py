@@ -35,7 +35,7 @@ def extract_consts(workflow_path: Path) -> dict[str, str]:
     try:
         text = workflow_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        # 纯读路径兜底（2026-10-29 审查）：存在但不可读（权限/占用/编码）与「文件不存在」同档，
+        # 纯读路径兜底：存在但不可读（权限/占用/编码）与「文件不存在」同档，
         # 都是「工具无法产出结论」→ rc=2，不得以 rc=1 + 裸栈冒充「版本常量不一致」。
         print(f"ERROR: workflow 文件无法读取: {workflow_path} - {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(2)

@@ -1433,7 +1433,7 @@ class LiveRecorderGUI:
     # 删除）；界面提示的「超过 1000 行自动截断」与本组常量同源，改值必须同改提示文案。
     _LOG_TRIM_TO = 800
     _LOG_FLUSH_INTERVAL = 200
-    # 2026-10-21：输出线程批次的**时间兜底**（秒，_LOG_BATCH_FLUSH_SECONDS）：稳定录制的房间约 120s 才输出一条
+    # 输出线程批次的**时间兜底**（秒，_LOG_BATCH_FLUSH_SECONDS）：稳定录制的房间约 120s 才输出一条
     # 状态行，只按「攒满 batch_size 行」刷新的话日志页要空白约 20 分钟——用户视角就是「界面冻住了」，
     # 且这是正常运行路径必然出现的失效。
     # 取 0.8s 而非更小：突发日志仍按 10 行成批（Tk 插入次数不变），稀疏日志最多滞留一个
@@ -2041,8 +2041,7 @@ class LiveRecorderGUI:
         # 中英双语标签是本仓既有惯例，英文界面下用户不必猜这是什么设置）。
         _setting_label(1, 1, T("语言 Language"))
         # 显示名一律取 i18n.unique_display_names()，不得再在本文件裁剪括注。
-        # [历史注] `name.split(" (")[0]` 会把 "English (US)" / "English (UK)" 折成同一个 "English"，
-        # 反向表后写覆盖前写只剩 en_GB：点任一 English 都写回 en_GB、en_US 选不到，下拉还出现同名两项（Web 面板却能选，两端不一致）。
+        # [历史注] 旧按 " (" 截断会把 "English (US)" / "English (UK)" 折成同名，反向表写覆盖只剩 en_GB、en_US 选不到。
         self._language_names: dict[str, str] = i18n_module.unique_display_names()
         # 显示名 → 语言码（unique_display_names 已保证值互不相同，故此表无覆盖风险）
         self._language_codes: dict[str, str] = {name: code for code, name in self._language_names.items()}
@@ -2311,8 +2310,8 @@ class LiveRecorderGUI:
     # 下生效，缩放后不重设就会出现「大字号被裁 / 小字号留白」两种错位。
     def _apply_scaled_geometry(self) -> None:
         s = self.scale_profile
-        # [历史注] 此处原还有一项 close_dialog 的高度缩放，实际空转（属性名少了前导下划线恒取到
-        # None，且基准值 0 会让 `and base` 短路）；关闭确认框高度由内容 pack 决定，故整项删除而不是改名字。
+        # [历史注] close_dialog 高度缩放已整项删除：属性名曾少前导下划线恒取到 None（基准值 0 令 `and base` 短路），
+        # 确认框高度由内容 pack 决定，改名字也无意义。
         for widget, base in ((getattr(self, "status_pill", None), 38),):
             # status_pill 是唯一需要按档缩放高度的固定高容器（其余卡片头高由
             # pack 内容决定，pack_propagate(False) 只在 status_pill 上开着）
@@ -3580,7 +3579,7 @@ class LiveRecorderGUI:
 
             self._log("━" * 40)
             self._log(i18n_module.tr("录制进程已启动 (PID: {pid})", pid=proc.pid))
-            # 2026-10-21：执行程序路径（record_cmd[0]，源码态含用户名 Home 段、可能是被代理/凭据包装的脚本
+            # 执行程序路径（record_cmd[0]，源码态含用户名 Home 段、可能是被代理/凭据包装的脚本
             # 路径）与工作目录同理，落日志前过脱敏（红线见「已打开下载目录」那条）。
             self._log(i18n_module.tr("执行程序: {path}", path=mask_credentials(record_cmd[0])))
             self._log(i18n_module.tr("工作目录: {path}", path=mask_credentials(self.script_dir)))
@@ -4074,8 +4073,8 @@ class LiveRecorderGUI:
 
         # 剥离 loguru 前缀（控制台格式 "{time} | {level} - {message}"，
         # 文件格式 "{time} | {level} | {module}:{func}:{line} - {message}"）。
-        # [2026-10-31 L-08] 旧实现 rfind(" | ")：主播名/消息含 " | " 时最后一个分隔符落在消息
-        # 内部，" - " 定位随之失配，该房间从画质监控表静默消失且无降级日志。改按字段切分：
+        # 不能用 rfind(" | ") 定位：主播名/消息含 " | " 时最后一个分隔符落在消息
+        # 内部，" - " 定位随之失配，该房间从画质监控表静默消失且无降级日志。故按字段切分：
         # 文件行取第三段、控制台行取第二段，再在段内找**首个** " - "——消息内容即便再含
         # " | "/" - " 也不再参与分隔符定位。
         msg = line
@@ -4835,9 +4834,8 @@ class LiveRecorderGUI:
                             i18n_module.tr("taskkill 执行失败: {type_name}: {err}", type_name=type(e).__name__, err=e),
                             "warn",
                         )
-                # [历史注] 原此处还有一段「映像名 + PARENTPID eq GUI 自身 PID」的兜底 taskkill：ffmpeg
-                # 的父进程恒为 main.py，该形态结构性无法命中。「main.py 已死、ffmpeg 孤儿残留」需按命令行
-                # 锚定程序目录（同 StopRecording.vbs 的三层匹配），为避免误杀其它项目的 ffmpeg 由 VBS 承担。
+                # [历史注] 「映像名 + PARENTPID eq GUI 自身 PID」兜底 taskkill 已删：ffmpeg 父进程恒为 main.py，结构性无法命中；
+                # 「main.py 已死、ffmpeg 孤儿残留」按命令行锚定程序目录（同 StopRecording.vbs 的三层匹配）防误杀，由 VBS 承担。
             else:
                 if target_pid is not None:
                     try:

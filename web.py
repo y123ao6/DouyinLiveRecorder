@@ -195,7 +195,7 @@ def _enter_background_mode(logs_dir: str, host: str, port: int) -> None:
     # 必须重建控制台 sink：loguru 的 console sink 在 `from src.logger import logger` 导入期就绑定了
     # 当时的 sys.stderr，不随下面的赋值而变；不重建则 DEBUG/WARNING 全写往随后被 SW_HIDE 的控制台，
     # web_console.log 只剩 print，排障时会把「日志没进来」误判成「事件没发生」。
-    # [历史注] 2026-08 虎牙 403 曾因此把「探针假绿」误判成「探针未执行」；Web 模式排障先看
+    # [历史注] 虎牙 403 曾因 sink 未重建把「探针假绿」误判成「探针未执行」；Web 模式排障先看
     # logs/streamget.log / PlayURL.log（文件 sink 不受重定向影响）。
     try:
         from src.logger import rebind_console_sink

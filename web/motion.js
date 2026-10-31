@@ -21,14 +21,13 @@
     function win() { return (typeof window !== "undefined") ? window : {}; }
     function doc() { return (typeof document !== "undefined") ? document : {}; }
 
-    // prefers-reduced-motion：环境缺失时降级为「不开启动效」，绝不报错。
-    // [2026-10-31 L-07 更正] 上行注释的降级方向写反了：本函数 false 语义是「未要求减少动效」，
-    // 环境缺失/异常按 false 处理＝照常播放动效，而非「不开启动效」。
+    // prefers-reduced-motion：命中 true＝用户要求减少动效；环境缺失/异常按 false 处理＝照常播放动效，
+    // 绝不报错。[历史注] 首版注释把降级方向写反（L-07 更正），false 语义是「未要求减少动效」。
     function prefersReduced() {
         try {
             var m = win().matchMedia;
             if (m) return !!m.call(win(), "(prefers-reduced-motion: reduce)").matches;
-        } catch (e) { /* 环境无 matchMedia：按不开启处理 */ }
+        } catch (e) { /* 环境无 matchMedia：按未要求减少动效（false）处理 */ }
         return false;
     }
 

@@ -193,7 +193,7 @@ class TestClientCacheLoopDimension:
                 _ = started.wait(timeout=15)
                 # 循环保持存活（不 close）直到主线程断言完毕——复现「房间仍在录制」
                 _ = keep_alive.wait(timeout=15)
-            except BaseException as e:  # pragma: no cover - 仅收集异常
+            except BaseException as e:  # pragma: no cover
                 errors.append(e)
                 _ = started.wait(timeout=15)
             finally:

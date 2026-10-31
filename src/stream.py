@@ -30,8 +30,6 @@ from .utils import trace_error_decorator
 
 # Author: Hmily
 # GitHub: https://github.com/ihmily
-# Date: 2023-07-15 23:15:00
-# Update: 2025-02-06 02:28:00
 # Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
 # Function: Get live stream data.
 
@@ -421,7 +419,7 @@ def get_quality_index(quality: str | int | None) -> tuple[str, int]:
 
     quality_str = str(quality).upper()
     if quality_str.isdigit():
-        # L-04（2026-10-21）：原写 int(quality_str[0])，只取首字符——"10" 被当成 1（BD）录成蓝光。
+        # 原写 int(quality_str[0])，只取首字符——"10" 被当成 1（BD）录成蓝光。
         # 纯数字串按整值解析，越界（>=6）仍按原口径归 0（OD）。上限钳在 9：调用方可能递来
         # 任意长度的数字串（配置/接口下发），int() 对超长串在 3.14 有位数上限、抛 ValueError 反而
         # 穿透房间线程；先按前两位取足够区分「越界」的判据即可。
@@ -464,7 +462,7 @@ async def get_douyin_stream_url(
     # 不能把"未开播"误判为 live，否则会带着空地址进入录制流程、空跑一路 ffmpeg。
 
     if status == 2:
-        # M-22（2026-10-21）：stream_url 及各档位表都是平台下发的结构，`or {}` 只兜住「缺失/None」，
+        # stream_url 及各档位表都是平台下发的结构，`or {}` 只兜住「缺失/None」，
         # 兜不住「下发成字符串/list」——那种形态下 .get 抛 AttributeError，被装饰器吞成「未开播」，
         # 在播房间从此静默不录。逐层 isinstance 归一，异常形态一律按空表处理（等价于「无档位」）。
         stream_url = d.get("stream_url")
@@ -517,7 +515,7 @@ async def get_douyin_stream_url(
         m3u8_quality_name, m3u8_url = m3u8_pairs[m3u8_idx] if m3u8_pairs else ("", "")
         actual_quality = _norm_code(flv_quality_name or m3u8_quality_name)
 
-        # M-23（2026-10-21）：h265 判定不再在此另写一份。原实现用 `"h265" in codec or "hevc" in codec`
+        # h265 判定不再在此另写一份。原实现用 `"h265" in codec or "hevc" in codec`
         # 做子串包含，选源侧 _is_h265 只认 codec 全等 h265——同一条流两处口径不一致，HEVC/H265 地址在
         # 选源侧不被剔除、仍被交付 ffmpeg 直拷。现在三处共用 stream_select._is_h265（函数内 import，
         # 理由同 _probe_headers 上方的循环导入说明）。
@@ -535,7 +533,7 @@ async def get_douyin_stream_url(
             # HLS 开启时仍 m3u8 优先，HLS 关闭/不可达时落到这条 h264 FLV。
             # flv_pull_url 条目若自带 codec=h265 标记同样会被选源层剔除，不收进备选徒增告警。
             # 函数内 import：stream_select 顶层 import main 会循环导入，惯例同 _probe_headers。
-            # M-23（2026-10-21）：_is_h265 已提到上方与本分支共用（同一处 import），此处不再重复导入。
+            # _is_h265 已提到上方与本分支共用（同一处 import），此处不再重复导入。
             if flv_url and flv_url != hevc_flv_url and not _is_h265(flv_url):
                 flv_url_list.append(flv_url)
             flv_url = hevc_flv_url
@@ -645,7 +643,7 @@ async def get_tiktok_stream_url(
         stream_data_outer = live_detail.get("streamData") or {}
         pull_data = stream_data_outer.get("pull_data") or {}
         stream_data_raw = pull_data.get("stream_data", "")
-        # M-21（2026-10-21）：本函数对每条流条目都做了逐条防御（见 get_video_quality_url 的
+        # 本函数对每条流条目都做了逐条防御（见 get_video_quality_url 的
         # except，注释写明「一条坏条目不得让整个房间吞成未开播」），而这一句却裸在 try 之外：
         # 上游 stream_data 被截断时 json.loads 抛错、被 @trace_error_decorator 吞成「未开播」，
         # 整房静默不录，与逐条防御的设计意图自相矛盾。取不到正文就按「无档位可用」走下方既有
@@ -754,7 +752,7 @@ async def get_kuaishou_stream_url(json_data: dict[str, object], video_quality: s
         actual_quality: str | None = None
         available_qualities: list[str] | None = None
         m3u8_list = k.get("m3u8_url_list")
-        # M-22（2026-10-21）：同 flv_list，只收 dict 元素；非 list（dumps 过的字符串等）按无候选处理。
+        # 同 flv_list，只收 dict 元素；非 list（dumps 过的字符串等）按无候选处理。
         if isinstance(m3u8_list, list):
             m3u8_list = [x for x in m3u8_list if isinstance(x, dict)]
         else:
@@ -765,7 +763,7 @@ async def get_kuaishou_stream_url(json_data: dict[str, object], video_quality: s
             result["m3u8_url"] = m3u8_url_list[idx].get("url", "")
 
         flv_list = k.get("flv_url_list")
-        # M-22（2026-10-21）：平台下发形态不可控——`flv_list` 可能是 dumps 过的字符串、元素也可能是
+        # 平台下发形态不可控——`flv_list` 可能是 dumps 过的字符串、元素也可能是
         # 裸串，那么 `flv_list[0]` 取到的是首字符、`"bitrate" in` 恒假，随后 `.get` 抛 AttributeError
         # 被装饰器吞成「未开播」。先按「只收 dict 元素」归一，非 dict 形态一律按「无候选」跳过。
         if isinstance(flv_list, list):
@@ -897,7 +895,7 @@ async def get_huya_stream_url(json_data: dict[str, object], video_quality: str |
                 )
             )
         # 按统一档位序输出可用档位（信息展示用）
-        # M-24（2026-10-21）：原实现无条件追加 ["UHD", "LD"]，exsphd 仅含 264_0、max_ratio<=0 的房间
+        # 原实现无条件追加 ["UHD", "LD"]，exsphd 仅含 264_0、max_ratio<=0 的房间
         # 对外声称 ["OD","UHD","LD"]——档位与房间实际可拉取集合不符。现与旧档位分支同一口径：按
         # available_ratios 经 huya_code_for_ratio 贴档位名再按 HUYA_CODE_ORDER 枚举；BD 子档位仍按
         # HUYA_FIXED_TIERS 的「≤ 房间最高码率」口径枚举（子档位不在 exsphd 的 264_ 族里）。
@@ -1087,7 +1085,7 @@ async def get_douyu_stream_url(
         logger.error(
             i18n.tr("[斗鱼直播] 全部档位拉流失败(尝试={attempt_rates})，本轮无可用流地址", attempt_rates=attempt_rates)
         )
-        # M-26（2026-10-21）：本轮**一格地址都没有**时不再谎报开播。上一条告警保留（它是唯一给出
+        # 本轮**一格地址都没有**时不再谎报开播。上一条告警保留（它是唯一给出
         # 「尝试过哪些 rate」的线索），但 is_live 必须为 False：旧口径下上层把「开播但无地址」当待录
         # 房间，每轮空跑一路 ffmpeg，而 select_source_url 侧只会得到「解析结果无任何流地址」。
         # 与模块头「缺字段即按未开播返回」的既定取舍同向（不伪造 is_live=True 误导调度器）。
@@ -1125,7 +1123,7 @@ async def get_yy_stream_url(json_data: dict[str, object]) -> dict[str, object]:
     result: dict[str, object] = {"anchor_name": anchor_name, "is_live": False}
     avp = y.get("avp_info_res")
     if avp:
-        # M-22（2026-10-21）：avp_info_res / stream_line_addr / cdn_info 全是平台下发结构，`or {}` 只兜住
+        # avp_info_res / stream_line_addr / cdn_info 全是平台下发结构，`or {}` 只兜住
         # 缺失与 None。下发成字符串或 list 时 .get 抛 AttributeError、list(...)[0] 抛 IndexError，
         # 都被装饰器吞成「未开播」。逐层 isinstance 归一，并保留「取首条线路」的既有语义。
         if not isinstance(avp, dict):
@@ -1224,7 +1222,7 @@ async def get_netease_stream_url(json_data: dict[str, object], video_quality: st
     available_qualities: list[str] | None = None
     stream_list_data = n.get("stream_list")
     if stream_list_data:
-        # M-22（2026-10-21）：stream_list / resolution 由平台下发，`or {}` 兜不住「下发成字符串」；
+        # stream_list / resolution 由平台下发，`or {}` 兜不住「下发成字符串」；
         # 那种形态下 .get 抛 AttributeError 被装饰器吞成「未开播」。逐层 isinstance 归一。
         if not isinstance(stream_list_data, dict):
             return json_data
@@ -1245,7 +1243,7 @@ async def get_netease_stream_url(json_data: dict[str, object], video_quality: st
         actual_quality = NETEASE_QUALITY_MAP.get(selected_quality, video_quality)
         available_qualities = [NETEASE_QUALITY_MAP.get(k, k.upper()) for k in sorted_keys]
         raw_entry = stream_list[selected_quality]
-        # M-22（2026-10-21）：档位条目本身也可能是非 dict 形态（平台改版/被截断），
+        # 档位条目本身也可能是非 dict 形态（平台改版/被截断），
         # `stream_list[selected_quality].get("cdn")` 会抛 AttributeError 被吞成「未开播」。
         # cast 理由同 get_yy_stream_url：档位条目的静态类型是具体 dict，直赋违反 dict 不变式。
         entry: dict[str, object] = cast(dict[str, object], raw_entry) if isinstance(raw_entry, dict) else {}

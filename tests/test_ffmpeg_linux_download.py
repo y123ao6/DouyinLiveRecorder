@@ -380,7 +380,6 @@ class TestUrlParityWithBuildExe:
 
             @staticmethod
             def iter_content(chunk_size: int) -> Any:
-                # M-12：生产读取改走限长分块，替身同步提供分块形态（单块交出全部字节）。
                 return iter(
                     [
                         json.dumps(
@@ -703,7 +702,6 @@ class TestDownloadRetryPolicy:
 # 上面 TestDownloadRetryPolicy 已经锁住「重试 / 退避 / 半截归档 / 异常不穿出」这四格；本段补的是
 # 同一批下载动作里**落盘纪律**的那一半：名字不可预测、独占创建、目录锁、PATH 去重、解包前空间预检、
 # 以及此前完全缺失的字节上限。判据一律落在「现场还剩什么」而不是「日志写了什么」。
-# ==========================================================================
 
 
 class TestExclusiveArchiveSink:

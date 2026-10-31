@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 2026-09-23 追加：CODE_REVIEW_2026-09-22.md 第十章「孪生副本」语义漂移 + §5.1 副本侧条目的回归锁。
+# CODE_REVIEW_2026-09-22.md 第十章「孪生副本」语义漂移 + §5.1 副本侧条目的回归锁。
 #
 # 被测对象是 scripts/douyin_live_recorder_standalone.py —— 它按设计**不 import src/**，是
 # src/scheduler.py 并发实现与 src/spider.py 部分平台解析的独立副本，因此必须有一份自己的用例。
@@ -35,8 +35,8 @@ _STANDALONE_PATH = _ROOT / "scripts" / "douyin_live_recorder_standalone.py"
 
 
 def _load_standalone() -> Any:
-    # 以模块形式加载单文件副本：其顶层只有常量与函数定义（真网络请求只发生在 main() 里），
-    # import 无副作用，故可直接驱动内部函数而不走 CLI。
+    # 以模块形式加载单文件副本：顶层除常量/定义外只有 stdout/stderr 的 UTF-8 流重配
+    # （真网络请求只发生在 main() 里），故可直接驱动内部函数而不走 CLI。
     spec = importlib.util.spec_from_file_location("dlr_standalone_under_test", _STANDALONE_PATH)
     assert spec and spec.loader, "无法为单文件副本构造 importlib spec"
     module = importlib.util.module_from_spec(spec)
@@ -67,7 +67,7 @@ def _report_from_other_thread(breaker: Any, success: bool) -> None:
     # current_thread() 等于把被测逻辑搬进测试自实现，故这里走真实线程。
     worker = threading.Thread(target=lambda: breaker.record(success))
     worker.start()
-    # 审查 7.11（2026-10-18）：裸 join() 会在 record() 卡在锁上时永久挂死整轮 pytest；带上限后
+    # 审查 7.11：裸 join() 会在 record() 卡在锁上时永久挂死整轮 pytest；带上限后
     # 这条 is_alive 断言才是「回报确实已落进窗口」的凭据（join 超时时样本可能尚未 append）。
     worker.join(timeout=10)
     assert not worker.is_alive(), "回报线程未在 10s 内退出：breaker.record() 挂死，不得判绿"
@@ -150,7 +150,6 @@ class TestStandaloneBreakerProbeGate:
 
 # ────────────────────────────────────────────────────────────
 # validate_stream_url 的容器判定大小写
-# ────────────────────────────────────────────────────────────
 
 
 class TestStandaloneM3u8CaseInsensitive:
@@ -220,7 +219,6 @@ class TestStandaloneM3u8CaseInsensitive:
 
 # ────────────────────────────────────────────────────────────
 # （副本侧）：字母房间号反查
-# ────────────────────────────────────────────────────────────
 
 _HUYA_OFF = {"data": {"profileInfo": {"nick": "虎牙主播"}, "realLiveStatus": "OFF"}}
 
@@ -267,7 +265,6 @@ class TestStandaloneHuyaLetterRoom:
 
 # ────────────────────────────────────────────────────────────
 # --selftest：副本唯一的离线自检入口
-# ────────────────────────────────────────────────────────────
 
 
 def _run_selftest() -> subprocess.CompletedProcess[bytes]:
@@ -299,7 +296,6 @@ class TestStandaloneSelftest:
 
 # ────────────────────────────────────────────────────────────
 # 探针/录制链防线与命令日志脱敏
-# ────────────────────────────────────────────────────────────
 
 
 class TestUntrustedStreamTargetGuard:
@@ -372,7 +368,7 @@ class TestWhitelistOpener:
 
 
 class TestHttpRequestBodyCapAndMaskedErrors:
-    # M-14/M-13（2026-10-30）：① http_request 响应体读取必须有上限（对齐主线 8MiB）——异常/被劫持
+    # M-14/M-13：① http_request 响应体读取必须有上限（对齐主线 8MiB）——异常/被劫持
     # 源不得把长跑进程内存打爆；② 网络层异常文本内嵌的 url 必须 strip_query——RuntimeError 会被
     # 上层原样写进日志，完整 URL 含 wsSecret 等签名 token，明文落盘违反「写入日志前必须脱敏」红线。
 
@@ -420,7 +416,7 @@ class TestHttpRequestBodyCapAndMaskedErrors:
 
 
 class TestRedirectHopGuard:
-    # SR-02（2026-10-02）：探针 opener 不得自动跟随重定向且每跳不复检——公网候选 302 到内网/
+    # SR-02：探针 opener 不得自动跟随重定向且每跳不复检——公网候选 302 到内网/
     # 云元数据时，旧裸 HTTPRedirectHandler 会把跳转请求真的发出去，末位候选的告警放行再把地址
     # 交给 ffmpeg。主线同层防线是探针客户端挂 src/async_http.build_sync_hop_guard；副本在
     # urllib 的重定向单点 redirect_request() 复刻同判据（复用 _untrusted_stream_target_reason）。
@@ -454,7 +450,7 @@ class TestRedirectHopGuard:
 
 
 class TestHlsSegmentProbeLite:
-    # 2026-10-02：HLS「播放列表 200」≠ 可录制——分片级探测回灌。判定原则与主线
+    # HLS「播放列表 200」≠ 可录制——分片级探测回灌。判定原则与主线
     # _probe_hls_segment 一致（保守优先）：分片明确 4xx/5xx 判假绿；解析不出分片/异常维持列表
     # 可达；派生地址过不可信目标闸（SR-01 同判据）。
 
@@ -568,7 +564,7 @@ class TestFfmpegCommandLogMasking:
 
 
 class TestStandaloneGracefulQuitChain:
-    # （2026-10-19 审查修复）：run_ffmpeg 的 Popen 原带 text=True，stdin 是 TextIOWrapper，
+    # （审查修复）：run_ffmpeg 的 Popen 原带 text=True，stdin 是 TextIOWrapper，
     # 而 terminate_all_ffmpeg 按主线 src/ffmpeg_proc.py 口径写 b"q"——必抛 TypeError 被写 q 处的
     # except 吞没，「写 q 优雅收尾补 moov」一级恒失效（Windows 下退化为硬杀，可产出缺 moov 的坏文件）。
     # 行为锁走真实链路：run_ffmpeg 建进程 → 登记表 → terminate_all_ffmpeg 写 q；替身只仿真「管道

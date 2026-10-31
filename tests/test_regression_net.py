@@ -723,7 +723,7 @@ class TestMin2217CloseAllClientsOwnership:
             thread.start()
             assert ready.wait(timeout=15)
             thread.join(timeout=15)
-            # 审查 7.11（2026-10-18）：join(timeout=15) 返回不等于线程已退出。本用例后面几条判据读的
+            # 审查 7.11：join(timeout=15) 返回不等于线程已退出。本用例后面几条判据读的
             # 是「线程 A 建的那份客户端有没有被主线程 await 关闭」，线程挂死时 holder 里已有值、断言
             # 照样全绿，且 daemon 线程会带着未结束的 run_until_complete 活到进程结束。
             assert not thread.is_alive(), "线程 A 未在 15s 内退出：客户端创建链挂死，不得判绿"
@@ -943,7 +943,7 @@ class TestMin2219InternalTargetGuard:
 
 
 class TestDirectAsyncClientHopGuardWiring:
-    # M-04（2026-10-30）结构锁：src/ 与根目录 .py 里的 `httpx.AsyncClient(` 构造点必须挂
+    # M-04 结构锁：src/ 与根目录 .py 里的 `httpx.AsyncClient(` 构造点必须挂
     # event_hooks（逐跳复检钩子 _build_hop_guard 的载体）。钩子唯一产地是 async_http._build_client
     # （它自身含 event_hooks，故天然满足）；room.py 两个直建 GET 点与 spider.py 的 popkontv 登录
     # POST 点经 M-04 接线后同判据——再新增直建点漏挂钩子即本锁转红。

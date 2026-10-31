@@ -1,4 +1,4 @@
-# scripts/smoke_test.py 的 **HTML 报告输出面**回归用例（M-97，2026-10-21 审查）。
+# scripts/smoke_test.py 的 **HTML 报告输出面**回归用例（M-97）。
 #
 # 为什么单独成文件：tests/test_scripts_error_paths.py 锁的是 load_config 的形态契约与退出码
 # （rc=0/1/2 的分档，消费方 scripts/_ci_web_smoke.sh 与 .github/actions/retry 的 fail_fast_codes
@@ -99,7 +99,7 @@ def test_html_report_escapes_response_derived_error_end_to_end(tmp_path: Path, m
 
         def read(self, size: int = -1) -> bytes:
             # size 形参对齐真实 http.client.HTTPResponse.read(amt)：run_check 现按
-            # _SMOKE_BODY_LIMIT 传 size 上限（2026-10-29 审查），替身不忠实会在合法路径抛 TypeError
+            # _SMOKE_BODY_LIMIT 传 size 上限，替身不忠实会在合法路径抛 TypeError
             return self._payload if size < 0 else self._payload[:size]
 
         def __enter__(self) -> "_FakeResponse":

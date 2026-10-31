@@ -455,7 +455,7 @@ class TestGetPlayUrlList:
 
 
 class TestKuaishouStreamData:
-    # 2026-10-19：get_kuaishou_stream_data：快手直播数据解析。
+    # get_kuaishou_stream_data：快手直播数据解析。
 
     @pytest.mark.asyncio
     async def test_network_error_returns_not_live(self) -> None:
@@ -677,7 +677,7 @@ class TestBilibiliStreamData:
 
     @pytest.mark.asyncio
     async def test_url_info_null_host_extra_degrades_to_empty_string(self) -> None:
-        # M-03（2026-10-30）：url_info[0] 的 host/extra 显式 null（风控降级响应形态）时不得以
+        # M-03：url_info[0] 的 host/extra 显式 null（风控降级响应形态）时不得以
         # TypeError 被装饰器吞成「未开播」——.get(key, "") 只挡缺键不挡 null。改走 _dig_str 后
         # null 回空串、拼接继续，拼出的残缺地址由选源阶段形态闸判掉，而不是整轮静默归因未开播。
         # 首响应给非 0 code：getRoomPlayInfo 回退只在 playUrl code!=0 时触发（code==0 且 durl
@@ -720,7 +720,7 @@ class TestAcFunTolerantSortKey:
 
     @pytest.mark.asyncio
     async def test_missing_bitrate_element_sorts_last_instead_of_silencing_room(self) -> None:
-        # M-02（2026-10-30）：representation 任一元素缺 bitrate（风控降级响应形态）时，排序键
+        # M-02：representation 任一元素缺 bitrate（风控降级响应形态）时，排序键
         # 不得让已确认开播的取流整轮被 trace_error_decorator 吞成 {"is_live": False}——
         # 取不到按 0 排到最后（与 B站 _qn_sort_key 同判据），只影响该元素排序。
         inner = {
@@ -790,7 +790,7 @@ class _LogSpy:
         self._record("error", message)
 
     def exception(self, message: object, *args: object, **kwargs: object) -> None:
-        # 2026-10-21：抖音最外层兜底走 logger.exception 留栈，替身必须同形实现——
+        # 抖音最外层兜底走 logger.exception 留栈，替身必须同形实现——
         # 只加方法、不重做级别分档（语义仍是被测方决定的）。
         self._record("exception", message)
 
@@ -1294,7 +1294,7 @@ class TestL09KuaishouEidExtraction:
 
 
 class TestL08BiliBuvidNeverLoggedInClear:
-    # 2026-10-19：B 站 buvid3 是设备级标识、弹幕 AUTH 的凭据成分，而 logs/ 按大小轮转保留多份
+    # B 站 buvid3 是设备级标识、弹幕 AUTH 的凭据成分，而 logs/ 按大小轮转保留多份
     # （AGENTS「凭据不入轮转日志」红线），故 _fetch_buvid 的两条 debug（cookie 提取、首页 Set-Cookie
     # 兜底）只留归因形态。判据按 AGENTS 关键约定 #11：「值确实消失」，不是「调用了 mask_credentials」；
     # 同时反向钉住「凭据照旧按原值取用」——只改日志形态，进房/AUTH 的语义一律不许动。

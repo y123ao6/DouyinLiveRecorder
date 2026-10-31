@@ -21,7 +21,7 @@
 #                     没装 uv 的机器恒红，且无法区分「已补齐」与「真的漂移」。门禁语义一律走 --check。
 #   降级边界        : uv 段（探测/锁定）失败只让 uv.lock 这一段落 WARN，**必须**继续执行 egg-info
 #                     重建；两条降级路径都不得让脚本抛栈退出。
-#   2（2026-10-21 M-94 追加，仅重建模式）: 生成步骤的子进程超过 _CHILD_TIMEOUT_SECONDS 未结束被
+#   2（M-94 追加，仅重建模式）: 生成步骤的子进程超过 _CHILD_TIMEOUT_SECONDS 未结束被
 #                     终止 —— 「没跑成」既不是 0（已同步）也不是 1（漂移）。--check 是纯读路径、
 #                     不产生这一档（它零子进程，由回归锁钉住）。
 # 回归锁：tests/test_scripts_error_paths.py（uv 缺失/探测抛错时 WARN 可达且 egg-info 仍重建、
@@ -41,7 +41,7 @@ PYPROJECT = ROOT / "pyproject.toml"
 UV_LOCK = ROOT / "uv.lock"
 EGG_INFO = ROOT / "DouyinLiveRecorder.egg-info"
 
-# —— 有界执行（M-94，2026-10-21）———————————————————————————————
+# —— 有界执行（M-94）———————————————————————————————
 # 三条生成步骤里唯一可能永不返回的是子进程：`uv lock` 解析索引要走网络、egg_info 走 setuptools
 # 插件链，任一处挂住本脚本就既没同步、也没结论。上界一律取「慢机器实测量级 × 余量」而不是
 # 「CI job 超时」——job 超时那种红里没有任何一步的结论（与 run_gates.py 的同一改动同批）。
@@ -59,7 +59,7 @@ def _read_project() -> dict[str, Any]:
     try:
         data: dict[str, Any] = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
-        # 纯读路径兜底（2026-10-29 审查）：读不出/解析不出时以 rc=2（没跑成，同 _RC_TIMEOUT 分档）
+        # 纯读路径兜底：读不出/解析不出时以 rc=2（没跑成，同 _RC_TIMEOUT 分档）
         # 明示「工具无法产出结论」，不得以 rc=1 + 裸栈冒充「元数据已漂移」——两者排障方向相反。
         print(f"ERROR: pyproject.toml 无法读取/解析（{type(e).__name__}: {e}）", file=sys.stderr)
         sys.exit(2)
@@ -130,9 +130,8 @@ def _run(cmd: list[str], timeout: float = _CHILD_TIMEOUT_SECONDS) -> int:
         # 会拿到已关闭的管道句柄（WinError 6）。
         return int(subprocess.call(cmd, cwd=str(ROOT), timeout=timeout, stdin=subprocess.DEVNULL))
     except subprocess.TimeoutExpired:
-        # M-94（2026-10-21）：`uv lock` 会在解析索引时联网、egg_info 会走 setuptools 插件链，
-        # 两者都可能**永不返回**。旧形态 subprocess.call(cmd, ...) 无任何上界，整个脚本挂住 =
-        # 元数据既没同步也没有结论。超时不是「跑成功」（rc 0）也不是「漂移」（rc 1），
+        # M-94：挂住成因见文件头「有界执行」（uv lock 解析索引走网络 / egg_info 走 setuptools
+        # 插件链，可能**永不返回**）。超时不是「跑成功」（rc 0）也不是「漂移」（rc 1），
         # 而是「这一步没跑成」→ 记入 _RUN_TIMED_OUT，由 main() 以 rc=2 收口（同 run_gates 口径）。
         # 只捕 TimeoutExpired：OSError 继续原样上抛，交给调用侧既有的降级分支
         # （tests/test_scripts_error_paths.py 锁的 M-32① 形态：uv 缺失只让本段 WARN）。
@@ -160,15 +159,15 @@ def _sync_uv_lock() -> bool:
         return False
 
     try:
-        # M-94 残留（2026-10-21）：这是全脚本唯一未加上界的子进程调用。`uv --version` 命中了
-        # PATH 里的目录 / 无执行位文件 / Windows 下同名非 exe 时不会抛 OSError，而是挂住等
-        # 系统层面超时——本脚本常在 CI 的元数据同步步骤里跑，挂住等于整步无结论。
+        # M-94：uv --version 探测必须有上界——命中 PATH 里的目录 / 无执行位文件 / Windows 下
+        # 同名非 exe 时不会抛 OSError，而是挂住等系统层面超时——本脚本常在 CI 的元数据同步
+        # 步骤里跑，挂住等于整步无结论。
         uv_probe = subprocess.run(
             [uv_bin, "--version"],
             capture_output=True,
             text=True,
             timeout=_CHILD_TIMEOUT_SECONDS,
-            stdin=subprocess.DEVNULL,  # [2026-10-31 L-11] 同族 WinError 6 防线，见 _run
+            stdin=subprocess.DEVNULL,  # 同族 WinError 6 防线，见 _run
         )
     except subprocess.TimeoutExpired:
         print(

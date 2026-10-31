@@ -1,16 +1,15 @@
-# 组 G（2026-09-22）Web 侧回归锁：SEV-2221（引擎假绿的存活判据）+ MID-2236（敏感键读写判据分叉）。
+# 组 G Web 侧回归锁：SEV-2221（引擎假绿的存活判据）+ MID-2236（敏感键读写判据分叉）。
 #
 # 与 tests/test_web_api.py 的分工：那边覆盖鉴权中间件、掩码/空值拒绝、房间写入等既有契约；本文件
 # 只放本轮两条修复对应的**失效形态**锁：
-#   ① SEV-2221：/api/status 需暴露「主循环是否还在推进」这条正交证据，且证据不足时不得下发——
-#      否则未接线的部署会被前端刷成红色假告警。[2026-09-23 更正] 该键连同探针已被整体撤下（见 ④），
-#      本条不变量收敛为「没有确凿证据就不得下发停摆判定」，锁点移到 TestMainLoopAliveProbeWithdrawn。
+#   ① SEV-2221：未接线的部署曾被前端刷成红色假告警；该键连同探针已被整体撤下（见 ④），不变量
+#      收敛为「没有确凿证据就不得下发停摆判定」，锁点 TestMainLoopAliveProbeWithdrawn。
 #   ② MID-2236：写侧敏感判据必须与读侧（web_config.read_config_safe）同源。修复前写侧只判
 #      is_sensitive_item，「键名不敏感但值本身是凭据」的项在面板上是掩码、后端却不当敏感项 →
 #      掩码/空值可直接写进去，真实凭据被静默覆盖且备份已脱敏、无从恢复。
 #
 # 全部用例驱动**真实函数/真实端点**，测试内不重新实现判定逻辑。
-# 2026-09-23 同步两处 src 侧变更：
+# 同步两处 src 侧变更：
 #   ③ MID-2241 后端强复验：`PUT /api/config` 写 `[Web] web_auth_enable` / `web_password` 时，认证
 #      当前已开启必须携带能过 `verify_web_password` 的 `reauth_password`，否则 403。TestAuthKeyReauth
 #      因此由「锁后端不判定」翻转为「锁后端判定 + 三条反向边界」。
@@ -114,7 +113,7 @@ def app_env(tmp_path: Path, fake_main: types.ModuleType) -> Generator[types.Simp
 
 
 class TestMainLoopAliveProbeWithdrawn:
-    # SEV-2221 / SEV-2228 收敛（2026-09-23）后的契约锁：/api/status 不再携带 `main_loop_alive`，
+    # SEV-2221 / SEV-2228 收敛后的契约锁：/api/status 不再携带 `main_loop_alive`，
     # 因为那版探针读的是 `main.main_loop_ticks`——main.py 里从未定义、也从未自增，后果是「有一个
     # 永不生效的存活信号」，比「没有该信号」更危险：后续排障会以为停摆已被覆盖。
     #
@@ -234,7 +233,7 @@ class TestWriteSideSensitiveParity:
         assert "_looks_like_secret_value(old_value)" in src, "写侧未判旧值形态（清空路径漏判）"
 
     def test_old_value_must_come_from_unmasked_read(self) -> None:
-        # 源码级锁（2026-09-22 补）：old_value 一旦取自 read_config_safe，值型凭据拿到的是
+        # 源码级锁：old_value 一旦取自 read_config_safe，值型凭据拿到的是
         # SENSITIVE_MASK，_looks_like_secret_value('***') 恒为 False —— 整条值形态分支被架空，
         # 端点静默放行。这里锁住「不得用脱敏读」这一根因：从 `old_value = ""` 到敏感判定之间
         # 若再出现 read_config_safe，即为退化。

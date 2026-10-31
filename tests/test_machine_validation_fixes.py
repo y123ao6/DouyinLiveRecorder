@@ -19,7 +19,6 @@ import pytest
 
 # ======================================================================
 # ① spider.py 防御
-# ======================================================================
 
 
 def test_spider_safe_loads_returns_none_on_bad_json() -> None:
@@ -51,13 +50,11 @@ def test_spider_is_safe_http_url_whitelist() -> None:
 
 # ======================================================================
 # ② ws_client 心跳超时
-# ======================================================================
 
 
-# MT-08：本用例原先整体押在**真实挂钟**上——超时 close 须落在 ≈1.1s 且早于 3.0s 的外部停止，
-# CI 上一次 >1.9s 的调度停顿就能把「超时先于外部停止」这条时刻归因翻案（假红）。故换成**可控虚拟
-# 时钟**：事件循环的取时与推进都在本类手里，1.05s 超时、3.0s 外部停止、60s 读帧挂起全部在微秒级
-# 墙钟内按确定次序发生。五条不放宽被测语义的关键设计（去掉任一条都会让判据失真或把挂死伪装成通过）：
+# MT-08：本用例押**可控虚拟时钟**而非真实挂钟——超时 close 须落在 ≈1.1s 且早于 3.0s 的外部停止，
+# CI 上一次 >1.9s 的调度停顿即可把「超时先于外部停止」翻案（假红）。事件循环取时与推进都在本类手里，
+# 1.05s 超时、3.0s 外部停止、60s 读帧挂起在微秒级墙钟内按确定次序发生。五条不放宽被测语义的关键设计（去掉任一条都会让判据失真或把挂死伪装成通过）：
 #   ① 只推进到「最早到期的定时任务」，不加固定步长——时刻读数因此仍是各定时器真正的到期点；
 #   ② 仅在「无就绪回调且循环未收到停止信号」时推进（有就绪回调时推进会把到期点挪到就绪批之后）；
 #   ③ 到期时刻取不到即直接判失败：CPython 3.14 的 TimerHandle 字段是 `_when`（3.7~3.13 为
@@ -135,10 +132,9 @@ def test_ws_heartbeat_timeout_closes_connection(monkeypatch: pytest.MonkeyPatch)
 
     from src import ws_client
 
-    # M-29（CODE_REVIEW_2026-09-29_2）假绿修复。旧用例只断 `len(close_called) >= 1`，而**用例自己**
-    # 末尾那句无条件 `await client.close()` 本身就会产生一次 ws.close()：把生产侧
-    # src/ws_client.py::_heartbeat_loop 的 wait_for 超时分支整块删掉，外部关闭也「恰好」满足断言，
-    # 于是超时特性有无 = 全绿。现按三条正交通道归因，全部只观察生产代码自身的行为、不复制心跳逻辑：
+    # M-29 假绿修复：旧断言 `len(close_called) >= 1` 连用例自己收尾那句无条件 `await client.close()`
+    # 产生的 ws.close() 都算数——删掉 _heartbeat_loop 的 wait_for 超时分支也全绿。现按三条正交通道
+    # 归因，全部只观察生产代码自身的行为、不复制心跳逻辑：
     #   ① 来源：沿调用栈取「最近一个位于 ws_client.py 内的调用帧」的协程名——超时分支从
     #      _heartbeat_loop 里 await close()，外部停止从 WsClient.close() 里 await，是两条不同代码；
     #   ② 生产自带的判别位 client._stopped：WsClient.close() 先置 True 再关连接，超时分支不置位；
@@ -151,7 +147,7 @@ def test_ws_heartbeat_timeout_closes_connection(monkeypatch: pytest.MonkeyPatch)
     # 断言与语言解耦（手法与口径同 tests/conftest.py::_pin_identity_translation）：本用例要锁的
     # warning 文案在 en_US/en_GB 目录里都有译文，而同一会话内任何 `import main`（main.py 模块级
     # 调 i18n.set_language）都会在**用例运行中**把 i18n._tr 从恒等映射重绑成真目录，于是
-    # 「按简中模板断言日志文本」当场失效——2026-09-29 本机实测同文件
+    # 「按简中模板断言日志文本」当场失效——本机实测同文件
     # test_video_postprocess_timeout_logged_as_timeout 正是这样红的。用例内再钉一次恒等。
     import i18n
 
@@ -302,7 +298,6 @@ def test_ws_heartbeat_timeout_closes_connection(monkeypatch: pytest.MonkeyPatch)
 
 # ======================================================================
 # ③ proxy.py IPv6
-# ======================================================================
 
 
 def test_proxy_info_accepts_ipv6_with_brackets() -> None:
@@ -333,7 +328,6 @@ def test_proxy_info_rejects_invalid_ip() -> None:
 
 # ======================================================================
 # ④ video_postprocess 超时分类型
-# ======================================================================
 
 
 def test_video_postprocess_timeout_logged_as_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -355,7 +349,7 @@ def test_video_postprocess_timeout_logged_as_timeout(tmp_path: Path, monkeypatch
 
     # 恒等映射必须打在 `import main` **之后**：main.py 模块级会调 i18n.set_language(language)，把
     # i18n._tr 重绑成真目录（宿主中文 Windows 上探测出 en_US），「按简中模板断言日志文本」当场失效
-    # （2026-09-29 本机实测本用例即被这条重绑打红）。本用例锁的是「异常被分到超时分支而非
+    # （本机实测本用例即被这条重绑打红）。本用例锁的是「异常被分到超时分支而非
     # unknown error 分支」这一分类语义，与目录语言无关，故在用例内钉死恒等（同文件 ② 同一手法）。
     monkeypatch.setattr(i18n, "_tr", lambda text: text)
 

@@ -354,7 +354,7 @@ def test_hub_thread_safety_under_concurrent_feed(tmp_path: Path) -> None:
     for t in threads:
         t.start()
     for t in threads:
-        # 审查 7.11（2026-10-18）：裸 join() 在 hub 内部锁互锁时会把整轮 pytest 挂死（本用例
+        # 审查 7.11：裸 join() 在 hub 内部锁互锁时会把整轮 pytest 挂死（本用例
         # 正是「四线程并发灌同一 hub」的形态）。带上限把挂死变成判红，再用 is_alive 收口——
         # join 超时静默返回时下面的 snapshot 断言仍可能全绿，那是假绿。
         t.join(timeout=10)
@@ -414,7 +414,7 @@ def test_api_danmaku_endpoint_returns_hub_snapshot(tmp_path: Path, monkeypatch: 
 # ─── GUI 弹幕监控（无头，不创建 Tk 窗口） ───────────────────
 
 
-# ②（2026-09-29 审查）：本文件此前在模块级 `gui = pytest.importorskip("gui")`，于是收集期就
+# ②：本文件此前在模块级 `gui = pytest.importorskip("gui")`，于是收集期就
 # 把 DLR_GUI_PARENT=1 注进整个会话（gui.py 在 import 期写入该变量），与「不在 pytest 进程 import
 # gui」的既定约定冲突。现改为用例内经 _load_gui() 取模块，并由下面的 autouse fixture 成对还原。
 # 残余风险（如实记录，不得当作已彻底解决）：① sys.modules 里的 gui 不会随用例结束消失，后续用例
@@ -584,7 +584,7 @@ def test_gui_tail_reads_jsonl_and_handles_rotation(tmp_path: Any) -> None:
     assert not t.is_alive(), "tail 线程未响应传入的 stop_event 退出（守护线程会残留到进程结束）"
 
 
-# ─── / （CODE_REVIEW_2026-10-21）：stats 线程复活窗口与裸文件名边车路径 ───
+# ───（CODE_REVIEW_2026-10-21）：stats 线程复活窗口与裸文件名边车路径 ───
 
 
 class _GapGate:

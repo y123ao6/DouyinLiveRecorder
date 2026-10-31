@@ -434,7 +434,6 @@ def test_official_download_wires_build_identity() -> None:
 # ==========================================================================
 # 以下为 2026-09-21 覆盖率专项追加段：把「装不上 ffmpeg」的主路径
 # （官方源下载 / 平台分发）逐分支锁住。
-# ==========================================================================
 
 # 追加段的「分支 → 用例」地图（上方原有段已逐条说明 MID-59 / MIN-24④）。
 #
@@ -906,7 +905,6 @@ class TestWindowsInstallSingleSource:
 
 # ==========================================================================
 # 2026-09-23 SEV-2218：第二条 Windows 运行期 ffmpeg 源的显式开关（默认关闭）
-# ==========================================================================
 
 
 def _platform_shim(machine: str) -> types.SimpleNamespace:
@@ -1030,7 +1028,6 @@ class TestMasterSourceGate:
 
 # ==========================================================================
 # 2026-09-23 SEV-2220 ②：下载源白名单（反查 src/ 全量 http(s) 常量，而非单文件）
-# ==========================================================================
 
 # 完整性方式取值域：与 AGENTS.md「三类钉定/校验」+ build_exe 的第 4 类同一套词表。
 INTEGRITY_METHODS: frozenset[str] = frozenset({"官方哈希", "官方签名", "第4类", "TOFU"})
@@ -1206,8 +1203,6 @@ class TestLinuxExtraBranches:
     # 上方原有类 TestLinuxPackageFallback 已锁住「yum 失败仍试 apt」；本类补它没走到
     # 的四条旁支：yum 探测抛非 FileNotFoundError、apt update 失败、apt 不存在、
     # apt 安装本身失败。这四条共同决成「请手动安装」的文案，走错一条就是直接放弃。
-    # [2026-10-18 L-14] 第一条的判据被反转：原先「yum 抛异常 → 不试 apt」正是「直接放弃」
-    # 那一支，与函数末尾「两条包管理器路径都试过之后才落直下兜底」的顺序判据冲突，已修为必须试 apt。
     def test_yum_probe_crash_still_tries_apt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # L-14（2026-10-18 行为变更）：yum 在位但 run() 抛非 FileNotFoundError 异常时也必须继续试 apt。
         # 本用例原名 test_yum_probe_crash_keeps_rhs_semantics，钉的是「is_RHS 保持 True、apt 不被
@@ -1288,9 +1283,8 @@ class TestLinuxExtraBranches:
 #      整体 True、且**不得**打印手动安装提示。
 # 按 M-26 一律写「谁被调用、传了什么」的行为锁：顺序判据取 calls 记录的真实调用次序，
 # 不用正则扫源码字面量（契约一改名，文本锁就静默空洞成立）。
-# [历史注] 本类初版（Unit B 首轮）只有四条，其中 ③ 按 brief 的实参形态（apt update 非零）
-# 对「接线存在与否」零敏感——当时实现里该分支在 apt 块内就 `return False` 早退、根本到不了兜底。
-# 2026-10-02 R-11 删除该早退后：③ 改判据成真锁，并新增 ⑤（开关传递）与 ⑥（update 失败支的成功侧）。
+# [历史注] 本类初版只有四条，③ 对「接线存在与否」零敏感——当时实现里该分支在 apt 块内就
+# `return False` 早退；R-11 删除该早退后 ③ 改判据成真锁，并新增 ⑤（开关传递）与 ⑥（update 失败支的成功侧）。
 class TestInstallFfmpegLinuxNativeFallback:
     def test_package_manager_success_skips_native_download(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # apt/yum 天然给原生 arch 且带发行版自己的签名链，直下只是「拿不到包管理器」时的兜底，
@@ -1518,7 +1512,6 @@ class TestCheckFfmpegEntry:
 
 # ==========================================================================
 # 2026-09-22 P-1：官方公布哈希优先校验（TOFU 降级为兜底）
-# ==========================================================================
 
 # 官方文档正文（gyan.dev 的 ffmpeg-release-essentials.zip.sha256 实测形态：裸 64 位小写十六进制）。
 # 取值刻意写成模块级字面量而不是现场 hashlib.sha256(...) 算出来：否则「解析器把任意输入
@@ -1734,7 +1727,6 @@ class TestOfficialDownloadAuthorityWiring:
 
 # ==========================================================================
 # 2026-10-18 评审修复包（M-06 / L-12 / LT-11 / L-15）
-# ==========================================================================
 
 # master 源候选 URL 之一（只作日志脱敏的输入，不发起请求：_probe 与 _stream_download 全部桩掉）。
 MASTER_GITHUB_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
@@ -2001,7 +1993,6 @@ class TestChildConsoleStartupInfo:
 # PATH 注入口径、解包位置与空间预检、重试退避与字节上限。
 # 这一族的共同点：全部只在「系统里没有 ffmpeg 的机器首次启动」时执行，失败形态是
 # 「装上了一半 / 把上一次能用的删了 / 把产物写到别处」——不打网络也能全部离线复现。
-# ==========================================================================
 
 LOCK_NAME = ffmpeg_install._LOCK_FILE_NAME
 
@@ -2507,7 +2498,6 @@ class TestShippedDownloadCaps:
 # 「拷贝抛错 → 根本走不到落位」，而落位**之后**才暴露的那几支（改名让位成功、落位失败、回滚又失败、
 # 同进程嵌套、锁建不出来、锁位被做成链接、空间探测本身抛错）只能直接打这一个模块。
 # 判据一律看文件系统现场（旧安装还在不在、锁还在不在），不看日志文案。
-# ==========================================================================
 
 
 class TestDownloadGuardFailureDirections:

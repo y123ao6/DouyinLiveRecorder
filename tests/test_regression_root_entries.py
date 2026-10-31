@@ -47,7 +47,6 @@ def gui() -> Iterator[ModuleType]:
 
 # ---------------------------------------------------------------------------
 # L-01：web_console.log 的启动侧大小上限
-# ---------------------------------------------------------------------------
 
 
 def _set_limits(monkeypatch: pytest.MonkeyPatch, *, max_bytes: int, keep_bytes: int) -> None:
@@ -171,7 +170,6 @@ def test_console_log_cap_is_called_before_the_append_stream_opens() -> None:
 
 # ---------------------------------------------------------------------------
 # L-02：GUI 退出链的 PID 复用防线
-# ---------------------------------------------------------------------------
 
 # 超出任何真实 PID 上限的号码：替身按「OpenProcess 对已消失进程回 NULL」的形态处理
 _DEAD_PID = 4_000_000_001

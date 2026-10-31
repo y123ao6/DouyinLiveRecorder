@@ -30,7 +30,7 @@ from src.ffmpeg_proc import _get_error_line
 # 段级精确替换：old_str 仅在「等于整行（去行尾换行与首尾空白后）」或「等于行内某个半角/全角
 # 逗号分隔段（strip 后）」时才替换，返回重写后的整行（保留原行尾与多逗号），未命中返回 None。
 # 不能用整行 str.replace：URL 前缀重叠时（.../room1 与 .../room12）会把别的配置行静默改坏，
-# 使用者只在下次「未生效」时才发现（2026-09-12 审查 6.1）。
+# 使用者只在下次「未生效」时才发现。
 def _rewrite_line_by_match(text_line: str, old_str: str, new_str: str) -> str | None:
     # 实现下沉在 src/utils.py::rewrite_line_by_segment：utils.replace_url（花椒「地址失效自动
     # 注释」写盘路径）与本模块 update_file 必须同一匹配口径，而反向导入会成环，故实现只能住
@@ -42,7 +42,7 @@ def _rewrite_line_by_match(text_line: str, old_str: str, new_str: str) -> str | 
 # 顺带去重相同行；返回实际生效的字符串，「失败」（含 old_str 一行未命中）返回 old_str 且不落盘。
 # 未命中不得返回 new_str：依赖负信号的调用方（main 的 `update_file(...) or url`、web_api 的
 # 「失败返回 old_str」契约）只认返回值，区分不了「未命中」与「替换成功」。
-# [2026-10-31 L-11] 返回注解由 `str | None` 收窄为 `str`：全部出口恒返回 str（未命中按
+# [历史注] 返回注解由 `str | None` 收窄为 `str`：全部出口恒返回 str（未命中按
 # 「负信号」契约返回 old_str，见下），None 分支不存在——旧注解逼调用方做多余判空。
 def update_file(file_path: str, old_str: str, new_str: str, start_str: str | None = None) -> str:
     if old_str == new_str and start_str is None:
@@ -87,14 +87,13 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str | Non
             return old_str
         if not file_data:
             return old_str
-        # old_str 在文件里一行都没命中 → **不落盘**并返回 old_str。旧实现会把「原样读回来的
-        # 内容」再原子重写一遍并返回 new_str，两个后果：
-        #   ① 调用方（main.py 的 `url = update_file(...) or url`、web_api 按该做的负信号
-        #      裁决）把「没改到任何东西」读成「已写入」，面板回报成功而配置行其实还是旧的；
-        #   ② 无谓地刷新配置文件 mtime——它正是 GUI/主循环热加载与备份线程的触发判据。
-        # 与同文件 delete_line 的「未命中不写文件」保持同一口径（2026-10-19）。
-        # 注意本判据只看「段级/整行是否命中」，不看内容是否真的变了：`old_str == new_str` 配
-        # `start_str="#"` 的注释形态（main.py 的未知链接注释路径）内容逐字不变但必须落盘。
+        # old_str 在文件里一行都没命中 → **不落盘**并返回 old_str（与同文件 delete_line 的
+        # 「未命中不写文件」同一口径）。否则无谓刷新配置文件 mtime——它正是 GUI/主循环热加载
+        # 与备份线程的触发判据；调用方（main.py 的 `url = update_file(...) or url`、web_api
+        # 的负信号裁决）也会把「没改到任何东西」读成「已写入」（见上方「未命中不得返回
+        # new_str」契约）。注意本判据只看「段级/整行是否命中」，不看内容是否真的变了：
+        # `old_str == new_str` 配 `start_str="#"` 的注释形态（main.py 的未知链接注释路径）
+        # 内容逐字不变但必须落盘。
         if not matched:
             return old_str
         joined = "".join(file_data)
@@ -158,9 +157,9 @@ def update_anchor_name(url: str, new_name: str) -> bool:
         if not changed:
             return False
         joined = "".join(out_lines)
-        # WD-15：原先的 open(..., "w") 直写中途失败会把整份 URL_config.ini 截成空文件——所有房间
-        # 配置一次丢失，且这条路径没有 ini_URL_content 的快照恢复兜底。改原子写后仅在落盘成功时
-        # 才更新快照，避免「快照已更新但实际没写成功」让恢复基线失真。
+        # 原子写：open(..., "w") 直写中途失败会把整份 URL_config.ini 截成空文件——所有房间配置
+        # 一次丢失，且这条路径没有 ini_URL_content 的快照恢复兜底。仅在落盘成功时才更新快照，
+        # 避免「快照已更新但实际没写成功」让恢复基线失真。
         if not _atomic_write_text(main.url_config_file, joined):
             logger.warning(i18n.tr("主播名写回 URL 配置失败（已忽略，下轮重试）"))
             return False
@@ -227,11 +226,10 @@ def delete_line(file_path: str, del_line: str, delete_all: bool = False) -> bool
         except (OSError, UnicodeDecodeError) as e:
             logger.error(i18n.tr("读取 URL 配置失败，跳过删除: {e}", e=e))
             return False
-        # 2026-09-20：调用方（web_api 的 parse_url_config raw_line、main.py 的 origin_line）
-        # 读文件时都没传 newline=""，传进来的 del_line 恒以 \n 结尾；此处按 newline="" 读到的行是
-        # \r\n 结尾 → 整行精确比较在 CRLF 文件上**恒不成立**，删除退化为永久静默 no-op，
-        # 而旧实现无返回值、调用方无条件回报成功（面板点「删除」后房间仍在录）。
-        # 工作区实际形态即 CRLF（URL_config.ini 14/14 行），Windows 主平台必然命中。
+        # 调用方（web_api 的 parse_url_config raw_line、main.py 的 origin_line）读文件时都没传
+        # newline=""，传进来的 del_line 恒以 \n 结尾；此处按 newline="" 读到的行是 \r\n 结尾 →
+        # 整行精确比较在 CRLF 文件上**恒不成立**，删除退化为永久静默 no-op（面板点「删除」后
+        # 房间仍在录）。工作区实际形态即 CRLF（URL_config.ini 14/14 行），Windows 主平台必然命中。
         # 现两侧先剥行尾再比较，写出时仍保留各行原始行尾（不做 LF/CRLF 翻译）。
         target = del_line.rstrip("\r\n")
         deleted_one = False
@@ -246,7 +244,7 @@ def delete_line(file_path: str, del_line: str, delete_all: bool = False) -> bool
             # 模板须同步四语目录，而「删除失败」的用户可见提示归调用方（web_api 端点 / main
             # 主循环）所有，由它们按返回的 False 统一告警——本函数只交回可观测性。
             return False
-        # 原 r+truncate 式写在崩溃时会清空整个 URL_config.ini（2026-09-12 审查 6.5）
+        # 原 r+truncate 式写在崩溃时会清空整个 URL_config.ini
         joined = "".join(out)
         if not _atomic_write_text(file_path, joined):
             return False
@@ -315,7 +313,7 @@ def read_config_value(
 # 已存在的值原样解析、不被覆写——识别 是/否、true/false、1/0、yes/no、on/off（大小写不敏感），
 # 无法识别的值返回 default。
 # 旧写法 `options.get(read_config_value(...), 兜底)` 对非「是/否」写法**静默**回落到硬编码
-# 兜底值（2026-09-17 实测致 8 项配置生效值漂移），本函数消除该路径。
+# 兜底值（实测致 8 项配置生效值漂移），本函数消除该路径。
 def read_config_bool(
     config_parser: configparser.RawConfigParser, section: str, option: str, default: bool = False
 ) -> bool:
@@ -395,11 +393,11 @@ def _redact_ini_secrets(text: str) -> str:
     try:
         parser.read_string(text)
     except configparser.Error as e:
-        # 2026-10-21：①：原实现在此**原样返回未脱敏原文**，而 URL_config.ini
-        # 实测没有任何小节（首行即注释行），read_string 恒抛 MissingSectionHeaderError → 该文件
-        # 的每一份备份都是明文。改为对「无小节文件」走整份逐行脱敏通道（见 _redact_plain_lines）：
-        # 真正的 ini 解析失败只该丢掉「按节结构判定」这一路能力，不该连值形态脱敏一起放弃。
-        # 仍然显式告警，因为逐行通道比按节通道弱（无法用节白名单）。
+        # URL_config.ini 实测没有任何小节（首行即注释行），read_string 恒抛
+        # MissingSectionHeaderError：若原样返回未脱敏原文，该文件的每一份备份都是明文。
+        # 故对「无小节文件」走整份逐行脱敏通道（见 _redact_plain_lines）：真正的 ini 解析失败
+        # 只该丢掉「按节结构判定」这一路能力，不该连值形态脱敏一起放弃。仍然显式告警，
+        # 因为逐行通道比按节通道弱（无法用节白名单）。
         logger.warning(
             i18n.tr(
                 "配置备份按节解析失败（{e}），已退回逐行值形态脱敏（节白名单不可用），请勿外传",
@@ -530,15 +528,15 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
                 # 才能还原原字节，故 _atomic_write_text 也显式传了它。
                 with open(file_path, "r", encoding=main.text_encoding, errors="surrogateescape") as src_f:
                     content = src_f.read()
-                # 2026-10-02：备份落盘走 _atomic_write_text——原 open(...,"w") 直写中途
-                # 崩溃（磁盘满/断电）会留下半份备份进 6 份轮转，可能恰被用户选来恢复成损坏配置。
+                # 备份落盘走 _atomic_write_text——原 open(...,"w") 直写中途崩溃（磁盘满/断电）
+                # 会留下半份备份进 6 份轮转，可能恰被用户选来恢复成损坏配置。
                 # 写失败时落入下方 except 退回 copy2（宁留明文不丢备份的既有语义）。
                 if not _atomic_write_redacted(backup_file_path, _redact_ini_secrets(content)):
                     raise OSError(f"atomic write failed: {backup_file_path}")
             except OSError:
-                # 2026-10-21：②：原子写失败时原实现直接 shutil.copy2 → **完全明文**
-                # 的副本进 backup_config/（正是用户打包/云同步/求助外发的目录）。改为「按字节流做一次
-                # 脱敏」再落盘：读原文 → 逐行脱敏 → 原子写；仍失败才退回 copy2，且副本名加 .UNMASKED
+                # 原子写失败时若直接 shutil.copy2，**完全明文**的副本会进 backup_config/
+                # （正是用户打包/云同步/求助外发的目录）。改为「按字节流做一次脱敏」再落盘：
+                # 读原文 → 逐行脱敏 → 原子写；仍失败才退回 copy2，且副本名加 .UNMASKED
                 # 后缀让用户一眼看出这份不能外传（表头逻辑见下方 _fallback_unmasked_copy）。
                 if not _fallback_redacted_copy(file_path, backup_file_path):
                     backup_file_path = _fallback_unmasked_copy(file_path, backup_file_path)
@@ -548,11 +546,11 @@ def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> 
 
         files = os.listdir(backup_dir_path)
         _files = [f for f in files if f.startswith(os.path.basename(file_path))]
-        # 2026-10-19：getmtime 在「listdir 之后、stat 之前文件被别的进程删掉」时抛
-        # FileNotFoundError。旧实现让它穿到外层 except，于是**本次副本明明已落盘**却被判成
-        # 备份失败（假失败），backup_file_start 因此不推进基线、下一轮重复备份同一份内容。
-        # 排序只为挑「最旧的那份来删」；此起排序键优先取文件名里的 UTC 时间戳（见
-        # _backup_sort_key），解析不出才回落 mtime，stat 失败退化为「最旧」。
+        # getmtime 在「listdir 之后、stat 之前文件被别的进程删掉」时抛 FileNotFoundError，
+        # 若穿到外层 except，**本次副本明明已落盘**却被判成备份失败（假失败），backup_file_start
+        # 因此不推进基线、下一轮重复备份同一份内容。
+        # 排序只为挑「最旧的那份来删」；排序键优先取文件名里的 UTC 时间戳（见 _backup_sort_key），
+        # 解析不出才回落 mtime，stat 失败退化为「最旧」。
         _files.sort(key=lambda x: _backup_sort_key(backup_dir_path, x))
 
         while len(_files) > limit_counts:
@@ -597,9 +595,9 @@ def backup_file_start() -> None:
             if os.path.exists(main.config_file):
                 new_config_md5 = utils.check_md5(main.config_file)
                 if new_config_md5 != config_md5:
-                    # 基线只在备份**真的落盘**后才推进。旧写法无条件推进，于是一次磁盘满/文件占用
-                    # 就让这份配置内容永久失去备份——基线已记成「备份过了」，之后内容不再变化就
-                    # 再也不会重试。不推进则下一轮（10 分钟后）仍会再试。
+                    # 基线只在备份**真的落盘**后才推进：若无条件推进，一次磁盘满/文件占用就让这份
+                    # 配置内容永久失去备份——基线已记成「备份过了」，之后内容不再变化就再也不会
+                    # 重试。不推进则下一轮（10 分钟后）仍会再试。
                     if backup_file(main.config_file, main.backup_dir):
                         config_md5 = new_config_md5
 

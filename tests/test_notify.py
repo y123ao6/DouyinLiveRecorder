@@ -19,7 +19,7 @@ from loguru import logger
 
 # 通知模块的 run_script 通过 import main 读写运行时全局；
 # 测试需先把 main 引入，才能加载 src.notify
-# [LT-07 2026-10-18] 这条 sys.path 注入只为下面两行**导入期**服务，用完当场摘回：旧形态把仓库根
+# [LT-07] 这条 sys.path 注入只为下面两行**导入期**服务，用完当场摘回：旧形态把仓库根
 # 永久留在 sys.path[0] 且从不还原（同会话其它包的模块解析顺序被单方面改写，多个用例各插一次还会累积）。
 # 不搬进 fixture：`import main` 就在模块级、收集期即执行，fixture 要等用例开跑才运行。
 # 摘回按值 remove 首个同名条目：tests/__init__.py 已登记一条时，移除的是我们插的那条；
@@ -38,9 +38,8 @@ finally:
 assert sys.path.count(_REPO_ROOT) == _PATH_BASELINE, "仓库根被永久留在 sys.path：注入未归还，状态泄漏"
 
 # M-30：命令一律用 sys.executable，不写死字面量 `python`——生产 run_script 以 shell=False +
-# shlex.split 在 PATH 里查找可执行文件，Linux/CI 镜像常只提供 python3（无 python 软链），旧写法在
-# CI 上「正常完成 / 超时」两条用例必失败，本机 Windows 单跑必绿——典型的「本地绿、CI 红」。换绑
-# 口径与 tests/test_run_gates.py::test_run_command_rebinds_interpreter_to_current_python 同族。
+# shlex.split 在 PATH 里查找可执行文件，Linux/CI 镜像常只提供 python3（无 python 软链），写死
+# `python` 即「本地绿、CI 红」。换绑口径与 tests/test_run_gates.py::test_run_command_rebinds_interpreter_to_current_python 同族。
 # 必须 shlex.quote：路径可能含空格，且 run_script 走 shlex.split(posix=True)——单引号内的 Windows
 # 反斜杠按字面保留，round-trip 无损。本文件其余两处「可执行文件字面量」刻意不改写：
 #   __definitely_not_a_real_binary_42__ 要的正是「PATH 里查不到」⇒ OSError 分支；

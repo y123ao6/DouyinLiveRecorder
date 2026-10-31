@@ -193,12 +193,11 @@ def test_new_platform_entry_can_be_registered(main_mod: Any, monkeypatch: pytest
 
 
 # --------------------------------------------------------------------------------------
-# 2026-09-20：白名单 host 与分发表必须一一对应
+# 白名单 host 与分发表必须一一对应
 #
 # 准入按 `url_host in PLATFORM_HOST` **精确 host**，分派按**子串**匹配。白名单里有、没有任何表项
 # 命中的 host 会让房间线程每轮走 _resolve_unrecognized：一条 error → sleep → 无限空转，永不录制、
 # 也**不记 record_error**（熔断/背压统计完全看不到），白占监控位并持续污染日志。
-# --------------------------------------------------------------------------------------
 def test_every_platform_host_has_a_resolver(main_mod: Any) -> None:
     matchers = [matcher for matcher, _handler in main_mod._PLATFORM_RESOLVERS]
 
@@ -233,12 +232,11 @@ def test_douyu_mobile_host_is_admitted_and_dispatched(main_mod: Any) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# 2026-09-20：录制链里的「平台名字面量」必须等于 resolver 回写值
+# 录制链里的「平台名字面量」必须等于 resolver 回写值
 #
 # 这些列表参与运行期判定（是否强制 http、是否强制直下 FLV、是否纯音频、源地址日志走哪个字段），
 # 比对对象是 _resolve_* 回写的 `platform`。写成 host 片段（曾经的 "migu"）就是死项：不报错、
 # 只是永不生效。此处用 AST 交叉校验两侧，防止再次漂移。
-# --------------------------------------------------------------------------------------
 # 需要与 resolver 回写平台名比对的主循环内列表/元组（变量名 → main.py）
 _PLATFORM_NAME_LITERALS = (
     "http_record_list",
@@ -346,12 +344,11 @@ def test_migu_is_not_a_dead_http_record_entry(main_mod: Any) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# 后续（2026-09-20）：自定义流判定必须按**路径扩展名**，不能整串子串包含
+# 自定义流判定必须按**路径扩展名**，不能整串子串包含
 #
 # 旧实现 `".flv" in url.lower()` 让任意地址只要在 query 里塞 `?a=.flv` 就命中自定义流分支，
 # 于是面板写入的 http://127.0.0.1:8000/x?a=.flv 会被原样送进 ffmpeg 的 -i（ SSRF 旁路）。
 # 反向要求：path 以 .m3u8/.flv 结尾、带任意 query/fragment 的合法形态必须照常命中（大小写不敏感）。
-# --------------------------------------------------------------------------------------
 _LEGITIMATE_STREAM_URLS = [
     "https://cdn.example.com/live/1.m3u8",
     "https://cdn.example.com/live/1.M3U8",
@@ -415,7 +412,7 @@ def test_custom_stream_keys_follow_path_extension(dispatch_env: tuple) -> None:
 
 
 def test_forced_direct_download_platforms_carry_cookie(main_mod: Any) -> None:
-    # 2026-10-02：不变量锁：两个「强制直下」平台必须在 platform_cookie 映射
+    # 不变量锁：两个「强制直下」平台必须在 platform_cookie 映射
     # 里有条目且绑定到配置项变量（*_cookie），而不是空串字面量。成因：[Cookie] shopee_cookie /
     # huajiao_cookie 已有读取点并透传给解析函数，却不在映射里，于是同一份 Cookie 在「解析」与
     # 「探针 / ffmpeg 录制头 / 直下」两条路口径不一——直下路径按游客态取流，CDN 可 403 或钳到最低档。

@@ -3,7 +3,7 @@
 #
 # 为什么单独成文件：scripts/extract_i18n_strings.py 与 tests/test_i18n_migration.py 的不变量③
 # 都只看 tr()/T() 的**字面量首参**；`i18n.tr(msgid)`（msgid 来自元组表）、`tr(THEME_LABELS[k])`、
-# `T(title)`（title 是循环变量）这类按名传入对两者完全隐形。2026-10-17 的实测事故即此类：
+# `T(title)`（title 是循环变量）这类按名传入对两者完全隐形。实测事故即此类：
 # Qt 侧栏导航 msgid 以「两空格」的 📊  控制台 存放在元组里，四目录只有 Tk 遗留的「三空格」形态，
 # 切到 en_US/en_GB/zh_TW 后静默回落简中原文，而提取器仍报「0 缺失」（假绿）。
 #
@@ -242,8 +242,7 @@ def collect_by_name_calls() -> tuple[dict[str, set[str]], list[str]]:
     for path, (tree, src) in parsed.items():
         local = locals_by_path[path]
         rel = path.relative_to(ROOT).as_posix()
-        # 锚点用「文件::函数名」而不是行号（M-35④）：上方增删一行就会让行号键漂移，白名单随即
-        # 造出假红（本仓 AGENTS「引用代码位置优先写锚点，不写行号」同一口径）。
+        # 锚点用「文件::函数名」而不是行号（M-35④，口径同上方白名单处）：行号漂移会让白名单造出假红（AGENTS「引用代码位置优先写锚点」同一口径）。
         symbols = _symbol_spans(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:

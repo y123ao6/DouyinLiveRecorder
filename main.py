@@ -17,8 +17,6 @@
 #
 # Author: Hmily
 # GitHub: https://github.com/ihmily
-# Date: 2023-07-17 23:52:05
-# Update: 2025-10-23 19:48:05
 # Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
 
 # stdout/stderr 必须最先统一为 UTF-8：冻结后的 exe 作为 GUI/Web 子进程时 stdout 是管道，
@@ -54,7 +52,7 @@ def _fix_encoding() -> None:
         try:
             import ctypes
 
-            # [2026-10-31 L-12] windll → WinDLL：对齐全仓惯例（ui_motion 同批迁移，至此全仓 0 残留）。
+            # WinDLL 而非 windll：对齐全仓惯例（AGENTS「Python 版本」条）。
             _k32 = ctypes.WinDLL("kernel32")
             _k32.SetConsoleOutputCP(65001)
             _k32.SetConsoleCP(65001)
@@ -207,8 +205,7 @@ max_request: int = 3  # 同一时间访问网络的线程数（由 main() 读取
 max_request_lock: threading.Lock = threading.Lock()  # 最大请求数的线程锁
 error_window_size: int = 10  # 错误窗口大小
 error_window: deque[int] = deque(maxlen=error_window_size)  # 错误窗口（deque maxlen 自动裁剪，避免无界增长）
-# [历史注] 此处原有的 error_threshold（错误率阈值）全仓零引用：并发压制已由
-# src/scheduler.ConcurrencyScheduler 自适应接管，保留常量只会让人误以为调它有用。
+# [历史注] 此处原有的 error_threshold（错误率阈值）全仓零引用：并发压制已由 src/scheduler.ConcurrencyScheduler 接管。
 
 # URL 和配置管理
 url_tuples_list: list[tuple[str, str, str]] = []  # 解析后的 URL 配置项（画质, URL, 主播名）
@@ -291,7 +288,7 @@ enable_proxy_platform_list: list[str] | None = None
 extra_enable_proxy: str = ""
 extra_enable_proxy_platform_list: list[str] | None = None
 
-# 2026-10-21：海外/代理平台判定只看 urlsplit 得到的 hostname，但条目本身仍按**子串**比对：配置默认值里的
+# 海外/代理平台判定只看 urlsplit 得到的 hostname，但条目本身仍按**子串**比对：配置默认值里的
 # tiktok / twitch / shopee / chzzk / youtu / shp 都不含点号，`youtu` 更是 `youtube` 的前缀而非独立
 # 标签——若要求「含点号且按标签边界匹配」，默认配置过半条目会静默失效、代理对它们全部不再生效。
 # [历史注] 旧实现拿条目在整条 URL 上做子串匹配，query 里出现平台名即误判为海外/走代理。
@@ -848,16 +845,14 @@ def direct_download_stream(
 
 
 # 输出扩展名 → segment 内层容器：必须严格一致，否则轻则播放器拒绝，重则封装失败。
-# [历史注] 2026-09-04 曾把 TS 与 M4A 的两个值互换：HEVC 拷进 ipod 直接 -22 退出，
-# H.264 则把 MP4 内容写进 .ts（静默损坏），回归锁 tests/test_record_container.py。
+# [历史注] 曾把 TS 与 M4A 两值互换（HEVC 拷进 ipod 直接 -22 退出、H.264 把 MP4 内容写进 .ts 静默损坏），回归锁 tests/test_record_container.py。
 SEGMENT_FORMAT_BY_SUFFIX: dict[str, str] = {
     ".ts": "mpegts",
     ".flv": "flv",
     ".mkv": "matroska",
     ".mp4": "mp4",
     ".m4a": "ipod",
-    # .mp3 → mp3 容器：此前表内无 .mp3，查表落空后被兜底成 ipod，会让 MP3 音频装进
-    # MP4 容器（与历史「TS 装进 ipod」同类错配）。补齐后两路音频均可显式查表取值。
+    # .mp3 → mp3 容器：此前缺表项会被兜底成 ipod（MP3 装进 MP4 容器），与历史「TS 装进 ipod」同类错配。
     ".mp3": "mp3",
 }
 
@@ -953,7 +948,7 @@ def _describe_return_code(return_code: int) -> str:
 
 
 # 输出侧本地失败只有一条判据：输出父目录当前不存在（判定点见 check_subprocess 失败分支）。
-# 曾经设想的「读 ffmpeg 输出按写侧特征归因」不可行：Popen 只设 stdin=PIPE + stderr=STDOUT，
+# 读 ffmpeg 输出按写侧特征归因不可行：Popen 只设 stdin=PIPE + stderr=STDOUT，
 # proc.stdout 恒为 None；补 PIPE 又需在守护循环持续消费，否则管道写满会卡死 ffmpeg。
 
 
@@ -1028,7 +1023,7 @@ def _record_output_bytes(save_file_path: str, split_video_by_time: bool) -> int 
     return total if found else -1
 
 
-# 2026-10-21：读 ffmpeg 错误输出的尾部若干行（进程退出后调用），并删除临时文件。
+# 读 ffmpeg 错误输出的尾部若干行（进程退出后调用），并删除临时文件。
 # 只读文件末尾 _FFMPEG_STDERR_KEEP_BYTES 字节再按行截取：6 小时录制可能写出几十 MB stderr，
 # 整份读进来既慢又占内存。任何失败一律返回空串——归因信息不值得让收尾链路抛错。
 def _read_ffmpeg_stderr_tail(path: str) -> str:
@@ -1119,10 +1114,9 @@ def check_subprocess(
         except OSError:
             _ffmpeg_stderr_file = None
         # stdin=PIPE：Windows 停止录制时 ffmpeg_proc 靠「写 q」走优雅退出（不写 q 只能硬杀，
-        # 正在写的 mp4/mkv/m4a 分段会缺 moov/索引、产物不可播）。此前接 DEVNULL 使 Popen.stdin
-        # 为 None，优雅分支整条不可达；句柄由 unregister_ffmpeg_process 在收尾时 close，不留整个
-        # 录制周期（CODE_REVIEW_2026-10-29 S-06）。stderr 写临时文件（否则继承父 stdout，Web/GUI
-        # 模式下 ffmpeg 的报错直接消失）。
+        # 正在写的 mp4/mkv/m4a 分段会缺 moov/索引、产物不可播）；接 DEVNULL 则 Popen.stdin
+        # 为 None，优雅分支整条不可达。句柄由 unregister_ffmpeg_process 在收尾时 close，
+        # 不留整个录制周期。stderr 写临时文件（否则继承父 stdout，Web/GUI 模式下 ffmpeg 的报错直接消失）。
         try:
             process = subprocess.Popen(
                 ffmpeg_command,
@@ -1132,7 +1126,7 @@ def check_subprocess(
                 startupinfo=get_startup_info(os_type),
             )
         except BaseException:
-            # [2026-10-30 L-05] Popen 抛错（ffmpeg 二进制缺失等）时，stderr 临时文件已建但成功路径
+            # Popen 抛错（ffmpeg 二进制缺失等）时，stderr 临时文件已建但成功路径
             # 的 close 与后续 finally 的 discard 均不会执行——%TEMP% 每次失败残留一个 0 字节
             # dlr_ffmpeg_*.log，句柄靠引用计数兜底、磁盘文件不清理。就地收尾后原样再抛。
             if _ffmpeg_stderr_file is not None:
@@ -1728,7 +1722,7 @@ def _match_stream_suffix(*suffixes: str) -> Callable[[str], bool]:
     return _m
 
 
-# 2026-10-21：从一整行配置里取出 URL，供「本轮被跳过的行」在归并时整行豁免。URL 未必在第一段：行格式是
+# 从一整行配置里取出 URL，供「本轮被跳过的行」在归并时整行豁免。URL 未必在第一段：行格式是
 # 「画质,URL,主播名」或「URL,主播名」，按 [,，] 切段后取第一个含 :// 的段（无协议头时取第一段——
 # 准入侧正是这样补 https://）。取不到（空行/纯标点）返回空串。
 def _line_contains_url(line: str) -> str:
@@ -2091,7 +2085,6 @@ def _resolve_live_bilibili_com(ctx: _PlatformResolveContext) -> None:
                     spider.get_bilibili_danmaku_info(url=record_url, proxy_addr=proxy_address, cookies=bili_cookie)
                 )
             except Exception as e:
-                # 带 type_name：部分异常 str() 为空串
                 logger.warning(i18n.tr("[B站直播]弹幕信息获取失败: {type_name}: {e}", type_name=type(e).__name__, e=e))
                 record_danmaku_args = None
     ctx.platform = platform
@@ -2104,8 +2097,7 @@ def _resolve_live_bilibili_com(ctx: _PlatformResolveContext) -> None:
 # 数字段即房间号，其余为短码，需跟随 302 解析；两种形态都归一成 live.bilibili.com/<房间号>
 # 后委托 _resolve_live_bilibili_com，复用桌面链路。不在准入层改写配置行（同 hy.fan）。
 
-# 短码 → 房间号缓存：映射稳定，进程内缓存避免每轮多发一次 302。
-# dict 单键读写受 GIL 保护且同键写入幂等，最坏只是重复解析一次，无需加锁。
+# 短码 → 房间号缓存：映射稳定，进程内缓存避免每轮多发一次 302（锁判据同 _HY_FAN_ROOM_CACHE）。
 _B23_TV_ROOM_CACHE: dict[str, str] = {}
 
 
@@ -2114,7 +2106,6 @@ def _b23_tv_path_segment(record_url: str) -> str:
     try:
         path = urlsplit(record_url).path
     except ValueError:
-        # 含控制字符 / 非法端口等畸形入参：urlsplit 抛 ValueError，按「无法解析」定因
         raise ValueError(i18n.tr("URL 无法解析"))
     segments = [seg for seg in path.split("/") if seg]
     if not segments:
@@ -2188,7 +2179,7 @@ def _resolve_b23_tv(ctx: _PlatformResolveContext) -> None:
         ctx.unrecognized = True
         return
     if segment.isascii() and segment.isdigit():
-        # 纯数字段就是房间号：零网络直接归一，覆盖标准 / 尾斜杠 / 带 query / http 四种形态
+        # 纯数字段就是房间号：零网络直接归一（判据同 _resolve_hy_fan）
         room_id = segment
     else:
         room_id = _B23_TV_ROOM_CACHE.get(segment, "")
@@ -2196,7 +2187,6 @@ def _resolve_b23_tv(ctx: _PlatformResolveContext) -> None:
             try:
                 room_id = asyncio.run(_resolve_b23_tv_room_segment(ctx.record_url, ctx.proxy_address))
             except Exception as err:
-                # reason 统一带异常类型：str() 为空的异常类型也要可见
                 logger.error(
                     i18n.tr(
                         "B站移动端短链解析失败，本轮跳过: {record_url} - {reason}",
@@ -2440,7 +2430,7 @@ def _resolve_flextv_co_kr(ctx: _PlatformResolveContext) -> None:
                 # 回归锁：tests/test_regression_main.py
                 #   :test_flextv_cookie_writeback_failure_keeps_stream_url
                 try:
-                    with file_update_lock:  # 与主循环 config.read/其他写入方互斥，防止半写
+                    with file_update_lock:
                         utils.update_config(config_file, "Cookie", "flextv_cookie", cast(str, json_data["new_cookies"]))
                 except (configparser.Error, OSError) as e:
                     logger.warning(
@@ -2501,7 +2491,7 @@ def _resolve_popkontv_com(ctx: _PlatformResolveContext) -> None:
             if port_info and port_info.get("new_token"):
                 # 回写是缓存优化，失败不得连累本轮已拿到的流地址
                 try:
-                    with file_update_lock:  # 与主循环 config.read/其他写入方互斥，防止半写
+                    with file_update_lock:
                         utils.update_config(
                             file_path=config_file,
                             section="Authorization",
@@ -2551,7 +2541,7 @@ def _resolve_twitcasting_tv(ctx: _PlatformResolveContext) -> None:
         # 回归锁：tests/test_regression_main.py::test_twitcasting_persists_cookie_when_live
         if json_data and json_data.get("new_cookies"):
             try:
-                with file_update_lock:  # 与主循环 config.read/其他写入方互斥，防止半写
+                with file_update_lock:
                     utils.update_config(
                         file_path=config_file,
                         section="Cookie",
@@ -2670,9 +2660,8 @@ def _resolve_twitch_tv(ctx: _PlatformResolveContext) -> None:
 def _resolve_liveme_com(ctx: _PlatformResolveContext) -> None:
     record_url = ctx.record_url
     proxy_address = ctx.proxy_address
-    # [2026-10-30 L-03 复核] 本函数的「未知平台」初值不是死赋值：下方「LiveMe」覆盖在
-    # `if global_proxy or proxy_address:` 之内，无代理路径（else 分支）会原样读到本值并
-    # 回写 ctx.platform——51 处死赋值清理（CODE_REVIEW_2026-10-30 L-03）已排除本函数。
+    # 「未知平台」初值不是死赋值：下方「LiveMe」覆盖在 `if global_proxy or proxy_address:` 之内，
+    # 无代理路径（else 分支）会原样读到本值并回写 ctx.platform（死赋值清理已排除本函数）。
     platform = "未知平台"
     port_info: dict[str, Any] = {}
     record_danmaku_args: dict[str, Any] | None = None
@@ -3529,7 +3518,6 @@ _DEFAULT_SEGMENT_NOW_FORMAT = "%Y-%m-%d_%H-%M-%S"
 # 输出文件名模板的 `%` 兜底清洗：segment muxer 把输出路径当 printf 模板，除末尾 `_%03d`/
 # `_%02d` 外残留裸 `%` 会直接 rc=-22，且被误判成容器不匹配 → CDN 快速失败 → 健康线路被拉黑。
 # rstr 已过滤 `%`，但昵称/标题还可能来自旧配置、手工改名或平台原样返回，故拼模板前再剥一层。
-# 回归锁：tests/test_regression_main.py::test_segment_template_has_single_percent_placeholder
 def _sanitize_output_name_base(base: str) -> str:
     if "%" not in base:
         return base
@@ -3602,7 +3590,7 @@ def _build_ffmpeg_input_args(
     proxy_address: str | None = None,
 ) -> list[str]:
     # FFmpeg 9.0 兼容：未使用 9.0 移除的 CLI 参数；TLS 校验默认开启，是否插 -tls_verify 0
-    # 由调用方按 get_effective_ssl_verify(platform) 裁决；冗余的 -v verbose 已移除。
+    # 由调用方按 get_effective_ssl_verify(platform) 裁决。
     command = [
         "ffmpeg",
         "-y",
@@ -4127,8 +4115,7 @@ def start_record(
                                     if not _host_in_platform_list(record_url, OVERSEAS_PLATFORM_HOST):
                                         real_url = real_url.replace("https://", "http://")
 
-                                # 列表元素是 resolver 回写的平台名，不是 host 片段
-                                # （"咪咕直播" 曾误写为 "migu" 而静默失效）。回归锁见 tests/test_platform_dispatch.py。
+                                # 列表元素是 resolver 回写的平台名，不是 host 片段。回归锁见 tests/test_platform_dispatch.py。
                                 http_record_list = ["shopee", "咪咕直播"]
                                 if platform in http_record_list:
                                     real_url = real_url.replace("https://", "http://")
@@ -4506,7 +4493,6 @@ def start_record(
                                     record_danmaku_args,
                                 )
                                 if started:
-                                    # 触发「录后 30s 快检」：下播速重开不必等一整轮
                                     record_finished = True
                                 if comment_end:
                                     # 提前结束走不到 rc==0 的转码分支，在此补转已录到的部分；
@@ -4582,8 +4568,8 @@ def check_ffmpeg_existence() -> bool:
     try:
         # text=True 按 locale 解码（中文 Windows 是 cp936），版本行出现非 GBK 字节会抛
         # UnicodeDecodeError（不属 OSError，会穿透成启动期崩溃）；errors="replace" 保证解码不失败。
-        # [2026-10-30 L-04] timeout=15：-version 是秒级命令，ffmpeg 挂起（杀软锁文件/坏包装的
-        # 假二进制）时无上限会阻塞整个启动入口。TimeoutExpired 与 CalledProcessError 同组处理。
+        # timeout=15：-version 是秒级命令，ffmpeg 挂起（杀软锁文件/坏包装的假二进制）时
+        # 无上限会阻塞整个启动入口。TimeoutExpired 与 CalledProcessError 同组处理。
         result = subprocess.run(
             ["ffmpeg", "-version"],
             check=True,
@@ -4602,7 +4588,7 @@ def check_ffmpeg_existence() -> bool:
     # 需 as 绑定，按 AGENTS except 约定回退加括号形态。
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         # 带 type_name：CalledProcessError 的 str 可能为空或语义不明。TimeoutExpired 并入同组
-        # （[2026-10-30 L-04]）：本函数新增 timeout 后它不再是被 check=True 排除的形态。
+        # （本函数新增 timeout 后它不再是被 check=True 排除的形态）。
         logger.error(
             i18n.tr(
                 "ffmpeg 版本检查命令执行失败: {type_name}: {e}",
@@ -4703,23 +4689,20 @@ def _read_https_recording_config(config_parser: configparser.RawConfigParser) ->
 
 
 # SSL/HTTPS 整合开关（合并原「强制启用 https」与「禁用 SSL 证书验证」两项）：
-# 开启 = 流地址升级 https，并禁用**拉流侧**证书校验；关闭 = 降级 http，拉流侧恢复严格校验。
-# 证书豁免只作用于拉流侧（http_config.stream_ssl_verify）：控制面（登录/取 Cookie/推送/
-# 平台 API，http_config.ssl_verify）恒严格校验——拉流开关不得顺带关掉全站 TLS。
-# main() 每轮读取后同步，支持热更新。
-# [历史注 2026-10-21] 本段前两句描述的是此前的形态（开 = 拉流侧全局免检）。现口径：
-# 本开关只管 http→https 协议改写，拉流侧免检由 SSL_DISABLE_REQUIRED_PLATFORMS / 用户名单决定。
+# 开启 = 流地址 http→https 升级（语义只落在 start_record 的协议改写一处）；关闭 = 降级 http。
+# 本开关**不再**联动拉流侧证书校验：SSL_DISABLE_REQUIRED_PLATFORMS / 用户名单是拉流侧免检的
+# 唯一入口（名单内平台按 get_effective_ssl_verify(platform) 返回 False，名单外一律严格校验）；
+# 控制面（登录/取 Cookie/推送/平台 API，http_config.ssl_verify）恒严格校验，拉流开关不得顺带关掉全站 TLS。
+# main() 每轮读取后同步，支持热更新。相关判据的用例在 tests/test_http_config.py
+# （拉流侧豁免范围 + 控制面不受联动）；
+# main 侧「热更新轮次不得按开关联动 set_https_recording」这条尚无独立回归锁。
 from src import http_config as _http_config
 
 enable_https_recording = _read_https_recording_config(config)
-# 2026-10-21：本开关**不再**联动拉流侧证书校验。原实现在此处调
-# _http_config.set_https_recording(True) 把 stream_ssl_verify 全局置 False，即「为了绕虎牙 CDN 的
-# 证书问题打开这个开关」会让抖音/B站/YouTube 的**全部**拉流都不校验证书（可被中间人劫持），
-# 而真正带证书问题的只有下方豁免名单里的平台。现在豁免名单是拉流侧免检的唯一入口：
-# 名单内平台按 get_effective_ssl_verify(platform) 返回 False，名单外一律严格校验。
-# 开关本身仍负责「流地址 http→https 升级」，其语义只落在 start_record 的协议改写一处。
-# 相关判据的用例在 tests/test_http_config.py（拉流侧豁免范围 + 控制面不受联动）；
-# main 侧「热更新轮次不得按开关联动 set_https_recording」这条尚无独立回归锁。
+# 显式落严格校验基线：豁免名单随后经 _apply_ssl_platform_exempt 逐平台生效。
+# [历史注] 原实现开开关时在此调 _http_config.set_https_recording(True) 把 stream_ssl_verify
+# 全局置 False——为绕虎牙 CDN 证书问题会让抖音/B站/YouTube 的**全部**拉流都不校验证书
+# （可被中间人劫持），而真正带证书问题的只有豁免名单里的平台。
 _http_config.set_https_recording(False)
 # 旧全局开关仅作迁移提示（只读，不写回）：检测到旧键=是 时告知功能已并入新开关
 if config.has_option("录制设置", "是否禁用SSL证书验证(是/否)"):
@@ -4850,10 +4833,9 @@ def main(non_interactive: bool = False) -> None:
         semaphore = scheduler.network_semaphore
         recording_semaphore = scheduler.recording_semaphore
 
-    # 2026-10-21：序号源必须跨轮次存活：在 while 之外初始化后序号单调递增，_room_seq_in_use 记录「序号 → 使用者
-    # 线程」，分配时跳过仍在存活的序号；线程退出时自行 pop（见 _room_thread_target 的 finally，
-    # start_record 自身 finally 不做此事——[更正] 2026-10-30 M-01 复核：原锚点「start_record 的
-    # finally」有误，且 start 失败回滚分支也会 pop）。
+    # 序号源必须跨轮次存活：在 while 之外初始化后序号单调递增，_room_seq_in_use 记录「序号 → 使用者
+    # 线程」，分配时跳过仍在存活的序号；线程退出时自行 pop（见 _room_thread_target 的 finally
+    # 与 start 失败回滚分支）。
     # [历史注] 两个容器曾在每轮 try 内重新初始化，首轮拉起的房间下一轮会被新的「序号1」覆盖撞键。
     _count_source = 0
     _room_seq_in_use: dict[int, threading.Thread] = {}
@@ -4888,7 +4870,7 @@ def main(non_interactive: bool = False) -> None:
                         time.sleep(3)
                     continue
                 input_url = input("请输入要录制的主播直播间网址（尽量使用PC网页端的直播间地址）:\n")
-                # [2026-10-30 L-06] 新建 URL_config.ini 与 config.ini 同口径走 atomic_write_text：
+                # 新建 URL_config.ini 与 config.ini 同口径走 atomic_write_text：
                 # 裸 open("w") 按 umask 落 0644，而该文件可含 user:pass@ 自定义流地址，
                 # Linux/Docker 下新建即全局可读。
                 _ = utils.atomic_write_text(url_config_file, input_url, encoding=text_encoding)
@@ -5187,15 +5169,14 @@ def main(non_interactive: bool = False) -> None:
             _line_list: set[str] = set()
             _url_line_list: set[str] = set()
             _seen_urls: set[str] = set()
-            # 2026-10-21：本轮**被跳过**的行与其中已识别出的 URL。下方归并判据是「running 但不在 _seen_urls 且不在
+            # 本轮**被跳过**的行与其中已识别出的 URL。下方归并判据是「running 但不在 _seen_urls 且不在
             # _url_comments → 当作已注释」，而 _seen_urls 只在准入成功那一支填充：过短行 / 解析异常行里的
             # URL 从不在其中，归并就会把**正在进行的录制**判成已注释并强制停掉（表现为「录了一半自己停了，
             # 配置行一个字没变」）。被跳过的行既不证明被注释、也不证明被移除，必须豁免归并。
             _unparsed_lines: set[str] = set()
             _skipped_urls: set[str] = set()
             # monitoring 只由「拉起 +1 / 线程退出 -1」增量维护，没有「每轮重算」可依仗，启动前先与运行
-            # 列表对齐（正常初值同为 0；Web 面板重启引擎时 running_list 可能非空）。此前它被两种口径写
-            # （主循环每轮覆盖 / 锁内增量递减），线程恰在两者之间退出时递减被覆盖抹掉，漂移值直接喂给
+            # 列表对齐（正常初值同为 0；Web 面板重启引擎时 running_list 可能非空）；漂移值会直接喂给
             # scheduler.set_active_count，自适应并发容量被错误压低。
             # 2026-10-21：序号必须来自单调源、且与房间绑定：取 len(running_list) 会让「线程退出后计数复用到同名主播」
             # 算出同一个「序号N 主播名」键，recording / recording_time_list 互相覆盖，clear_record_info
@@ -5300,7 +5281,7 @@ def main(non_interactive: bool = False) -> None:
                     # 本身支持带凭据地址（只有 .flv/.m3u8 形态因下方扩展名放行能存活）。
                     url_host = urlsplit(url).hostname or ""
 
-                    # 2026-10-21：_match_host 改按 DNS 标签边界比较后，shopee 各地区站
+                    # _match_host 改按 DNS 标签边界比较后，shopee 各地区站
                     # （live.shopee.sg / s.shp.ee 等）不再命中两段片段，故准入侧把它们收敛到白名单的
                     # 两段条目再比对；分派侧片段是 live.shopee.co / shp.ee，两侧边界同一口径。
                     if "live.shopee." in url_host:
@@ -5428,9 +5409,8 @@ def main(non_interactive: bool = False) -> None:
                             )
                         )
                         # 一次临界区内完成「计数 +1 → 登记 → 快照序号」，增量维护 monitoring。
-                        # not_record_list 的写入统一挪到 record_state_lock 内（消费侧也持锁读），
-                        # 原先「录制线程 append + 主线程切片整体替换」在锁外交错会丢条目 → 该房间
-                        # 再也不会被拉起。
+                        # not_record_list 的写入统一挪到 record_state_lock 内（消费侧也持锁读）；
+                        # 锁外交错会丢条目 → 该房间再也不会被拉起。
                         with record_state_lock:
                             monitoring += 1
                             running_list.append(url_tuple[1])
@@ -5452,8 +5432,7 @@ def main(non_interactive: bool = False) -> None:
                                 remove_room_from_running(_args[0][1])
                                 # Shopee 的 new_record_url 会进 not_record_list 跳过本轮，
                                 # 线程退出时须按 base + "?" 前缀移除本线程条目，否则该房间永久消失。
-                                # 2026-10-21：增删一律在 record_state_lock 内做，
-                                # 并按值定点移除（旧实现锁外切片整体替换，与主线程 append 交错会丢条目）。
+                                # 增删一律在 record_state_lock 内做，并按值定点移除（锁外交错会丢条目）。
                                 if _args[0][1]:
                                     _not_record_prefix = _args[0][1].split("?", 1)[0] + "?"
                                     with record_state_lock:

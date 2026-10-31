@@ -1,4 +1,4 @@
-# tests/test_ui_fonts.py — GUI 自选字体的回归锁（2026-10-17 新增）。
+# tests/test_ui_fonts.py — GUI 自选字体的回归锁。
 #
 # 覆盖三件事：
 #   ① SFNT name 表解析 —— 自己按字节规则读，UVT 容错的边界（坏文件要有确定性答案）；

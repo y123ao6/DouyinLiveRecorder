@@ -74,8 +74,8 @@ from src.utils import unzip_file
 #   FFMPEG_MASTER_ALLOWED 时只给出手动安装提示（见 install_ffmpeg_windows）。第二条源 BtbN master
 #   滚动构建（src/ffmpeg_master_download.py）因上游不为 latest 别名公布 .sha256、只能落 TOFU，不满足
 #   第②类的准入判据，故显式门控且默认关闭；开启与跳过两条分支都各落一条 warning，不静默。
-#   [历史注] 2026-09-22 蓝奏云个人网盘兜底整体删除（直链需爬分享页内联签名、且无独立可信来源可
-#   比对）；同日 master 源曾默认开启，2026-09-23 按 SEV-2218 收为默认关闭。
+#   [历史注] 蓝奏云个人网盘兜底已整体删除（直链需爬分享页内联签名、无独立可信来源可比对）；
+#   master 源曾默认开启，按 SEV-2218 收为默认关闭。
 #
 # PATH 优先级策略（W6，2026-09-22 起）：包内 ffmpeg 目录是否前置由 should_prepend_bundled_ffmpeg_dir()
 #   单点裁决（判据、后果与日志口径见该函数注释）。本模块自身的「安装成功后前置注入 PATH」**不在**该
@@ -85,16 +85,13 @@ from src.utils import unzip_file
 #   （src/ffmpeg_linux_download.install_ffmpeg_linux_native）。三处都是「先注入再校验，校验失败也保留
 #   注入」——该取舍与合并前一致，本次刻意不改。让位判据本身不变：只在 darwin+arm64 生效，Linux 上
 #   should_prepend_bundled_ffmpeg_dir() 恒 True，故下一次启动会命中上一次直下的那份、不会每轮重下。
-#   [历史注 2026-10-03] 上句原写「仅 Windows 分支可达」，在 Windows-only 自动下载时代为真；Linux
-#   arm64 支持落地后已被证伪（Linux 直下同样就地前置 PATH），故改为上段的现状描述。
+#   [历史注] 上句原写「仅 Windows 分支可达」，Linux arm64 支持落地后已被证伪（Linux 直下同样就地前置 PATH）。
 
 
 current_platform = platform.system()
 execute_dir = script_path  # 冻结后指向 _internal/，与 __file__ 定位的资源收敛到同一处
-# [历史注 2026-10-21 M-47] 此处原有 `current_env_path = os.environ.get("PATH")` 导入时快照，注释自称
-# 「先快照原始值避免重复嵌套」。两个理由都不成立，故连常量一并撤掉：① 快照会在自动安装时把 main.py
-# 侧 W6 已完成的注入整体丢掉（拼接的是「导入那一刻的 PATH」）；② 避免重复嵌套的正确形态是对**实时**
-# PATH 去重，而不是冻结一份旧值。去重前置收敛到本文件内联块的 prepend_to_path_env。
+# [历史注 M-47] 原有导入时快照 `current_env_path = os.environ.get("PATH")` 已连常量撤掉：快照会丢掉
+# main.py 侧 W6 注入，防重复嵌套须对**实时** PATH 去重（收敛于内联块的 prepend_to_path_env）。
 # 安装目标子目录：解压后可执行文件平铺位于 execute_dir/ffmpeg/ffmpeg.exe。
 # [历史注] 原注释称 execute_dir/ffmpeg/bin/，与 copytree 平铺解压的实际布局不符。
 # **消费方是 main.py**（模块级 `from src.ffmpeg_install import ... ffmpeg_path ...`）：本模块自己的
@@ -143,8 +140,8 @@ _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 #      Windows 侧靠「名字不可预测」：随机后缀使攻击者无法在链接位置上等到本次要写的那个名字，
 #      而 O_EXCL 保证「名字已被占用」（占用者是不是链接都一样）时绝不写入、绝不跟随。
 #   3) swap_directories 的「原子」是**两次改名之间的短暂窗口**（先让位、再落位），不是文件系统级原子
-#      替换。取舍在于：窗口期只有毫秒级的「PATH 上暂时少一个 ffmpeg」，而旧实现的
-#      `rmtree → copytree` 窗口是「几百 MB 拷贝的全程」，且中途失败就是永久空壳（M-45 的成因）。
+#      替换。取舍与后果见下方 swap_directories 定义处注释（旧 `rmtree → copytree` 窗口是「几百 MB 拷
+#      贝的全程」，现仅毫秒级）。
 # >>> BEGIN INLINE INSTALL-GUARD BLOCK (keep byte-identical across the three installers)
 # 平台专属符号一律用 `sys.platform` 字面量门控（AGENTS.md「平台专属符号必须 sys.platform 字面量门控」）：
 # mypy 在 --platform win32 / --platform linux 下各只分析其中一支，另一支按常量真值判不可达。
@@ -442,8 +439,7 @@ def _win_startup_info() -> object | None:
 #   用户只剩一行 logger.error 和「请手动安装 ffmpeg」（MID-59「自动安装永久死路」）。按构建标识（响应
 #   头 Last-Modified / ETag / Content-Length 的摘要）命名后，「版本轮转」表现为「为新构建记录新基准」、
 #   「同一构建内容变了」仍是硬失败——篡改检测强度不降。
-#   [历史注] 旧版失败链曾写作「官方源拒绝 → 转蓝奏云 → 蓝奏云亦拒绝」，该兜底源于 2026-09-22 删除，
-#   链尾现为「官方源拒绝 → 直接只剩手动安装」。
+#   [历史注] 旧失败链的蓝奏云兜底已删除（见模块头「Windows 下载源现状」），链尾现为「官方源拒绝 → 直接只剩手动安装」。
 #
 # 防护强度边界（勿据此高估）：
 #   1) 不能消除 CDN 投毒（首次下载始终是 trust-on-first-use），只阻断「已缓存 zip 被静默替换」这条
@@ -541,7 +537,7 @@ def _hash_file_name(build_id: str) -> str:
     return f"_ffmpeg_official.{build_id}{_HASH_SUFFIX}" if build_id else _FFMPEG_HASH_FILE
 
 
-# 把本次实算哈希写进旁路基准（TOFU 的「记录」侧，原先内联在 _check_or_record_zip_sha256 里）。
+# 把本次实算哈希写进旁路基准（TOFU 的「记录」侧）。
 # 权威校验通过时同样记录：官方文档不可达的那次运行（离线 / 上游故障）需要它才有可比对基准。
 def _record_zip_sha256(zip_path: Path, hash_file: Path, current_hash: str) -> None:
     # 本构建标识首次记录。若目录里已存在其它基准文件，说明上游发布了新构建（旧基准随之失效），
@@ -732,9 +728,7 @@ def _stream_official_zip(url: str, zip_path: Path) -> tuple[str | None, bool]:
 
 
 # 把解包出来的 bin 目录**完整落成同级暂存目录、再两次改名换进目标位**（M-45）。
-# 旧形态 `if exists(target): rmtree(target)` + `copytree(bin, target)` 的破坏动作排在「这一次能不能
-#   装成」之前：拷贝被磁盘满 / 杀软占用打断时，上一次可用的 ffmpeg 已经被删干净，
-#   execute_dir/ffmpeg 只剩空壳，程序彻底失去录制能力，且下次启动会重复同一条破坏路径。
+# 旧形态 `rmtree(target) + copytree(bin, target)` 的破坏排序与后果见 swap_directories 函数注释。
 # 这里保留原有的那道前置校验：调用点必须先确认解包产物里有 bin/ffmpeg.exe（见
 #   download_ffmpeg_official 里的 `bin_dir is None` 分支），删旧动作永远发生在校验之后。
 # 返回 False 表示「本次没能落位、旧安装原地未动」，由调用方归成安装失败。
@@ -758,7 +752,6 @@ def _install_bin_dir(bin_dir: str, ffmpeg_target: str) -> bool:
 
 
 def download_ffmpeg_official(url: str, dest_dir: str) -> bool:
-    # 从官方源下载并安装 FFmpeg (Windows)
     # L-13：临时包路径必须先于 try 求值，函数末尾的 finally 才能在**所有**出口（含两个 except 分支）
     # 引用到它；写在 try 第一行则异常出口可能没有这个名字（UnboundLocalError 风险）。
     # [M-44 2026-10-21] 「先于 try 求值」这条形状约束保留，但名字不再固定：原先的
@@ -850,7 +843,6 @@ def download_ffmpeg_official(url: str, dest_dir: str) -> bool:
             if zip_file_path.exists():
                 zip_file_path.unlink()
 
-            # 更新 PATH 并验证安装
             # 把 ffmpeg 目录前置注入 PATH，本进程及子进程后续 `ffmpeg` 调用都命中新装文件（覆盖系统其它同名项）。
             # 先注入再校验，校验失败也保留注入——无副作用（该目录即安装产物）。
             # L-15：本行刚装完就真跑一次 ffmpeg.exe，Windows 无控制台形态下不传 startupinfo 会闪窗。
@@ -1006,9 +998,7 @@ def install_ffmpeg_linux() -> bool:
         # 移除 `yum -y update`：它是**全量系统升级**（一并升内核 / glibc / systemd，副作用远超「装一个
         # ffmpeg」、甚至要求重启），且 `yum install` 自身会刷新仓库元数据、无需前置 update；旧实现
         # update 失败即 return False，还会把「yum 源暂不可用」误判成 RHEL 系不可用、连 apt 回退都不给。
-        # [历史注] 本块旧末句「移除 update 后 install 失败会自然落到下方 apt 分支」与实现不符：is_RHS
-        # 原本只在 FileNotFoundError 分支置 False，「yum 在位但装不上」（RHEL 未启用 EPEL 的常态）遂直接
-        # 落到「请手动安装」；真正的回退置位在下方 returncode!=0 分支。
+        # [历史注] is_RHS 原本只在 FileNotFoundError 分支置 False，「yum 在位但装不上」曾直接落到「请手动安装」。
         result = subprocess.run(["yum", "install", "-y", "ffmpeg"], capture_output=True, timeout=300)
         if result.returncode == 0:
             logger.debug("ffmpeg installation was successful using yum. Restart for changes to take effect.")

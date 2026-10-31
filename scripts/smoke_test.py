@@ -35,8 +35,8 @@ from typing import cast
 DEFAULT_TIMEOUT = 5
 DEFAULT_METHOD = "GET"
 # 响应体读取上限（字节）：冒烟对象是本项目自己的面板/健康端点，正常响应远小于该值；上限只为挡住
-# 「配置被指到不受控目标 / 跟随后的重定向返回超大正文」时把整个响应读进内存（resp.read() 原先无界，
-# 2026-10-29 审查）。取值与 src/async_http.py 的 _MAX_RESPONSE_BYTES 同值不同源——本脚本是零依赖
+# 「配置被指到不受控目标 / 跟随后的重定向返回超大正文」时把整个响应读进内存（resp.read() 原先无界）。
+# 取值与 src/async_http.py 的 _MAX_RESPONSE_BYTES 同值不同源——本脚本是零依赖
 # 单文件，不 import src/。
 _SMOKE_BODY_LIMIT = 8 * 1024 * 1024
 
@@ -70,7 +70,7 @@ def _fail(s: str) -> str:
     return _c(s, _RED)
 
 
-# 不跟随重定向的 handler（2026-09-12 审查 6.7）：urlopen 默认自动跟随 3xx，
+# 不跟随重定向的 handler：urlopen 默认自动跟随 3xx，
 # 使「期望 301/302」的断言永远拿不到 3xx 状态码。redirect_request 返回 None 即
 # 中止跟随，3xx 会以 urllib.error.HTTPError 抛出（带真实 code），从而可被断言。
 # 只在「期望 3xx」时挂上（见 run_check）：默认仍跟随，不破坏依赖短链跳转的既有检查。
@@ -148,7 +148,7 @@ def _validate_check_item(item: object, index: int, path: str) -> CheckConfig:
     # expected_status 标量畸形（如写成 string "200" 或 null）必须前置挡住：run_check 里
     # `300 <= expected_status < 400` 的重定向开关判定在 try 之外，TypeError 会穿透 main() 的
     # except (OSError, ValueError) → rc=1 崩溃栈，被消费方读成「面板接口挂了」——与上面
-    # expect_contains 元素检同族（2026-10-29 审查）。仍不做强制转换（见 _SHAPE_REQUIREMENTS
+    # expect_contains 元素检同族。仍不做强制转换（见 _SHAPE_REQUIREMENTS
     # 处「标量原样透传」的口径说明），只把畸形挡在发请求之前。bool 先拒（bool 是 int 子类，
     # true/false 当状态码没有语义）。timeout 不必同检：它在 run_check 的 try 内被 urlopen
     # 消费，TypeError 落进单条 errors，不构成崩溃路径。
@@ -381,7 +381,7 @@ def write_json_report(results: list[CheckResult], summary: CheckResult, path: st
 
 
 # 生成自包含 HTML 报告：逐行拼接表格行（含命中文本与错误），通过/失败行用 ok/bad 样式区分。
-# （2026-10-21 审查）：动态片段**一律** html.escape 后再拼。旧注释「依赖配置可信」只对
+# 动态片段**一律** html.escape 后再拼：「依赖配置可信」只对
 # name/url 成立（测试目标由使用者提供），对 errors/detail 不成立：errors 装的是异常文本与
 # **HTTP 响应派生内容**（未命中的 expect_contains token 原文、`响应不是合法 JSON: {e}`、
 # JSON 字段的实际值 actual!r），全部来自被探测服务的返回；而本产物是 CI 附件、由浏览器打开，

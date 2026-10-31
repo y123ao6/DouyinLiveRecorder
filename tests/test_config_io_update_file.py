@@ -173,7 +173,7 @@ class TestUpdateFile:
         assert main.ini_URL_content == "", "写失败时快照不得前进"
 
     def test_no_match_writes_nothing_and_returns_old_string(self, url_config: Path, monkeypatch: MonkeyPatch) -> None:
-        # 2026-10-19：old_str 一行都没命中 → **不落盘** + 返回 old_str。
+        # old_str 一行都没命中 → **不落盘** + 返回 old_str。
         # 变异验证（短 id M07，改动行当时带盘上标记、跑完已按字节还原）实测：把 `if not matched: return old_str` 摘掉后
         # 本用例三条断言全红（返回 new_str、写了一次、快照前进），说明锁真的落在那条分支上。
         _write_text(url_config, f"{URL_A}\n{URL_B}\n")
@@ -196,7 +196,7 @@ class TestUpdateFile:
         self, url_config: Path, monkeypatch: MonkeyPatch
     ) -> None:
         # 判据是「是否命中」而不是「内容是否变了」：main.py 注释未知链接那条路径传的是
-        # 2026-10-19：old_str == new_str + start_str="#"，落盘内容与被替换行逐字相同（只是加了前缀），
+        # old_str == new_str + start_str="#"，落盘内容与被替换行逐字相同（只是加了前缀），
         # 用「文本是否变化」当判据会让这条路径永久 no-op。
         _write_text(url_config, f"{URL_A}\n")
         assert config_io.update_file(str(url_config), URL_A, URL_A, start_str="#") == URL_A
@@ -370,7 +370,7 @@ class TestBackupSecretHandling:
     def test_write_failure_returns_false_with_type_bearing_warning(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        # 2026-10-19：备份必须**把成败交回调用方**——旧签名 `-> None` 全吞异常，
+        # 备份必须**把成败交回调用方**——旧签名 `-> None` 全吞异常，
         # backup_file_start 因此无条件推进 MD5 基线，一次磁盘满/文件占用就让这份内容的版本
         # 永久失去备份。这里让 copy2 抛错（DLR_BACKUP_KEEP_SECRETS=1 那条直复制的分支，
         # 失败点唯一、不会被脱敏回退路径掩盖），断言三件事实：返回 False、副本没落盘、
@@ -415,7 +415,7 @@ class TestBackupLoop:
         monkeypatch.delenv("DLR_BACKUP_KEEP_SECRETS", raising=False)
         monkeypatch.setattr(main, "text_encoding", "utf-8")
 
-        # 2026-10-19：旧桩在**首轮** sleep 就抛，循环只跑一轮，
+        # 旧桩在**首轮** sleep 就抛，循环只跑一轮，
         # 「MD5 未变 → 不重复备份」那条分支从未被执行——删掉 `if new_md5 != md5` 去重判断
         # 本用例照样绿（假绿）。现放行第一轮、第二轮才停，第二轮就是那条去重分支的真覆盖。
         rounds: list[float] = []
@@ -448,7 +448,7 @@ class TestBackupLoop:
     def test_failed_backup_keeps_baseline_and_retries_next_round(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        # 2026-10-19：的回归锁：备份写入失败 → 基线**不推进** → 下一轮同一份内容仍会重试。
+        # 回归锁：备份写入失败 → 基线**不推进** → 下一轮同一份内容仍会重试。
         # 变异验证实测（短 id M10，改动行当时带盘上标记、跑完已按字节还原）：把 `if backup_file(...):` 还原成
         # 「无条件调用 + 无条件推进基线」的旧形态后，本用例的 attempts 断言立刻变成
         # ["config.ini"]（只试过一次）而转红。

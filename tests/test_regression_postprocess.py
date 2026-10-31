@@ -1,4 +1,4 @@
-# tests/test_regression_2026_09_22_postprocess.py - src/video_postprocess.py 回归锁。
+# tests/test_regression_postprocess.py - src/video_postprocess.py 回归锁。
 #
 # 覆盖三条 2026-09-23 实测确认「仍未修复」的条目：
 #   ① generate_subtitles 的写盘段无 try/except：线程跑在**录制子进程**里（main.py 的
@@ -237,7 +237,7 @@ class TestSegmentPartialCleanup:
 
 
 class TestNoOverwriteFlagOnAllConverters:
-    # 三个 ffmpeg 后处理入口的 `-n` 口径必须一致（2026-09-12 审查 6.1 只补了 mp4/m4a）
+    # 三个 ffmpeg 后处理入口的 `-n` 口径必须一致（审查 6.1 只补了 mp4/m4a）
     def test_mp4_and_m4a_still_carry_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         for name, call in (("mp4", vp.converts_mp4), ("m4a", vp.converts_m4a)):
             src = _make_source(tmp_path, f"live_{name}.ts")

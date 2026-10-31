@@ -114,7 +114,7 @@ class TestSelectSourceUrl:
 
     def test_h265_flv_uses_hls_when_enabled_and_valid(self, main_mod: Any) -> None:
         # 端到端：h265 FLV 校验通过 + HLS 采集开 → 选源命中 m3u8。
-        # [历史注 2026-10-01] 原注释「规避 h265 copy 限制」已证伪——h265 在 TS/MKV/MP4 下
+        # [历史注] 原注释「规避 h265 copy 限制」已证伪——h265 在 TS/MKV/MP4 下
         # 已放行进常规序列（_h265_copy_format_supported），此处 m3u8 胜出靠的是默认
         # HLS-first 排序而非 h265 过滤。
         with patch("src.stream_select._validate_stream_url", return_value=True):

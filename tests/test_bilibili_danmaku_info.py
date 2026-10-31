@@ -492,7 +492,7 @@ def test_auth_watchdog_fires_without_reply() -> None:
     async def _run() -> None:
         with patch.object(BilibiliDanmaku, "_AUTH_TIMEOUT", 0.01):
             await client._auth_watchdog(ws)
-            await asyncio.sleep(0)  # 让 ensure_future 调度的 close 协程得到执行
+            await asyncio.sleep(0)
 
     with patch("src.spider.invalidate_bili_buvid_cache") as inv:
         asyncio.run(_run())

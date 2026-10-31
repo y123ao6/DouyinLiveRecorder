@@ -262,7 +262,7 @@ class DanmakuCollector:
         # 「只上报已注册房间」的自述相悖）。
         hub = self._monitor_hub()
         if hub is not None and not self._room_closed_reported and self._started:
-            # 2026-10-02：reason 文案经 i18n——面板非中文语言下混入简中
+            # reason 文案经 i18n——面板非中文语言下混入简中
             hub.room_closed(self._room_name, i18n.tr("采集停止"))
             self._room_closed_reported = True
         if not self._started:
@@ -477,15 +477,13 @@ class DanmakuCollector:
                     )
                 )
         except Exception as e:
-            # 2026-10-21 ：平台类**构造期**与回调注入（下方 only_fans 透传）此前裸奔在
+            # 平台类**构造期**与回调注入（下方 only_fans 透传）此前裸奔在
             # finally 之外——只有 danmaku.start() 那一段受保护，构造一抛就逃出守护线程：
             # 线程带 traceback 消失（无控制台进程里连 traceback 都没有），而监控枢纽条目仍停在
             # started、面板显示「采集中」直到录制结束。这里补外层 except：记脱敏异常 + 主动把
             # 房间上报为已关闭，收尾仍交给原有 finally（loop.close() 与 _loop 置空的位置不动）。
-            # _stop_called 守卫：stop() 入口已经调过 hub.room_closed()，此时再报一次会在边车里
-            # 留两条重复 closed 事件（面板计数虚增），故只在「线程自己出错」这条路径上补报。
-            # 2026-10-29 审查：该守卫已并入全路径统一的 _room_closed_reported 首投生效标记
-            # （_on_close 原先无守卫，是 stop() 之外的另一条重复投递源），判定口径不再单看 stop()。
+            # 重复 closed 事件会让面板计数虚增：stop() 入口与 _on_close 也会上报，全路径统一由
+            # _room_closed_reported 首投生效标记去重，此处补报只发生在「线程自己出错」这条路径。
             logger.warning(
                 i18n.tr(
                     "[弹幕采集]{cls_name} 运行异常,不影响录制: {e}",

@@ -230,11 +230,10 @@ def test_is_pinned_shape_rule_rejects_every_placeholder_form() -> None:
 
 
 # ---------------------------------------------------------------------------
-# P-2：官方 GPG 签名核验（2026-09-22 批准引入 gnupg）
+# P-2：官方 GPG 签名核验（批准引入 gnupg）
 #
 # 全部离线：gpg 与 urlopen 都被打桩。桩只替换 build_exe 的**模块全局名**（urllib / _run_gpg），
 # 绝不改 stdlib 模块本体。
-# ---------------------------------------------------------------------------
 
 _PRIMARY_FPR = "20F6EA3E0CFD6B4C53447A73476C4B611A660874"
 _SIGNING_SUBKEY_FPR = "31B0C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7"
@@ -432,9 +431,7 @@ def test_gpg_tool_or_sig_missing_never_passes_silently(
         assert "gnupg 不可用" in capsys.readouterr().out
 
 
-# ---------------------------------------------------------------------------
 # P-5：full 包产物自检
-# ---------------------------------------------------------------------------
 
 
 def test_verify_runtime_binaries_flags_every_missing_component(tmp_path: Path) -> None:
@@ -526,10 +523,8 @@ def test_dual_full_aborts_on_release_path_when_runtime_incomplete(
         assert "不得用于发布" in capsys.readouterr().out
 
 
-# ---------------------------------------------------------------------------
-# W1（2026-09-22 批准）：第 4 类完整性口径「源码可复现构建」
+# W1（批准）：第 4 类完整性口径「源码可复现构建」
 # 锁的是两件事：满足条件不可被标记单独糊过去；声明第 4 类的槽位不得再走下载路径。
-# ---------------------------------------------------------------------------
 
 _MARKER = build_exe.SOURCE_BUILD_PROVENANCE
 _EVIDENCE_OK = {"source_sha256": "b" * 64, "recipe_sha256": "c" * 64, "provenance_ref": "build-release.yml@abc"}
@@ -636,15 +631,12 @@ def test_pinned_slot_still_downloads_and_verifies_normally(monkeypatch: pytest.M
     assert seen == [(dest, "ffmpeg", "ffmpeg (gyan.dev)")], "钉定通过后才应触发验签，且不得对未核过内容的产物验签"
 
 
-# ---------------------------------------------------------------------------
-# 2026-09-26 官方签名档（macOS 两槽）：上游不公布 SHA256，判据 = 官方分离 GPG 签名
+# 官方签名档（macOS 两槽）：上游不公布 SHA256，判据 = 官方分离 GPG 签名
 # + 带外钉死的 40 位主钥指纹。下面各锁分别拦一种具体失效形态：
 #   ① 「光有标记就拿免检」——标记比 64 位十六进制更容易填，缺登记 / 缺形状必须同等拦下；
 #   ② SEV-2221「验签代码写在下载后、闸口卡在下载前」——若签名档槽位不在哈希分支之外也验签，
 #      这一档在真实构建路径上永不可达，看着有防线其实一次都没跑过；
 #   ③ 签名档**没有哈希兜底**，故发布路径上「gpg 不可用 / 验签判坏」必须终止，不得降级放行。
-# 全程离线：urlopen 与 _run_gpg 一律打桩（桩替换 build_exe 的模块全局名，不改 stdlib 本体）。
-# ---------------------------------------------------------------------------
 
 _SIG_MARKER = build_exe.OFFICIAL_SIGNATURE_PIN
 _GOOD_VERIFY_STATUS = (
@@ -821,12 +813,10 @@ def test_linux_ffmpeg_extraction_aborts_when_binary_absent(monkeypatch: pytest.M
         build_exe._extract_linux_ffmpeg_binaries(archive, ffmpeg_dir)
 
 
-# ---------------------------------------------------------------------------
-# 2026-09-26 macOS full 包两处产物缺陷：zip 解包丢可执行位 + ffprobe 从未被下载。
+# macOS full 包两处产物缺陷：zip 解包丢可执行位 + ffprobe 从未被下载。
 # 前者让 ffmpeg 落盘即不可执行（自检 PermissionError [Errno 13]），后者让 macOS 的 full 包
 # 结构上就缺件（evermeet 的 ffmpeg 归档里只有 ffmpeg）。
 # 全程离线：归档由用例自己造，网络与 gpg 走本文件既有的桩。
-# ---------------------------------------------------------------------------
 
 
 def _make_zip(archive: Path, members: dict[str, tuple[bytes, int]]) -> None:
@@ -984,13 +974,11 @@ def test_macos_ffmpeg_branch_fetches_both_archives_and_verifies(
     assert not list(tmp_path.glob("_*temp.zip")), "临时归档残留在发布目录里"
 
 
-# ---------------------------------------------------------------------------
 # MID-2254：发布 zip 与冒烟解耦 + 「运行期产物不得进包」
 # 冒烟以 cwd=RELEASE_DIR 连跑 CLI 25s / Web 90s / GUI 8s，src/logger.py 会在包内落
 # streamget.log / PlayURL.log / web_console.log（含 runner 绝对路径、用户名、告警堆栈），
 # 「缺键补写」还会改写包内 config.ini。旧顺序把冒烟排在 full 压缩之前，等于把这些打进对外分发的 zip。
 # 下面几条分别锁：顺序、清理、实物断言。全程桩掉 PyInstaller / 下载 / 压缩 / 起进程，不执行真实打包。
-# ---------------------------------------------------------------------------
 
 
 def _stub_build_steps(monkeypatch: pytest.MonkeyPatch, order: list[str], tmp_path: Path) -> None:
@@ -1225,8 +1213,7 @@ def test_make_zip_accepts_clean_archive(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert zip_path.is_file()
 
 
-# ---------------------------------------------------------------------------
-# 2026-09-27 CI 实红：zip 文件名被 Path.with_suffix(".zip") 截断。
+# CI 实红：zip 文件名被 Path.with_suffix(".zip") 截断。
 # 版本号带点（如 4.3.0）时 with_suffix 从**最后一个点**起把尾巴整段当旧扩展名丢弃，
 # DouyinLiveRecorder-v4.3.0-windows-amd64-{lite,full} 双双变成 DouyinLiveRecorder-v4.3.zip
 # （架构段写 amd64：那是 platform.machine().lower() 在 Windows 上的实际取值，x64 只是
@@ -1234,7 +1221,6 @@ def test_make_zip_accepts_clean_archive(monkeypatch: pytest.MonkeyPatch, tmp_pat
 # 一个 zip，build-release.yml 的「lite+full 齐全」校验与 dist/*-lite.zip 上传通配同时落空。
 # 上方两条既有 make_zip 用例对**名字**都不设判据，名称漂移对它们完全隐形——本组用例锁的
 # 正是名称形态与「两个 zip 互不覆盖」。
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("suffix,tail", [("-lite", "lite"), ("-full", "full")])
@@ -1361,11 +1347,9 @@ def test_clean_stale_release_zips_only_touches_own_artifacts(monkeypatch: pytest
     assert build_exe._clean_stale_release_zips() == []
 
 
-# ---------------------------------------------------------------------------
 # MID-2255：.dockerignore / .gitignore 的行内 `#` 与空规则
 # 两份文件都只有**行首** `#` 是注释；`pattern   # 说明` 让模式变成「带空格与中文的长串」，
 # 永不匹配 —— 规则看着在、实际等于没写，而且**伪装成已排除**（比漏写更危险）。
-# ---------------------------------------------------------------------------
 
 
 def _ignore_patterns(name: str) -> list[str]:
@@ -1402,10 +1386,8 @@ def test_gitignore_runtime_dirs_are_bare_patterns() -> None:
     assert "!node/" not in patterns and "!logs/" not in patterns and "!backup_config/" not in patterns
 
 
-# ---------------------------------------------------------------------------
 # MIN-2260：scripts/smoke_test.py 的「0 断言」不得算通过
 # _ci_web_smoke.sh 原样透传 rc，CI 的「Web panel smoke test」步骤因此可以查了个空气还报成功。
-# ---------------------------------------------------------------------------
 
 _SMOKE_SCRIPT = ROOT / "scripts" / "smoke_test.py"
 
@@ -1459,7 +1441,6 @@ def test_smoke_load_config_still_reads_valid_checks(tmp_path: Path) -> None:
         smoke.load_config(str(bad))
 
 
-# ---------------------------------------------------------------------------
 # 产物体积优化：排除清单与资源清单的回归锁
 #
 # 为什么值得锁：这些排除项**在源码里看不出代价**——排除一个模块在本地 Windows 上可能毫无变化
@@ -1467,7 +1448,6 @@ def test_smoke_load_config_still_reads_valid_checks(tmp_path: Path) -> None:
 # **冻结产物运行时**炸出来，而单测跑的是源码、覆盖不到。故锁三件事：① 清单不含「生产代码真的
 # 导入了」的模块；② 三个入口都挂上清单（COLLECT 合并去重，只挂一个等于没排）；
 # ③ i18n 资源不含 .po 但含运行时真正读的格式。
-# ---------------------------------------------------------------------------
 
 
 def _production_import_names() -> set[str]:
@@ -1598,7 +1578,6 @@ def test_zip_release_dir_prefixes_members_with_app_name(monkeypatch: pytest.Monk
         assert info.compress_type == zipfile.ZIP_DEFLATED
 
 
-# ---------------------------------------------------------------------------
 # 运行时钉定的在线来源层（**默认 off**）
 #
 # 被测面是「在线值在什么条件下才允许影响判据」。三条核心不变量：
@@ -1607,8 +1586,6 @@ def test_zip_release_dir_prefixes_members_with_app_name(monkeypatch: pytest.Monk
 #      而那道闸口同时也是「重新确认版本代次 / 体积门禁 / 冒烟」的触发点；
 #   ③ adopt 只认「清单有独立认证」的槽位：advisory 档（清单与产物同源同服务器）与
 #      「signed 但没钉指纹」一律拒绝采用——前者是 TOFU，后者等于没验。
-# 全程离线：urlopen 与 _run_gpg 一律打桩（桩替换 build_exe 的模块全局名，不改 stdlib 本体）。
-# ---------------------------------------------------------------------------
 
 _BUILTIN_HEX = "a" * 64
 _ONLINE_HEX = "b" * 64
@@ -1878,8 +1855,7 @@ def test_github_pin_asset_name_matches_the_download_url_basename() -> None:
     assert checked, "没有任何 github 档条目被核对——该档若被整体删掉，本用例会变成空转"
 
 
-# ---------------------------------------------------------------------------
-# M-99（2026-10-21 审查）三处，全部离线：urlopen / gpg 走本文件既有的桩，文件一律落 tmp_path，
+# M-99 三处，全部离线：urlopen / gpg 走本文件既有的桩，文件一律落 tmp_path，
 # 且**绝不调用** build_exe.main()（那会真打包、真下载、真起 exe）。
 #   ① 脱敏与断言只认 CREDENTIAL_FILE_NAMES 两个硬编码名字 + `not item.is_file()` 静默跳过子目录
 #      → 改为「递归复制 + 全树判定」；
@@ -1887,7 +1863,6 @@ def test_github_pin_asset_name_matches_the_download_url_basename() -> None:
 #      → 清理落 finally（except 只捕 Exception，SystemExit 那一路必须也覆盖）+ 压缩前实物残留断言；
 #   ③ _verify_gpg_artifact 只捕 OSError，条目漏配 sig_url 时 urlopen("") 抛 ValueError 穿透，
 #      以未处理异常终止整个构建（绕过 _skip_or_fail 的发布/本地分级处置）。
-# ---------------------------------------------------------------------------
 
 _M99_DESC = "ffmpeg (evermeet.ca release)"
 

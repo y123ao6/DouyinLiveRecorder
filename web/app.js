@@ -21,19 +21,18 @@
     var TOKEN_KEY = 'dlr_token';
     var THEME_KEY = 'dlr_theme';
     // PARITY（M-61 前端同批）：节白名单必须与后端 src/web_config.py::SENSITIVE_SECTIONS 同源，
-    // 2026-10-21 后端增列「推送配置」，此处随之增列——两侧任一侧漏，该节内「键名正则看不见」的
+    // 后端增列「推送配置」时此处随之增列——两侧任一侧漏，该节内「键名正则看不见」的
     // 凭据（如 bark_key 一类）就会在面板里渲染成明文 text 框。
     var SENSITIVE_SECTIONS = { 'Cookie': true, '账号密码': true, 'Authorization': true, '推送配置': true };
 
-    // MI-27：token 存取统一走此入口，sessionStorage 优先、不可用时回退 localStorage。
+    // MI-27：token 存取统一走此入口，sessionStorage 优先、不可用时回退内存载体。
     // 回退是必要的：Safari 无痕模式与「禁用站点数据」会把 storage 访问变成抛异常，直接写
-    // sessionStorage 会让登录流程整体失败（前端测试环境同样只注入了 localStorage）。
-    // [M-84 更正] 上面「回退 localStorage」这句已不成立：回退载体改为**仅存内存**。
-    // bearer token 默认 24h 有效，落 localStorage 等于明文写盘、跨标签页与浏览器重启存活，
+    // sessionStorage 会让登录流程整体失败。
+    // 回退载体是**仅存内存**（[历史注] 早期为 localStorage，M-84 改定）：bearer token 默认 24h 有效，
+    // 落 localStorage 等于明文写盘、跨标签页与浏览器重启存活，
     // 与 Token helpers 处「关标签页即失效」的设计目标相反，且 XSS、恶意扩展、本机任意进程均可读取。
     // 回退本身仍保留（隐私模式下 storage 访问抛异常，不能让整个登录流程失败），只是换了载体；
     // 代价是偏好项（主题/语言）在该场景下随之只对本次会话生效——比「凭据落盘」轻一个量级。
-    // [M-84 更正·续] 上文括注「前端测试环境同样只注入了 localStorage」一并失效：
     // tests/frontend 的三个沙箱已补 sessionStorage 替身（走主路径），内存回退分支单独用例外，
     // 那条用例断言的正是「令牌绝不落进 localStorage」。
     var _memoryTokenStore = null;
@@ -96,7 +95,7 @@
     // _SENSITIVE_KEY_PATTERN 同步，新增配置键时须确认它是否落入正则）：仅靠节名会漏掉「推送配置」节内的
     // tgapi令牌/发件人密码(授权码)/pushplus推送token，以及各平台节内的 popkontv_token 等独立凭据
     // ——它们在 DOM 里会被渲染成明文 text 输入框。
-    // CR-10 再补两类：端点型键名（钉钉/微信/bark 推送接口链接、ntfy 推送地址、代理地址）与值形态兜底
+    // 另补两类：端点型键名（钉钉/微信/bark 推送接口链接、ntfy 推送地址、代理地址）与值形态兜底
     // ——「凭据嵌在值里」的键按键名一律漏，而用户会在 text 框里一眼看到完整 webhook / userinfo 账密。
     var SENSITIVE_KEY_RE = /令牌|密码|授权码|token|secret|passwd|password|api[_-]?key|推送接口链接|推送地址|代理地址/i;
     // 例外：expiry/timeout/有效期 类键是数值型运维参数（如 web_token_expiry 秒数），无保密意义。
@@ -121,7 +120,7 @@
         // MIN-2237：判定顺序必须与后端 is_sensitive_item 逐字对齐——后端的例外表只在键名分支内部
         // 生效，即「敏感节」优先于例外。反例：[Cookie] 抖音cookie有效期 这类「敏感节 + 含有效期」的键
         // 后端脱敏、前端若先短路例外则渲染成明文 text 框（值仍是掩码，但用户会误读成「这项没被保护」）。
-        // [2026-10-31 L-07 备案] 「逐字对齐」与现状有两处已知分叉（CODE_REVIEW_2026-10-30 L-07）：
+        // [L-07 备案] 「逐字对齐」与现状有两处已知分叉（CODE_REVIEW_2026-10-30 L-07）：
         // ① 前端 isSensitiveValue 多一道 scheme 门（URL_VALUE_RE 要求 ^scheme://，后端值形态判定无此要求）；
         // ② SENSITIVE_SECTIONS[section] 节名判定大小写敏感，后端节匹配大小写不敏感。
         // 两处分叉方向均为「前端更严」，不构成明文渲染面；对齐属后续改造，不在本批展开。
@@ -190,9 +189,8 @@
 
     // 1. Token helpers —— MI-27：一律经 _tokenStore() 存取。token 由 localStorage 移到 sessionStorage，
     // 正常浏览器下关闭标签页即失效，配合 /api/logout 吊销服务端 bearer 收窄泄露窗口；仅 sessionStorage
-    // 不可用时才回退 localStorage（隐私模式的让步，此时「关标签页即失效」并不成立）。
-    // [M-84] 最后一句已改正：回退载体是**内存**对象而非 localStorage，隐私模式下同样不落盘、
-    // 关闭页面即失效；getToken/setToken 的存取形状不变（仍按 _tokenStore() 判空）。
+    // 不可用时才回退内存载体（隐私模式的让步，此时「关标签页即失效」并不成立；同样不落盘、
+    // 关闭页面即失效。[历史注] 回退载体早期是 localStorage，M-84 改定；存取形状不变，仍按 _tokenStore() 判空）。
     function getToken() {
         var st = _tokenStore();
         return st ? (st.getItem(TOKEN_KEY) || '') : '';
@@ -363,7 +361,7 @@
             'danmaku.unavailable': '弹幕监控状态获取失败，以下为最后一次成功取到的数据（后端错误码 danmaku_unavailable）',
             'danmaku.live': '实时弹幕', 'danmaku.allRooms': '全部房间', 'danmaku.clear': '清空',
             'danmaku.connected': '已连接', 'danmaku.disconnected': '已断开', 'danmaku.noData': '暂无弹幕数据',
-            // 2026-09-12 新增（CODE_REVIEW_FIX_1 F-21）：筛选无匹配时的空态提示，理由见 dmRenderStream
+            // 筛选无匹配时的空态提示，理由见 dmRenderStream
             'danmaku.noMatch': '当前筛选条件下没有弹幕，试试切换房间或选择「全部房间」',
             'danmaku.gift': '[礼物] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' 条已省略)',
             'danmaku.truncated': '（消息量过大，部分已折叠）',
@@ -395,8 +393,7 @@
             'config.authChangeSkipped': '已跳过 {n} 项认证相关改动（未确认）',
             'config.authChangeReauth': '请复验当前 Web 口令（修改认证配置需要；留空或取消即放弃本次改动）:',
             'files.title': '录制文件', 'files.root': '根目录', 'files.emptyDir': '空目录',
-            // M-22（2026-09-29）新增：common.cancel —— #reauth-modal 口令窗的取消按钮。
-            // 面板此前没有「通用取消」串（确认类交互一律走 window.confirm），四套目录同键同步添加，
+            // common.cancel —— #reauth-modal 口令窗的取消按钮；四套目录同键同步添加，
             // 键集相等由 tests/frontend/test_quality_ui.mjs 的 MIN-10 段机检。
             'common.yes': '是', 'common.no': '否', 'common.cancel': '取消', 'common.unauthorized': '未授权',
             'common.requestFailed': '请求失败',
@@ -406,7 +403,7 @@
             'toast.downloadFailed': '下载失败: ', 'toast.loginExpired': '登录已过期，请重新登录',
             'toast.saveFailed': '保存失败: ', 'toast.langSwitched': '语言已切换',
             'toast.langSwitchFailed': '语言切换失败: ',
-            // 图标导入（2026-10-22）：err.* 的键名**就是** POST /api/icon 回传的机器码 detail，
+            // 图标导入：err.* 的键名**就是** POST /api/icon 回传的机器码 detail，
             // 与 src/ui_icons.py::validate_icon_bytes 的 code 一一对应——前端只做码→文案映射，
             // 不在后端拼中文（少一处四目录漂移面）。四套目录同键同步，键集相等由前端用例机检。
             'icon.import': '导入图标',
@@ -447,7 +444,7 @@
             'danmaku.unavailable': 'Failed to fetch danmaku monitoring status; showing the last data retrieved successfully (backend error code danmaku_unavailable)',
             'danmaku.live': 'Live danmaku', 'danmaku.allRooms': 'All rooms', 'danmaku.clear': 'Clear',
             'danmaku.connected': 'Connected', 'danmaku.disconnected': 'Disconnected', 'danmaku.noData': 'No danmaku data',
-            // F-21 (2026-09-12): empty state shown when the room filter matches nothing
+            // empty state shown when the room filter matches nothing
             'danmaku.noMatch': 'No danmaku under the current filter — try another room or "All rooms"',
             'danmaku.gift': '[Gift] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' messages omitted)',
             'danmaku.truncated': '(Too many messages, some collapsed)',
@@ -469,7 +466,7 @@
             'config.hint.sslOn': 'HTTPS mode: certificate verification is globally skipped; this list is not needed (kept for compatibility)',
             'config.hint.sslOff': 'HTTP mode: certificates are verified by default; platforms in this list skip verification (for platforms with broken certificates, e.g. Huya/Bilibili)',
             'config.deprecated': 'Merged into "是否启用https录制"; this option no longer takes effect',
-            // MID-37: hints for masked credentials (inline note / clear confirmation / skipped count / server rejection)
+            // hints for masked credentials (inline note / clear confirmation / skipped count / server rejection)
             'config.hint.masked': 'This value is masked as ***; the real value is still stored server-side. Submitting it empty requires confirmation, and the server refuses to blank sensitive items',
             'config.clearSecretConfirm': '"{k}" currently shows the mask ***; submitting an empty value would overwrite the real credential with an empty string (not automatically reversible). Submit the empty value anyway?',
             'config.secretSkipped': 'Skipped {n} empty submission(s) for masked credentials',
@@ -487,7 +484,7 @@
             'toast.downloadFailed': 'Download failed: ', 'toast.loginExpired': 'Login expired, please log in again',
             'toast.saveFailed': 'Save failed: ', 'toast.langSwitched': 'Language switched',
             'toast.langSwitchFailed': 'Language switch failed: ',
-            // Icon import (2026-10-22): err.* keys ARE the machine codes returned by POST /api/icon
+            // Icon import: err.* keys ARE the machine codes returned by POST /api/icon
             // (mirroring src/ui_icons.py::validate_icon_bytes). Front end only maps code -> text.
             'icon.import': 'Import Icon',
             'icon.badFormat': 'Only .ico files are supported (must contain 16x16, 256x256 recommended)',
@@ -527,7 +524,7 @@
             'danmaku.unavailable': 'Failed to fetch danmaku monitoring status; showing the last data retrieved successfully (backend error code danmaku_unavailable)',
             'danmaku.live': 'Live danmaku', 'danmaku.allRooms': 'All rooms', 'danmaku.clear': 'Clear',
             'danmaku.connected': 'Connected', 'danmaku.disconnected': 'Disconnected', 'danmaku.noData': 'No danmaku data',
-            // F-21 (2026-09-12): empty state shown when the room filter matches nothing
+            // empty state shown when the room filter matches nothing
             'danmaku.noMatch': 'No danmaku under the current filter — try another room or "All rooms"',
             'danmaku.gift': '[Gift] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' messages omitted)',
             'danmaku.truncated': '(Too many messages, some collapsed)',
@@ -549,7 +546,7 @@
             'config.hint.sslOn': 'HTTPS mode: certificate verification is globally skipped; this list is not needed (kept for compatibility)',
             'config.hint.sslOff': 'HTTP mode: certificates are verified by default; platforms in this list skip verification (for platforms with broken certificates, e.g. Huya/Bilibili)',
             'config.deprecated': 'Merged into "是否启用https录制"; this option no longer takes effect',
-            // MID-37: hints for masked credentials (inline note / clear confirmation / skipped count / server rejection)
+            // hints for masked credentials (inline note / clear confirmation / skipped count / server rejection)
             'config.hint.masked': 'This value is masked as ***; the real value is still stored server-side. Submitting it empty requires confirmation, and the server refuses to blank sensitive items',
             'config.clearSecretConfirm': '"{k}" currently shows the mask ***; submitting an empty value would overwrite the real credential with an empty string (not automatically reversible). Submit the empty value anyway?',
             'config.secretSkipped': 'Skipped {n} empty submission(s) for masked credentials',
@@ -567,7 +564,7 @@
             'toast.downloadFailed': 'Download failed: ', 'toast.loginExpired': 'Log in expired, please log in again',
             'toast.saveFailed': 'Save failed: ', 'toast.langSwitched': 'Language switched',
             'toast.langSwitchFailed': 'Language switch failed: ',
-            // Icon import (2026-10-22): err.* keys ARE the machine codes returned by POST /api/icon
+            // Icon import: err.* keys ARE the machine codes returned by POST /api/icon
             // (mirroring src/ui_icons.py::validate_icon_bytes). Front end only maps code -> text.
             'icon.import': 'Import Icon',
             'icon.badFormat': 'Only .ico files are supported (must contain 16x16, 256x256 recommended)',
@@ -607,7 +604,7 @@
             'danmaku.unavailable': '彈幕監控狀態取得失敗，以下為最後一次成功取得的資料（後端錯誤碼 danmaku_unavailable）',
             'danmaku.live': '即時彈幕', 'danmaku.allRooms': '全部房間', 'danmaku.clear': '清空',
             'danmaku.connected': '已連線', 'danmaku.disconnected': '已斷線', 'danmaku.noData': '暫無彈幕資料',
-            // F-21（2026-09-12）：篩選無匹配時的空態提示
+            // 篩選無匹配時的空態提示
             'danmaku.noMatch': '目前篩選條件下沒有彈幕，請切換房間或選擇「全部房間」',
             'danmaku.gift': '[禮物] ', 'danmaku.sc': '[SC] ', 'danmaku.dropped': ' 條已省略)',
             'danmaku.truncated': '（訊息量過大，部分已摺疊）',
@@ -629,7 +626,7 @@
             'config.hint.sslOn': 'HTTPS 錄製模式：已全域跳過 SSL 憑證校驗，此列表無需設定（相容保留）',
             'config.hint.sslOff': 'HTTP 錄製模式：預設校驗憑證；列表內平台將跳過憑證校驗（適用於憑證異常平台，如虎牙/B站）',
             'config.deprecated': '已整合進「是否啟用https錄製」，此設定不再生效',
-            // MID-37：遮罩憑據的四條提示（行內說明 / 清空確認 / 跳過統計 / 服務端拒絕）
+            // 遮罩憑據的四條提示（行內說明 / 清空確認 / 跳過統計 / 服務端拒絕）
             'config.hint.masked': '該項已脫敏為 *** ，原值仍儲存於服務端；提交空值需要先確認，且服務端不允許清空敏感項',
             'config.clearSecretConfirm': '「{k}」目前顯示的是遮罩 ***，提交空值會嘗試以空字串覆寫真實憑據（無法自動回滾）。確定仍要提交空值嗎？',
             'config.secretSkipped': '已跳過 {n} 項遮罩憑據的空值提交',
@@ -647,7 +644,7 @@
             'toast.downloadFailed': '下載失敗: ', 'toast.loginExpired': '登入已過期，請重新登入',
             'toast.saveFailed': '儲存失敗: ', 'toast.langSwitched': '語言已切換',
             'toast.langSwitchFailed': '語言切換失敗: ',
-            // 圖示匯入（2026-10-22）：err.* 的鍵名即 POST /api/icon 回傳的機器碼 detail
+            // 圖示匯入：err.* 的鍵名即 POST /api/icon 回傳的機器碼 detail
             'icon.import': '匯入圖示',
             'icon.badFormat': '僅支援 .ico 圖示檔案（需含 16×16，建議含 256×256）',
             'icon.readFailed': '讀取檔案失敗',
@@ -717,7 +714,7 @@
 
     // MID-2239：PUT /api/language 的响应（language/fallback/notice）必须被消费，并按**生效码**更新，
     // 不得按请求值回写。典型失效：PyYAML 缺失使 zh_TW 装载不到 → 后端实际生效并落盘 en_US，前端却
-    // 切成内嵌 zh_TW 并把偏好写成 zh_TW、回退说明一次都不显示（即 MID-52 的「面板与进程各说一种语言」）。
+    // 切成内嵌 zh_TW 并把偏好写成 zh_TW、回退说明一次都不显示。
     function setLanguage(target) {
         api('/api/language', { method: 'PUT', body: { language: target } }).then(function (res) {
             // 以**生效码**为准：后端回什么就切什么、就持久化什么
@@ -745,9 +742,8 @@
     }
 
     // 7b. 登出按钮显隐（MID-38）：#logout-btn 在 index.html 里带 class="hidden"（.hidden 为
-    // display:none !important），而原本没有任何代码移除该 class——WD-09 补的 POST /api/logout（泄露
-    // token 的唯一吊销入口，token 默认有效 86400s）在界面上根本点不到。登录成功/进入任意视图即显示，
-    // 回到登录页即收起。
+    // display:none !important），没有代码移除该 class 的话，POST /api/logout（泄露 token 的唯一吊销
+    // 入口，token 默认有效 86400s）在界面上根本点不到。登录成功/进入任意视图即显示，回到登录页即收起。
     function setLogoutVisible(visible) {
         var btn = $('logout-btn');
         if (!btn) return;
@@ -811,7 +807,7 @@
     }
 
     // 10. doLogin —— POST /api/login，成功即 setToken() 存好返回的 token 并进入仪表盘；失败（含 401）
-    // 在 #login-error 显示后端文案。密码仅此一次明文发送，之后一律用 Token。MID-2238 后语言/主题偏好
+    // 在 #login-error 显示后端文案。密码仅此一次明文发送，之后一律用 Token。语言/主题偏好
     // 同样落在 sessionStorage（「隐私模式下不抛异常」换来的取舍），故不再跨浏览器重启持久化。
     async function doLogin() {
         var pw = $('login-password').value;
@@ -884,7 +880,7 @@
     function startSSE() {
         sseWanted = true;
         sseStopped = false;
-        // M-21：begin() 内已含「清掉上一代定时器 + 推进代次」，原先那三行手写 clearTimeout 不再需要。
+        // begin() 内已含「清掉上一代定时器 + 推进代次」，无需再手写 clearTimeout。
         sseChain.begin(0, function poll(myGen) {
             api('/api/status')
                 .then(function (data) {
@@ -951,7 +947,7 @@
 
     // WD-10：把「已断开」显式呈现给用户，而不是让面板停在陈旧数据上。此处写的 #danmaku-stream 只
     // 存在于弹幕视图内，仪表盘侧由 showStatusWarning 独立承担（MID-2237）。
-    // M-88③：原先只有 if (flag) 一支，形参的 false 语义根本不存在——后端恢复后「已断开」只能等
+    // M-88③：后端恢复后「已断开」无人复写、只能等
     // 下一轮渲染顺带覆盖。补恢复分支（用既有键 danmaku.connected，与断开态成对，不新增 msgid），
     // 并用 _backendMarkedDown 做状态闸门：只有真出现过断开态才还原标签，健康轮次零噪音、
     // 也不会把弹幕流区域反复改写。
@@ -1110,7 +1106,7 @@
         }
     }
 
-    // 13a. 仪表盘日志轮询（MID-2240）：loadLogs 原先只在切到仪表盘那一刻调一次，用户长时间停留时
+    // 13a. 仪表盘日志轮询（MID-2240）：loadLogs 只在切到仪表盘那一刻调一次，用户长时间停留时
     // 「实时日志」名不副实。节拍取 5s：日志不是秒级指标，而 /api/logs 是读文件、比 /api/status 更重，
     // 没必要同频。可见性感知与弹幕轮询同型：页面隐藏即停。logTimer 已由 logsChain 承载（机制见 10b）。
     var logsChain = makePollChain();
@@ -1484,7 +1480,6 @@
     // 15. window.toggleRoom
     // M-88②：本文件所有 toast 拼接一律走 (e.message || '') 兜底形态——e 不是 Error（被 reject 的
     // 字符串/对象、或刻意 throw 的非标准值）时 e.message 为 undefined，直拼会把「undefined」显示给用户。
-    // 原先 5 处漏了兜底（toggleRoom/deleteRoom/changeRoomQuality/addRoom/downloadFile），现与其余各处分批同形。
     window.toggleRoom = async function (url, enable) {
         try {
             await api('/api/rooms/toggle', { method: 'POST', body: { url: url, enable: enable } });
@@ -1570,7 +1565,7 @@
 
     async function loadConfig() {
         var container = $('config-container');
-        // M-18（2026-10-18）：与 loadRooms 同一代次判据（机制说明见状态区 roomsChain 处）。
+        // M-18：与 loadRooms 同一代次判据（机制说明见状态区 roomsChain 处）。
         // 本条额外要紧的是「未保存修改」：saveConfig 失败分支会 await loadConfig() 回拉服务端真值，
         // 用户也可能在保存回拉尚未落地时又切走/切回配置页；两支 GET /api/config 乱序落地时，
         // 旧一代那份 HTML 会把新一代（含用户已填的框）整体覆盖掉。
@@ -1587,9 +1582,9 @@
                 for (var key in items) {
                     if (!items.hasOwnProperty(key)) continue;
                     var val = items[key];
-                    // CR-10：值形态命中时同样按敏感字段渲染（password 框，不明文展示）
+                    // 值形态命中时同样按敏感字段渲染（password 框，不明文展示）
                     var inputType = (isSensitiveField(section, key) || isSensitiveValue(val)) ? 'password' : 'text';
-                    // MID-37：后端把敏感项回显为掩码 '***'，渲染时打标，供 saveConfig 判定
+                    // 后端把敏感项回显为掩码 '***'，渲染时打标，供 saveConfig 判定
                     // 「这个框留空 = 用户要清空真实凭据」而不是「用户把值改成了空串」。
                     var masked = String(val).trim() === SENSITIVE_MASK;
                     var hintHtml = '';
@@ -1896,10 +1891,10 @@
     window.loadFiles = loadFiles;
 
     // 19b. downloadFile —— 走认证头拉二进制并触发下载（I1）：直接 fetch + .blob()，不经过 api()（它返回
-    // res.text()，会破坏二进制）。MIN-2238：失败分支曾用 res.statusText，而现代浏览器（HTTP/2 下连
+    // res.text()，会破坏二进制）。MIN-2238：失败分支不得用 res.statusText——现代浏览器（HTTP/2 下连
     // reason phrase 都不再收到）对 statusText 恒给空串，toast 只能渲染成「下载失败: 」。改用 apiError 解析
     // 错误体的 detail（成功分支仍是 blob）。
-    // M-88①：原先裸 fetch，后端挂起（或大文件迟迟不响应）时请求无限 pending，同文件 api() 却已有
+    // M-88①：裸 fetch 在后端挂起（或大文件迟迟不响应）时请求无限 pending，同文件 api() 已有
     // API_TIMEOUT_MS + AbortController 的超时形态。这里复用同一形状：定时器只覆盖「响应头未到」阶段，
     // 拿到 res 立即 clearTimeout，随后的 blob 读取不受这层超时掐断（大文件仍然能下完）。
     window.downloadFile = function (path) {
@@ -2019,7 +2014,7 @@
 
     // 22. initTheme
     function initTheme() {
-        // MID-2238：它是 DOMContentLoaded 的第一条语句，任何异常都会让后续所有监听器注册被跳过（面板变静态页）。
+        // 它是 DOMContentLoaded 的第一条语句，任何异常都会让后续所有监听器注册被跳过（面板变静态页）。
         try {
             var theme = safeGetItem(THEME_KEY) || 'light';
             document.body.dataset.theme = theme;

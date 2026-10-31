@@ -1,4 +1,4 @@
-# M-11 回归锁（2026-09-29 审查）：TikTok 选档时 FLV 与 HLS 两个列表必须各自基于「用户请求档」的
+# M-11 回归锁：TikTok 选档时 FLV 与 HLS 两个列表必须各自基于「用户请求档」的
 # 原始索引独立钳制，不得把被 FLV 长度钳过的索引再喂给 HLS。
 #
 # 被测生产实现：src/stream.py::get_tiktok_stream_url 的 flv_quality_index / m3u8_quality_index

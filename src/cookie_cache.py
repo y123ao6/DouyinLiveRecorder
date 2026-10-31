@@ -435,7 +435,7 @@ async def singleflight(
         try:
             value = await factory()
         except Exception as e:
-            # M-05：异常文本常内嵌带签名/鉴权查询串的完整 URL（factory 里就是 async_req/sync_req），
+            # 异常文本常内嵌带签名/鉴权查询串的完整 URL（factory 里就是 async_req/sync_req），
             # 与 fetch_cookies 同口径一律过 mask_credentials——logs/ 按 rotation 保留多份，
             # 原文入日志等于凭据长期落盘。{type_name} 保持不脱敏（Windows 下 str(e) 可能为空，
             # 缺类型名就只剩一条空白告警，无法归因）。

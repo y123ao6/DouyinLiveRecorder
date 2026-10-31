@@ -30,7 +30,7 @@
 #     python scripts/report_bundle_size.py --json size.json    # 落 JSON 供下次 --compare 比对
 #     python scripts/report_bundle_size.py --compare size.json # 与上次报告逐项比对
 #
-# 退出码（2026-10-21 M-92 起在本文件显式登记）：
+# 退出码（在本文件显式登记）：
 #   0  报告已产出，且（--strict 时）没有工具链泄漏
 #   1  --strict 命中开发/测试工具链泄漏（产物不合格）
 #   2  度量面缺输入：发布目录不存在，或 --compare 指定的基线不存在/读不出/不是合法报告
@@ -210,10 +210,9 @@ def main() -> int:
 
     report = collect(release)
     text = render(report, int(args.top))
-    # 比对通道自己没能判定 → rc=2（M-92，2026-10-21）。旧形态只往报告里追加一行 [warn]
-    # 就以 0 结束：CI 把「--compare 指定的基线根本不存在 / 读不出 / 不是合法报告」读成
-    # 「与上次比没查出问题」，而真相是这一项从没比过。与「发布目录不存在 → 2」同一档：
-    # 本脚本的度量面缺输入时不判代码不合格（1，那是 --strict 命中泄漏那一档），也不判通过（0）。
+    # 比对通道自己没能判定 → rc=2，与「发布目录不存在 → 2」同一档：度量面缺输入时不判
+    # 代码不合格（1，那是 --strict 命中泄漏那一档），也不判通过（0）。
+    # 旧形态「只追加一行 [warn] 就退 0」的沿革见文件头退出码说明，不在此重复。
     compare_unusable: str | None = None
     if str(args.baseline_path):
         baseline_path = Path(str(args.baseline_path))

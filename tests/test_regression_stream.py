@@ -336,7 +336,7 @@ class _Resp:
         self.status_code = status_code
         self.text = text
         self.headers: dict[str, str] = {}
-        # L-11（2026-10-19）：探针读正文改走 _bounded_probe_get 的流式形态，故桩要能当流式响应用
+        # L-11：探针读正文改走 _bounded_probe_get 的流式形态，故桩要能当流式响应用
         # （上下文协议 + iter_bytes + encoding）。刻意整段一次交出、不在桩里重实现「读满上限即断」。
         self.encoding = "utf-8"
 
@@ -439,13 +439,13 @@ class TestDerivedHopScope:
         assert sent.get("Range") == "bytes=0-0"
 
     def test_internal_target_is_not_requested(self) -> None:
-        # 内网/本机目标：一个请求都不发。[历史注] SR-01 修复（2026-10-02）前此处断言 True——
+        # 内网/本机目标：一个请求都不发。[历史注] SR-01 修复前此处断言 True——
         # 安全拒绝分支错误沿用「保守维持列表可达」，内网地址经播放列表正文交给 ffmpeg -i。
         client = _RecordingClient(
             {_PLAYLIST: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nhttp://127.0.0.1:8080/x.m3u8\n"}
         )
         with patch("src.stream_select.logger.warning") as warn:
-            # S-04（2026-10-19）：安全拒绝改抛内部控制流异常（原先 return False）——
+            # S-04：安全拒绝改抛内部控制流异常（原先 return False）——
             # False 与「分片 404 不可达」不可区分，会被调用方的 last_resort / 同址复用翻回可达。
             with pytest.raises(ss._DerivedHopRejected):
                 _ = ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS)  # type: ignore[arg-type]
@@ -456,18 +456,18 @@ class TestDerivedHopScope:
         # 形态不合规变体（file://）：同 SR-01 判据，候选判失败而非维持可达
         client = _RecordingClient({_PLAYLIST: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nfile:///etc/passwd\n"})
         with patch("src.stream_select.logger.warning"):
-            # S-04（2026-10-19）：同 test_internal_target_is_not_requested，改判内部控制流异常
+            # S-04：同 test_internal_target_is_not_requested，改判内部控制流异常
             with pytest.raises(ss._DerivedHopRejected):
                 _ = ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS)  # type: ignore[arg-type]
         assert [url for url, _ in client.calls] == [_PLAYLIST]
 
     def test_internal_segment_target_rejects_candidate(self) -> None:
-        # SR-01 行为锁（2026-10-02）：变体合法但媒体分片行携带内网地址——分片派生跳的安全拒绝
+        # SR-01 行为锁：变体合法但媒体分片行携带内网地址——分片派生跳的安全拒绝
         # 必须判候选失败，否则被劫持播放列表把 http://127.0.0.1:6379/ 形态目标经 -i 交给 ffmpeg。
         # 对照：修复前该形态维持可达，逐跳钩子拦不住（正文请求不走客户端钩子）。
         client = _RecordingClient({_PLAYLIST: "#EXTM3U\n#EXTINF:4.0,\nhttp://127.0.0.1:6379/seg.ts\n"})
         with patch("src.stream_select.logger.warning") as warn:
-            # S-04（2026-10-19）：改判内部控制流异常（详见 tests/test_stream_select.py 的同名锁）
+            # S-04：改判内部控制流异常（详见 tests/test_stream_select.py 的同名锁）
             with pytest.raises(ss._DerivedHopRejected):
                 _ = ss._probe_hls_segment(cast(object, client), _PLAYLIST, _HEADERS)  # type: ignore[arg-type]
         assert [url for url, _ in client.calls] == [_PLAYLIST]

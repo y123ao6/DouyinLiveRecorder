@@ -14,7 +14,7 @@
 #
 # 另附该写线程侧：get() 带超时 + _srt_stop 自检，队列空时能自行退出。
 #
-# 2026-10-21 CODE_REVIEW_2026-10-21 追加两条不变量（改回旧形态即应转红）：
+# CODE_REVIEW_2026-10-21 追加两条不变量（改回旧形态即应转红）：
 #   ⑤ 该采集线程 join 超时后必须复查 is_alive() 并留 warning——join(timeout) 超时是静默返回，
 #           旧写法不复查，卡死的线程（连同事件循环与监控房间条目）在日志里完全隐形；
 #           同时钉住「新增判定不得改变 srt.close() 的调用顺序」（该槽位泄漏契约）。
@@ -514,7 +514,7 @@ def test_run_reports_closed_and_masks_when_construction_raises(tmp_path: Path, l
 
 
 def test_room_closed_reported_once_across_stop_and_on_close(tmp_path: Path) -> None:
-    # 2026-10-29 审查：hub.room_closed 在枢纽侧不去重（每次写一条新 seq 的 conn/closed 事件），
+    # hub.room_closed 在枢纽侧不去重（每次写一条新 seq 的 conn/closed 事件），
     # 而 stop() 与 _on_close 在「正常停止」时序里都会触发——双投让面板 closed 计数虚增。
     # 首投生效语义：哪种时序先到，哪种 reason 被保留，第二条一律吞掉。
     hub = DanmakuMonitorHub(log_path=str(tmp_path / "dm_a.jsonl"))

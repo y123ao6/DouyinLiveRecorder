@@ -18,7 +18,7 @@
 #
 # 打桩点必须覆盖平台分流的全部分支：win32 的 _send_ctrl_break_to_child 与 POSIX 的 os.kill。
 # 只桩 win32 时 Linux CI 上附着记账恒空、「恰一次附着」与「复用在途线程」两组判据同时
-# 落空（2026-10-01 实测 4 failed、本地 Windows 全绿）。FakeProc 只提供 poll/wait/terminate
+# 落空（实测 4 failed、本地 Windows 全绿）。FakeProc 只提供 poll/wait/terminate
 # 三个状态查询；超时强杀分支由 _send_stop_signal_and_wait 自身语义负责，本文件不重复锁。
 #
 # 四个场景缺一不可：

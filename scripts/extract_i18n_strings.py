@@ -34,8 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCAN_FILES = [
     ROOT / "main.py",
     ROOT / "gui.py",
-    # [历史注] 原第三条是 gui_legacy.py（2026-09-10 随 v4.1.0-dev 删除，2026-09-21 清掉引用）；
-    # 它此前恒被 main() 的 exists() 兜底跳过，留着只会让人误以为这里仍是扫描入口
+    # [历史注] 原第三条 gui_legacy.py 已随 v4.1.0-dev 删除（恒被 main() 的 exists() 兜底跳过），勿回填。
     ROOT / "web.py",
     ROOT / "msg_push.py",
     ROOT / "i18n.py",

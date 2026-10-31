@@ -115,14 +115,12 @@ def test_repository_has_no_dangling_symbols() -> None:
     assert problems == [], f"存在悬空引用：{problems}"
 
 
-# ---------------------------------------------------------------------------
 # --snapshot 基线目录防呆的判定表（M-23）
 #
 # 三个方向都要锁，缺一个都会让功能退化成另一种故障：
 #   ① 工作区子目录放行——不锁则功能在家目录检出下依旧不可用；
 #   ② 危险输入仍拒绝——rmtree 不可逆，削掉它比误拒更危险；
 #   ③ 放行不得越界到「cwd 本体/祖先」与「cwd 就是家目录」两种入口形态。
-# ---------------------------------------------------------------------------
 
 
 def _fixed_layout_path(home: Path, cwd: Path) -> Any:
@@ -207,7 +205,7 @@ def test_snapshot_guard_still_rejects_system_dirs(monkeypatch: pytest.MonkeyPatc
 def test_snapshot_guard_rejects_any_target_outside_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outside: str
 ) -> None:
-    # S-13（2026-10-21）：旧实现是排除式黑名单——不在任何一条拒绝规则里的路径落到函数末尾
+    # S-13：旧实现是排除式黑名单——不在任何一条拒绝规则里的路径落到函数末尾
     # 的 `return None` 被放行，于是 `--snapshot D:\OtherRepo` / `/srv/data` 会 rmtree 整棵无关
     # 目录树。本用例钉的是**白名单正向判定**：cwd 之外的任何绝对路径都必须被拒绝。
     base = tmp_path.resolve()

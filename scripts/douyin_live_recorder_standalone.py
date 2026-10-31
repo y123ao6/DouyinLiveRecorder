@@ -15,8 +15,8 @@
 #   **等价性并不完整**，逐条差异见 PlatformBreaker 类注释。漂移的机检面：
 #   tests/test_regression_standalone.py、tests/test_ffmpeg_reconnect_args.py、
 #   tests/test_ffmpeg_path_preference.py。
-#   [2026-10-30] http_request 响应体上限（_MAX_RESPONSE_BYTES=8MiB）已与主线 sync_http/async_http
-#   同值收敛（CODE_REVIEW_2026-10-30 M-14）；网络层异常文本内嵌的 url 已统一 strip_query（M-13）。
+#   http_request 响应体上限（_MAX_RESPONSE_BYTES=8MiB）与主线 sync_http/async_http 同值收敛
+#   （M-14）；网络层异常文本内嵌的 url 统一 strip_query（M-13）。
 # * **语法基线 Python >= 3.14**：本仓统一使用 PEP 758 无括号多异常写法(except A, B:)，
 #   该语法 3.14 起才合法——请勿用 3.13 及以下版本运行本文件。
 # * **保留原工程的核心正确性约定**(原工程踩坑后的结论，单文件版一律继承)：
@@ -116,7 +116,7 @@ _print_lock = threading.Lock()
 # 可选文件日志路径：Recorder 初始化时按配置赋值；空串表示关闭
 _LOG_FILE_PATH = ""
 
-# 2026-10-02：日志轮转阈值。standalone.log 与 ffmpeg.log 均为无上限 append
+# 日志轮转阈值。standalone.log 与 ffmpeg.log 均为无上限 append
 # （该只解决了凭据明文问题，磁盘占满这一半未闭合），长跑数周可写满磁盘。
 _LOG_ROTATE_BYTES = 10 * 1024 * 1024
 
@@ -192,17 +192,17 @@ class ProbeResult:
         return (self.headers.get("content-type") or "").lower()
 
 
-# 显式协议白名单 handler 集（2026-09-30）：与主程序 src/sync_http.py 的定稿同构。
+# 显式协议白名单 handler 集：与主程序 src/sync_http.py 的定稿同构。
 # build_opener 即使显式传入 ProxyHandler，默认 Handler 集合（含 FileHandler/FTPHandler/
 # DataHandler）**仍然生效**——file:// 会被本地读出 200，与「平台 API 候选属不可信输入面」
 # 叠加成「候选 → 探针 → ffmpeg 读本地文件」的完整利用链。现只显式注册 http/https 相关
 # handler，白名单外协议经 UnknownHandler 统一抛 URLError('unknown url type: …')，响应体
 # 一步都不读。UnknownHandler 必须保留：它是白名单外协议的统一拒绝口。
 # 残余缺口（登记，与主线同边界）：DNS 重绑定窗口不在本层闭合。
-# [历史注] SR-02（2026-10-02）前本集用的是裸 HTTPRedirectHandler——探针自动跟随重定向且每跳
+# [历史注] SR-02 前本集用的是裸 HTTPRedirectHandler——探针自动跟随重定向且每跳
 # 不复检，公网候选 302 到内网/云元数据时逐跳判定缺失；现改挂下方 _HopGuardRedirectHandler。
 class _HopGuardRedirectHandler(urllib.request.HTTPRedirectHandler):
-    # SR-02（2026-10-02）：重定向逐跳复检（主线防线回灌）。主线同层防线是探针客户端挂
+    # SR-02：重定向逐跳复检（主线防线回灌）。主线同层防线是探针客户端挂
     # src/async_http.build_sync_hop_guard（response 事件钩子，每跳含落地跳均判内网/协议，
     # 命中即断），本副本按设计不 import src，故在 urllib 的重定向单点复刻同判据：
     # HTTPRedirectHandler 的 301/302/303/307/308 全部经 redirect_request() 发起下一跳，
@@ -233,7 +233,7 @@ def _build_opener(proxy: str | None) -> urllib.request.OpenerDirector:
     # urllib 的默认 opener 会读取 http_proxy/ALL_PROXY 等环境变量，导致「配置说直连、
     # 实际走了系统代理」的隐性行为。代理策略必须只由配置文件决定(与原工程 httpx
     # proxy=None 直连语义对齐)。
-    # 2026-09-30：[历史注] 原经 build_opener 构造——默认 Handler 集合不受显式
+    # [历史注] 原经 build_opener 构造——默认 Handler 集合不受显式
     # ProxyHandler 影响，file/ftp/data 三类协议全部可读；改按上方白名单手工组装
     # （HTTPSHandler 仍为必挂实参，http/https 是本项目仅有的两类出站协议）。
     opener = urllib.request.OpenerDirector()
@@ -247,7 +247,7 @@ def _build_opener(proxy: str | None) -> urllib.request.OpenerDirector:
     return opener
 
 
-# 2026-10-30（M-14）：响应体读取上限，与主线 src/sync_http.py / src/async_http.py 的
+# M-14：响应体读取上限，与主线 src/sync_http.py / src/async_http.py 的
 # _MAX_RESPONSE_BYTES 同值。消费面（_probe_hls_segment_lite 等）拉取的是 CDN 控制的播放列表
 # 正文，属不可信输入面（见下方「不可信流地址候选」节）；无上限的 resp.read() 可被异常/被劫持
 # 源把长跑进程内存打爆。单次 read(limit+1)：http.client 的 read(amt) 会阻塞读满 amt 或到 EOF，
@@ -266,7 +266,7 @@ def http_request(
     # 发起一次 HTTP 请求，返回 HttpResponse；网络层失败时抛出 RuntimeError(带 URL 与异常类型)。
     # 注意(原工程踩坑)：Windows 下 socket.timeout 的 str() 为空字符串，
     # 异常信息必须携带 type(e).__name__ 与 url，否则日志只有一行无意义的空白。
-    # 2026-10-30（M-13）：url 内嵌前经 strip_query——异常对象会被上层原样写进日志（流地址校验
+    # M-13：url 内嵌前经 strip_query——异常对象会被上层原样写进日志（流地址校验
     # 异常路径等），完整 URL 含 wsSecret/anti_code 等签名 token，明文落盘违反「写入日志前必须
     # 脱敏」红线；保留 host+path 已足够定位。
     req = urllib.request.Request(url, data=data, headers=headers or {})
@@ -364,7 +364,7 @@ def strip_query(url: str) -> str:
     return url.split("?", 1)[0]
 
 
-# --- 不可信流地址候选的协议/目标判定(2026-09-30) ---
+# --- 不可信流地址候选的协议/目标判定 ---
 #
 # 平台 API 响应是不可信输入面(恶意/被劫持代理、接口投毒、MITM 都可能改写候选)，
 # 候选在进探针与 ffmpeg 命令之前必须先过这道闸。与主程序 src/web_config.py 的
@@ -707,7 +707,7 @@ class PlatformBreaker:
     def __init__(self, name: str, window: int = 40, fail_rate: float = 0.5, cooldown: float = 45.0) -> None:
         self.name = name
         self._window = max(1, window)
-        # 2026-10-21 该回灌(与 src/scheduler.py:PlatformBreaker 同批改)：fail_rate 钳到 [0,1]。
+        # 该回灌(与 src/scheduler.py:PlatformBreaker 同批改)：fail_rate 钳到 [0,1]。
         # 副本此前原样保存配置值，0.0 会让「0 >= 0」恒真、1.5 会让熔断永不触发，两种错配在
         # 主线已被 clamp 消化，副本不 clamp 就是同一份配置的两种行为。
         self._fail_rate = min(1.0, max(0.0, float(fail_rate)))
@@ -756,7 +756,7 @@ class PlatformBreaker:
         with self._lock:
             self._push(0 if success else 1)
             if self._state == "closed":
-                # 2026-10-21 该回灌：_fail_count > 0 是必要条件(fail_rate=0 时全成功窗口
+                # 该回灌：_fail_count > 0 是必要条件(fail_rate=0 时全成功窗口
                 # 会因 0 >= 0 被直接熔断)，阈值改读按窗口钳制过的 _min_samples(见 __init__)。
                 # 计数仍走增量 _fail_count，禁止退回 sum(self._samples)(AGENTS「熔断计数必须增量」)。
                 if (
@@ -814,7 +814,7 @@ class PlatformBreaker:
 
 class Scheduler:
     # 并发调度中枢：网络并发容量 + 录制并发上限 + 按 host 熔断。
-    # 熔断表容量上限：2026-10-21 该回灌(与 src/scheduler.py:_MAX_BREAKERS 同值同判据)——
+    # 熔断表容量上限(该回灌，与 src/scheduler.py:_MAX_BREAKERS 同值同判据)——
     # key 来自 host_of(record_url)，属外部可控输入，旧写法只增不减，24×7 长跑下每个历史 host
     # 留一支 PlatformBreaker(含 window 长度样本窗口)。逐出只看「最久未使用 + closed」，
     # open/half-open 的键**不逐**（摘掉等于把一次进行中的熔断重置成放行，坏 CDN 会立刻回到全部房间）。
@@ -941,7 +941,6 @@ def resolve_douyin(url: str, proxy: str | None = None, cookies: str = "") -> Str
     # （如 status_code=8 需登录、=4002 参数异常）。只看 HTTP 状态与空响应体会漏掉这一形态
     # → 风控被误报成"未开播"，用户得不到「去配 cookie」的有效提示，只会反复重试。
     # 与主工程 src/spider.py 同判据（该侧在 200+合法 JSON 后同样检 status_code 非零）。
-    # [历史注] 2026-09-12 审查 6.7 补齐此处。
     if isinstance(data, dict):
         try:
             api_status_code = int(cast(str, data.get("status_code"))) if data.get("status_code") is not None else 0
@@ -982,7 +981,7 @@ def resolve_douyin(url: str, proxy: str | None = None, cookies: str = "") -> Str
 # 虎牙页面中的 stream 数据：非贪婪匹配到 "iWebDefaultBitRate" 结束(与原工程一致)
 _HUYA_STREAM_RE = re.compile(r'stream: (\{"data".*?),"iWebDefaultBitRate"')
 # 房间别名(含字母)时从 HTML 提取数字房间号(与原工程 get_huya_app_stream_url 一致)
-# 孪生点(2026-09-23 )：主实现 src/spider.py:get_huya_app_stream_url 的正则现已与本
+# 孪生点：主实现 src/spider.py:get_huya_app_stream_url 的正则现已与本
 # 副本**逐字同串**(键名起始引号作锚点)，且两侧都在取回后剥引号 + 判 isdigit。改此处须两处同改。
 _HUYA_PROFILE_ROOM_RE = re.compile(r'"ProfileRoom":(.*?),"sPrivateHost')
 
@@ -1066,7 +1065,7 @@ def resolve_huya(url: str, proxy: str | None = None, cookies: str = "") -> Strea
         if m:
             # 页面的 "ProfileRoom" 有数字(:6030242)与字符串(:"6030242")两种内联形态，
             # 非贪婪捕获对后者会连引号一起收下 → 不剥引号则恒判非数字、白丢兜底接口
-            # (2026-09-23 与 src/spider.py 同步，见上方 _HUYA_PROFILE_ROOM_RE 的孪生点注释)。
+            # (与 src/spider.py 同步，见上方 _HUYA_PROFILE_ROOM_RE 的孪生点注释)。
             room_id = m.group(1).strip().strip('"')
     if not room_id.isdigit():
         info_.error = f"{fetch_failed_reason}；未能解析 stream 数据，且未取得数字房间号，无法走兜底接口".strip("；")
@@ -1479,7 +1478,7 @@ _SELFTEST_ACTIVE = False
 
 
 def _probe_hls_segment_lite(url: str, headers: dict[str, str], proxy: str | None) -> bool:
-    # （2026-10-02 回灌主线分片级探测）：「播放列表 200」≠ 可录制——CDN 动态合成的
+    # （主线分片级探测回灌）：「播放列表 200」≠ 可录制——CDN 动态合成的
     # 列表恒 200 但分片可能 404（2026-09-13 斗鱼 hw 事故形态：ffmpeg 逐分片失败、零字节
     # 产出）。列表 200 后再探一层：master playlist 跟随带宽最高变体（最多两层，覆盖
     # 变体→子列表嵌套）→ 取末行分片（最新，避开滚出窗口的旧分片误杀）→ Range bytes=0-0
@@ -1493,7 +1492,7 @@ def _probe_hls_segment_lite(url: str, headers: dict[str, str], proxy: str | None
         resp = http_request(url, headers=dict(headers), timeout=_PROBE_TIMEOUT, proxy=proxy)
     except Exception:
         if _SELFTEST_ACTIVE:
-            # 2026-10-21 ：自检期间这里的异常**只有一种解释**——selftest 没有把 http_request
+            # 自检期间这里的异常**只有一种解释**——selftest 没有把 http_request
             # 换绑成假实现，于是这条用例真的对 cdn.example 发了网络请求（违反文件头的离线契约），
             # 旧写法把它当「列表 GET 失败、保守维持可达」返回 True，离线环境下自检照样打印 PASS，
             # 是典型的假绿。自检模式下显式判失败，让「没换绑」当场变红；生产路径不受影响。
@@ -1628,7 +1627,6 @@ def validate_stream_url(
     # (非末位候选被直接拒，整轮回退或放弃录制)，并连带漏掉 -reconnect_at_eof 的移除、
     # 复现 HLS 挂起事故。主程序侧 main.py::_validate_stream_url / src/stream_select.py /
     # src/async_http.py 同样 lower。
-    # [历史注] 2026-09-23 该补齐此处；命令构造两处早在 2026-09-12 审查时已 lower。
     url_lower = url.lower()
     try:
         # 状态码与 content-type 必须取自同一次 HEAD(单次探针，省连接预算)。
@@ -1642,7 +1640,7 @@ def validate_stream_url(
         if ".m3u8" in url_lower:
             if status == 200 or any(k in ctype for k in _STREAM_MEDIA_TYPES):
                 # 列表 200 不再直接判可达——补分片级探测，拦「列表 200 但分片 404」
-                # 的假绿候选（2026-09-13 斗鱼 hw 事故整改回灌）
+                # 的假绿候选（斗鱼 hw 事故整改回灌）
                 return _probe_hls_segment_lite(url, headers, proxy)
             # HEAD 不可靠 → Range GET 探测(200/206 判可达)，401/403 重试一次再定罪
             last_gs = status
@@ -1695,7 +1693,7 @@ def validate_stream_url(
 
 
 def _h265_copy_format_supported_standalone(record_format: str) -> bool:
-    # 判定「视频保存格式」的容器能否直拷(-c copy) HEVC（2026-10-02 回灌主线
+    # 判定「视频保存格式」的容器能否直拷(-c copy) HEVC（回灌主线
     # _h265_copy_format_supported 同判据）：TS(mpegts)/MKV(matroska)/MP4 三个 muxer 均支持
     # 写 HEVC；FLV（HEVC-in-FLV 属 Enhanced-FLV 扩展，仓库口径不支持）与未识别取值不支持
     # （保守默认）。standalone 无 main 热更新全局，格式由调用方从 Settings 传入。
@@ -1727,7 +1725,7 @@ def select_source_url(stream: StreamInfo, proxy: str | None = None, record_forma
         seq = [u for u in seq if "h265" not in u.lower()]
         if rec and "h265" not in rec.lower():
             seq.append(rec)
-    # 2026-09-30：不可信候选(协议不在白名单/指向本机/内网/云元数据)先丢弃再探针——
+    # 不可信候选(协议不在白名单/指向本机/内网/云元数据)先丢弃再探针——
     # 绝不交给探针与 ffmpeg。逐条留日志(带 strip_query 后的地址)保证「候选为何没录」可归因。
     trusted: list[str] = []
     for cand in seq:
@@ -1844,7 +1842,7 @@ def build_ffmpeg_cmd(
         header_str,
         "-rw_timeout",
         "15000000",
-        # 输入协议白名单(2026-09-30)：与主程序 main.py:_build_ffmpeg_input_args 逐字同值。
+        # 输入协议白名单：与主程序 main.py:_build_ffmpeg_input_args 逐字同值。
         # 本项目输入恒为 http(s)/rtmp 直播流，file 从不使用；放行 file 意味着「URL 可控」时
         # ffmpeg 可读写本地文件(平台 API 候选属不可信输入面)。crypto 需保留(HLS 分片解密)。
         # 两处命令定义点(本列表 + run_ffmpeg 内联列表)必须同值同位(-i 之前)。
@@ -1875,7 +1873,6 @@ def build_ffmpeg_cmd(
     # FLV 输入保留该选项：CDN 掐断长连接时在 EOF 处重连续写同一文件(斗鱼游客态 FLV
     # ~70s 被掐的既有缓解手段)。del 只按字面量标志对删除，不引入动态拼接。
     # 判定必须走小写形态(大写 .M3U8 会漏判并复现上述挂起)。
-    # [历史注] 2026-09-11 事故沉淀；2026-09-12 审查把此处由大小写敏感改为 url.lower()。
     if ".m3u8" in url.lower():
         _eof_idx = cmd.index("-reconnect_at_eof")
         del cmd[_eof_idx : _eof_idx + 2]
@@ -1929,11 +1926,11 @@ def _stage_budget(deadline: float, stages_left: int) -> float:
 
 
 def terminate_all_ffmpeg() -> int:
-    # 2026-09-12 审查 6.7：原实现只 proc.terminate() 就返回——SIGTERM 后 ffmpeg 仍需
+    # 原实现只 proc.terminate() 就返回——SIGTERM 后 ffmpeg 仍需
     # 时间 flush 缓冲并写 mp4 的 moov box，调用方（Ctrl+C / 停止流程）紧接着退出或
     # 删除句柄，会把输出文件截断成「不可播放」（moov 缺失，播放器报 invalid data）。
     # 改为 terminate → 宽限 wait(3s) → 仍存活才 kill 的两级终止。
-    # （2026-10-02 回灌主线三级终止链）：在最前增加「写 q 到 stdin + 关闭」一级——
+    # （回灌主线三级终止链）：在最前增加「写 q 到 stdin + 关闭」一级——
     # Windows 下 terminate() 即 TerminateProcess 硬杀，上方 3 秒宽限对它毫无作用，
     # 只有 ffmpeg 自己读到 q/SIGINT 才会走收尾流程补写 moov。主线实现见
     # src/ffmpeg_proc.py::_terminate_ffmpeg_process（写 q / SIGINT → terminate → kill）。
@@ -2025,7 +2022,7 @@ def run_ffmpeg(
             header_str,
             "-rw_timeout",
             "15000000",
-            # 输入协议白名单(2026-09-30)：与 build_ffmpeg_cmd 逐字同值，理由见该函数注释
+            # 输入协议白名单：与 build_ffmpeg_cmd 逐字同值，理由见该函数注释
             "-protocol_whitelist",
             "rtmp,crypto,http,https,tcp,tls,udp,rtp,httpproxy",
             "-reconnect_delay_max",
@@ -2080,7 +2077,7 @@ def run_ffmpeg(
 
 # ===== 8. 配置 =====
 
-# 布尔配置值解析（2026-10-02 回灌主线 src/config_bool.py 统一口径）：旧前缀判断
+# 布尔配置值解析（回灌主线 src/config_bool.py 统一口径）：旧前缀判断
 # (`startswith("是")` / `not startswith("否")`) 在 true/false、1/0、yes/no、on/off 取值下
 # 静默反向生效（主线 2026-09-17 P0 同款：8 项配置漂移、9 个海外平台 100% 无法录制）。
 # token 集与主线逐字同源（比较前 strip + lower）；空值与未识别值返回 default，调用方传
@@ -2164,7 +2161,6 @@ def load_settings(config_path: str) -> Settings:
         # 启用代理但地址为空时，下游 `proxy or None` 会把空串判成 falsy → 静默直连：
         # 用户以为流量走了代理（往往正是为了隐藏出口 IP / 绕过地域限制），实际全部裸连，
         # 既不达预期又无任何提示。故显式告警要求补填，而不是悄悄降级为直连。
-        # [历史注] 2026-09-12 审查补此告警。
         if not st.proxy:
             warn("「是否启用代理 = 是」但「代理地址」为空，将按直连处理；请填写代理地址或关闭代理开关")
     st.save_dir = get("视频保存路径") or "downloads"
@@ -2270,7 +2266,7 @@ class Recorder:
             info(f"未开播: {stream.anchor_name or url}")
             return False
 
-        # 解析成功即上报成功样本(与解析失败分支对称，原工程 2026-08-27 约定)：
+        # 解析成功即上报成功样本(与解析失败分支对称，原工程约定)：
         # 否则探针房间进入长时间录制期间，half-open 的同 host 其余房间被饿死
         self.scheduler.record_success(host)
 
@@ -2565,7 +2561,7 @@ def selftest() -> int:
     # HLS 分支。HEAD 用 405 —— 非 401/403，避免污染退避表(_mark_probe_reject 只认那两个码)。
     saved_probe = http_probe
     saved_throttle = _throttle_probe
-    # 2026-10-21 ：HLS 分支最终调用的是 http_request（_probe_hls_segment_lite 取播放列表正文），
+    # HLS 分支最终调用的是 http_request（_probe_hls_segment_lite 取播放列表正文），
     # 只换绑 http_probe / _throttle_probe 时那一步会**真的**向 cdn.example 发一次请求——
     # 违反本函数的离线契约，且异常被 except 吞掉后仍打印 PASS（假绿）。现一并换绑，并把
     # 「假实现收到过调用」作为「确实走了 HLS 分支且没走真实网络」的凭据。

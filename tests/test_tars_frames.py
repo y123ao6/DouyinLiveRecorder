@@ -1,4 +1,4 @@
-# CR-03 畸形 Tars 帧边界回归锁（src/platforms/_tars.py，2026-09-21 补）。
+# CR-03 畸形 Tars 帧边界回归锁（src/platforms/_tars.py）。
 #
 # 被守的失败形态：解码器把协议里的长度字段当游标增量直接用，且只判「未越上界」不判负数。
 # 负长度 → 切片得空串且游标**回退**到刚消费的头字节之前，而 _goto / finish_struct /
@@ -165,7 +165,7 @@ def test_documented_residual_escape_types() -> None:
     with pytest.raises(IndexError):
         TarsInputStream(b"\xf0").finish_struct()  # tag==15 的扩展 tag 字节缺失
 
-    # [2026-10-30 L-15] STRING4 长度域未过 _need 是登记的第 4 处同族（探针实测 struct.error）；
+    # L-15：STRING4 长度域未过 _need 是登记的第 4 处同族（探针实测 struct.error）；
     # 补 _need(4) 后与「畸形帧降级为 ValueError」的统一承诺对齐，本锁钉住它不再回退。
     with pytest.raises(ValueError):
         TarsInputStream(b"\x17\x00")._skip(7)

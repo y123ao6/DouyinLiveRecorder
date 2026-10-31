@@ -28,7 +28,7 @@ no_proxy_handler: urllib.request.ProxyHandler = urllib.request.ProxyHandler({})
 _PUSH_MAX_REDIRECTS = 5
 
 
-# 2026-10-21：逐跳复核的重定向处理器。
+# 逐跳复核的重定向处理器。
 # 原实现把裸 HTTPRedirectHandler 放进白名单：`_checked_push_url` 只在**发起请求前**跑一次，
 # 落地地址既不复核内网也不复核协议。推送地址来自 config.ini（Web 面板可写全部配置），攻击者把自己的
 # 服务器设为推送地址、再 302 到 http://169.254.169.254/latest/meta-data/，就绕过了「拒绝内部目标」，
@@ -65,7 +65,7 @@ class _PushHopGuardRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-# 2026-10-19：opener 按**协议白名单手工组装**，不能用 build_opener——后者是「默认 handler
+# opener 按**协议白名单手工组装**，不能用 build_opener——后者是「默认 handler
 # 集合 + 指定 ProxyHandler」，默认集合含 FileHandler / FTPHandler / DataHandler；而推送地址来自
 # config.ini，Web 面板可写全部配置，写成 file:///C:/Users/x/.ssh/id_rsa 就能让本模块读本地文件，
 # 读到的内容随后经 ntfy 分支的 error 键原样进日志（logs/ 按轮转保留多份，求助时常整包上传）。
@@ -131,7 +131,7 @@ def _mask_secret(secret: str) -> str:
 # 末段。：旧实现靠 hostname.endswith("day.app") 白名单命中 Bark 的 8 位短密钥，自建 / 反代
 # Bark（https://bark.example.com/<8字符key>）因此整串明文进 logs/streamget.log（300KB 轮转、保留
 # 多份、求助时通常整包上传），拿到即可向用户手机无限推送——主机名从来不是判据，密钥的位置才是，
-# 故改由调用方按渠道声明。（2026-09-22）：ntfy 的 https://ntfy.sh/<topic> 同样「末段即频道
+# 故改由调用方按渠道声明。ntfy 的 https://ntfy.sh/<topic> 同样「末段即频道
 # 口令」（拿到 topic 即可匿名订阅、也能抢先发假消息），三处失败日志曾漏传该参数，已补齐；
 # 钉钉/TG/PushPlus 的凭据在 query 或 token 字段、末段非凭据，保持不传（本函数本就丢弃 query）。
 def _mask_url(url: str, *, mask_last_segment: bool = False) -> str:
@@ -155,7 +155,7 @@ def _mask_url(url: str, *, mask_last_segment: bool = False) -> str:
                 masked_segs.append(seg)
         masked_path = "/" + "/".join(masked_segs) if masked_segs else ""
         # netloc 里的 userinfo（https://user:pass@host，自托管反代常见的 basic-auth 形态）必须剥离：
-        # 原实现原样带出，口令因此明文进轮转日志（CODE_REVIEW_2026-10-29 S-07 实测）。
+        # [历史注] 原实现原样带出，口令曾因此明文进轮转日志。
         netloc = parts.netloc
         if "@" in netloc:
             netloc = "***@" + netloc.rsplit("@", 1)[1]
@@ -181,7 +181,7 @@ def _sanitize_resp_text(value: object) -> str:
     return mask_credentials(text)
 
 
-# 异常文本进轮转日志前的统一出口（CODE_REVIEW_2026-10-29 S-07）：出站失败时 str(e) 常带完整推送
+# 异常文本进轮转日志前的统一出口：出站失败时 str(e) 常带完整推送
 # URL，自托管 bark/ntfy 的口令就在路径末段，而 logs 按大小轮转保留多份 = 凭据长期落盘。
 # 类型名由各日志模板的 {type_name} 单独承载，此处不重复拼接；截断复用同一上限避免超长 URL 刷屏。
 def _mask_exc_text(exc: BaseException) -> str:
@@ -308,7 +308,7 @@ def send_email(
     receivers = to_email.replace("，", ",").split(",") if to_email.strip() else []
     smtp_obj: smtplib.SMTP | smtplib.SMTP_SSL | None = None
 
-    # 2026-09-22：两条 TLS 路径共用同一个**校验证书**的 context。
+    # 两条 TLS 路径共用同一个**校验证书**的 context。
     # 病史：原实现 `SMTP_SSL(host, port, timeout=10)` 与 `starttls()` 都不传 context，二者均回落
     # `ssl._create_stdlib_context()`——而它**就是** `_create_unverified_context`（本机 CPython 3.14
     # 实测 verify_mode=0 / check_hostname=False）：中间人呈递任意自签证书即可解密整段会话、拿到
@@ -320,7 +320,7 @@ def send_email(
     ctx = ssl.create_default_context()
 
     try:
-        # 2026-09-12 审查 6.6：CRLF 注入校验前置。放行则攻击者可用含换行的主播名
+        # CRLF 注入校验前置。放行则攻击者可用含换行的主播名
         # 伪造 Bcc/Reply-To 等邮件头；拒绝并记 warning 比静默发送伪造邮件安全。
         # kind 标签在调用点过 tr（盲区③推送文案，提取器扫不到裸字面量实参位）
         _reject_smtp_newline(i18n.tr("邮件标题"), title)
@@ -351,7 +351,7 @@ def send_email(
             except ValueError:
                 port = 25
             smtp_obj = smtplib.SMTP(email_host, port, timeout=10)
-            # MI-24：非 SSL 分支原先直接 login，授权码在**明文链路**上传输（等同邮箱口令，可被公共
+            # 非 SSL 分支原先直接 login，授权码在**明文链路**上传输（等同邮箱口令，可被公共
             # Wi-Fi / 透明代理嗅探）。这里先尝试 STARTTLS 升级，服务器不支持时明确告警而非静默明文登录。
             # starttls 必须显式传 context=ctx，否则回落不校验证书的 context，升级成
             # 「已加密但未认证」的链路。
@@ -396,7 +396,7 @@ def send_email(
         )
         return {"success": [], "error": receivers}
     # 无论成功失败都主动 quit() 关闭 SMTP 会话，避免连接悬挂；quit 失败忽略（连接本就要丢弃）。
-    # 2026-09-22：原先只吞 smtplib.SMTPException，但 quit() 走 docmd("QUIT") 等 221
+    # 原先只吞 smtplib.SMTPException，但 quit() 走 docmd("QUIT") 等 221
     # 响应、socket 带 timeout=10，服务端不回 221 时抛 socket.timeout（= TimeoutError，是 **OSError**
     # 子类而**不是** SMTPException）。在 finally 里穿出会**替换掉** try 块已算好的成功返回值：邮件其实
     # 已发出，上层 push_message 却拿到未捕获异常、重试逻辑据此重发（用户表现为重复收到同一封开播通知）。
@@ -427,7 +427,7 @@ def tg_bot(chat_id: str | int, token: str, content: str) -> dict[str, list[str |
         # Telegram 即便 HTTP 2xx 也可能业务失败（ok=false + description），须以 ok 字段判定、不能只看状态码。
         if resp_data.get("ok") is True:
             return {"success": [str(chat_id)], "error": []}
-        # 残留（2026-10-21）：description 由服务端响应体派生，经重定向落到内网（云元数据等）
+        # description 由服务端响应体派生，经重定向落到内网（云元数据等）
         # 时它就是回显内容，必须与其余分支一样过 _sanitize_resp_text（截断 + 脱敏）再入日志。
         error_detail = _sanitize_resp_text(resp_data.get("description", i18n.tr("未知错误")))
         logger.warning(
@@ -594,7 +594,7 @@ def ntfy(
                 i18n.tr(
                     "ntfy推送失败, 推送地址：{masked_api}, 错误信息:{error_detail}",
                     masked_api=_mask_url(_api, mask_last_segment=True),
-                    # 残留（2026-10-21）：HTTPError 的响应体是攻击者可控的回显，与上面
+                    # HTTPError 的响应体是攻击者可控的回显，与上面
                     # resp_data["error"] 那条同口径，写日志前一律截断 + 脱敏。
                     error_detail=_sanitize_resp_text(error_detail),
                 )
@@ -688,7 +688,7 @@ if __name__ == "__main__":
     bark_url = "https://xxx.xxx.com/key/"
     # bark(bark_url, send_title, send_content)
 
-    # 2026-09-12 修复（CODE_REVIEW_FIX_1 ）：本调用原先未注释，而本文件 `if __name__` 块是手工
+    # [历史注] 本调用原先未注释，而本文件 `if __name__` 块是手工
     # 调试入口、其余渠道（钉钉/邮件/TG/Bark 等）全部已注释——直接 `python msg_push.py` 会向公网
     # ntfy.sh 主题发出真实推送（主题名可被任何人订阅），属误操作外泄。注释掉，与其余渠道保持一致。
     # _ = ntfy(

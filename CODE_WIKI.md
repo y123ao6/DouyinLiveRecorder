@@ -1763,6 +1763,16 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
 
+### v4.6.0-dev (2026-10-31) — 全仓注释级精简与一致性优化（零行为变化）
+
+- **用户指令**：扫描全部代码文件，仅对确定不影响构建/运行/工具解析的非执行注释做冗余精简与一致性优化；严禁改动可执行代码、常量、导入、签名、调用顺序、线程模型、日志重定向、安全闸门顺序、优雅退出收尾逻辑；注释与代码不一致时以代码为准最小修正；无法判断的保留原文列入人工确认。
+- **范围**：133 个代码文件（src/、tests/、scripts/、根目录入口、web/app.js、web/motion.js、tests/frontend、index.html、web/index.html、web/style.css），净删 263 行注释（+798/−1061）。**排除**（零触碰）：`src/proto/douyin_pb2.py`（protoc 生成）、`src/javascript/*.js`（SHA256 字节冻结）、`StopRecording.vbs`（UTF-16LE）、`typings/`（第三方存根）、`.agents/`（skill 工具）、`scripts/agent_hook_guard.py` 与 `tests/test_agent_hook_guard.py`（并行会话占用，移交）。
+- **改动构成**：S1 与代码矛盾/悬空引用最小修正约 27 处（如 `sync_version`/`check_version` 的 `i18n/zh_CN.po` 死路径改指 `i18n/zh_CN/LC_MESSAGES/zh_CN.po`、`sync_version` 删除指向不存在测试的死锚点、`http_config.py` 的 L-07 更正块与消费方事实对齐、`test_stream.py` 的 `get_quality_index` 修复前机制描述改整值解析口径、`ffmpeg_proc.py` 管道句柄表述、`web/motion.js` 降级方向两处证伪修正）；S2 考古/日期/单号前缀压缩为主体（多层「旧实现→现在」叙事压为现行判据 + 恰好一行 `[历史注]`，实测读数/常量名/判据/回归锁用例名逐字保留）；S3 重复解释与装饰性分隔线去重留首处。
+- **等价性证明**：① Python `ast.dump` / JS·CSS·HTML 剥注释行序全仓 288 文件比对 286 OK（仅并行会话两文件 signature differs，非本批）；② BOM/编码/行尾形态零漂移；③ 实测读数存活 0 丢失（--strict-readings）；④ 每文件密度不低于 13% 地板（preflight 复检 0 穿板）；⑤ 主题存活：回归锁/历史注/孪生/钉定/脱敏/降级/并发/探针/风控等 13 主题计数无一归零；⑥ 台账 1160 条逐条可审计（覆盖 134 个改动文件，0 未记录）。
+- **锁定条目全部存活**：`async_http.py` 的 `[历史注 2026-09-30` 逐字锁、`ffmpeg_install.py` 孪生判据块与「等同/目录权限」意图锁、`douyin_pb2.py` 生成头、三安装器 `INLINE INSTALL-GUARD BLOCK` 字节级孪生（过程中 F 域曾在块内删单号致 `TestInlineInstallGuardParity` 红灯，按回归处置树对参照份逐字恢复 4 处 M-45/M-47/M-48 后复绿）。
+- **判定记录（交回）**：43 个 preflight「锁定短语移除」候选经断言语句扫描全部判为散文提及（单号仅出现在断言失败消息里），非真锁；`web/motion.js` 等 2 处 S1 修正、`main_window.py:76` 旧名因果注等 33 条 N 项保留原文待人工确认（明细见当日台账）。
+- **验证**：`run_gates.py` 10/10 PASS；pytest 全量 5053 passed / 16 skipped / 0 警告（李生块恢复后复跑）；`check_coverage.py` 全过（总覆盖率 84.47%，69 模块全达标）；basedpyright 0 error / 0 warning。**DoD 第 2 步豁免**：纯注释改动不涉录制链路/选源/ffmpeg 参数/平台解析行为。
+
 ### v4.6.0-dev (2026-10-31) — CODE_REVIEW_2026-10-30 整改：P0 五条 + P1 八条 + P2 三条 + L 组可定位项
 
 - **用户指令**：按 `docs/worklog/CODE_REVIEW_2026-10-30.md` 逐条「解析分类 → 精确定位 → 最小化修复」，最后输出结构化汇总。

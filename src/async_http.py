@@ -94,7 +94,7 @@ async def _get_client(
     current_loop = asyncio.get_running_loop()
     current_thread = threading.current_thread()
     key: _CacheKey = (proxy_addr or "", verify, http2, current_loop)
-    # 2026-09-12 审查：不能「锁外创建 + 锁内无条件覆盖写」——两个协程并发首建同一 key 时后写者
+    # 不能「锁外创建 + 锁内无条件覆盖写」——两个协程并发首建同一 key 时后写者
     # 覆盖先写者，被覆盖的 AsyncClient 从此无引用、连接池无人 aclose，随房间数累积泄漏。故改为
     # 「探查 → 按需创建 → 写前二次检查 → 落败者主动关闭自建实例」。
     with _client_cache_lock:
@@ -426,14 +426,12 @@ async def async_req(
             if owned_client:
                 await _release_client(client)
     except (ImportError, ModuleNotFoundError, RuntimeError) as e:
-        # 依赖缺失是**环境级**故障，原先与网络异常同一条 debug 出口，表现为「200 + 空响应体 =
-        # 疑似风控」+ 无意义的 HTML 兜底与重试风暴。三类异常都来自 httpx 构造客户端时的可选依赖
-        # 检查（http2 缺 h2、socks 代理缺 socksio）；ModuleNotFoundError 是 ImportError 的子类，
-        # 列出来是让「缺包」这一类在代码里显式成立。返回契约不变（仍走 _failure_result 的空值）：
-        # 调用方全部按「本轮没拿到数据」处理，改成抛异常会击穿 50+ 平台函数的兜底装饰器语义。
-        # 只有「确实能识别出缺失模块」才走缺包告警：原实现把整个请求路径都包在本分支里，请求在途时
-        # 任何真 RuntimeError（anyio 取消作用域错乱、房间线程退出竞态的 Event loop is closed 等）都会
-        # 被系统性误报成「缺少可选依赖」。非缺包的真 RuntimeError 落下方通用分支同款 debug 处理。
+        # 依赖缺失是**环境级**故障，误判成「疑似风控」的后果与三类异常的来源见上方模块级说明。
+        # ModuleNotFoundError 是 ImportError 的子类，列出来是让「缺包」这一类在代码里显式成立。
+        # 返回契约不变（仍走 _failure_result 的空值）：调用方全部按「本轮没拿到数据」处理，改成
+        # 抛异常会击穿 50+ 平台函数的兜底装饰器语义。只有「确实能识别出缺失模块」才走缺包告警——
+        # 请求在途的真 RuntimeError（anyio 取消作用域错乱、房间线程退出竞态的 Event loop is closed
+        # 等）不得被误报成「缺少可选依赖」，非缺包的真 RuntimeError 落下方通用分支同款 debug 处理。
         if _missing_dependency_name(e):
             _log_dependency_missing(e, url)
             return _failure_result(redirect_url, return_cookies, include_cookies)
@@ -703,8 +701,7 @@ async def get_response_status(
     if internal_reason is not None:
         if internal_reason.startswith(web_config.DNS_UNRESOLVABLE_REASON_PREFIX):
             # DNS 解析失败（含瞬时故障）同样 fail-closed 拒绝（理由见 web_config._host_internal_reason），
-            # 但**归因**要分开：「疑似被篡改」只对内网/保留目标成立，瞬时 DNS 故障打那条会误导排障方向
-            # （2026-10-29 审查）。
+            # 但**归因**要分开：「疑似被篡改」只对内网/保留目标成立，瞬时 DNS 故障打那条会误导排障方向。
             logger.warning(
                 i18n.tr(
                     "get_response_status 拒绝目标（主机名无法解析，可能为瞬时 DNS 故障）: {masked_url} - {reason}",
@@ -724,7 +721,7 @@ async def get_response_status(
         )
         return False
     if verify is None:
-        # 本函数的入参是**流地址**（src/stream.py 的 HLS 候选校验），原先回落到控制面
+        # 本函数的入参是**流地址**（src/stream.py 的 HLS 候选校验），verify 不得回落到控制面
         # config.ssl_verify（生产恒 True、严格校验），而 ffmpeg 的 -tls_verify 与 stream_select 的同步
         # 校验器都按 get_effective_ssl_verify(platform) 取值。于是「https 录制模式（拉流侧已全局豁免）」或
         # 「平台命中禁用 SSL 验证名单（虎牙 TX CDN 主机名不匹配正是该名单的立论）」时，探针必然 SSL 报错
@@ -739,8 +736,6 @@ async def get_response_status(
         # 轻量探测避免误判降档。判据覆盖 405/501（方法不允许/未实现）而非只认 `.m3u8` 扩展名：
         # flv/直链遇「CDN 拒绝 HEAD 但 GET 可拉流」同样该复核。**不放宽** 404/403——真死链必须
         # 继续判不可达。扩展名按小写判定（大写 .M3U8 否则会漏掉该探测）。
-        # [2026-10-30 L-03] 旧条件带 `response.status_code != 200 and` 前缀——上方 ==200 已 return，
-        # 该前缀恒真，属死条件（误导读者以为 200 也会进复核）。摘掉前缀，语义不变。
         if ".m3u8" in url.lower() or response.status_code in (405, 501):
             probe = await client.get(
                 url, headers={**(headers or {}), "Range": "bytes=0-0"}, follow_redirects=True, timeout=timeout

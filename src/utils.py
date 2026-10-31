@@ -53,7 +53,6 @@ def is_safe_http_url(url: str) -> bool:
 # 并阻塞等 stdout，在「每房间独立线程 + 独立事件循环」模型下会**冻结该房间的整个事件循环**（咪咕最坏
 # 30s），且每次调用都重新读文件 + compile。本组工具统一解决两点：① 按 (路径, mtime) 缓存编译产物；
 # ② 把阻塞段丢进专用线程池，协程侧只 await。
-# ─────────────────────────────────────────────────────────────
 
 # path -> (源文件 mtime, 编译产物)。mtime 参与键判定：脚本更新后自动重编译，无需重启进程
 # （开发期频繁改签名脚本的场景）。
@@ -356,7 +355,7 @@ async def run_node_script_async(script_path: str, *args: str, timeout: float = 3
     # ② 外层 asyncio.wait_for 管 await 侧——线程不可取消，① 一旦不生效（管道被孙进程拖住、有人把
     #    执行方式改回不带超时的形态、Popen 构造本身阻塞）await 就永久挂住。
     # 外层预算刻意与内层同值：调用方拿到的最坏等待就是 timeout。两类超时异常一律**上抛**。
-    # [2026-10-31 L-11 注] 本函数刻意走 asyncio.to_thread 默认池而非 _JS_EXECUTOR 自有池：
+    # [历史注] 本函数刻意走 asyncio.to_thread 默认池而非 _JS_EXECUTOR 自有池：
     # 与 run_js_async 的差异在于本函数内层 communicate 必带 timeout 且超时即回收进程树
     # （_kill_node_process_tree），线程不会被无限拖死，自有池防的「shutdown_default_executor
     # 300s join」形态在此不成立；两函数为何不同池，以本注为准。
@@ -624,9 +623,8 @@ def read_ini_value(file_path: str | Path, section: str, key: str) -> str | None:
     return None
 
 
-# 原该兼容别名 `read_config_value = read_ini_value`（三参路径形态）已删除：全仓零调用点
-# （main.py 的 100+ 处同名调用全部指向 src.config_io），保留只会让该想消除的「同名不同义」
-# 混淆继续存在。`utils.read_ini_value` 是唯一入口。
+# [历史注] 兼容别名 `read_config_value = read_ini_value`（三参路径形态）已删除：全仓零调用点
+# （main.py 的 100+ 处同名调用全部指向 src.config_io）。`utils.read_ini_value` 是唯一入口。
 
 
 # ── 原子写的可注入落盘原语（测试缝）─────────────────────
@@ -696,7 +694,7 @@ def atomic_write_text(file_path: str | Path, text: str, encoding: str = "utf-8-s
                 _fsync_file(f.fileno())
             except OSError:
                 pass  # 见上方该注释：仅无法确认耐久时不阻断发布
-        # 2026-10-21：目标此前不存在时**显式**落 0600，而不是只靠 mkstemp 的默认权限。
+        # 目标此前不存在时**显式**落 0600，而不是只靠 mkstemp 的默认权限。
         # 为什么要显式写一次：os.replace 后目标继承临时文件的模式，而 mkstemp 的 0600 是「与
         # umask 相与」的结果——本仓的凭据文件（config.ini 含明文 Cookie/账号密码）此前只有
         # utils.update_config 一条路径在写完 chmod 0600，首次创建与缺键补写都只经本函数，
@@ -815,7 +813,7 @@ def remove_duplicate_lines(file_path: str | Path) -> None:
     # 移除文件中的重复行（URL_config.ini 启动期去重）。
     # 整文件重写必须持 main.file_update_lock + 原子写（与 config_io 的 update_file/
     # delete_line 同一把锁），否则与主循环热加载 / Web 面板写入并发时会读到半写文件、或在 Windows
-    # 上让对端的 os.replace 直接失败。：编码回退分支必须先 clear() 首轮结果——首轮按 utf-8-sig
+    # 上让对端的 os.replace 直接失败。编码回退分支必须先 clear() 首轮结果——首轮按 utf-8-sig
     # 读出的行可能已带 U+FFFD 替换字符，不清空就会把两轮混合的键写回文件。
     #
     # ①（行尾）：两处读一律 newline=""。默认 universal newlines 会把 \r\n 读成 \n，而写侧

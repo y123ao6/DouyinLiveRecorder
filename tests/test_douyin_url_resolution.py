@@ -32,7 +32,6 @@ SEC_UID = "MS4wLjABAAAASGMSxxCNSLh6Obfutqd_VtTnfp0cLgfhAeT9kpJb9Ar8D9_WMFSez95is
 
 # ---------------------------------------------------------------------------
 # 测试替身：模拟 httpx.AsyncClient
-# ---------------------------------------------------------------------------
 
 
 class _FakeResponse:
@@ -74,9 +73,7 @@ def _patch_client(handler: Any) -> tuple[Any, Any]:
     return client, patch("src.room.httpx.AsyncClient", lambda **_kwargs: client)
 
 
-# ---------------------------------------------------------------------------
 # 1) sec_user_id 提取
-# ---------------------------------------------------------------------------
 
 
 class TestExtractSecUserId:
@@ -100,9 +97,7 @@ class TestExtractSecUserId:
         assert extract_sec_user_id(f"https://www.douyin.com/share?sec_uid={SEC_UID}&x=1") == SEC_UID
 
 
-# ---------------------------------------------------------------------------
 # 2) get_unique_id —— 主页链接解析为抖音号
-# ---------------------------------------------------------------------------
 
 
 class TestGetUniqueId:
@@ -239,9 +234,7 @@ class TestGetUniqueId:
         assert call_count["api"] == 1
 
 
-# ---------------------------------------------------------------------------
 # 3) get_douyin_web_stream_data —— 格式 1 (数字房间) & 格式 3 (抖音号, VR)
-# ---------------------------------------------------------------------------
 
 
 class TestGetDouyinWebStreamData:
@@ -314,9 +307,7 @@ class TestGetDouyinWebStreamData:
         assert mock_req.await_count == 2
 
 
-# ---------------------------------------------------------------------------
 # 4) get_douyin_app_stream_data —— 格式 2 (app直播间) & 格式 4/5 (主播主页)
-# ---------------------------------------------------------------------------
 
 
 class TestGetDouyinAppStreamData:
@@ -379,7 +370,6 @@ class TestGetDouyinAppStreamData:
         # 优化点：网页端主页链接不会重定向到 reflow 直播间页，应直接走主页解析，
         # 不应调 get_sec_user_id（旧逻辑会白下载一次主页 HTML 并抛 UnsupportedUrlError）。
         assert mock_sec.await_count == 0
-        # 解析出的抖音号应被拼接成 live.douyin.com 直播间地址
         assert mock_web.call_args.args[0] == "https://live.douyin.com/47884081925"
         # 回归：主页路径必须透传 cookies
         assert mock_web.call_args.args[2] == "ttwid=fake"
