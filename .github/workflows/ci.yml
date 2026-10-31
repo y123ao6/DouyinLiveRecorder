@@ -66,7 +66,8 @@
 #                              .coveragerc-concurrency（并发测试不设全局覆盖率下限）。
 #     · DOUYIN_SKIP_RUNTIME_CHECK / DOUYIN_LOG_NO_ENQUEUE
 #                           —— 由 tests/conftest.py 自动 setdefault，无需在此声明。
-#     · DISPLAY             —— 由 xvfb-run 注入（test job 的真 Tk 用例 + build-verify job 的 GUI 冒烟）。
+#     · DISPLAY             —— build-verify job 由 xvfb-run 注入（GUI 冒烟）；test job 的
+#                              Qt 用例走 offscreen 后端，不依赖 DISPLAY。
 #     · secrets.CODECOV_TOKEN —— 可选：test job 的覆盖率上传步骤仅在「已配置该 secret
 #                              且为最低支持版本」时运行；未配置则自动跳过，不阻断 CI。
 #                              公开仓库也可不配置（Codecov 可从 commit 关联推断），配置后
@@ -487,10 +488,8 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ffmpeg：部分测试会探测 ffmpeg 可用性；xvfb：无头 X server，让真 Tk 集成用例
-      # （test_gui_wrap_hints / test_ui_theme / test_ui_kit 的显示门控用例）在 CI 常态执行
-      # 而非 skip——阶段4/5 实证这类用例能抓到无头测试看不见的真 bug（ttk 无控件级
-      # -font、CTk configure 静默忽略 cnf 字典）。两者均 apt 装轻量版（非打包用途）。
+      # ffmpeg：部分测试会探测 ffmpeg 可用性。tkinter GUI 技术栈已移除，Qt 用例统一走
+      # offscreen 后端，故 test job 不再安装 xvfb / 不再启动虚拟显示。
       # Qt 运行库（libegl1 及其 GL/xcb 同族）：GUI 窗口层 2026-10-17 迁 PySide6 后已进入
       # 运行时清单（requirements.txt），pip 装得到 wheel 自带的 Qt .so，但那些 .so 仍 dlopen
       # 一组**系统库**——ubuntu runner 缺 libEGL.so.1 时 `from PySide6.QtGui import ...` 抛
@@ -498,14 +497,14 @@ jobs:
       # （2026-10-18 实测：4337 collected / 2 errors → Interrupted，exit code 2，其余用例
       # 一条没跑，覆盖率 xml 与逐模块门禁全部拿不到数据）。装这组库是让窗口层真跑起来的前提，
       # 而不是让它在 CI 上安静地 skip（见下方两道反 skip 闸门）。
-      - name: Install ffmpeg + xvfb + Qt runtime libs (apt)
+      - name: Install ffmpeg + Qt runtime libs (apt)
         uses: ./.github/actions/retry
         with:
-          label: apt 安装 ffmpeg + xvfb + Qt 运行库
+          label: apt 安装 ffmpeg + Qt 运行库
           command: >-
             sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq -o Acquire::Retries=3
             && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends
-            ffmpeg xvfb
+            ffmpeg
             libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri
             libxkbcommon-x11-0 libdbus-1-3 libglib2.0-0 libfontconfig1
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0
@@ -535,29 +534,23 @@ jobs:
             "isort==${{ needs.setup.outputs.isort_version }}"
             "mypy==${{ needs.setup.outputs.mypy_version }}"
 
-      # MID-2264 同款反 skip 兜底：xvfb 装完即验「Tk 真能开显示」——若 xvfb 失效，
-      # 真窗用例会以 TclError 走 skip 通道（skipped 与 passed 在 ci-summary 里不可区分），
-      # 常态化的真 Tk 用例就会静默消失；本步让那类环境故障当场红而不是假绿。
-      - name: Assert Tk display is available (real-window tests must not skip)
-        run: xvfb-run -a python -c "import tkinter; root = tkinter.Tk(); print('Tk display OK', root.winfo_screenwidth()); root.destroy()"
-
-      # Qt 侧的同形兜底（2026-10-18）：两个 Qt 测试模块靠 pytest.importorskip 降级到 skip，
+      # Qt 侧反 skip 兜底（2026-10-18）：两个 Qt 测试模块靠 pytest.importorskip 降级到 skip，
       # 而 ci-summary 分不清 skipped 与 passed —— 一旦上面那组 apt 包被换镜像 / 换源削弱，
       # 窗口层用例会整片 skip 而汇总仍绿，**这正是本次事故想避免的假绿**（事故原始形态是
       # 直接 collection error 中断整轮，用 skip 掩盖它只会更糟）。本步在 pytest 之前先手验证
       # QtGui/QtWidgets 能加载、且离屏后端真能起 QApplication（平台插件缺失时 Qt 在此即 fatal
       # abort），让环境故障当场红在明确的步骤名上。
       # QT_QPA_PLATFORM=offscreen 与 tests/test_gui_qt_*.py 内部的 setdefault 同口径（那两处
-      # 用 setdefault 是为了不覆盖外部指定，此处行内写死是为了让本步自身不依赖 xvfb）。
+      # 用 setdefault 是为了不覆盖外部指定，此处行内写死是为了让本步自身不依赖显示服务器）。
       - name: Assert Qt offscreen platform is usable (GUI window tests must not skip)
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -c "from PySide6.QtWidgets import QApplication; app = QApplication([]); print('Qt offscreen OK', app.platformName())"
 
-      # pytest 全程跑在 xvfb 下：非 Tk 用例不受影响（不读 DISPLAY），真窗用例因此真实执行。
-      # 全局覆盖率下限 fail_under = 50 由 pyproject [tool.coverage.report] 强制
+      # Qt 用例在各自模块内 setdefault QT_QPA_PLATFORM=offscreen，无需显示服务器。
+      # 全局覆盖率下限由 pyproject [tool.coverage.report] fail_under 强制。
       - name: Run pytest with coverage
-        run: xvfb-run -a pytest --cov=src --cov-report=term-missing --cov-report=xml
+        run: pytest --cov=src --cov-report=term-missing --cov-report=xml
 
       # 「有告警即失败」pytest 侧（与上方 isort/black 兜底步骤同一形态）：
       # pyproject filterwarnings 已忽略已知第三方告警，理论上 warnings summary 恒为空。
@@ -869,7 +862,7 @@ jobs:
         with:
           node-version: ${{ needs.setup.outputs.node_version }}
 
-      # xvfb：GUI（Qt/pystray）冒烟需要虚拟显示。
+      # xvfb：GUI（PySide6）冒烟需要虚拟显示（Qt 离屏后端只覆盖测试，冒烟要真实窗口）。
       # Qt 运行库与 test job 同一组：smoke_gui() 起的正是带 PySide6 窗口层的打包产物，
       # 缺 libEGL.so.1 时进程一起来就崩（与 test job 那次 collection error 同源故障面），
       # 而 build_exe.py 的冒烟对「产物打出来了但跑不起来」是宽松的，故在环境侧先补齐。

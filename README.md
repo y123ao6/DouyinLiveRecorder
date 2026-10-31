@@ -484,8 +484,6 @@ web_tray_icon =
 gui_theme = light
 # 界面缩放：自动 | 85 | 100 | 115 | 130 | 150（「自动」按屏幕可用区现算；菜单选择后自动写回）
 gui_scale = 自动
-# 动效强度：跟随系统 | off | subtle | full（系统「关闭动画」优先于用户选择）
-gui_motion = 跟随系统
 # 界面字体：留空 = 系统默认（Microsoft YaHei UI）；填字体族名即用之
 gui_font =
 # 自定义字体文件路径：由侧边栏「导入字体…」写入；字体副本存放在 config/fonts/ 下
@@ -1015,7 +1013,7 @@ brew install node
 > 本版本（v4.5.0，2026-10-02 ~ 10-17）是一次「GUI 全面现代化 + 平台接入扩张」周期：① **窗口层由 tkinter/ttk 迁到 PySide6（Qt6）**，新增 `src/gui_qt/`，令牌与 QSS 单一事实源、控制器层可离屏单测，打包侧靠 `QT_BLOAT_FILES` 剪除 Qt 死重；② **界面现代化阶段4~6 收尾**（CTk → ttk、`customtkinter` 摘除、字号 / 缩放 / 动效）；③ **平台接入扩张**（三类移动端短链 + 小红书四类链接归一，Linux arm64 与 GHCR 多架构补齐）；④ **config.ini 同节重复键不再整份失效**（新增 `src/config_read.py`）。**存在破坏性变更（GUI 实现与依赖面）**，见下方专节。详细根因与验证见 [CODE_WIKI.md](CODE_WIKI.md)。
 
 **✨ 新增功能 / 改进**
-- **GUI 窗口层迁移 PySide6（Qt6）**：新增 `src/gui_qt/`（16 文件 4189 行，含 `pages/` 五页），`gui.py:main()` 委托 `src.gui_qt.app.main()`（tkinter 实现留作 `_legacy_main()`）。令牌与 QSS 单一事实源在 `theme.py`，线程模型换轨 Qt Signal/Slot + `QTimer`；控制器层无 Qt 布局代码，`QT_QPA_PLATFORM=offscreen` 即可离屏单测。
+- **GUI 窗口层迁移 PySide6（Qt6）**：新增 `src/gui_qt/`（16 文件 4189 行，含 `pages/` 五页），`gui.py:main()` 委托 `src.gui_qt.app.main()`（tkinter 实现留作 `_legacy_main()`；[历史注] 该回退实现已于 2026-10-31 完全移除）。令牌与 QSS 单一事实源在 `theme.py`，线程模型换轨 Qt Signal/Slot + `QTimer`；控制器层无 Qt 布局代码，`QT_QPA_PLATFORM=offscreen` 即可离屏单测。
 - **界面现代化阶段6（字号 / 缩放 / 动效）**：新增 `src/ui_scale.py`（语义字号七档 caption 10 → display 28、间距栅格、缩放档位、小屏自动降档）与 `src/ui_motion.py`（off/subtle/full，系统「关闭动画」优先）。缩放只改字号与间距，点值按 `factor ** 0.6` 温和增益（等宽再乘 0.9）。
 - **GUI 视觉语言改版（品牌蓝 → 暖赭橙）**：`src/ui_theme.py` light/dark 两表换 16 个槽位，`gui.py` 的 `Colors` 同批换值；主色 `#B5573A`（白字 4.78；原型 `#C96442` 实测 3.90 不达 AA），深色 hover `#A8502F`。`high_contrast`、`TERMINAL_*` 与语义色槽未动。
 - **GUI 自选字体**：新增 `src/ui_fonts.py`（SFNT name 表解析 + GDI 私有字体注册，拒收 woff2）；切族在同一 `configure` 完成、不重建控件树。可用性判据是让 Tk 解析一次并与缺失族名的兜底结果比对（`AddFontResourceExW(FR_PRIVATE)` 成功但 `tkfont.families()` 列不到私有字体）。
@@ -1038,7 +1036,7 @@ brew install node
 
 **⚠️ 破坏性变更 / 行为变化**
 - **`customtkinter` 整体摘除（阶段4~5）**：控件层 CTk → ttk，新增 `src/ui_kit.py`（六个兼容工厂 + `DataTable`），配色由 `ui_theme` 注册的 ttk 变体派生、「界面主题」成为唯一明暗入口；`CTkToplevel` → `tk.Toplevel`、`CTkFont` → 负数点值 `tkfont.Font`，存根删除。兼容契约逐字保持（`import gui` 无头导入、录制链一行不动）。
-- **GUI 窗口层换轨 PySide6**：`gui.py:main()` 委托 `src.gui_qt.app.main()`，tkinter 实现留作 `_legacy_main()`；`packages` 增列 `src.gui_qt` 与 `src.gui_qt.pages`（显式 packages 不递归发现，漏列会让 `douyin-recorder-gui` 入口 `ModuleNotFoundError`）。
+- **GUI 窗口层换轨 PySide6**：`gui.py:main()` 委托 `src.gui_qt.app.main()`，tkinter 实现留作 `_legacy_main()`（[历史注] 已于 2026-10-31 完全移除）；`packages` 增列 `src.gui_qt` 与 `src.gui_qt.pages`（显式 packages 不递归发现，漏列会让 `douyin-recorder-gui` 入口 `ModuleNotFoundError`）。
 - **镜像默认不装 GUI 依赖**：`Dockerfile` 新增 `ARG INSTALL_GUI=false`——阶段1 按行首剔除 `pyside6` 后再装，阶段2 仅 true 时补 Qt 运行库；依据是「PySide6 解压 647.56MB，屏蔽后 `import main` / `import web` 仍成功」。过滤只在镜像侧，compose 的 `gui` 服务另用 `:latest-gui` tag。
 - **`[tool.mypy].exclude` 目录名锚定**：该字段是路径子串正则，裸 `"ffmpeg"` / `"node"` 曾把 12 个文件（`src/ffmpeg_*`、`tests/test_ffmpeg_*`、`node_install`）排除在无参 mypy 门禁外；改 `(^|/)ffmpeg/` 与 `(^|/)node/` 后首次进门禁并暴露 8 处存量标注错误（已修）。
 - **CI 真窗用例由 skip 转为真实执行**：test job 的 pytest 改 `xvfb-run -a` 包裹并加装 xvfb，另加「Tk 开显示」兜底步骤（xvfb 失效当场红，防真窗用例静默消失）。

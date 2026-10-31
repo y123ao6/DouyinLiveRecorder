@@ -108,7 +108,7 @@ class ArrowComboBox(QComboBox):
 
 class StatusDot(QWidget):
     # 设计稿 .dot-live：6px 圆点 + pulse 动画。用 QTimer + 手写 paintEvent 实现呼吸：
-    # timer 挂在控件自身，销毁即自动停，不必像 ttk 版那样手工保存并 cancel 五处 after id。
+    # timer 挂在控件自身，销毁即自动停，不必像旧版那样手工保存并 cancel 五处定时器 id。
     # 不用 QPropertyAnimation 改色——QColor 不是可直接缓动的 Qt 属性，成本高于按需重绘。
     _SIZES: tuple[int, ...] = (10, 12, 14, 16, 14, 12)
 

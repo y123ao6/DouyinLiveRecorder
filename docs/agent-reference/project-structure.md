@@ -61,12 +61,10 @@
 │   ├── web_models.py    # Web 请求体校验层（dataclass + parse）
 │   ├── web_config.py    # Web 配置
 │   ├── web_tray.py      # Web 托盘
-│   ├── ui_theme.py      # GUI 主题层（token/多主题/ttk 注册/持久化/对比度机检）
-│   ├── ui_kit.py      # GUI 控件工厂（ttk 变体样式 + Treeview 增量表格 + 过渡动效原语）
-│   ├── ui_scale.py    # GUI 度量层（语义字号 token + 间距栅格 + 缩放档位）
-│   ├── ui_motion.py   # GUI 动效层（off/subtle/full 三档 + 系统「关闭动画」感知）
+│   ├── ui_theme.py      # GUI 主题偏好层（主题 id 白名单 + 系统明暗探测 + config.ini 持久化）
+│   ├── ui_scale.py    # GUI 缩放档位层（可选档位 + 自动档 + 持久化）
 │   ├── ui_i18n.py     # GUI 静态标签 i18n 接线（T() 标记 + retranslate_all 整窗回填）
-│   ├── ui_fonts.py    # GUI 自选字体（Tk 族名解析判据 + config/fonts/ 副本）
+│   ├── ui_fonts.py    # GUI 自选字体（偏好读写 + config/fonts/ 副本 + 文件名清洗）
 │   ├── ui_icons.py    # 应用图标安装与解析（WEB_ICON_KEY/WEB_SECTION、图标偏好持久化、体积前置闸）
 │   ├── gui_qt/        # GUI 窗口层（PySide6/Qt6：app·theme·widgets·main_window·tray·settings_dialog·recorder + pages 五页）
 │   ├── log_archive.py   # 运行日志归档（停止录制流程收尾：四日志按时间戳改名）

@@ -159,13 +159,15 @@ def test_child_process_env_strips_marker(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_gui_entry_sets_marker_before_src_import() -> None:
     # 静态回归锁：gui.py 的标记设置必须先于首个 src 导入（src.logger 在导入期即读标记，
-    # 若先导入 src 再设标记，GUI 进程照样持有录制日志句柄，修复失效），
-    # 且拉起子进程的 env 必须经 child_process_env() 构建
+    # 若先导入 src 再设标记，GUI 进程照样持有录制日志句柄，修复失效）。
+    # 拉起子进程的 env 由窗口层的 RecorderController 经 child_process_env() 构建，单独锁。
+    root = Path(__file__).resolve().parents[1]
     marker_line = f'os.environ["{logger_mod.GUI_PARENT_ENV}"] = "1"'
-    source = (Path(__file__).resolve().parents[1] / "gui.py").read_text(encoding="utf-8")
+    source = (root / "gui.py").read_text(encoding="utf-8")
     marker_pos = source.find(marker_line)
     src_candidates = [pos for pos in (source.find("from src."), source.find("import src")) if pos != -1]
     assert marker_pos != -1, "gui.py 缺少 GUI 父进程标记设置"
     assert src_candidates, "gui.py 未找到 src 导入"
     assert marker_pos < min(src_candidates), "gui.py 的标记设置必须先于任何 src 导入"
-    assert "child_process_env()" in source, "gui.py 拉起录制子进程必须经 child_process_env() 构建 env"
+    recorder_source = (root / "src" / "gui_qt" / "recorder.py").read_text(encoding="utf-8")
+    assert "child_process_env()" in recorder_source, "窗口层拉起录制子进程必须经 child_process_env() 构建 env"

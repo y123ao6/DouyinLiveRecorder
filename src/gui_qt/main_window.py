@@ -63,8 +63,7 @@ from src.ui_scale import (
 )
 
 # 主题 ID 与「跟随系统」的判定复用 src/ui_theme（config.ini [GUI] gui_theme 的读写事实源），
-# 显示名用本包自己的 THEME_LABELS（ui_theme 里那份是私有的 _THEME_LABELS，
-# 且它服务于 ttk 的 ThemeManager，不该被窗口层反向依赖）。
+# 显示名用本包自己的 THEME_LABELS，避免窗口层反向依赖共享层的展示文案。
 from src.ui_theme import THEME_IDS, detect_system_appearance, load_theme_preference, save_theme_preference
 from src.web_config import parse_url_config, update_config_line
 

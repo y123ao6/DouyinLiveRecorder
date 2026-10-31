@@ -144,9 +144,8 @@ def validate_icon_bytes(data: bytes, max_bytes: int = MAX_ICON_BYTES) -> IconChe
 def install_icon_bytes(data: bytes, app_root: str | Path, filename: str = DEFAULT_ICON_FILENAME) -> Path | None:
     # 校验通过后落盘到 config/icons/，返回落盘路径（校验失败 / 写失败返回 None）。
     # 文件名走 ui_fonts.safe_filename（与字体同一套清洗口径：Unicode 分隔符、Windows 保留设备名）。
-    # [为什么延迟导入] ui_fonts 顶层 `from tkinter import font`：headless 容器与冻结 CLI 产物里
-    # 没有 tkinter，而本模块被 Web 托盘与 favicon 路由在**读取路径**上直接 import（那时根本不需要
-    # 落盘）。放到函数内后，「图标读取」与 tkinter 解耦——图标是装饰，绝不能因它挡住启动。
+    # 延迟导入保留：本模块被 Web 托盘与 favicon 路由在**读取路径**上直接 import（那时根本不需要
+    # 落盘），把 ui_fonts 的导入面收紧到落盘分支，图标是装饰、不能因任何导入期问题挡住启动。
     from src.ui_fonts import safe_filename
 
     check = validate_icon_bytes(data)

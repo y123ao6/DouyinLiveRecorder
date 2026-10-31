@@ -35,11 +35,12 @@ _EXCLUDED_PARTS = {
     ".agents",
     ".superpowers",
 }
-# ②的基线：由本锁自己的 AST 分类器实测（61 处无括号 / 43 处带括号）。[历史注] 首版基线
+# ②的基线：由本锁自己的 AST 分类器实测（56 处无括号 / 43 处带括号）。[历史注] 首版基线
 # 60 来自行正则粗扫，与分类器不同源，变异验证当场发现「摘掉一处无括号」仍判绿（61→60 ≥ 60 恒真）——
-# 棘轮与判据必须由同一个分类器产出。读数过期时重跑下面的命令，而不是凭印象改：
+# 棘轮与判据必须由同一个分类器产出。2026-10-31 legacy tkinter gui.py（5k 行）删除后由 61 降至 56。
+# 读数过期时重跑下面的命令，而不是凭印象改：
 #   PYTHONUTF8=1 python -c "import importlib.util as u;s=u.spec_from_file_location('p','tests/test_pep758_except_form.py');m=u.module_from_spec(s);s.loader.exec_module(m);print(len(m._classify(m._scan_roots())[0]))"
-_BARE_MULTIPLE_BASELINE = 61
+_BARE_MULTIPLE_BASELINE = 56
 
 
 def _scan_roots() -> list[Path]:

@@ -145,7 +145,7 @@ Platforms that support actual quality feedback and downgrade alerting: Douyin, T
 | FFmpeg | Video recording and transcoding |
 | Node.js + exejs/PyExecJS | Run JavaScript signing algorithms (exejs preferred, PyExecJS fallback) |
 | Loguru | Structured logging |
-| PySide6 (Qt6) | GUI and system tray (the window layer is `src/gui_qt/` since 2026-10-17; both the GUI and Web entry trays use QSystemTrayIcon (since 2026-10-20); the tkinter.ttk implementation is kept during the migration and carries no tray since that date) |
+| PySide6 (Qt6) | GUI and system tray (the window layer is `src/gui_qt/`; both the GUI and Web entry trays use QSystemTrayIcon (since 2026-10-20); the tkinter/ttk implementation was fully removed on 2026-10-31) |
 | Starlette + uvicorn | Web management panel backend |
 | HTML + CSS + JavaScript | Web management panel frontend |
 | Docker | Containerized deployment |
@@ -237,12 +237,10 @@ DouyinLiveRecorder/
 │   ├── web_models.py                   # Web 请求体校验层（纯标准库 dataclass + parse，替代 pydantic）
 │   ├── web_config.py                   # Web 面板配置读写（不依赖 Web 框架）
 │   ├── web_tray.py                     # Web 模式系统托盘（Windows 最小化到托盘）
-│   ├── ui_theme.py                     # GUI 主题层（语义 token + 多主题 + ttk 注册 + 持久化 + 对比度机检）
-│   ├── ui_kit.py                       # GUI 控件工厂（ttk 变体样式映射 + Treeview 增量表格 + 过渡动效原语）
-│   ├── ui_scale.py                     # GUI 度量层（语义字号 token + 间距栅格 + 全局缩放档位 + 小屏降档）
-│   ├── ui_motion.py                    # GUI 动效层（off/subtle/full 三档 + 插值原语 + 系统「关闭动画」感知）
-│   ├── ui_i18n.py                      # GUI 静态标签 i18n 接线（T() 标记 + 语言切换整窗回填 + Qt/Tk 两种应用模式）
-│   ├── ui_fonts.py                     # GUI 自选字体（Tk 族名解析判据 + 私有字体加载 + config/fonts/ 副本）
+│   ├── ui_theme.py                     # GUI 主题偏好层（主题 id 白名单 + 系统明暗探测 + config.ini 持久化）
+│   ├── ui_scale.py                     # GUI 缩放档位层（可选档位 + 自动档 + config.ini 持久化）
+│   ├── ui_i18n.py                      # GUI 静态标签 i18n 接线（T() 标记 + 语言切换整窗回填 + Qt setText）
+│   ├── ui_fonts.py                     # GUI 自选字体（偏好读写 + config/fonts/ 副本 + 文件名清洗）
 │   ├── gui_qt/                         # GUI 窗口层（PySide6/Qt6：app·theme·widgets·main_window·tray·settings_dialog·recorder·监控 + pages 五页）
 │   ├── http_config.py                  # HTTP 客户端共享运行时配置（SSL 验证开关）
 │   ├── async_http.py                   # 异步 HTTP 客户端 (httpx)
@@ -289,7 +287,7 @@ DouyinLiveRecorder/
 ├── ffmpeg/                              # FFmpeg 二进制目录（Windows，git 忽略 exe）
 ├── node/                                # Node.js 二进制目录（Windows，git 忽略）
 ├── main.py                              # 命令行入口
-├── gui.py                               # GUI 图形界面入口（委托 src/gui_qt/，PySide6 窗口层；tkinter 实现迁移期保留）
+├── gui.py                               # GUI 图形界面入口（薄入口：父进程标记 + PySide6 崩溃兜底 + 委托 src/gui_qt/）
 ├── web.py                               # Web 管理面板入口
 ├── i18n.py                              # 国际化实现（print 翻译包装）
 ├── msg_push.py                          # 消息推送模块
@@ -650,7 +648,7 @@ NETEASE_QUALITY_MAP = {"blueray": "OD", "ultra": "UHD", "high": "HD", "standard"
 
 ### 9. GUI Module (`gui.py`)
 
-> **Since 2026-10-17 the window layer has moved to PySide6**: this section describes the tkinter implementation kept during the migration period (`_legacy_main()`); the current window implementation lives in `src/gui_qt/` (`app.py` assembly / `theme.py` design tokens & QSS / `widgets.py` Card·Toast·DataTable / `main_window.py` main window / `pages/` five pages / `recorder.py`·`danmaku_monitor.py` controllers), with the visual source of truth in `docs/gui-redesign/index.html` — see the same-day entry in the changelog.
+> **The window layer has been PySide6 since 2026-10-17; the legacy tkinter implementation was fully removed on 2026-10-31**: the current window implementation lives in `src/gui_qt/` (`app.py` assembly / `theme.py` design tokens & QSS / `widgets.py` Card·Toast·DataTable / `main_window.py` main window / `pages/` five pages / `recorder.py`·`danmaku_monitor.py` controllers), and `gui.py` is only a thin entry (parent-process marker + crash fallback + delegation). Visual source of truth: `docs/gui-redesign/index.html` — see the same-day entry in the changelog.
 
 **Responsibility**: Provide a modern graphical user interface.
 
@@ -1750,6 +1748,22 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > Scripts: `tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`
 > (`python file.py <URL> [seconds]`; requires a live room + network; manual channel by default).
 > **Rolling archive**: this section keeps only the current release window; older entries live verbatim in [`docs/changelog/code-wiki-history-en.md`](docs/changelog/code-wiki-history-en.md) (rule stated in the "Changelog Archive Index" above).
+
+### v4.6.0-dev (2026-10-31) — Complete removal of the tkinter GUI stack (PySide6 is the only window implementation)
+
+- **User directive**: remove every remaining tkinter framework artifact and related code from the GUI (including fallbacks and hidden dependencies); migrate required capabilities to PySide6 / shared modules first, without changing user-visible behavior, the recording core, config I/O, logging, subprocess control, or Web/headless entry semantics.
+- **Entry**: `gui.py` drops from a 5,022-line legacy window to a 54-line thin entry — it keeps the process contract "`DLR_GUI_PARENT` is set before any `src` import", lazily imports and delegates `main()` to `src.gui_qt.app.main()`, and keeps a PySide6 `QMessageBox` crash fallback plus file logging for windowed runs. Removed: `LiveRecorderGUI`, `AdvancedSettingsWindow`, `_legacy_main()`, the tkinter crash dialog and `_fix_encoding()`.
+- **Shared-layer trimming**: deleted the tkinter-only `src/ui_kit.py` (ttk widget factories / incremental Treeview table / motion primitives) and `src/ui_motion.py` (tk frame scheduling); `src/ui_theme.py` now only keeps the theme-id whitelist, system appearance detection and `config.ini` persistence (removed `ThemeManager`, ttk theme registration and the token/contrast contract); `src/ui_fonts.py` only keeps preference I/O, font-copy import and filename cleaning (removed Tk family enumeration/resolution, SFNT name-table parsing and GDI private-font registration); `src/ui_i18n.py` is collapsed into a Qt `setText` registry (removed the Tk `configure`/`title`/`heading` modes and `apply_title`); `src/ui_scale.py` only keeps presets/auto/persistence (removed `ScaleProfile` and the font-size/spacing/window-geometry derivation). Everything the Qt layer uses — `THEME_IDS`, scale presets/auto/persistence, font import — is preserved.
+- **Test migration**: deleted 11 tkinter-only test files (`test_ui_kit` / `test_ui_motion` / `test_gui_wrap_hints` / `test_gui_right_edge_fit` / `test_gui_language_retranslate` / `test_gui_legacy_guards` / `test_gui_monitor` / `test_gui_tail_robustness` / `test_gui_stop_exit_singleflight` / `test_gui_save_atomic` / `test_regression_gui`); `test_gui_status_pattern_i18n` now drives `src.gui_qt.quality_monitor.QualityMonitor` + `shared.status_patterns()` directly (retaining the four-language, reordered-placeholder and mid-build race locks); `test_ui_theme` / `test_ui_fonts` / `test_ui_i18n` were rewritten as headless core assertions; the legacy-GUI sections were removed from `test_danmaku_monitor` / `test_regression_root_entries`; the `child_process_env()` lock in `test_logger_gui_parent` now points at `src/gui_qt/recorder.py`; the PEP 758 bare-except baseline moved from 61 to the post-deletion reading of 56.
+- **Engineering config**: the test job no longer installs xvfb or asserts a live Tk display (Qt tests use `QT_QPA_PLATFORM=offscreen`); the `tkinter` excludes in `build_exe.py` / `DouyinLiveRecorder.spec` stay as anti-regression measures with updated comments; `config/config.ini` and both READMEs drop the `[GUI] gui_motion` key that only served the legacy motion layer.
+- **Verification**: `scripts/run_gates.py` 10/10 PASS (black/isort/mypy on both platforms/annotations/po/version/pins/Skill consistency); pytest 4786 passed / 16 skipped / 0 warnings; `scripts/check_coverage.py` 67/67 modules pass (total 84.65%); basedpyright 0 error / 0 warning; `import gui` succeeds with `PySide6` unavailable (`sys.modules['PySide6']=None`); offscreen `MainWindow` construction succeeds (5 pages); `python gui.py` runs offscreen for 6 s without crashing (timeout 124). No `import tkinter` / `from tkinter` remains in product code. **DoD step 2 is not applicable** (no recording chain / source selection / ffmpeg argument / platform parsing changes).
+
+### v4.6.0-dev (2026-10-31) — GUI run-log window: word wrap follows viewport width
+
+- **User instruction**: make the run-log output window auto-wrap as the overall window size changes (screenshot attached: long lines overflow horizontally).
+- **Change**: `src/gui_qt/widgets.py::TerminalText` line-wrap mode `NoWrap` → `WidgetWidth` (one line + a "why" comment). Log lines are routinely wider than the viewport (platform status lines / URLs / masked placeholders); with NoWrap they can only scroll horizontally. Under WidgetWidth, Qt re-wraps existing blocks automatically when the widget resizes; the break points for long unbroken tokens come from QPlainTextEdit's default `wordWrapMode` (WrapAtWordBoundaryOrAnywhere, verified empirically), so no explicit extra setting is needed. The legacy tkinter `gui.py` is migration-retained and not the active GUI — untouched; `TerminalText` is used only by the run-log page, so the danmaku page and other views are unaffected.
+- **Regression lock**: `tests/test_gui_qt_units.py::test_terminal_wraps_at_widget_width_and_rewraps_on_resize` — the evidence surface is `document().firstBlock().lineCount()` (always 1 under NoWrap; changes monotonically with width; relative assertions only, robust across fonts / CI). Mutation-verified: reverting to `NoWrap` turns it red, restoring turns it green.
+- **Verification**: `run_gates.py` 10/10 PASS; pytest with coverage 5054 passed / 16 skipped / 0 warnings; `check_coverage.py` 69/69 modules meet threshold (total 84.47%); basedpyright 0 errors / 0 warnings. Offscreen measurement: a long line wraps into 24 visual lines at a 240px viewport and re-wraps to 5 when widened to 1500px. **DoD step 2 not applicable** (no recording-chain / source-selection / ffmpeg / platform-resolver behavior touched); on-screen visual confirmation (drag the main window and watch the log re-wrap) is handed back to the user.
 
 ### v4.6.0-dev (2026-10-31) — Repo-wide comment-only slimming and consistency pass (zero behavior change)
 

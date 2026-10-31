@@ -145,7 +145,7 @@
 | FFmpeg | 视频录制与转码 |
 | Node.js + exejs/PyExecJS | 运行 JavaScript 签名算法（exejs 优先，PyExecJS 回退） |
 | Loguru | 结构化日志 |
-| PySide6 (Qt6) | GUI 图形界面与系统托盘（2026-10-17 起窗口层为 `src/gui_qt/`；GUI 与 Web 两入口托盘均走 QSystemTrayIcon（2026-10-20 起）；tkinter.ttk 实现迁移期保留，自同日起不自带托盘） |
+| PySide6 (Qt6) | GUI 图形界面与系统托盘（窗口层为 `src/gui_qt/`；GUI 与 Web 两入口托盘均走 QSystemTrayIcon（2026-10-20 起）；tkinter/ttk 实现已于 2026-10-31 完全移除） |
 | Starlette + uvicorn | Web 管理面板后端 |
 | HTML + CSS + JavaScript | Web 管理面板前端 |
 | Docker | 容器化部署 |
@@ -237,12 +237,10 @@ DouyinLiveRecorder/
 │   ├── web_models.py                   # Web 请求体校验层（纯标准库 dataclass + parse，替代 pydantic）
 │   ├── web_config.py                   # Web 面板配置读写（不依赖 Web 框架）
 │   ├── web_tray.py                     # Web 模式系统托盘（Windows 最小化到托盘）
-│   ├── ui_theme.py                     # GUI 主题层（语义 token + 多主题 + ttk 注册 + 持久化 + 对比度机检）
-│   ├── ui_kit.py                       # GUI 控件工厂（ttk 变体样式映射 + Treeview 增量表格 + 过渡动效原语）
-│   ├── ui_scale.py                     # GUI 度量层（语义字号 token + 间距栅格 + 全局缩放档位 + 小屏降档）
-│   ├── ui_motion.py                    # GUI 动效层（off/subtle/full 三档 + 插值原语 + 系统「关闭动画」感知）
-│   ├── ui_i18n.py                      # GUI 静态标签 i18n 接线（T() 标记 + 语言切换整窗回填 + Qt/Tk 两种应用模式）
-│   ├── ui_fonts.py                     # GUI 自选字体（Tk 族名解析判据 + 私有字体加载 + config/fonts/ 副本）
+│   ├── ui_theme.py                     # GUI 主题偏好层（主题 id 白名单 + 系统明暗探测 + config.ini 持久化）
+│   ├── ui_scale.py                     # GUI 缩放档位层（可选档位 + 自动档 + config.ini 持久化）
+│   ├── ui_i18n.py                      # GUI 静态标签 i18n 接线（T() 标记 + 语言切换整窗回填 + Qt setText）
+│   ├── ui_fonts.py                     # GUI 自选字体（偏好读写 + config/fonts/ 副本 + 文件名清洗）
 │   ├── gui_qt/                         # GUI 窗口层（PySide6/Qt6：app·theme·widgets·main_window·tray·settings_dialog·recorder·监控 + pages 五页）
 │   ├── http_config.py                  # HTTP 客户端共享运行时配置（SSL 验证开关）
 │   ├── async_http.py                   # 异步 HTTP 客户端 (httpx)
@@ -289,7 +287,7 @@ DouyinLiveRecorder/
 ├── ffmpeg/                              # FFmpeg 二进制目录（Windows，git 忽略 exe）
 ├── node/                                # Node.js 二进制目录（Windows，git 忽略）
 ├── main.py                              # 命令行入口
-├── gui.py                               # GUI 图形界面入口（委托 src/gui_qt/，PySide6 窗口层；tkinter 实现迁移期保留）
+├── gui.py                               # GUI 图形界面入口（薄入口：父进程标记 + PySide6 崩溃兜底 + 委托 src/gui_qt/）
 ├── web.py                               # Web 管理面板入口
 ├── i18n.py                              # 国际化实现（print 翻译包装）
 ├── msg_push.py                          # 消息推送模块
@@ -651,7 +649,7 @@ NETEASE_QUALITY_MAP = {"blueray": "OD", "ultra": "UHD", "high": "HD", "standard"
 
 ### 9. GUI 模块 (`gui.py`)
 
-> **2026-10-17 起窗口层已迁到 PySide6**：本节描述的是迁移期保留的 tkinter 实现（`_legacy_main()`），现行窗口实现见 `src/gui_qt/`（`app.py` 装配 / `theme.py` 设计令牌与 QSS / `widgets.py` Card·Toast·DataTable / `main_window.py` 主窗 / `pages/` 五页 / `recorder.py`·`danmaku_monitor.py` 控制器），视觉事实源 `docs/gui-redesign/index.html`，详见「更新日志」当日条目。
+> **窗口层自 2026-10-17 起为 PySide6，legacy tkinter 实现已于 2026-10-31 完全移除**：现行窗口实现见 `src/gui_qt/`（`app.py` 装配 / `theme.py` 设计令牌与 QSS / `widgets.py` Card·Toast·DataTable / `main_window.py` 主窗 / `pages/` 五页 / `recorder.py`·`danmaku_monitor.py` 控制器），`gui.py` 仅保留为薄入口（父进程标记 + 崩溃兜底 + 委托）。视觉事实源 `docs/gui-redesign/index.html`，详见「更新日志」当日条目。
 
 **职责**: 提供现代化图形用户界面
 
@@ -1762,6 +1760,22 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本直跑时额外输出 `VERIFICATION_RESULT: {"platform":..., "status":..., ...}` 结构化一行供机器解析。
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
+
+### v4.6.0-dev (2026-10-31) — 彻底移除 tkinter GUI 技术栈（PySide6 成为唯一窗口实现）
+
+- **用户指令**：彻底移除 GUI 中仍保留的 tkinter 框架及其全部相关代码（含回退路径、隐藏依赖），能力须先迁移到 PySide6 / 共享模块，不得改变用户可见行为、录制核心、配置读写、日志、子进程控制与 Web/无头入口语义。
+- **入口**：`gui.py` 由 5022 行 legacy 窗口实现改为 54 行薄入口——保留「`DLR_GUI_PARENT` 标记先于任何 `src` 导入」的进程契约、`main()` 延迟导入并委托 `src.gui_qt.app.main()`、窗口化运行下的 PySide6 `QMessageBox` 崩溃兜底与落盘；删除 `LiveRecorderGUI`、`AdvancedSettingsWindow`、`_legacy_main()`、tkinter 崩溃弹窗与 `_fix_encoding()`。
+- **共享层裁剪**：删除纯 tkinter 模块 `src/ui_kit.py`（ttk 控件工厂 / Treeview 增量表 / 动效原语）与 `src/ui_motion.py`（tk 帧调度）；`src/ui_theme.py` 只保留主题 id 白名单、系统明暗探测与 `config.ini` 持久化（删除 `ThemeManager`、ttk 主题注册、token/对比度契约）；`src/ui_fonts.py` 只保留偏好读写、字体副本导入与文件名清洗（删除 Tk 族名枚举/解析、SFNT name 表解析与 GDI 私有字体注册）；`src/ui_i18n.py` 收敛为 Qt `setText` 登记表（删除 Tk `configure`/`title`/`heading` 模式与 `apply_title`）；`src/ui_scale.py` 只保留档位/自动档/持久化（删除 `ScaleProfile` 与字号/间距/窗口几何派生）。Qt 窗口层用到的 `THEME_IDS`、缩放档位/自动档/持久化、字体导入能力全部保留。
+- **测试迁移**：删除 11 个纯 tkinter 用例文件（`test_ui_kit` / `test_ui_motion` / `test_gui_wrap_hints` / `test_gui_right_edge_fit` / `test_gui_language_retranslate` / `test_gui_legacy_guards` / `test_gui_monitor` / `test_gui_tail_robustness` / `test_gui_stop_exit_singleflight` / `test_gui_save_atomic` / `test_regression_gui`）；`test_gui_status_pattern_i18n` 改为直接驱动 `src.gui_qt.quality_monitor.QualityMonitor` + `shared.status_patterns()`（保留四语解析、占位符换序、组装期竞态的锁）；`test_ui_theme` / `test_ui_fonts` / `test_ui_i18n` 重写为无头核心断言；`test_danmaku_monitor` / `test_regression_root_entries` 移除 legacy GUI 段；`test_logger_gui_parent` 的 `child_process_env()` 锁改指 `src/gui_qt/recorder.py`；PEP 758 无括号基线按删除后读数 61 → 56。
+- **工程配置**：测试 job 去掉 xvfb 安装与「Tk 真能开显示」反 skip 步骤（Qt 用例统一 `QT_QPA_PLATFORM=offscreen`）；`build_exe.py` / `DouyinLiveRecorder.spec` 的 `tkinter` 排除项保留为防回归口径并更新注释；`config/config.ini` 与中英 README 删除仅服务 legacy 动效层的 `[GUI] gui_motion` 键。
+- **验证**：`scripts/run_gates.py` 10/10 PASS（black/isort/mypy 双平台/注释/po/版本/钉定/Skill 一致性）；pytest 4786 passed / 16 skipped / 0 warnings；`scripts/check_coverage.py` 67/67 模块达标（总 84.65%）；basedpyright 0 error / 0 warning；`import gui` 在 `PySide6` 不可用（`sys.modules['PySide6']=None`）时仍成功；离屏构造 `MainWindow` 成功（5 页），`python gui.py` 离屏运行 6s 无崩溃（timeout 124）。全仓产品代码已无 `import tkinter` / `from tkinter`。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
+
+### v4.6.0-dev (2026-10-31) — GUI 运行日志窗口：自动换行随窗口宽度自适应
+
+- **用户指令**：给运行日志的输出窗口增加因整体窗口大小变化而变化的自动换行（附截图：长行横向溢出视口）。
+- **改动**：`src/gui_qt/widgets.py::TerminalText` 折行模式 `NoWrap` → `WidgetWidth`（单行 + 「为什么」注释）。日志行普遍长于视口（平台状态行 / URL / 掩码占位），NoWrap 只能横向滚动；WidgetWidth 下 Qt 在控件 resize 时对既有块自动重排折行，长无空格串的断行点由 QPlainTextEdit 默认 `wordWrapMode`（WrapAtWordBoundaryOrAnywhere，实测确认）承担，无需显式再设。旧 tkinter 版 `gui.py` 仅迁移期保留、非在用 GUI，未动；`TerminalText` 仅被运行日志页使用，弹幕页等其他界面不受影响。
+- **回归锁**：`tests/test_gui_qt_units.py::test_terminal_wraps_at_widget_width_and_rewraps_on_resize`——取证面取 `document().firstBlock().lineCount()`（NoWrap 恒为 1，折行随宽单调变化；判据全用相对断言，跨字体 / CI 不脆断）。变异验证：改回 `NoWrap` 转红、恢复转绿。
+- **验证**：`run_gates.py` 10/10 PASS；带覆盖率 pytest 5054 passed / 16 skipped / 0 warnings；`check_coverage.py` 69/69 模块达标（总 84.47%）；basedpyright 0 error / 0 warning。离屏实测：240px 视口长行折 24 行、拉宽 1500px 自动重排为 5 行。**DoD 第 2 步不适用**（不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）；真机视觉确认（拖拽主窗口观察日志折行随宽重排）交回用户。
 
 ### v4.6.0-dev (2026-10-31) — 全仓注释级精简与一致性优化（零行为变化）
 

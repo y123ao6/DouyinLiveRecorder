@@ -200,8 +200,9 @@ datas = [
 ]
 # 注意：config/ 不在此处（不进 _internal），由 copy_external_binaries 复制到 exe 同级，
 # 以便程序在运行时直接读写配置。ffmpeg/ node/ 同理。
-# excludes 里的 'customtkinter' / 'pystray' / 'PIL' / 'fastapi' 均为防御口径（依赖已摘除，但构建
-# venv 仍有残留），防止残留引用把包重新拖回 _internal。
+# excludes 里的 'tkinter' / 'customtkinter' / 'pystray' / 'PIL' / 'fastapi' 均为防御口径：
+# tkinter GUI 技术栈已从产品代码完全移除，其余依赖也已摘除但构建 venv 仍可能有残留——
+# 排除项保证任何残留引用不能把包重新拖回 _internal。
 #
 # [2026-10-17] GUI 入口改走 PySide6（src/gui_qt/），收集由 PyInstaller 自带的 hook-PySide6.py 完成
 # （Qt6 平台插件 / ANGLE / ICU 等）：本 spec 不加任何 collect 调用——hook 已按「实际导入的 Qt 模块」

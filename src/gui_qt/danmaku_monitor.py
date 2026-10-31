@@ -88,7 +88,7 @@ class DanmakuMonitor:
             stop_event.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
-            # WD-21：join 超时压到 0.2s。旧 tkinter 版的 2s 会让每次收尾冻结窗口约 2 秒。
+            # WD-21：join 超时压到 0.2s。旧版的 2s 会让每次收尾冻结窗口约 2 秒。
             thread.join(timeout=0.2)
             if thread.is_alive():
                 # 收尾未完成：**保留**线程引用与它的停止标志，让下一轮启动前重查。

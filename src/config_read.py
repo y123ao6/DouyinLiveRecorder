@@ -2,7 +2,7 @@
 # src/config_read.py — config.ini 读取侧：容错解析器与「重复键」点名。
 #
 # 为什么单独成模块：这条判据必须同时被录制引擎（main.py 的模块级裸读）与 GUI/Web 进程
-# （ui_theme / ui_scale / ui_motion / ui_fonts、src/gui_qt/main_window）复用，而
+# （ui_theme / ui_scale / ui_fonts、src/gui_qt/main_window）复用，而
 # src/config_io.py 在导入期就 `import main`（会把录制引擎的 file_update_lock 体系带进 GUI 进程，
 # AGENTS.md「GUI 主题层」明令禁止），src/web_config.py 又自居不落日志的纯函数模块。
 # 故这里只依赖 stdlib + i18n + logger，并复用 web_config 的 TEXT_ENCODING 取值。

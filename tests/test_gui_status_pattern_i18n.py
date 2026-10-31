@@ -1,19 +1,17 @@
 # tests/test_gui_status_pattern_i18n.py — 画质监控状态行的跨语言回归锁（M-14）。
 #
-# 故障形态：gui.py 曾用硬编码简中正则/子串解析录制子进程 stdout 的三类行（录制中、
-# 画质降级、空态），而这些行生产侧全部经 i18n.tr 翻译（src/recorder_status.py::display_info、
-# main.py 的录制启动处）。用户切英文并重启录制后三类匹配全静默失败，画质页不再刷新且无日志。
-# AGENTS「关键约定 #13」禁止拿自然语言子串当跨模块契约，比较对象必须取 i18n.tr(...) 后形态。
+# 故障形态：状态行生产侧经 i18n.tr 翻译（src/recorder_status.py::display_info、main.py 的录制
+# 启动处），消费侧若用硬编码简中正则/子串解析，英文用户切语言并重启录制后三类匹配全静默失败，
+# 画质页不再刷新且无日志。AGENTS「关键约定 #13」禁止拿自然语言子串当跨模块契约，比较对象必须
+# 取 i18n.tr(...) 后形态。
 #
 # 锁：① 四种受支持语言下三类行都能解析（行为锁）；② 语言热切换后匹配器重算；
 # ③ 审查 F-06 的解析语义（贪婪 name 段 + [^\]]+ 画质段）不回退；
-# ④ gui.py 不得再出现裸简中匹配字面量（AST 静态锁）。
-# 修复形态是「消费侧由同 msgid 的 tr() 结果派生匹配串」；#DLRQ| 结构化键值协议属
-# 「待批准长期方案」，要同时改 src/recorder_status.py 与 main.py，不在本包授权范围。
+# ④ src/gui_qt/shared.py 不得再出现裸简中匹配字面量（AST 静态锁）。
 #
-# 走子进程而不在 pytest 进程 import gui：gui 的 DLR_GUI_PARENT 会跨文件污染；且 conftest 的
-# _pin_identity_translation 把 i18n._tr 钉成恒等映射，跨语言判据必须在干净子进程里跑。
-# 探测子进程一律按字节比较并显式注入 UTF-8。
+# 走子进程而不在 pytest 进程跑：conftest 的 _pin_identity_translation 把 i18n._tr 钉成恒等映射，
+# 跨语言判据必须在干净子进程里跑。被测实现是 src.gui_qt.quality_monitor.QualityMonitor（PySide6
+# 窗口层的纯数据模型，不建窗口）；探测子进程一律按字节比较并显式注入 UTF-8。
 
 import ast
 import json
@@ -26,21 +24,21 @@ from typing import Any, cast
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-GUI_SOURCE = (ROOT / "gui.py").read_text(encoding="utf-8")
+SHARED_SOURCE = (ROOT / "src" / "gui_qt" / "shared.py").read_text(encoding="utf-8")
 _MARKER = "\n@@WP_E_I18N@@ "
 
 # 支持的语言全集（四语目录都齐，见 _SUPPORTED 断言）；用例逐语言跑同三条判据。
 _LANGUAGES = ["zh_CN", "en_US", "en_GB", "zh_TW"]
 
-# 子进程内驱动 gui 的真实解析实现。三条 msgid 在这里**独立重写一份**（不引用
-# gui._STATUS_TPL_*）：生产侧与消费侧必须同键，共用一个常量的话漂移会同时消失、用例假绿。
+# 子进程内驱动真实解析实现。三条 msgid 在这里**独立重写一份**（不引用 shared.STATUS_TPL_*）：
+# 生产侧与消费侧必须同键，共用一个常量的话漂移会同时消失、用例假绿。
 _SCRIPT = r"""
 import json
 import sys
-import threading
 
 import i18n
-import gui
+from src.gui_qt import shared as shared_module
+from src.gui_qt.quality_monitor import QualityMonitor
 
 TPL_RECORDING = "{recording_live}[{qa}] 正在录制中 {have_record_time}"
 TPL_IDLE = "\r没有正在录制的直播 循环监测间隔时间：{delay_default}秒"
@@ -52,23 +50,13 @@ TPL_DOWNGRADE = (
 _TPLS = {"recording": TPL_RECORDING, "idle": TPL_IDLE, "empty": TPL_EMPTY, "downgrade": TPL_DOWNGRADE}
 
 
-def _stub():
-    # object.__new__ 跳过 Tk 初始化：_parse_quality_log 只用这几个字段，不触碰任何控件。
-    stub = object.__new__(gui.LiveRecorderGUI)
-    stub._quality_lock = threading.Lock()
-    stub._quality_data = {}
-    stub._log_lines = []
-    stub._log = lambda message, level="info": stub._log_lines.append([message, level])
-    return stub
-
-
 def _feed_line(tpl_key, kwargs, raw, loguru_prefix):
     template = _TPLS[tpl_key]
     # raw=True：不经 tr() 直接按原文打印——复刻 src/recorder_status.py 里
     # print("\r没有正在监测和录制的直播") 那条未过 tr 的裸字面量形态。
     text = template if raw else i18n.tr(template, **kwargs)
     if loguru_prefix:
-        # 复刻 loguru 控制台 sink 的行形态（src/logger.py::custom_format），GUI 会先剥前缀。
+        # 复刻 loguru 控制台 sink 的行形态（src/logger.py::custom_format），解析器会先剥前缀。
         text = "2026-09-29 12:00:00.000 | WARNING  - " + text
     return text
 
@@ -79,17 +67,20 @@ out = {"cases": []}
 for case in req["cases"]:
     requested = case["language"]
     effective = i18n.set_language(requested)
-    stub = _stub()
+    monitor = QualityMonitor()
+    lines = []
     for feed in case["feed"]:
-        gui.LiveRecorderGUI._parse_quality_log(
-            stub, _feed_line(feed["tpl"], feed.get("kwargs") or {}, feed.get("raw", False), feed.get("prefix", False))
+        monitor.parse_line(
+            _feed_line(feed["tpl"], feed.get("kwargs") or {}, feed.get("raw", False), feed.get("prefix", False)),
+            lambda message, level: lines.append([message, level]),
+            "12:00:00",
         )
     out["cases"].append(
         {
             "requested": requested,
             "effective": effective,
-            "data": {name: dict(info) for name, info in stub._quality_data.items()},
-            "lines": stub._log_lines,
+            "data": {name: dict(info) for name, info in monitor._data.items()},
+            "lines": lines,
         }
     )
 
@@ -100,25 +91,23 @@ if req.get("reorder_check"):
     real_tr = i18n._tr
     reordered = "recording in progress: {have_record_time} by {qa} <- {recording_live}"
     i18n._tr = lambda text: reordered if text == TPL_RECORDING else real_tr(text)
-    gui._STATUS_PATTERNS_BY_LANG.clear()
-    built = gui._status_patterns()
-    # 用组装出的正则直接吃一行「顺序被打乱」的译文
+    shared_module._STATUS_PATTERNS_BY_LANG.clear()
+    built = shared_module.status_patterns()
     line = "recording in progress: 0:00:12 by 原画 <- 主播[1号]"
     match = built.recording.match(line) if built.recording is not None else None
     out["reorder"] = None if match is None else {"name": match.group("recording_live"), "qa": match.group("qa")}
     i18n._tr = real_tr
 
 if req.get("cache_race_check"):
-    # 组装期换语言不得把**混语** patterns 固化进缓存（_status_patterns 的复核逻辑）。
+    # 组装期换语言不得把**混语** patterns 固化进缓存（status_patterns 的复核逻辑）。
     # 语言码序列即注入本身：第 1 次读=zh_CN（进入组装），第 2 次读=组装期间被 UI 线程切走
     # →en_US（复核不等→本轮结果丢弃、不写缓存），第 3/4 次=en_US（重取并落定）。
-    # 不 patch _after_retry/不 sleep：判据只依赖「缓存键集合 + 组装次数 + 取值次数」。
     i18n.set_language("zh_CN")
-    gui._STATUS_PATTERNS_BY_LANG.clear()
+    shared_module._STATUS_PATTERNS_BY_LANG.clear()
     seq = ["zh_CN", "en_US", "en_US", "en_US"]
     state = {"idx": 0, "builds": 0}
-    real_get = gui.i18n_module.get_language
-    real_build = gui._build_status_patterns
+    real_get = shared_module.i18n_module.get_language
+    real_build = shared_module._build_status_patterns
 
     def _flaky_get():
         value = seq[min(state["idx"], len(seq) - 1)]
@@ -129,22 +118,21 @@ if req.get("cache_race_check"):
         state["builds"] += 1
         return real_build()
 
-    gui.i18n_module.get_language = _flaky_get
-    gui._build_status_patterns = _counting_build
+    shared_module.i18n_module.get_language = _flaky_get
+    shared_module._build_status_patterns = _counting_build
     try:
-        built = gui._status_patterns()
+        built = shared_module.status_patterns()
         out["cache_race"] = {
-            "keys": sorted(gui._STATUS_PATTERNS_BY_LANG.keys()),
+            "keys": sorted(shared_module._STATUS_PATTERNS_BY_LANG.keys()),
             "builds": state["builds"],
             "get_calls": state["idx"],
-            "cached_is_returned": gui._STATUS_PATTERNS_BY_LANG.get("en_US") is built,
+            "cached_is_returned": shared_module._STATUS_PATTERNS_BY_LANG.get("en_US") is built,
         }
     finally:
-        gui.i18n_module.get_language = real_get
-        gui._build_status_patterns = real_build
-        gui._STATUS_PATTERNS_BY_LANG.clear()
+        shared_module.i18n_module.get_language = real_get
+        shared_module._build_status_patterns = real_build
+        shared_module._STATUS_PATTERNS_BY_LANG.clear()
 
-# 与父进程 _MARKER 逐字一致：结果载荷用该标记与 customtkinter 的杂散输出分离。
 sys.stdout.write("\n@@WP_E_I18N@@ " + json.dumps(out, ensure_ascii=False))
 """
 
@@ -173,12 +161,10 @@ def _run_child(
     )
     marker = _MARKER.encode("utf-8")
     detail = proc.stderr.decode("utf-8", errors="replace")
-    assert proc.returncode == 0, "gui i18n subprocess failed: " + detail[-3000:]
+    assert proc.returncode == 0, "status pattern subprocess failed: " + detail[-3000:]
     assert marker in proc.stdout, "no result marker in: " + proc.stdout.decode("utf-8", errors="replace")[-800:]
     # json.loads 返回 Any，直接 return 会让父侧所有下标检查整体失效（mypy 还会报
     # no-any-return）。这里只做声明收窄、不改运行时：结构校验仍在各用例的断言里。
-    # 不用行内 type: ignore——AGENTS 明令该写法 Linux 必要 / Windows 多余，会触发
-    # basedpyright 的 reportUnnecessaryTypeIgnoreComment。
     return cast(dict[str, Any], json.loads(proc.stdout.split(marker, 1)[1].decode("utf-8")))
 
 
@@ -229,7 +215,7 @@ def _downgrade_case(language: str) -> dict[str, Any]:
 
 def _empty_case(language: str, *, raw: bool) -> dict[str, Any]:
     # 先喂一行录制中、再喂空态行：空态必须把 recording 标记清掉。
-    # raw=True 走「未过 tr() 的原文」形态（_STATUS_TPL_EMPTY 那条刻意不对称的串）。
+    # raw=True 走「未过 tr() 的原文」形态（STATUS_TPL_EMPTY 那条刻意不对称的串）。
     recording = {
         "tpl": "recording",
         "kwargs": {"recording_live": "主播甲", "qa": "原画", "have_record_time": "0:01:23"},
@@ -249,7 +235,7 @@ def _case_result(payload: dict[str, Any], index: int) -> dict[str, Any]:
     return cast(dict[str, Any], payload["cases"][index])
 
 
-# ─── 行为锁：三种语言下三类行都能被解析 ─────────────────────
+# ─── 行为锁：四种语言下三类行都能被解析 ─────────────────────
 
 
 @pytest.mark.parametrize("language", _LANGUAGES)
@@ -339,7 +325,7 @@ def test_reordered_translation_still_parsed() -> None:
 
 
 def test_mid_build_language_switch_is_not_cached() -> None:
-    # _status_patterns 的组装期竞态（按语言缓存自带的问题）：组装要连读 6 次 i18n.tr()，
+    # status_patterns 的组装期竞态（按语言缓存自带的问题）：组装要连读 6 次 i18n.tr()，
     # 语言若在中间被 UI 线程切走，得到的是**混语** patterns。判据不是「不抛异常」，而是
     # **缓存键集合**——混语结果不允许落进任何语言码为键的缓存（落了就长期失配）。
     # 注入方式就是语言码读取序列本身，不 patch 被测函数。
@@ -359,7 +345,7 @@ _MATCHING_MARKERS = ("画质降级：设置", "正在录制中", "没有正在�
 
 
 def _status_tpl_assigned_names(tree: ast.Module) -> set[str]:
-    # 收集 gui.py 里赋给 _STATUS_TPL_* 的字符串常量值——它们就是「msgid 常量」，
+    # 收集 shared.py 里赋给 STATUS_TPL_* 的字符串常量值——它们就是「msgid 常量」，
     # 特征串出现在这些值里是**正确**的（tr() 的键必须与生产侧逐字相同）。
     values: set[str] = set()
     for node in ast.walk(tree):
@@ -371,7 +357,7 @@ def _status_tpl_assigned_names(tree: ast.Module) -> set[str]:
             targets, value = [node.target], node.value
         if value is None:
             continue
-        if not any(isinstance(t, ast.Name) and t.id.startswith("_STATUS_TPL") for t in targets):
+        if not any(isinstance(t, ast.Name) and t.id.startswith("STATUS_TPL") for t in targets):
             continue
         if isinstance(value, ast.Constant) and isinstance(value.value, str):
             values.add(value.value)
@@ -379,11 +365,11 @@ def _status_tpl_assigned_names(tree: ast.Module) -> set[str]:
 
 
 def test_no_bare_chinese_literals_outside_tr_templates() -> None:
-    # 特征串只允许待在 _STATUS_TPL_* 常量里（作为 tr 的 msgid）；
+    # 特征串只允许待在 STATUS_TPL_* 常量里（作为 tr 的 msgid）；
     # 一旦有人在 re.compile(...) 或 `xxx in msg` 里重新写死简中，本用例即红。
-    tree = ast.parse(GUI_SOURCE)
+    tree = ast.parse(SHARED_SOURCE)
     allowed = _status_tpl_assigned_names(tree)
-    assert allowed, "gui.py 里找不到 _STATUS_TPL_* 常量（M-14 的派生实现被删了？）"
+    assert allowed, "shared.py 里找不到 STATUS_TPL_* 常量（M-14 的派生实现被删了？）"
     offenders: list[str] = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
@@ -393,14 +379,14 @@ def test_no_bare_chinese_literals_outside_tr_templates() -> None:
             continue
         if text in allowed:
             continue
-        offenders.append(f"gui.py:{node.lineno} {text[:40]!r}")
+        offenders.append(f"shared.py:{node.lineno} {text[:40]!r}")
     assert offenders == [], "状态行匹配串不得硬编码简中（应由 tr() 结果派生）：" + "; ".join(offenders)
 
 
 def test_patterns_are_derived_from_tr_and_cached_per_language() -> None:
     # 结构锁：匹配器必须由 i18n 的公开翻译入口派生、且**按语言惰性重算**。
     # 「模块级 re.compile(...) 一次钉死简中」正是 M-14 的原始形态，故这里反向钉死它。
-    tree = ast.parse(GUI_SOURCE)
+    tree = ast.parse(SHARED_SOURCE)
     compiled_literals: list[str] = []
     for node in ast.walk(tree):
         if (
@@ -414,11 +400,11 @@ def test_patterns_are_derived_from_tr_and_cached_per_language() -> None:
             compiled_literals.append(node.args[0].value)
     assert not any(
         marker in literal for marker in _MATCHING_MARKERS for literal in compiled_literals
-    ), "gui.py 仍有硬编码状态行的 re.compile 字面量"
+    ), "shared.py 仍有硬编码状态行的 re.compile 字面量"
 
     names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    assert "_build_status_patterns" in names and "_status_patterns" in names
+    assert "_build_status_patterns" in names and "status_patterns" in names
     # 语言变化必然经 get_language()，否则缓存键无从失效。
-    status_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_status_patterns")
+    status_fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "status_patterns")
     dumped = ast.dump(status_fn)
-    assert "get_language" in dumped, "_status_patterns 必须以当前语言为缓存键"
+    assert "get_language" in dumped, "status_patterns 必须以当前语言为缓存键"

@@ -2,7 +2,7 @@
 #
 # 覆盖三条 2026-09-23 实测确认「仍未修复」的条目：
 #   ① generate_subtitles 的写盘段无 try/except：线程跑在**录制子进程**里（main.py 的
-#      _subtitle_thread_target），而全仓 threading.excepthook 只在 gui.py 装过 → 磁盘满 / 目录被改名 /
+#      _subtitle_thread_target），而 threading.excepthook 只装在 GUI 窗口层（src/gui_qt/app.py）→ 磁盘满 / 目录被改名 /
 #      路径过长时线程静默死掉，traceback 落 stderr 后被 display_info 的 "\033[2J" 刷掉，房间仍显示
 #      「正在录制」。锁：异常不外抛 + 告警按时间窗聚合 + 失败后按间隔退避重开 + 恢复只报一次。
 #   ② converts_m4a / segment_video 未接该半成品清理（只有 converts_mp4 有）

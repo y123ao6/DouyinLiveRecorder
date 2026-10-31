@@ -1613,7 +1613,6 @@ _R11_NO_ASSERT_DEBT: dict[str, int] = {
     "test_recorder_status.py": 1,
     "test_run_gates.py": 1,
     "test_ttwid.py": 1,
-    "test_ui_motion.py": 1,
     "test_web_config_secret_mask.py": 1,
 }
 

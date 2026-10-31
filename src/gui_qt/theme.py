@@ -20,8 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-# 主题 ID 与 src/ui_theme.py（ttk 主题层）保持一致：config.ini [GUI] gui_theme 里已持久化的
-# 取值必须被两套实现都识别，否则用户在旧版选过的主题换了窗口层就失效。
+# 主题 ID 与 src/ui_theme.py 保持一致：config.ini [GUI] gui_theme 里已持久化的取值必须被
+# 偏好读写层与窗口层都识别，否则用户已保存的主题在窗口层就失效。两份常量刻意各写一份而
+# 不互相导入——共享层要能在无 Qt 环境（无头容器 / CLI 冻结产物）里被 import，反向依赖
+# 窗口层会把 Qt 拖进那条链路；一致性由 tests/test_ui_theme.py 与窗口层用例共同锁定。
 THEME_LIGHT: Final[str] = "light"
 THEME_DARK: Final[str] = "dark"
 THEME_HIGH_CONTRAST: Final[str] = "high_contrast"
@@ -30,8 +32,8 @@ THEME_IDS: Final[tuple[str, ...]] = (THEME_LIGHT, THEME_DARK, THEME_HIGH_CONTRAS
 # 只在下拉的 currentData 里流转，故此值必须不可能与真实主题 ID 撞上。
 FOLLOW_SYSTEM_ID: Final[str] = "_follow_system_"
 
-# 显示名在窗口层自持而不复用 ui_theme 的 _THEME_LABELS：那份是私有的、且服务于 ttk 的
-# ThemeManager，窗口层反向依赖它会把两套实现焊死。
+# 显示名在窗口层自持，不由共享偏好层提供：展示文案属于窗口层（还要随语言热切换重译），
+# 反向依赖会让「改一个主题名」波及无头偏好层；键集仍由上面的 THEME_IDS 与共享层对齐。
 THEME_LABELS: Final[dict[str, str]] = {
     THEME_LIGHT: "浅色",
     THEME_DARK: "深色",
@@ -146,7 +148,7 @@ _DARK: Final[dict[str, str]] = {
     "terminal_select": "rgba(217,119,87,0.34)",
 }
 
-# 高对比度：保留旧 ttk 层的第三个主题 ID（用户可能已持久化），取值以「文本对比度优先」
+# 高对比度：保留旧控件层的第三个主题 ID（用户可能已持久化），取值以「文本对比度优先」
 # 为原则——纯黑纯白 + 高饱和 accent，供弱视用户使用。它不在设计稿里，故不与之逐值对齐。
 _HIGH_CONTRAST: Final[dict[str, str]] = {
     "bg_app": "#ffffff",

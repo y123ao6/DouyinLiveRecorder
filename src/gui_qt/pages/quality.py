@@ -3,7 +3,7 @@
 #
 # 表格选 QTableView + QStandardItemModel 而不是 QTableWidget：后者每格一个 item 控件，
 # 画质页每轮可能同步几十行；model/view 下「未变化行不碰、只改内容」更容易做到零重建。
-# 降级整行着色走逐 item 的 setForeground（等价于旧 tkinter 版 Treeview 的行级 tag 语义）；
+# 降级整行着色走逐 item 的 setForeground（等价于旧版表格的行级 tag 语义）；
 # 「状态」列另用文字承载语义，不依赖颜色——深色主题与色弱场景下颜色不足以为凭。
 from __future__ import annotations
 

@@ -10,8 +10,8 @@
 #      这类 ast.BinOp 形态（MID-68，详见该用例内注释）；
 #   ② 每个 tr() 调用的模板占位符集合 == 关键字实参集合（防止改模板漏改实参）；
 #   ③ 运行时模板集合 ⊆ zh_CN.po 键集合（等价于提取器「缺失 0」）；
-#   ④ print_colored / messagebox 实参位不再出现插值 f-string：这两处是提取器盲区①②，
-#      主提取器与不变量①都看不见；盲区文案须 tr 预格式化后整体传入，否则目录词条静默失效。
+#   ④ print_colored 实参位不再出现插值 f-string：这是提取器盲区①，主提取器与不变量①
+#      都看不见；盲区文案须 tr 预格式化后整体传入，否则目录词条静默失效。
 
 import ast
 import importlib.util
@@ -57,7 +57,7 @@ extract_constant_or_template = getattr(_EX, "extract_constant_or_template")
 # tr() 的模块别名集合取自提取器，避免两处硬编码各自漂移
 TR_CALLER_IDS: set[str] = getattr(_EX, "TR_CALLER_IDS")
 # ui_i18n.T()（静态标签标记）同样取自提取器：T 的首参是 msgid/模板，占位符与 kwargs
-# 也必须一致（gui.py 的 text=T("...") 由工厂建时查表 + 登记重译）。
+# 也必须一致（窗口层的 text=T("...") 由工厂建时查表 + 登记重译）。
 T_CALLER_IDS: set[str] = getattr(_EX, "T_CALLER_IDS")
 
 
@@ -229,45 +229,32 @@ def test_runtime_templates_covered_by_catalog() -> None:
 
 def _blindspot_fstring_offenders(src: str) -> list[int]:
     # 不变量④判据本体（供全仓扫描与下方判据自检共用，避免两处各写一份遍历而漂移）：
-    # print_colored 只看首参（第二参是颜色）；messagebox.show*/ask* 看全部位置实参
-    # （gui.py 里模块别名有 messagebox / _messagebox 两种，按名字含 messagebox 归一）。
+    # print_colored 只看首参（第二参是颜色）。
     out: list[int] = []
     tree = ast.parse(src)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
-        attr = node.func.attr
-        receiver = node.func.value
-        is_colored = attr == "print_colored" and node.args
-        is_dialog = attr.startswith(("show", "ask")) and isinstance(receiver, ast.Name) and "messagebox" in receiver.id
-        if not (is_colored or is_dialog):
+        if node.func.attr != "print_colored" or not node.args:
             continue
-        args = node.args[:1] if is_colored else node.args
-        for arg in args:
-            if _interpolated_fstrings(arg) and is_valuable(_message_text(arg, src)):
-                out.append(node.lineno)
-                break
+        if _interpolated_fstrings(node.args[0]) and is_valuable(_message_text(node.args[0], src)):
+            out.append(node.lineno)
     return out
 
 
-def test_no_valuable_fstring_in_print_colored_or_messagebox() -> None:
-    # ④ 盲区①②实参位禁插值 f-string：翻译须 tr(常量模板, **kw) 预格式化后整体传入。
-    # 全仓扫描：全部调用点已迁移（main/notify 的 print_colored 与 gui 的
-    # messagebox），任何一处改回 f-string 直传都会让对应目录词条静默失效。
+def test_no_valuable_fstring_in_print_colored() -> None:
+    # ④ 盲区①实参位禁插值 f-string：翻译须 tr(常量模板, **kw) 预格式化后整体传入。
+    # 全仓扫描：全部调用点已迁移，任何一处改回 f-string 直传都会让对应目录词条静默失效。
     offenders: list[str] = []
     for path in _iter_files():
         src = path.read_text(encoding="utf-8-sig")
         offenders.extend(f"{path.relative_to(ROOT)}:{lineno}" for lineno in _blindspot_fstring_offenders(src))
-    assert not offenders, "以下位置仍是 print_colored/messagebox f-string（应改用 i18n.tr 预格式化）：" + ", ".join(
-        offenders
-    )
+    assert not offenders, "以下位置仍是 print_colored f-string（应改用 i18n.tr 预格式化）：" + ", ".join(offenders)
     # 判据自检：谓词必须真抓得到盲区形态，且不误伤 tr 预格式化/常量/动态非模板实参
-    hits = "color_obj.print_colored(f'[{n}]录制时已被注释', c)\nmessagebox.showerror('错误', f'保存失败: {e}')\n"
-    assert _blindspot_fstring_offenders(hits) == [1, 2], "门禁漏抓：盲区实参位的插值 f-string 必须全部命中"
+    hits = "color_obj.print_colored(f'[{n}]录制时已被注释', c)\n"
+    assert _blindspot_fstring_offenders(hits) == [1], "门禁漏抓：盲区实参位的插值 f-string 必须命中"
     clean = (
         "color_obj.print_colored(i18n.tr('[{n}]已注释', n=n), c)\n"  # tr 预格式化（推荐形态）
-        "messagebox.showerror(i18n_module.tr('错误'), i18n_module.tr('失败: {e}', e=e))\n"  # 标题正文均 tr
-        "messagebox.showerror('GUI 启动失败', text[-3000:])\n"  # 动态 traceback 文本非模板
         "color_obj.print_colored('\\n正在安全退出...', c)\n"  # 常量串（translated_print 直查）
     )
     assert _blindspot_fstring_offenders(clean) == [], "误伤：tr 预格式化 / 常量 / 非模板实参不应命中"
@@ -276,14 +263,14 @@ def test_no_valuable_fstring_in_print_colored_or_messagebox() -> None:
 def test_extractor_sees_T_marker_templates(tmp_path: Path) -> None:
     # 提取器必须与 tr 同口径认识 ui_i18n.T()（静态标签标记）：T 的首参是 msgid，
     # 不被 scan_file 收录时「目录覆盖完整」（不变量③）对这批词条退化为假绿——
-    # 缺失检测看不见它们，孤儿/缺词条都不会变红。apply_title 的第二参是 T(...)，
+    # 缺失检测看不见它们，孤儿/缺词条都不会变红。set_text 的第二参是 T(...)，
     # 由 ast.walk 独立访问，不需要特例。
     probe = tmp_path / "probe_t.py"
     probe.write_text(
-        "x = T('静态标签探针')\ny = apply_title(win, T('标题探针'))\nz = str('非 T 串不计')\n",
+        "x = T('静态标签探针')\ny = set_text(win, T('标题探针'))\nz = str('非 T 串不计')\n",
         encoding="utf-8",
     )
     found = scan_file(probe)
     assert "静态标签探针" in found, "T(...) 首参必须被提取"
-    assert "标题探针" in found, "apply_title 内层 T(...) 必须被提取"
+    assert "标题探针" in found, "set_text 内层 T(...) 必须被提取"
     assert "非 T 串不计" not in found, "普通字面量不得被提取（防误收）"

@@ -1,28 +1,16 @@
-# tests/test_regression_root_entries.py —— CODE_REVIEW_2026-10-18 两条根目录入口修复的
-# 回归锁（生产实现由别的包落地，本文件只锁行为）。
+# tests/test_regression_root_entries.py —— CODE_REVIEW_2026-10-18 根目录入口修复的回归锁。
 #
-# 覆盖两条：
-#   L-01  web.py::_cap_web_console_log —— 后台模式启动侧把超限的 logs/web_console.log 就地截断为
-#         末尾若干 KB（起点强制对齐整行首），失败只留痕不阻断后台化；
-#   L-02  gui.py 的 PID 复用防线 —— 退出链在 `taskkill /F /T` 之前先确认「这个号码现在还是我们启动
-#         的那个映像」，只在**确证不同**时收手，取不到判据一律退回原无条件形态。
+# 覆盖 L-01：web.py::_cap_web_console_log —— 后台模式启动侧把超限的 logs/web_console.log
+# 就地截断为末尾若干 KB（起点强制对齐整行首），失败只留痕不阻断后台化。
 #
-# 全部离线：不起 Web 服务、不建真窗、不联网；产物一律 tmp_path。打桩边界：web 侧只替换两个体积
-# 阈值常量，gui 侧只替换 kernel32 的三个系统入口与 subprocess.run，判定链全部真实执行。
+# 全部离线：不起 Web 服务、不联网；产物一律 tmp_path。打桩边界：只替换两个体积阈值常量，
+# 截断、对齐、返回值三段逻辑一律走 web.py 真实实现。
 #
-# Windows 专属分支**没有**用 skipif：CI 全跑在 ubuntu，若 skip 则这两格回归锁会静默消失。gui.py 未把
-# 平台判定抽成模块级常量、且不归本包改，故按仓内既有做法 monkeypatch `sys.platform`（test_test_hygiene
-# 的 R1 判据表刻意不含 sys），再把 `_get_gui_kernel32` 换成替身，于是 win32 分支在 Linux 上真实执行。
+# 原 L-02（legacy tkinter GUI 退出链的 PID 复用防线）已随该实现退役删除；窗口层的进程清理
+# 回归锁在 tests/test_gui_qt_units.py。
 
 import ast
-import importlib
-import os
-import subprocess
-import sys
-import types
-from collections.abc import Iterator
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -31,18 +19,6 @@ import web
 
 # web.py 的导入期副作用只有 _fix_encoding()（就地 reconfigure 宿主 stdio）：模块顶层导入即落在
 # pytest 收集期、早于 conftest 的函数级 stdio 快照，与 tests/test_web_background_gate_order.py 同形态。
-_GUI_PARENT_ENV = "DLR_GUI_PARENT"
-
-
-@pytest.fixture(scope="session", autouse=True)
-def gui() -> Iterator[ModuleType]:
-    # gui.py 的模块级副作用有两条：os.environ["DLR_GUI_PARENT"]="1" 与 _fix_encoding() 的 stdio
-    # 重配置。逐例导入会让后者被 conftest 的函数级 stdio 守卫判成「用例改动了宿主编码策略」，收集期
-    # 导入又把前者永久留给整个会话——故会话级导入 + 导入完立刻还原标记（同 MT-05 手法）。
-    with pytest.MonkeyPatch.context() as patcher:
-        patcher.setenv(_GUI_PARENT_ENV, "")
-        module = importlib.import_module("gui")
-    yield module
 
 
 # ---------------------------------------------------------------------------
@@ -166,180 +142,3 @@ def test_console_log_cap_is_called_before_the_append_stream_opens() -> None:
     assert cap_at is not None, "_enter_background_mode 里没有 _cap_web_console_log 调用（上限防线被摘）"
     assert open_at is not None, "_enter_background_mode 里找不到追加流 open(..., 'a')，判据失去基准"
     assert cap_at < open_at, f"截断调用（第 {cap_at} 行）没有早于追加流打开（第 {open_at} 行）"
-
-
-# ---------------------------------------------------------------------------
-# L-02：GUI 退出链的 PID 复用防线
-
-# 超出任何真实 PID 上限的号码：替身按「OpenProcess 对已消失进程回 NULL」的形态处理
-_DEAD_PID = 4_000_000_001
-
-
-class _FakeKernel32:
-    # kernel32 的三个入口替身：映像名由 pid→完整路径表给定；表里没有的 pid 返回 NULL(0)。只替「问
-    # 操作系统这个号码现在是谁」这一处外部副作用，早返回 / 空串即放行 / 基名比对全部走真实代码。
-    def __init__(self, image_paths: dict[int, str], *, query_ok: bool = True) -> None:
-        self._image_paths = image_paths
-        self._query_ok = query_ok
-        self.opened: list[int] = []
-        self.closed = 0
-
-    def OpenProcess(self, access: int, inherit_handle: int, pid: int) -> int:
-        self.opened.append(pid)
-        return pid if pid in self._image_paths else 0
-
-    def QueryFullProcessImageNameW(self, handle: int, flags: int, buffer: Any, size: Any) -> int:
-        if not self._query_ok:
-            return 0
-        buffer.value = self._image_paths[int(handle)]
-        return 1
-
-    def CloseHandle(self, handle: int) -> int:
-        self.closed += 1
-        return 1
-
-
-class _FakeCompleted:
-    # taskkill/pkill 的返回形态：returncode 0 + 空 stdout/stderr（按字节，非 text=）
-    returncode = 0
-    stdout = b""
-    stderr = b""
-
-
-def _own_image_name() -> str:
-    # 「我们自己启动的映像」：Windows 上是 python.exe，ubuntu CI 上是 python3.x。判据只比基名，
-    # 故取 sys.executable 的基名而不是硬写 "python.exe"——硬写在 CI 上会让「①同名→放行」退化。
-    return os.path.basename(sys.executable).lower()
-
-
-def _use_win32_kernel32(gui: ModuleType, monkeypatch: pytest.MonkeyPatch, k32: _FakeKernel32) -> None:
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(gui, "_get_gui_kernel32", lambda: k32)
-
-
-def _kill_runs(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    # 进程级 stdlib 替身一律走被测模块命名空间的 shim（AGENTS/MID-66）：
-    # 直接 setattr(subprocess, "run", ...) 会把全进程唯一的 subprocess 本体换掉。
-    runs: list[list[str]] = []
-
-    def _run(argv: Any, *args: Any, **kwargs: Any) -> _FakeCompleted:
-        runs.append([str(item) for item in argv])
-        return _FakeCompleted()
-
-    shim = types.SimpleNamespace(**vars(subprocess))
-    shim.run = _run
-    monkeypatch.setattr(gui, "subprocess", shim)
-    return runs
-
-
-def test_pid_guard_passes_when_own_pid_still_runs_our_image(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 格①：自身 PID + 记录的映像名就是它 → 判「未复用」→ 放行（继续原有清理，不收窄能力）
-    own = os.getpid()
-    k32 = _FakeKernel32({own: sys.executable})
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    assert gui._reused_pid_image_pair(_own_image_name(), own) is None
-    assert k32.opened == [own]
-    assert k32.closed == 1, "读过一次就必须关掉一次句柄（退出链上每漏一只都没有道理）"
-
-
-def test_pid_guard_detects_reuse_and_reports_both_names(
-    gui: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # 格②：号码还在、但映像名确实不是我们启动的那个 → 判复用，并把「现占用者 / 期望者」一起带回去
-    own = os.getpid()
-    k32 = _FakeKernel32({own: str(tmp_path / "notepad.exe")})
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    verdict = gui._reused_pid_image_pair(_own_image_name(), own)
-    assert verdict is not None, "确证被别的映像接手时必须判成复用，否则整树强杀会打到无关进程"
-    current, expected = verdict
-    assert current == "notepad.exe"
-    assert expected == _own_image_name()
-    assert k32.closed == 1
-
-
-def test_pid_guard_passes_for_dead_pid(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 格③：PID 已不存在（OpenProcess 回 NULL）→ 取不到判据 → 退回原无条件形态
-    # （本来就没有活对象可误杀，而 taskkill 会自己返回 128、由 MIN-2249 如实记「未能清理」）
-    k32 = _FakeKernel32({os.getpid(): sys.executable})
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    assert gui._reused_pid_image_pair(_own_image_name(), _DEAD_PID) is None
-    assert k32.closed == 0, "没拿到句柄就不该有关可关（不得凭空计数）"
-
-
-def test_pid_guard_passes_and_asks_nothing_when_image_not_recorded(
-    gui: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # 格④：从未启动过录制核心（或桩实例不跑 __init__）→ 没有期望映像名 → 不判定。
-    # 替身被摆成「真去读就会读出别的映像」，以此证明这里是**短路**而不是巧合放行。
-    own = os.getpid()
-    k32 = _FakeKernel32({own: str(tmp_path / "notepad.exe")})
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    assert gui._reused_pid_image_pair("", own) is None
-    assert k32.opened == [], "期望名缺席时不该发起任何系统调用"
-
-
-def test_pid_guard_passes_when_image_name_query_fails(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 判据⑤（「权限不足 / 读不到一律退回原形态」那条兜底）：OpenProcess 成功但
-    # QueryFullProcessImageNameW 失败 → 空串 → 不判复用，且句柄照样关掉。
-    own = os.getpid()
-    k32 = _FakeKernel32({own: sys.executable}, query_ok=False)
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    assert gui._reused_pid_image_pair(_own_image_name(), own) is None
-    assert k32.closed == 1
-
-
-def _cleanup_stub(gui: ModuleType, recorded_image: str, logs: list[tuple[str, str]]) -> Any:
-    # object.__new__ 跳过 __init__（不建真窗），只注入 _cleanup_zombie_ffmpeg 触及的三个面；
-    # _child_image_name 用 setattr 而非裸赋值共享属性（桩实例私有，不涉还原）
-    app = object.__new__(gui.LiveRecorderGUI)
-    setattr(app, "_child_image_name", recorded_image)
-    setattr(app, "_log", lambda message, level="info": logs.append((str(message), level)))
-    return app
-
-
-def test_cleanup_skips_whole_tree_kill_when_pid_is_confirmed_reused(
-    gui: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # 行为侧判据：确证复用 → 一次 taskkill 都不发（`/F /T` 打的是号码，接手者及其整棵子树
-    # 都可能是无关进程），且必须留下一条能归因的告警（哪个 PID、现被谁占用、期望者是谁）。
-    own = os.getpid()
-    k32 = _FakeKernel32({own: str(tmp_path / "notepad.exe")})
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    runs = _kill_runs(gui, monkeypatch)
-    logs: list[tuple[str, str]] = []
-    gui.LiveRecorderGUI._cleanup_zombie_ffmpeg(_cleanup_stub(gui, _own_image_name(), logs), own)
-
-    assert runs == [], f"PID 确证已被别的映像接手，仍发出了杀进程命令: {runs}"
-    warns = [(message, level) for message, level in logs if level == "warn"]
-    assert len(warns) == 1, f"跳过强杀必须恰留一条告警（多于一条说明别处也在报错）: {logs}"
-    message = warns[0][0]
-    assert str(own) in message and "notepad" in message, f"告警必须点名 PID 与现占用映像，否则无法归因: {message}"
-
-
-def test_cleanup_still_kills_whole_tree_when_image_matches(gui: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 反向护栏：映像名对得上（最常见路径）→ 整树强杀照发，且一条 warn 都不该有
-    # （warn 缺席同时反向证明本函数没有靠「异常被外层 except 吞掉」凑出上一格的告警）
-    own = os.getpid()
-    k32 = _FakeKernel32({own: sys.executable})
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    runs = _kill_runs(gui, monkeypatch)
-    logs: list[tuple[str, str]] = []
-    gui.LiveRecorderGUI._cleanup_zombie_ffmpeg(_cleanup_stub(gui, _own_image_name(), logs), own)
-
-    assert any("/T" in argv and str(own) in argv for argv in runs), f"未复用时必须照常清理: {runs}"
-    assert [level for _, level in logs if level == "warn"] == [], f"正常清理路径不应有告警: {logs}"
-
-
-def test_cleanup_still_kills_whole_tree_when_nothing_recorded(
-    gui: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # 反向护栏：没记录过期望映像名 → 判据不介入，原有的清理能力不得被凭空收窄
-    own = os.getpid()
-    k32 = _FakeKernel32({own: str(tmp_path / "notepad.exe")})
-    _use_win32_kernel32(gui, monkeypatch, k32)
-    runs = _kill_runs(gui, monkeypatch)
-    logs: list[tuple[str, str]] = []
-    gui.LiveRecorderGUI._cleanup_zombie_ffmpeg(_cleanup_stub(gui, "", logs), own)
-
-    assert any("/T" in argv and str(own) in argv for argv in runs), f"未记录即不判定，照发清理: {runs}"
-    assert k32.opened == [], "未记录时期望名缺席，判据连读映像都不该发起"

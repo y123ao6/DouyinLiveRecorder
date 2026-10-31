@@ -287,7 +287,7 @@ jobs:
       # ── ffmpeg：冒烟测试需要（main.py 启动即检查）──────────────────────
       # 冒烟跑在 lite 产物上（不含内置运行时），故四平台都用系统包管理器装一份。
       # full 版本内置的 ffmpeg 由 build_exe.py --dual 在打包阶段单独下载。
-      # Linux 额外装 xvfb：GUI（tkinter/pystray）冒烟需要虚拟显示。
+      # Linux 额外装 xvfb：GUI（PySide6）冒烟需要虚拟显示。
       - name: Install ffmpeg (Windows)
         if: matrix.platform == 'windows'
         uses: ./.github/actions/retry

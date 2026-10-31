@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ALLOWED_UNRESOLVED_BY_NAME_CALLS = {"src/ui_i18n.py::render"}
 
 # 参数位实参链式解析的收敛轮数：`模块常量 → 调用方实参 → 形参 → 再传入下一层 → tr(形参)`
-# 在 gui.py / src/gui_qt/shared.py 的实际深度是 2 层（_pattern_from_template → _sentinel_text），
+# 在 src/gui_qt/shared.py 的实际深度是 2 层（_pattern_from_template → _sentinel_text），
 # 留一轮余量；轮数本身不是判据，白名单才是。
 _INDEX_PASSES = 3
 

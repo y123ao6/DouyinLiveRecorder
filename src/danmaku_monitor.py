@@ -388,7 +388,7 @@ class DanmakuMonitorHub:
             )
 
     # 房间停止监控（main.py 的录制线程在 outer try 的 finally 里调用，覆盖录制态/轮询态/解析失败态）：
-    # 从房间表移除条目并写 conn/stopped 事件——GUI 的 _danmaku_dispatch 见 state=="stopped" 即 pop
+    # 从房间表移除条目并写 conn/stopped 事件——窗口层 DanmakuMonitor 见 state=="stopped" 即 pop
     # 房间行，Web 快照随房间表自动消失；同房间重新录制时由 room_started 重新登记。
     # 条目必须删除：URL 被移除/注释后房间线程已退出，旧实现却让监控页一直残留失效直播间及其旧数据。
     def room_stopped(self, room: str, reason: Optional[str] = None) -> None:

@@ -1,6 +1,7 @@
 # GUI 重设计：迁移 PySide6 并按 gui-redesign 视觉语言重构
 
 > 状态：设计已批准（2026-10-17 用户确认「无异议，执行」）。本文件是本次改造的规格事实源。
+> **[2026-10-31 结项]** 迁移期 legacy tkinter 栈已完全移除：`gui.py` 退化为薄入口，`src/ui_kit.py` / `src/ui_motion.py` 与 ttk 主题注册、Tk 字体解析均已删除，PySide6 为唯一窗口实现。下文的「迁移期保留 / 验证后删除」按完成态理解。
 > 视觉事实源：`docs/gui-redesign/index.html`（设计令牌、布局骨架、动效曲线）。
 
 ## 1. 背景与目标

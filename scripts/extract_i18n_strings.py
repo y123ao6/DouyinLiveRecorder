@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# i18n 待翻译串提取器：AST 扫描运行时代码（main/gui/web/msg_push/i18n + src/ 全部 .py），
+# i18n 待翻译串提取器：AST 扫描运行时代码（main/gui/web/msg_push/i18n + src/ 全部 .py；
+# gui.py 已退化为 PySide6 薄入口，保留在扫描面以覆盖入口期文案），
 # 提取 print() 的全部常量实参、logger.*() 与 i18n.tr() 的首参（常量串或 f-string 模板底稿），
 # 与四语目录（zh_CN.po / en_US.json / en_GB.json / zh_TW.yaml）比对并打印缺失清单。
 # 只读工具、仅供维护期使用：不进运行时链路，也不在 AGENTS.md 的门禁命令块里（缺失靠人工跟进）。
@@ -7,7 +8,7 @@
 # 三个**扫不到的盲区**（AGENTS.md 第 14 条同源）——新增这类用户可见文案必须手工登记进四语
 # 目录并重编 .mo，否则本脚本会一直报「0 缺失」的假绿：
 #   ① color_obj.print_colored(...)（main.py 彩色控制台输出，不是 print 调用）；
-#   ② messagebox.show*（gui.py 弹窗标题与正文）；③ 推送正文（msg_push.py 裸字面量 + replace 模板）。
+#   ② 推送正文（msg_push.py 裸字面量 + replace 模板）。
 # 另两个边界：web/app.js 自带四套内嵌目录（与后端目录互不相干，不在扫描面内，须手工五处同改）；
 # 「疑似冗余」段只是参考级——孤儿 msgid（目录比代码多）不会变红，改源码删功能时要人工回查。
 #
@@ -89,10 +90,10 @@ def extract_constant_or_template(node: ast.AST, source: str) -> str | None:
 
 
 # i18n.tr(...) 的调用形态：裸 tr 或 <别名>.tr。别名集合必须覆盖仓内全部写法，
-# 否则该调用点会从提取结果消失，缺失检测对它退化为假绿（gui.py 用的是 i18n_module）。
+# 否则该调用点会从提取结果消失，缺失检测对它退化为假绿（窗口层用的是 i18n_module）。
 TR_CALLER_IDS = {"i18n", "i18n_module"}
 
-# ui_i18n.T(...) 的调用形态：裸 T（gui.py 的静态标签标记，src/ui_i18n.py 提供）。
+# ui_i18n.T(...) 的调用形态：裸 T（窗口层静态标签标记，src/ui_i18n.py 提供）。
 # i18n 静态标签（按钮/表头/窗口标题）经 T() 建时查表 + 登记重译，其 msgid 与 tr 同族；
 # 不纳入扫描面则这批词条只有人工登记一条路，缺失检测对它们退化为假绿。
 T_CALLER_IDS = {"T"}

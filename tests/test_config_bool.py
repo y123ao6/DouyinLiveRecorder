@@ -2,7 +2,7 @@
 #
 # 背景（2026-09-17）：旧实现把「取值」与「解析」混在 main.py 的 `options = {"是": True, "否": False}`
 # 字典查表里，非「是/否」写法会**静默**回落到 options.get 的兜底实参；logger.py / web_config.py /
-# web/app.js / gui.py 又各有一套口径。把 config.ini 批量改写成 true/false 后 8 项配置的生效值
+# web/app.js / GUI 窗口层又各有一套口径。把 config.ini 批量改写成 true/false 后 8 项配置的生效值
 # 全部漂移（最严重：「是否跳过代理检测 = true」被判 False → global_proxy=False → 9 个海外平台
 # 解析分支走 else，100% 无法录制）。
 #

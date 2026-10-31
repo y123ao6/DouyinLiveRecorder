@@ -304,11 +304,9 @@ def test_recorder_log_messages_route_through_tr() -> None:
 
 
 def test_recorder_path_logging_masks_credentials() -> None:
-    # 红线判据同 tests/test_gui_legacy_guards.py::test_absolute_paths_are_masked_before_logging
-    # （gui.py 当年正是路径日志漏过脱敏才立的判据）：「执行程序/工作目录」两条 {path} 模板的
-    # path= 实参必须是 mask_credentials(...) 调用。「未找到 console 解释器 {path}」不在旧守护
-    # 的 _MASKED_PATH_MSGIDS 集合内（gui.py 同款调用点就不脱敏，解释器位置属低敏诊断信息），
-    # 与 gui.py 逐行对齐、不扩大红线范围。
+    # 红线判据沿用「路径进日志前必须脱敏」的既有约束：「执行程序/工作目录」两条 {path}
+    # 模板的 path= 实参必须是 mask_credentials(...) 调用。「未找到 console 解释器 {path}」
+    # 刻意不在脱敏集合内——解释器位置属低敏诊断信息，不扩大红线范围。
     masked_msgids = ("执行程序: {path}", "工作目录: {path}")
     source = (Path(__file__).resolve().parent.parent / "src" / "gui_qt" / "recorder.py").read_text(encoding="utf-8")
     seen = 0
