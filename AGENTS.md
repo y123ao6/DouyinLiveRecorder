@@ -1,11 +1,10 @@
-> 本文件是项目**每次会话必守约束**的唯一事实源：核心事实、安全红线、门禁命令。按需查阅的详情已外迁到 `.agents/skills/dlr-dev-playbook/references/`，纯参考长段外迁到 `docs/agent-reference/`。新增长期约定写回对应章节，不得出现第二份事实源。
+> 本文件是项目**每次会话必守约束**的唯一事实源：核心事实、安全红线、门禁命令。按需查阅的详情在 `.agents/skills/dlr-dev-playbook/references/`，纯参考长段外迁到 `docs/agent-reference/`，更新日志正文归档在 `docs/changelog/`。新增长期约定写回对应章节，不得出现第二份事实源。
 >
 > **阅读顺序**：先读「风险控制（前置）」→ 跑门禁时读「格式化命令」→ 动手前读所在主题的 Skill 参考文档。
 
 ## 项目概览
 
-- **名称**: DouyinLiveRecorder
-- **版本**: 4.6.0（唯一事实源 `pyproject.toml` 的 `version`，动态读取口径见「关键约定」#1）
+- **名称 / 版本**: DouyinLiveRecorder 4.6.0（唯一事实源 `pyproject.toml` 的 `version`，动态读取见「关键约定」#1）
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具
 - **许可证**: MIT
 
@@ -13,28 +12,28 @@
 
 ### 必须停下来交回用户的情形
 
-- **批量重装 venv 依赖**：必须由用户在普通终端执行，沙箱拦截发生在 pip 已开始卸载之后、会清空包目录。命令与分级流程见 dlr-dev-playbook `references/ci-workflow.md` 的「venv 依赖修复分级处置」。
-- **清理范围越界**：收尾清理只限本次任务自己产生的一次性脚本与 `tests/` 下用例生成的临时输出；运行期产物目录（downloads/recordings/logs/backup_config/）与 `scripts/` 下正式维护脚本一律不动（范围与命令见「测试收尾清理临时脚本」）。**括号枚举是唯一事实源**：`scripts/agent_hook_guard.py::PROTECTED_RUNTIME_DIRS` 与 `.gitignore`/`.dockerignore` 同源维护，`tests/test_agent_hook_guard.py` 按此括号形态正则取基准并逐项比对；写成顿号/斜杠列表会让该一致性锁失去比对基准而判红，精简本文件时**不得**改动这处括号形态。
-- **删除被 harness safe-delete 拦截**：记下路径、按同节口径逐文件重试；仍删不净时在回复里明确列出残留路径交回用户，**不得静默跳过**。
-- **治理式流程技能（vibe 等）需要 run 范围与 artifact root**：先由用户确认，不得把工具安装目录当产物根目录（见「流程编排技能的使用边界」）。
+- **批量重装 venv 依赖**：必须由用户在普通终端执行：沙箱拦截发生在 pip 开始卸载之后、会清空包目录。分级流程见 dlr-dev-playbook `references/ci-workflow.md`「venv 依赖修复分级处置」。
+- **清理范围越界**：收尾清理只限本次任务产生的一次性脚本与 `tests/` 临时输出；运行期产物目录（downloads/recordings/logs/backup_config/）与 `scripts/` 下正式维护脚本一律不动（范围与命令见「测试收尾清理临时脚本」）。**括号枚举是唯一事实源**：`scripts/agent_hook_guard.py::PROTECTED_RUNTIME_DIRS` 与 `.gitignore`/`.dockerignore` 同源，`tests/test_agent_hook_guard.py` 按此括号形态正则比对；改成顿号/斜杠列表会让该锁失去基准而判红，**不得**改动这处括号形态。
+- **删除被 harness safe-delete 拦截**：记下路径、按同节口径逐文件重试；仍删不净时在回复里列出残留路径交回用户，**不得静默跳过**。
+- **治理式流程技能（vibe 等）**：需先由用户确认 run 范围与 artifact root，不得把工具安装目录当产物根目录（见「流程编排技能的使用边界」）。
 
 ### 凭据与敏感配置红线
 
-- **不得提交 / 外传运行时凭据**：仓库当前保留一份已跟踪的脱敏 `config/config.ini` 基线模板；`.gitignore` 对已跟踪文件不生效，故本地填入 Cookie / 代理 / Web 密码后绝不能提交。`config/URL_config.ini` 与新增同类运行时文件须保持忽略，二者均经 `.dockerignore` 排除、不得进入镜像。
-- **写入配置或日志前必须脱敏**：URL / 代理地址一律经 `utils.mask_credentials()`；Web 面板敏感键判定走「节白名单 + 键名正则」双重口径，`'***'` 掩码跳过是写入侧唯一防线（详见 dlr-dev-playbook `references/known-pitfalls.md`「凭据与敏感配置脱敏」）。
+- **不得提交 / 外传运行时凭据**：仓库保留一份已跟踪的脱敏 `config/config.ini` 基线模板；`.gitignore` 对已跟踪文件不生效，本地填入 Cookie / 代理 / Web 密码后绝不能提交。`config/URL_config.ini` 及新增同类运行时文件须保持忽略，并经 `.dockerignore` 排除、不得进入镜像。
+- **写入配置或日志前必须脱敏**：URL / 代理地址一律经 `utils.mask_credentials()`；Web 面板敏感键走「节白名单 + 键名正则」双重判定，`'***'` 掩码跳过是写入侧唯一防线（详见 dlr-dev-playbook `references/known-pitfalls.md`「凭据与敏感配置脱敏」）。
 - **文档与审查记录里不得出现真实凭据**：新增 `CODE_REVIEW_*.md` / `DIAGNOSIS_*.md` 类根目录文档时只写脱敏后的样例值。
 
 ## Python 版本
 
 - **最低要求 / 目标 / mypy 检查版本**: Python >= 3.14（`requires-python = ">=3.14"`）。
-- **3.14 破坏性变更基线**: `asyncio.get_event_loop()` 不再隐式创建事件循环（后果与整改口径详见 dlr-dev-playbook `references/concurrency-model.md`）；`pkg_resources`、PEP 594 亡故电池模块已移除；新代码统一走 `ctypes.WinDLL`（对齐 web.py 惯例，而非 `ctypes.windll`）。
-- 语法/编译检查一律使用项目 venv 的 Python 3.14（3.13 做 `compileall`/`py_compile` 会误报 PEP 758 语法，详见 dlr-dev-playbook `references/known-pitfalls.md`）。
+- **3.14 破坏性变更**: `asyncio.get_event_loop()` 不再隐式创建事件循环（口径见 dlr-dev-playbook `references/concurrency-model.md`）；`pkg_resources`、PEP 594 亡故电池模块已移除；新代码统一走 `ctypes.WinDLL`（对齐 web.py，而非 `ctypes.windll`）。
+- 语法/编译检查一律用项目 venv 的 Python 3.14（3.13 做 `compileall`/`py_compile` 会误报 PEP 758 语法，见 dlr-dev-playbook `references/known-pitfalls.md`）。
 
 ## 代码风格
 
 > 配置摘录自 `pyproject.toml [tool.*]`，配置本体才是事实源；门禁命令见「格式化命令」。
 
-- **Black**: `line-length = 120`、`target-version = ['py314']`；排除 `.git`/`.venv`/`build`/`dist`/`__pycache__`/`.pyc`/`node`/`ffmpeg`/`downloads`/`logs`。
+- **Black**: `line-length = 120`、`target-version = ['py314']`；排除 `.git`/`.venv`/`build`/`dist`/`__pycache__`/`.pyc`/`node`/`ffmpeg`、运行期产物目录与本地工具目录（`.agents`/`.workbuddy`/`typings` 等，完整清单见配置本体）。
 - **isort**: `profile = "black"`、`line_length = 120`、`known_first_party = ["src", "i18n"]`。
 - **mypy**: `python_version = "3.14"`；**不带路径参数**（范围取 `[tool.mypy].files`）；平台双跑 `mypy --platform linux` / `mypy --platform win32`。typings/ 存根告警见 dlr-dev-playbook `references/static-check-adjudication.md`。
 - **except 多异常写法**: 本仓统一 `except A, B:`（PEP 758 无括号）。新增写无括号，存量不为对齐而批量改；需 `as` 绑定时回退加括号。
@@ -42,14 +41,14 @@
 ### 注释约定
 
 - **统一使用 `#` 行注释，不使用三引号 docstring**（docstring 进 AST、`#` 注释不进，AST 等价性校验借此证明「逻辑未改动、未误插 docstring」）。
-- **写「为什么」而非「做什么」**：边界条件、平台差异、风控信号、降级路径、异常吞没后果、并发与时序假设。三个层次：模块头总览 / 函数级职责 / 关键分支与边界的「为什么」；`src/stream_select.py`、`src/scheduler.py` 是参照。
-- **引用代码位置优先写锚点（符号名 / 唯一语句片段），不写 `file:line`**: 行号随同文件增删必然漂移。确需给读数时写「实测日期 + 取数命令」，让读者能复跑。
+- **写「为什么」而非「做什么」**：边界条件、平台差异、风控信号、降级路径、异常吞没后果、并发与时序假设。三个层次：模块头总览 / 函数级职责 / 关键分支与边界；参照 `src/stream_select.py`、`src/scheduler.py`。
+- **引用代码位置优先写锚点（符号名 / 唯一语句片段），不写 `file:line`**: 行号随文件增删漂移。确需给读数时写「实测日期 + 取数命令」，便于复跑。
 - **修改注释只增不改**：不得删除或重写已有解释性注释；需修正时在其下方补充。**例外**：不适用于已被证伪的事实性陈述。
-- **「更正考古」段可压缩**：多层叠加的修订段落允许压为「当前实测状态 + 一行 `[历史注]`」，但实测读数、常量名、判据、回归锁用例名一律逐字保留。
+- **「更正考古」段可压缩**：多层叠加的修订允许压为「当前实测状态 + 一行 `[历史注]`」，但实测读数、常量名、判据、回归锁用例名逐字保留。
 
 ## 项目结构
 
-完整目录树已外迁为纯参考段：[项目结构目录树][struct-tree]；逐模块覆盖率阈值数值不在本文件维护（事实源 `scripts/check_coverage.py` 的 `MODULE_THRESHOLDS`）。
+完整目录树见 [项目结构目录树][struct-tree]；逐模块覆盖率阈值只维护在 `scripts/check_coverage.py` 的 `MODULE_THRESHOLDS`，本文件不复制数值。
 
 [struct-tree]: docs/agent-reference/project-structure.md
 
@@ -62,15 +61,15 @@
 | --- | --- | --- | --- |
 | DLR 开发手册 | `.agents/skills/dlr-dev-playbook/` | 新功能设计、编写测试、运行时日志分诊、平台符号门控、静态检查裁定、Windows 只读探源 | 开发工作流路由；命中路由后只加载对应的单个 `references/*.md` |
 | 领域硬约束（选源/录制/发布） | `.agents/skills/dlr-domain-constraints/` | `select_source_url`、`ffmpeg`、`-reconnect`、`-segment_format`、`_PINNED_RUNTIME_SHA256`、`--require-pinned`、JS 签名脚本钉定 | 选源探针与画质映射、F-01 四定义点与容器格式查表、运行时钉定三层防线、签名脚本字节级对齐 |
-| 大规模注释重构（通用技能，非本仓领域约定） | `.agents/skills/comment-refactor-at-scale/` | 纯注释重构、等价性校验、配额感知派发写入代理、批量文本改写 | 基线与六维等价证明、波次派发与 JSONL 台账、配额中断后的产物重建、字节级批量改写 |
-| 只读审查生命周期（通用技能，非本仓领域约定） | `.agents/skills/code-review-lifecycle/` | 全仓静态审查、只读审查、审查报告整改、输出 `CODE_REVIEW_YYYY-MM-DD.md` | 分区派发与主控复核；审查结论的严重度分级与逐条整改验收 |
-| 运行时安全应急（通用技能，非本仓领域约定） | `.agents/skills/runtime-security-response/` | Node.js Brotli CVE、PHP php2shell、运行时版本核查与升级 | 影响面判定、解压/参数注入入口追踪、缓解与补丁验收 |
-| Python 工程规范（外部市场技能，非本仓领域约定） | `.agents/skills/python-engineering/` | Python 代码风格与后端分层、ruff/uv、异步与数据库实践 | 函数式风格与文档、后端工程实践清单 |
-| 通用开发工具箱（外部市场技能，非本仓领域约定） | `.agents/skills/general-dev-toolkit/` | 全栈架构与测试、性能优化、符号级编辑、提示词分析 | Clean Architecture/DDD、优化杠杆、符号导航、任务规格澄清 |
+| 大规模注释重构（通用，非本仓约定） | `.agents/skills/comment-refactor-at-scale/` | 纯注释重构、等价性校验、配额感知派发写入代理、批量文本改写 | 基线与六维等价证明、波次派发与 JSONL 台账、配额中断后的产物重建、字节级批量改写 |
+| 只读审查生命周期（通用，非本仓约定） | `.agents/skills/code-review-lifecycle/` | 全仓静态审查、只读审查、审查报告整改、输出 `CODE_REVIEW_YYYY-MM-DD.md` | 分区派发与主控复核；审查结论的严重度分级与逐条整改验收 |
+| 运行时安全应急（通用，非本仓约定） | `.agents/skills/runtime-security-response/` | Node.js Brotli CVE、PHP php2shell、运行时版本核查与升级 | 影响面判定、解压/参数注入入口追踪、缓解与补丁验收 |
+| Python 工程规范（外部市场，非本仓约定） | `.agents/skills/python-engineering/` | Python 代码风格与后端分层、ruff/uv、异步与数据库实践 | 函数式风格与文档、后端工程实践清单 |
+| 通用开发工具箱（外部市场，非本仓约定） | `.agents/skills/general-dev-toolkit/` | 全栈架构与测试、性能优化、符号级编辑、提示词分析 | Clean Architecture/DDD、优化杠杆、符号导航、任务规格澄清 |
 
 ### 项目级 Hooks / Commands
 
-> Skill 展开**怎么做**，Hook 只做**确定性拦截与即时反馈**，Command 只是短入口。三者约束本体仍在 AGENTS.md。
+> Skill 展开**怎么做**，Hook 只做**确定性拦截与即时反馈**，Command 只是短入口。
 
 | 资产 | 位置 | 触发条件 |
 | --- | --- | --- |
@@ -93,7 +92,7 @@
 - **运行时依赖**: `pyproject.toml [project.dependencies]` 与 `requirements.txt` 保持同步。回归锁：`tests/test_regression_gates.py`。
 - **开发 / 构建 / GUI 依赖**: `pip install .[dev]`（pytest / pytest-asyncio / pytest-cov / black / isort / mypy / pre-commit）/`.[build]`（PyInstaller>=6.10.0）/`.[gui]`（PySide6 一条）；三者均不进运行时清单。
 - **i18n 依赖**: PyYAML（zh_TW.yaml 加载；缺失时仅损失 YAML 格式）。
-- **GUI 包版本下限**: `PySide6>=6.12.0`（须与 `requirements.txt` 和 `pyproject.toml [project.dependencies]` 三处一致）。
+- **GUI 包版本下限**: `PySide6>=6.12.0`（`requirements.txt`、`pyproject.toml` 运行时依赖与 `[gui]` 三处同值）。
 - **安全下限**: `starlette>=1.3.1`、`urllib3>=2.8.0`、`h2>=4.4.1`。优先抬下限而非 `--ignore-vuln` 白名单。
 - **依赖缺失排查**: venv 缺包表现为测试收集期 `ModuleNotFoundError`，先核对 `pip list` 与 `requirements.txt` 差异再怀疑代码。
 
@@ -109,9 +108,9 @@
 
 ### 测试收尾清理临时脚本
 
-- **收尾必须删除任务中生成的一次性脚本与产物**：前缀分三类——`_tmp_`/`tmp_`（通用临时）、`mock_`（桩服务/模拟器）。残留会污染 `git status`、被 mypy 收编、误导协作者。**任务收尾一律删除**，不留「下次可能还用」。
-- **优先写在仓库之外**: 落 `%TEMP%`/`/tmp` 或 `tempfile.mkdtemp()`；确需写在仓库内者用完即删，统一前缀命名；需长期复用才进 `scripts/`。
-- **清理范围与禁区**: 只删本次任务产生的临时脚本与输出；**不要**删 `downloads/`/`recordings/`/`logs/`/`backup_config/` 运行期产物目录、**不要**动 `scripts/` 下正式维护脚本。清理前 `git status --short` 列出未跟踪文件，对 `.workbuddy/` 等 gitignore 目录显式枚举后确认再删；被 safe-delete 拦截时逐文件重试或列出残留交回用户，**不得静默跳过**。
+- **收尾必须删除任务中生成的一次性脚本与产物**：前缀分三类——`_tmp_`/`tmp_`（通用临时）、`mock_`（桩服务/模拟器）。残留会污染 `git status`、被 mypy 收编、误导协作者；**任务收尾一律删除**，不留「下次可能还用」。
+- **优先写在仓库之外**: 落 `%TEMP%`/`/tmp` 或 `tempfile.mkdtemp()`；确需写在仓库内者统一前缀命名、用完即删；长期复用才进 `scripts/`。
+- **清理范围与禁区**: 只删本次任务产生的临时脚本与输出；**不要**删「风险控制」列出的运行期产物目录、**不要**动 `scripts/` 下正式维护脚本。清理前 `git status --short` 核未跟踪文件，对 `.workbuddy/` 等 gitignore 目录显式枚举后确认再删；safe-delete 拦截按「风险控制」处置，**不得静默跳过**。
 
 ```powershell
 Get-ChildItem -Recurse -File -Include *_tmp_*.py,tmp_*.py,mock_*.py,*_tmp_*.txt,tmp_*.txt |
@@ -135,8 +134,7 @@ docker compose up -d
 ## 格式化命令（门禁唯一基准）
 
 ```bash
-# PYTHONUTF8=1 是门禁语义的一部分，不得删（MID-63）：GBK locale 下 isort 会对含中文注释文件
-# 抛 'gbk' codec can't encode 并静默跳过、rc 仍 0——本地与 CI 都没查。
+# PYTHONUTF8=1 属门禁语义、不得删（MID-63）：GBK locale 下 isort 会对含中文注释文件静默跳过、rc 仍 0。
 PYTHONUTF8=1 python -m black --check --diff --line-length 120 --target-version py314 .
 PYTHONUTF8=1 python -m isort --check-only --diff --profile black --line-length 120 .
 mypy                      # 不带路径，范围取 pyproject [tool.mypy].files（本机平台目标）
@@ -155,10 +153,9 @@ python scripts/check_skill_agents_consistency.py  # Skill 目录与 AGENTS.md �
 
 ### basedpyright（本地补充门禁，CI 不跑）
 
-- 命令：`basedpyright`（不传路径，范围取 `pyproject [tool.basedpyright]`）；要求 0 error/0 warning。
-- 与 mypy 分工：mypy 是跨平台 CI 门禁（Linux runner）；basedpyright 是本地严格度补充。
-- **`pyright` 与 Pylance 的定位**: `pyright` 只是 basedpyright 的引擎基座，**不是第三条门禁**；Pylance 无命令行入口，不得为绕过许可证去 shell 驱动它。
-- **裁决规则**: CI 只跑 mypy。只在 Linux 或只在 Windows 出现的基于 basedpyright 结论，以与 CI 一致的 Linux 一侧为准。
+- 命令：`basedpyright`（不传路径，范围取 `pyproject [tool.basedpyright]`），要求 0 error/0 warning；mypy 是跨平台 CI 门禁（Linux runner），basedpyright 是本地严格度补充。
+- **`pyright` / Pylance 的定位**: `pyright` 只是 basedpyright 的引擎基座，**不是第三条门禁**；Pylance 无命令行入口，不得为绕过许可证去 shell 驱动它。
+- **裁决规则**: CI 只跑 mypy。仅单平台出现的 basedpyright 结论，以与 CI 一致的 Linux 一侧为准。
 
 ### isort 收尾清理 `.isorted` 备份残留
 
@@ -172,7 +169,7 @@ POSIX: `find . -name "*.isorted" -delete`
 1. **门禁全绿**: `python scripts/run_gates.py` + `pytest`（0 警告）+ `scripts/check_coverage.py`；basedpyright 本地核一次。**大批量改动收尾时，被引用为「门禁全绿」证据的那次运行必须发生在整批最后一次编辑之后**。
 2. **端到端真机验证**: 涉及录制链路/选源/ffmpeg 参数/平台解析的改动必须用**真实 URL** 增量跑并写进回复。无法执行时记「未执行 + 原因 + 交回用户的动作」且**不得宣布完成**。
 3. **回归锁**: 动到带「回归锁」标注的行为时确认对应用例存在且覆盖；缺则补。
-4. **文档同源**: `CODE_WIKI.md`/`CODE_WIKI_EN.md` 更新日志追加本次变更；新增长期约定写回本文件。
+4. **文档同源**: 按滚动归档口径追加更新日志（正文入 `docs/changelog/code-wiki-history-*.md`，`CODE_WIKI*.md` 只留索引与概要）；新增长期约定写回本文件。
 5. **收尾清理**: 按「测试收尾清理临时脚本」执行，并 `git status --short` 核对无未跟踪残留。
 6. **日志**: 当日 `.workbuddy/memory/YYYY-MM-DD.md` 追加一条。
 
@@ -180,13 +177,12 @@ POSIX: `find . -name "*.isorted" -delete`
 
 ## 流程编排技能的使用边界
 
-- 本仓库日常改动（缺陷修复、性能优化、真机验证迭代、重构）**不进入**治理式运行时类技能（如 `vibe`）。
-- 仅当次会话用户**显式**要求才加载；确需治理式执行时先由用户确认 run 范围与 artifact root。
+- 本仓库日常改动（缺陷修复、性能优化、真机验证迭代、重构）**不进入**治理式运行时类技能（如 `vibe`）；仅当次会话用户**显式**要求才加载，且先由用户确认 run 范围与 artifact root。
 - `brainstorming` 类「先出设计再动手」技能，对「方案已在 AGENTS.md/CODE_WIKI 钉死」或「用户已批准、正在连续推进」的改动不适用。
 
 ## 关键约定
 
-1. **版本号同步**: 唯一事实源 `pyproject.toml`。`main.py`/`src/web_api.py` 经 `importlib.metadata` 动态读取；`Dockerfile` 经 `APP_VERSION` 注入。`uv.lock` 与 `DouyinLiveRecorder.egg-info` 是派生消费方：改版本后运行 `python scripts/sync_metadata.py` 重新生成。`scripts/check_version.py` 校验动态消费方。
+1. **版本号同步**: 唯一事实源 `pyproject.toml`；`main.py`/`src/web_api.py` 经 `importlib.metadata` 读取，`Dockerfile` 经 `APP_VERSION` 注入。改版本后运行 `python scripts/sync_metadata.py` 重生成 `uv.lock` 与 `DouyinLiveRecorder.egg-info`；`scripts/check_version.py` 校验动态消费方。
 2. **行宽**: 120 字符（black + isort 统一）。
 7. **排除目录**: `node/`/`ffmpeg/`/`downloads/`/`__pycache__/` 在所有工具均排除。
 
@@ -196,5 +192,5 @@ POSIX: `find . -name "*.isorted" -delete`
 
 ## 外迁内容路由
 
-> 以下详情已外迁到 `.agents/skills/dlr-dev-playbook/references/`，命中场景时按需加载：
+> 命中场景时按需加载（目录同上）：
 > 已知坑 → `known-pitfalls.md` · 测试编写约定 → `testing-conventions.md` · 并发与线程模型 → `concurrency-model.md` · CI/workflow → `ci-workflow.md` · 打包与冒烟 → `build-details.md` · mypy typings/ 存根 → `static-check-adjudication.md` · 注释检查工具 → `annotation-tools.md` · 关键约定 #3–#16 → `key-conventions.md`

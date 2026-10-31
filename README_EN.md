@@ -166,107 +166,33 @@ independent trust root and does not replace the official digest document.)
 
 ```
 DouyinLiveRecorder/
-├── config/                     # config file directory
-│   ├── config.ini             # main config file
-│   └── URL_config.ini         # live room URL list
-├── src/                        # core source package
-│   ├── __init__.py             # package init + Node.js env config + danmaku platform registry/factory
-│   ├── spider.py              # live stream URL parsing (60+ platforms, danmaku logic extracted)
-│   ├── stream.py              # live stream recording orchestration (ffmpeg commands/segmentation/format)
-│   ├── stream_select.py       # stream source selection / reachability check / probe backoff
-│   ├── scheduler.py           # concurrency scheduler hub (adaptive capacity + per-platform circuit breaker)
-│   ├── room.py                # live room info parsing
-│   ├── utils.py               # utility function library
-│   ├── logger.py              # Loguru logging config
-│   ├── proxy.py               # proxy detection
-│   ├── ttwid.py               # Douyin visitor ttwid fetch/cache
-│   ├── node_install.py        # Node.js auto-install/init
-│   ├── ffmpeg_install.py      # FFmpeg install script
-│   ├── ffmpeg_master_download.py  # FFmpeg master builds (per-platform fetch + verification)
-│   ├── ffmpeg_proc.py         # ffmpeg subprocess management (extracted from main.py)
-│   ├── video_postprocess.py   # post-recording processing (remux/transcode)
-│   ├── notify.py              # live-status message push (extracted from main.py)
-│   ├── recorder_status.py     # recording status tracking (extracted from main.py)
-│   ├── config_io.py           # config read/write / value conversion / backup (extracted from main.py)
-│   ├── config_bool.py         # boolean config parsing (是/否 equals true/false/1/0/yes/no; dependency-free)
-│   ├── config_read.py         # tolerant config read (a duplicated key folds to the last value and is reported)
-│   ├── cookie_cache.py        # visitor Cookie process-level shared cache
-│   ├── log_archive.py         # runtime log archiving (on recording stop: four logs renamed with timestamp)
-│   ├── http_config.py          # HTTP client shared config (SSL verify toggle)
-│   ├── async_http.py          # async HTTP client (httpx)
-│   ├── sync_http.py           # sync HTTP client
-│   ├── web_api.py             # Web management panel Starlette app
-│   ├── web_config.py          # Web panel config read/write
-│   ├── web_tray.py            # Web-mode system tray (minimize to tray)
-│   ├── base.py               # danmaku collector base class (DanmakuBase / DanmakuMessage)
-│   ├── collector.py           # danmaku collector (thread bridge to main flow)
-│   ├── danmaku_monitor.py     # danmaku monitor hub (DanmakuMonitorHub)
-│   ├── srt_writer.py         # danmaku time subtitle (SRT) writer
-│   ├── ws_client.py          # WebSocket transport layer (danmaku direct connect, proxy=None)
-│   ├── platforms/            # danmaku platform implementations (factory-registered by platform id)
-│   │   ├── douyin.py         # Douyin danmaku (protobuf + _tars heartbeat)
-│   │   ├── douyu.py          # Douyu danmaku (STT protocol)
-│   │   ├── huya.py           # Huya danmaku (WSP protocol)
-│   │   ├── bilibili.py       # Bilibili danmaku (WebSocket)
-│   │   ├── twitch.py         # Twitch danmaku (IRC/WS)
-│   │   ├── _tars.py          # TARS private protocol codec
-│   │   └── _xbogus.py        # X-Bogus signature
-│   ├── proto/                # Douyin danmaku protobuf definitions
-│   │   ├── douyin.proto      # protoc source definition
-│   │   ├── douyin_pb2.py      # protoc-generated (DO NOT EDIT)
-│   │   └── douyin_pb2.pyi     # type stub
-│   ├── gui_qt/              # GUI window layer (PySide6/Qt; `gui.py:main()` delegates to this package)
-│   │   ├── app.py           # Qt application assembly and event loop
-│   │   ├── main_window.py   # main window / sidebar navigation
-│   │   ├── theme.py         # design tokens (25 keys x 3 themes) and QSS generation
-│   │   └── pages/           # five pages: dashboard / config / danmaku / quality / runlog
-│   └── javascript/            # JavaScript signature scripts
-│       ├── crypto-js.min.js
-│       ├── x-bogus.js
-│       ├── haixiu.js
-│       ├── liveme.js
-│       └── migu.js
-├── web/                        # Web management panel frontend
-│   ├── index.html              # SPA entry
-│   ├── app.js                  # frontend logic (API, SSE, rendering)
-│   └── style.css               # stylesheet (theme, responsive)
-├── typings/                    # third-party lib type stubs (for static checks)
-│   └── execjs/                 # PyExecJS stub
-├── scripts/                    # engineering helper scripts
-│   ├── smoke_test.py           # generic Web/API smoke test (zero-dep, config-driven)
-│   ├── smoke_web.json          # smoke test sample cases (probe Web panel)
-│   ├── compile_po.py           # .po → .mo compile and sync check (--check)
-│   ├── check_coverage.py       # per-module coverage gate (used by CI)
-│   ├── check_version.py        # version "single source of truth" dynamization check
-│   └── sync_version.py         # version sync helper
-├── downloads/                  # recording output dir (generated at runtime)
-├── logs/                       # log dir (generated at runtime, includes danmaku_monitor.jsonl)
-├── i18n/                       # i18n translation dirs (multilingual, multi-format)
-│   ├── zh_CN/LC_MESSAGES/      # Simplified Chinese (gettext)
-│   │   ├── zh_CN.po           # Chinese translation source (1127 translation keys; 1128 entries including the header)
-│   │   └── zh_CN.mo           # compiled translation (required at runtime, shipped with repo)
-│   ├── en_US.json              # English (US) (JSON catalog)
-│   ├── en_GB.json              # English (UK) (British spelling variant)
-│   └── zh_TW.yaml              # Traditional Chinese (YAML catalog, requires PyYAML)
-├── ffmpeg/                     # FFmpeg dir (Windows)
-├── node/                       # Node.js dir (Windows)
-├── main.py                     # CLI entry
-├── gui.py                      # GUI entry
-├── web.py                      # Web management panel entry
-├── index.html                  # M3U8 video player (standalone tool page)
-├── msg_push.py                 # message push module
-├── i18n.py                     # i18n implementation
-├── build_exe.py                # PyInstaller packaging script (CLI/GUI/Web three entries)
-├── requirements.txt            # Python dependencies
-├── pyproject.toml             # Python project config
-├── Dockerfile                  # Docker build file (multi-stage)
-├── docker-compose.yaml         # Docker Compose (recorder/web/gui three services)
-├── .dockerignore               # Docker build-context exclude
-├── .gitignore                  # Git exclude
-├── StopRecording.vbs           # Windows stop-recording script
-├── CODE_WIKI.md                # project architecture doc
-└── README.md                   # project README doc
+├── config/                     # config.ini (main) + URL_config.ini (room list)
+├── assets/app.ico              # application icon (GUI tray / Web favicon / packaged artifacts)
+├── src/
+│   ├── entry & scheduling: __init__ · spider · stream · stream_select · scheduler · room
+│   ├── infrastructure: utils · logger · proxy · ttwid · http_config · async_http · sync_http
+│   ├── config & installers: config_io · config_bool · config_read · node_install · ffmpeg_*
+│   ├── recording post-processing: ffmpeg_proc · video_postprocess · notify · recorder_status
+│   ├── Web: web_api · web_models · web_config · web_tray
+│   ├── GUI: gui_qt/ (app · main_window · theme · widgets · tray · settings_dialog · pages) + ui_*
+│   ├── danmaku: base · collector · danmaku_monitor · srt_writer · ws_client · platforms/ · proto/
+│   └── javascript/             # 5 signing scripts
+├── web/                        # index.html · app.js · motion.js · style.css
+├── i18n/                       # zh_CN po/mo (1206 keys + header = 1207 entries) · en_US.json · en_GB.json · zh_TW.yaml
+├── typings/                    # third-party type stubs
+├── downloads/ · logs/ · backup_config/  # runtime output (git-ignored)
+├── scripts/                    # run_gates · check_* · compile_po · sync_metadata · smoke_test · sync_version
+├── tests/                      # pytest cases + frontend/*.mjs
+├── docs/                       # agent-reference · changelog · worklog
+├── main.py / gui.py / web.py   # CLI / GUI / Web entry points
+├── i18n.py · msg_push.py · build_exe.py
+├── requirements.txt · pyproject.toml · uv.lock
+├── Dockerfile · docker-compose.yaml · .dockerignore · .gitignore · .gitattributes
+├── index.html · StopRecording.vbs
+└── README.md · README_EN.md · CODE_WIKI.md · CODE_WIKI_EN.md · AGENTS.md
 ```
+
+> The full per-file tree is in [`CODE_WIKI_EN.md`](CODE_WIKI_EN.md) → "Directory Structure".
 
 ## ⚙️ Configuration
 
@@ -496,9 +422,9 @@ web_tray_icon =
 ```ini
 [GUI]
 # UI theme: light | dark | high_contrast (leave empty to follow the system appearance; the sidebar menu writes it back)
-gui_theme = light
-# UI scale: auto | 85 | 100 | 115 | 130 | 150 (auto computes from the usable screen area; the menu writes it back)
-gui_scale = auto
+gui_theme =
+# UI scale: 85 | 100 | 115 | 130 | 150 (leave empty to auto-select from the usable screen area; the menu applies and writes it back)
+gui_scale =
 # UI font family: leave empty for the system default (Microsoft YaHei UI)
 gui_font =
 # Custom font file path: written by "Import Font…"; the copy lives under config/fonts/
@@ -510,7 +436,7 @@ gui_tray_icon =
 
 > Font notes: the preset families in the dropdown are filtered by whether they are **installed on this machine**,
 > so no entry can silently fall back. "Import Font…" accepts `.ttf` / `.otf` / `.ttc` (SFNT containers);
-> `.woff2` / `.woff` are web delivery formats that Tk cannot load through GDI on Windows — convert them
+> `.woff2` / `.woff` are web delivery formats that Qt cannot load directly on Windows — convert them
 > to ttf/otf first. The log terminal and URL editor stay on the monospace font regardless of this setting.
 >
 > Icon notes: "Import Icon…" in the sidebar accepts `.ico` only — Windows picks the frame per scenario from
@@ -519,6 +445,8 @@ gui_tray_icon =
 > squeeze a large frame down, smearing the ring) and should contain 256×256 (missing it only warns). The copy
 > lands in `config/icons/` and the config stores that copy's path, so deleting the original does not lose the
 > icon; any load failure falls back silently to the built-in icon (then to the drawn one) and never blocks startup.
+
+### Live room config (config/URL_config.ini)
 
 Douyin supports the following 5 live-room / profile URL formats (formats for other platforms are shown in the per-platform examples below):
 
@@ -875,7 +803,7 @@ pytest
 
 > **Comment convention**: module/function docs uniformly use `#` line comments, not triple-quoted `"""` docstrings; functional multiline string literals (templates/SQL) use single quotes + line concatenation instead of `"""`.
 
-> **Five-tool quality gate**: this project uses `mypy` (src + tests) / `basedpyright` (tests) / `pytest` (0 warnings) / `black --check .` / `isort --check-only .` jointly as a quality gate; all-green in CI is a prerequisite for merging. Current baseline: **974 passed / 2 skipped / 0 warnings**.
+> **Five-tool quality gate**: this project uses `mypy` (src + tests) / `basedpyright` (local supplement) / `pytest` (0 warnings) / `black --check` / `isort --check-only` jointly as a quality gate; all-green in CI is a prerequisite for merging. Pass counts and coverage follow the most recent gate output.
 
 > **Test note**: `tests/test_web_api.py`'s symlink-related cases (`TestListFiles::test_broken_symlink_skipped` / `test_symlink_outside_skipped`) auto-`pytest.skip` in environments where real symlinks cannot be created (Windows without Developer Mode, some sandboxes) — this is normal and does not indicate a code defect.
 
@@ -985,7 +913,7 @@ brew install node
 **Q: Douyin risk control prevents data retrieval**
 
 - Fill `config.ini`'s `[Cookie]` section with a valid cookie copied from the browser at `live.douyin.com` (must at least include `ttwid`)
-- Lower the loop monitoring frequency (the default 120-second loop is already conservative; you may increase it as appropriate)
+- Lower the loop monitoring frequency (the default 60-second loop is already conservative; you may increase it as appropriate)
 - Change IP or use a proxy
 - Key troubleshooting points (verified conclusions):
   - The typical signal of Douyin risk control is **HTTP 200 + empty response body**, not a 4xx error code; seeing `web/enter` return `status_code=10002 / unknown error` then auto-falling back to HTML scraping is a **normal fault-tolerant path**, not a recording failure
@@ -1084,160 +1012,20 @@ This project is open-sourced under the [MIT License](LICENSE). Stars and Forks a
 
 ### v4.5.0 (2026-10-02 ~ 2026-10-17) — GUI window layer migrated to PySide6 (Qt6) and UI modernization phases 4-6 closed out / mobile and short-link platforms added (b23.tv / m.douyu.com / hy.fan / Xiaohongshu normalization) / Linux arm64 ffmpeg plus multi-arch GHCR images / startup bytecode-cache purge and the release-chain online pin-source layer / tolerant config.ini duplicate-key reader and three rounds of i18n machine checks / full-workspace code review and two metadata reconciliation passes
 
-> This release (v4.5.0, 2026-10-02 ~ 10-17) is a "full GUI modernization + platform onboarding" cycle: ① **the window layer moved from tkinter/ttk to PySide6 (Qt6)** - new `src/gui_qt/`, tokens and QSS as a single source of truth, the controller layer testable offscreen, and Qt dead weight pruned via `QT_BLOAT_FILES`; ② **UI modernization phases 4-6 are closed out** (CTk -> ttk, `customtkinter` removed, type scale / zoom / motion); ③ **platform onboarding** (three mobile short links plus Xiaohongshu's four link shapes normalized, Linux arm64 and multi-arch GHCR filled in); ④ **a duplicated option inside one config.ini section no longer voids the whole file** (new `src/config_read.py`). **There are breaking changes (GUI implementation and dependency surface)** - see the dedicated section below. Full root-cause analysis and verification are in [CODE_WIKI.md](CODE_WIKI.md).
-
-**✨ New Features / Improvements**
-- **GUI window layer migrated to PySide6 (Qt6)**: new `src/gui_qt/` (16 files, 4,189 lines, including the five `pages/`); `gui.py:main()` delegates to `src.gui_qt.app.main()` (the tkinter implementation is kept as `_legacy_main()`; [historical note] that fallback was fully removed on 2026-10-31). Tokens and QSS live in `theme.py`, and the threading model moved to Qt Signal/Slot plus `QTimer`; the controller layer carries no Qt layout code, so `QT_QPA_PLATFORM=offscreen` is enough for unit tests.
-- **UI modernization phase 6 (type scale / zoom / motion)**: new `src/ui_scale.py` (semantic type tokens in seven steps, caption 10 -> display 28, spacing grid, zoom steps, automatic down-step on small screens) and `src/ui_motion.py` (off/subtle/full, with the system "reduce motion" switch taking priority). Zoom changes only type and spacing; point sizes use a gentle `factor ** 0.6` gain (monospace gets another 0.9).
-- **GUI visual language restyle (brand blue -> warm terracotta)**: 16 slots swapped in `src/ui_theme.py`'s light/dark tables, with `gui.py`'s `Colors` changed in the same pass; the primary is `#B5573A` (4.78 against white text; the prototype's `#C96442` measured 3.90 and fails AA) and dark-theme hover goes to `#A8502F`. The `high_contrast` theme, `TERMINAL_*` and the semantic slots were left alone.
-- **Selectable GUI font**: new `src/ui_fonts.py` (SFNT name-table parsing + GDI private font registration; woff2 is rejected); switching families completes in one `configure` without rebuilding the widget tree. Usability is judged by having Tk resolve the name once and comparing against a deliberately-missing family - `AddFontResourceExW(FR_PRIVATE)` succeeds yet `tkfont.families()` never lists a private font.
-- **GUI static labels wired into i18n**: new `src/ui_i18n.py` (`T()` + `retranslate_all` + `apply_title`), with 54 static-label sites and about 60 runtime strings wired; a language switch refills the window in place instead of rebuilding it. 27 presentational texts in `src/web_api.py` now render through `tr()` (the stable machine-code details stay untranslated).
-- **Mobile and short-link platforms onboarded**: Bilibili `b23.tv` (pure-numeric path taken directly; alphabetic short codes followed through a 302), Douyu `m.douyu.com` (whitelist + room-id normalization), Huya `hy.fan` (new resolver + 301 short-code resolution), and Xiaohongshu `parse_xhs_live_url` (four shapes: `/livestream/<room ID>` / dynamic path / `xhslink` / share parameters). All reuse the existing stream-fetch chain after normalization, and `record_host` keeps the short-link domain so circuit-breaker buckets count separately.
-- **Linux arm64 (aarch64) ffmpeg in three parts**: the release matrix gains `ubuntu-24.04-arm` (four platforms x lite/full = 8 zips); new `src/ffmpeg_linux_download.py` (official digest first, TOFU downgrade, two-pass install) as the no-root fallback; new `docker-publish.yml`, one architecture layer per native runner, composed into a manifest by digest (`v*` tags only).
-- **Stale bytecode-cache purge at startup**: new `src/startup_cleanup.py` - whitelisted scan roots, baseline `sha256(relative path + file bytes)` plus the version, persisted in `logs/.pyc_stamp`; it purges once, only when sources or the version actually changed (on by default, switchable).
-- **Release-chain runtime pinning gains an "online source layer"**: `build_exe.py` gains the three-state switch `DLR_RUNTIME_PIN_SOURCE` (off/verify/adopt; off by default, no network request at all). `adopt` opens only for "the manifest has independent authentication" (`trust=signed` and the manifest verifies), and online values must pass a 64-character lowercase-hex shape check. `_PINNED_RUNTIME_SHA256` is unchanged, so default behavior is identical to before.
-
-**🐛 Fixes**
-- **A duplicated option inside one config.ini section voided the whole file**: with the same key on two lines inside `[录制设置]`, `RawConfigParser()` (strict defaults to True) raises `DuplicateOptionError` and not one key survives the read (`import main` dies on the spot, the GUI reports a read failure every 10 s). New `src/config_read.py` (`tolerant_config_parser` / `find_duplicate_options` / `warn_duplicate_options`) wired into 10 read sites, with missing-key write-back kept idempotent.
-- **Qt monospace family-name warnings**: `QFont`'s family slot accepts a single family only, so on a machine without Consolas `QFont("Consolas, Menlo, Courier New, monospace")` falls back via `styleHint=Monospace` (measured enum value 7) into `Terminal`, emitting `CreateFontFaceFromHDC() failed` and `setPointSize(-1)`. New `fixed_font()` picks the first candidate family present on the host.
-- **Two `src/ui_fonts.py` defects**: ① copy failures were swallowed by `except Exception: return None` with no log line - it now emits a warning carrying `{type_name}` and `{err}`; ② `_safe_filename` did not handle Windows reserved device names (`CON`/`PRN`/`AUX`/`NUL`/`COM1-9`/`LPT1-9`) - the base segment before the first dot is compared case-insensitively and gets a `_` prefix on a hit.
-- **GUI right-border clipping**: three long hint labels start with `wraplength=0`, pushing `winfo_reqwidth()` to 1248 against a geometry of 1120, and Tk's grid clips (rather than shrinks) any slave whose requested width exceeds its allocation. Three stages: raise the first-window geometry to kill the first-frame deficit, squeeze to the step's minimum width to read the content's "shrink floor" and raise `minsize` only to that floor, then clamp every dimension to `SCREEN_FILL_CEILING`.
-- **Xiaohongshu anchor name missing on offline rounds**: now read from `liveStream.roomData.hostInfo.nickName` (measured to still exist at `liveStatus="end"`); the old implementation only extracted it from `roomInfo.deeplink` while live, so every waiting round was misjudged as a failure, falling back to `小红书_<room_id>` when unavailable.
-- **Two boundary holes in Douyu room-id extraction**: the old patterns were not anchored to a parameter boundary (`?xyzrid=123` matched as a room id) and dragged the trailing slash and further path segments into the id (`/8751648/`). Now `urlsplit` strips scheme / trailing slash / query / fragment at the parse layer; the error messages are `i18n.tr` constant templates with URLs passed through `mask_credentials()` first.
-- **`CODE_REVIEW_2026-10-02` remediation closed out**: L-04 (`shopee` / `花椒直播` missing from the `platform_cookie` map) and L-05 (module-level dead globals deleted); plus four defects the remediation introduced - a `NameError` from `except Exception:` that still referenced `type(e)`, a `TypeError` from passing a tuple to `mask_credentials`, the log-flush chain's reset point, and a bare-truthiness check that misread the string `"0"` as private (now `parse_config_bool`).
-- **Three i18n items**: 5 "by-name `tr()`" msgids were missing for the Qt sidebar (Qt uses the two-space shape, the catalogs only had the three-space shape) - 5 entries added per catalog, both shapes kept; 9 Qt button icons were reverted to bare text by `set_text` - the constructor label and the `T()` key are now the same msgid, reusing existing keys (zero new entries); 21 Chinese raise messages are wrapped in `tr()` at the production point (16 unique msgids).
-- **Signature-script pin table drifted on trailing bytes**: pre-commit's `end-of-file-fixer` appended a newline to four scripts under `src/javascript/`, while `_check_js_hash` hashes raw bytes, so all four mismatched; the pin table was recomputed per decision (`migu.js` already carried a trailing newline and was left alone).
-
-**⚠️ Breaking Changes / Behavior Changes**
-- **`customtkinter` removed entirely (phases 4-5)**: the widget layer moved from CTk to ttk - new `src/ui_kit.py` (six compatible factories plus `DataTable`), colors derived from the ttk variants `ui_theme` registers, and "interface theme" as the single light/dark entry point; `CTkToplevel` -> `tk.Toplevel`, `CTkFont` -> a negative-point `tkfont.Font`, stubs deleted. The compatibility contract is preserved verbatim (`import gui` still headless, recording chain untouched).
-- **The GUI window implementation switched to PySide6**: `gui.py:main()` delegates to `src.gui_qt.app.main()` with the tkinter implementation kept as `_legacy_main()` ([historical note] it was fully removed on 2026-10-31); `packages` gained `src.gui_qt` and `src.gui_qt.pages` (explicit `packages` are not discovered recursively, so omitting them kills the `douyin-recorder-gui` entry with `ModuleNotFoundError`).
-- **Images no longer carry GUI dependencies by default**: `Dockerfile` gains `ARG INSTALL_GUI=false` - stage 1 strips `pyside6` by line-leading package name before installing, stage 2 adds the Qt runtime libraries only when true; the evidence is "PySide6 unpacks to 647.56MB, yet `import main` and `import web` both succeed with it blocked". Filtering happens only on the image side, and the compose `gui` service uses a separate `:latest-gui` tag.
-- **`[tool.mypy].exclude` directory names anchored**: the field is a path-substring regex, so the bare `"ffmpeg"` / `"node"` had kept 12 files (`src/ffmpeg_*`, `tests/test_ffmpeg_*`, `node_install`) out of the pathless mypy gate; after switching to `(^|/)ffmpeg/` and `(^|/)node/` they entered the gate for the first time and exposed 8 pre-existing annotation errors (fixed).
-- **CI real-window cases now run instead of skipping**: the test job's pytest is wrapped in `xvfb-run -a` with xvfb installed, plus a "Tk can open a display" backstop step (a broken xvfb turns red immediately, so real-window cases cannot silently disappear).
-
-**📦 Dependency Changes**
-- **Runtime dependency `PySide6>=6.12.0` added** with the window migration (20 entries after `customtkinter` was removed, back to 21); the 6.12 floor is the measured minimum that supports Python 3.14.8. `uv.lock` and the egg-info were regenerated via `sync_metadata.py`. `pystray` / `Pillow` stay - the Web tray `src/web_tray.py` still uses pystray.
-- **`customtkinter` removed** in one pass from `requirements.txt`, `pyproject.toml` (runtime list and the `.[gui]` extra) and `typings/customtkinter/`; `build_exe.py` drops `collect_data_files('customtkinter')` while keeping the excludes entry as a defensive measure.
-- **dev extra gains `pre-commit>=3.6.0`** (with `.pre-commit-config.yaml`); it belongs to the dev extra and stays out of `requirements.txt`, so runtime dependencies remain 21.
-- **CI tool-version constants aligned with the local installs**: `isort_version` 9.0.2, `black_version` 26.10.1, and the two mirror revs in `.pre-commit-config.yaml` -> 26.10.1 / 9.0.2, leaving one value across "local venv / CI / commit hook"; before raising them a full `black --check` ran under both black versions (verdict unchanged) and both new revs were verified via the GitHub API.
-
-**🛠️ Repo Maintenance & Docs**
-- **UI modernization phases 4-6 closed out**: CTk -> ttk widget layer, dependency removal and packaging cleanup, the size baseline filled in (91.81MB / 224 files), xvfb made permanent, and type scale / zoom / motion.
-- **Three rounds of i18n machine checks**: new `tests/test_i18n_catalog_coverage.py` (msgids from by-name call sites present in all four catalogs / whitelist set equality / key sets equal item by item), `test_i18n_raise_site_tr.py` and `test_gui_qt_label_parity.py`; `extract_i18n_strings.py` now understands `T(...)`. Catalog size went 1110 -> 1127 keys (6 orphan keys retracted along the way).
-- **Gates and CI**: typecheck gains `mypy --platform win32`; new `pyrightconfig.json` (include equal to `[tool.mypy].files`, exclude covering both lists) so a pathless `pyright` run reproduces the IDE scan surface; new `tests/test_ci_frontend_registration.py` (two-way diff between `.mjs` and the ci.yml list) and the hook body `scripts/agent_hook_guard.py` with `/dlr-dod`.
-- **Code review and metadata reconciliation**: `CODE_REVIEW_2026-10-02.md` (8 per-file deep-audit packages - Critical 2 / Medium 18 / Minor 47 = 67; the report matrix originally said 17 / 66 and was corrected against the enumeration); two metadata reconciliation passes (zero value changes); `AGENTS.md` re-verified with 69 machine checks, 6 claims corrected against measurement and 3 `file:line` references turned into anchors.
-- **CODE_WIKI gains a "change overview by module" section in both languages** (11 subsections, rendered from one shared data table); the Linux arm64 and four-platform matrix was synced into the artifact list and GHCR pull notes of both READMEs.
-
-**🧪 Tests & Verification**
-- Full `pytest` **4365 passed / 14 skipped / 0 failed with an empty warnings summary**; `run_gates.py` **10/10 green, rc=0** (black 246 files, pathless mypy over 245 files plus the linux/win32 re-runs).
-- Coverage **83.10%** overall, `check_coverage.py` **all 69 modules meet threshold** (`src/config_read.py` 98%); basedpyright and a bare `pyright` run both 0 errors / 0 warnings.
-- Bundle size **153.21MB / 359 files**; `QT_BLOAT_FILES` (11 entries / 39.25MB) pruned by filename after COLLECT, since excludes cannot reach hook-collected DLLs. The frozen GUI exe survived a 9-second real run.
-- Live: Huya 660000 (2 messages / 206 B), Bilibili 545068 (33 / 2,642 B) and b23.tv 22747736 (18 / 1,402 B) all PASS; `hy.fan/JbmwoV` resolved through a real 301 to `www.huya.com/30764624` (live, WARN because no danmaku in that window); Xiaohongshu 570480456678837366 parsed OK (`liveStatus=end`); Douyu `m.douyu.com/5526219` returned `flv_url` / `m3u8_url` / `record_url` through the full chain.
-- Real-window: themes x4 / zoom x5 / motion x4 / all five pages / dialogs / advanced settings all `ALL_OK`, with screenshots reviewed at the 85% / 100% / 150% steps (the "button padding not following", "sidebar bottom overflow" and "page disappearing after slide-in" defects were found here).
+> Full entry in the [archive volume](docs/changelog/release-notes-history-en.md) (imported: v4.5.0 / v4.4.0 / v4.3.0).
 
 ### v4.4.0 (2026-09-29 ~ 2026-10-01) — Web panel migrated from FastAPI to Starlette (fastapi/pydantic removed, 24 route contracts preserved verbatim) / Web frontend motion layer & mobile adaptation / GUI theme layer (phase 3) and adaptive label wrapping eradicating the DPI freeze / root cure for the douyin HEVC-origin-room "no usable source" deadlock & h265 candidates admitted by save format / two full code-review rounds with P0 fixes (standalone SSRF triple guard, ffmpeg command log masking, etc.) / i18n blind-spot backfill / dependency & doc reconciliations
 
-> This release (v4.4.0, 2026-09-29 ~ 10-01) is a "UI modernization + full review fixes" cycle. Four things matter most: ① **the Web panel backend moved from FastAPI to a Starlette-driven design** — a self-built route adapter plus a zero-dependency validation layer, with all 24 route contracts and every security invariant preserved verbatim, and runtime dependencies 23 → 21; ② **two full code-review rounds** (`CODE_REVIEW_2026-09-29_2` with all 31 numbered fixes landed + `CODE_REVIEW_2026-09-30` with Critical 2 / Medium 51 / Minor 160, P0 fixed) cleared a batch of silent-failure modes — the standalone edition's SSRF/local-file-read chain and ffmpeg commands writing credentials to disk in plaintext among them; ③ **the douyin HEVC-origin-room deadlock is cured** — live streamers whose rooms logged "no usable source this round" every round and never recorded (three individually-correct rules stacking: hevc substitution, the pre-probe h265 candidate drop, and the silent HLS-config drop) now record again; h265 candidates are admitted by save format (TS/MKV/MP4) and a zero-source observability warning was added; ④ **the GUI theme layer (phase 3)** and **the Web frontend motion layer (phase 1)** shipped, and adaptive label wrapping eradicated both-side clipping and the DPI-rescale freeze. **There are breaking changes (dependency surface)** — see the dedicated section below. Full root-cause analysis and verification are in [CODE_WIKI.md](CODE_WIKI.md).
-
-**✨ New Features / Improvements**
-- **GUI theme layer (phase 3)**: new `src/ui_theme.py` (zero display dependencies, safe to import headlessly) — 13 semantic token slots × three themes (light / dark / high contrast), a sidebar theme menu that switches at runtime and persists to `config.ini [GUI] gui_theme`; WCAG contrast checks (body text 4.5 / non-text & disabled 3.0) continuously enforced by `tests/test_ui_theme.py` (34 tests).
-- **Web frontend motion layer (phase 1)**: new `web/motion.js` (zero-dependency IIFE exposing `window.__dlrMotion`) — scroll-in reveals (IntersectionObserver with stagger) / parallax particles (count adapts to viewport, halved on low-core devices) / full `prefers-reduced-motion` degradation / pause while the page is hidden / `destroy()` leaves no timers behind; wired via `web/index.html` + `web/style.css`; `tests/frontend/test_motion.mjs` 5 tests (node:test sandbox, zero npm dependencies).
-- **Self-built Web adapter layer** (added with the migration): `src/web_models.py` (9 pure-stdlib dataclass request models replacing pydantic) + the `_route` adapter in `src/web_api.py` (JSON body parsing / Query clamping / threadpool dispatch for sync endpoints / JSONResponse wrapping), with the bodies of all 24 route handlers untouched.
-- **The `retry` composite action gains a `fail_fast_codes` input (exit-code tiering)**: with it omitted, the behavior of all 16 existing call sites is byte-identical; the web smoke call site passes `"2"` so configuration-class errors fail immediately without entering backoff — never rewritten to 0 or downgraded to a warning just to make the pipeline green.
-- **Two new test defenses**: R7, an AST gate over the real-device collector script template (`__main__` guard / zero collection-time side effects / two-step argv guard / platform-prefixed cleanup, with all 5 live_collector scripts hardened in the same batch); R8, a repo-wide scan for leftover `MUTATION-` markers (a mutation not reverted turns the gate red, with the three hard rules written back into AGENTS.md).
-- **New dynamic route-contract lock** `tests/test_web_api_routes.py` (exact set of 24 method/path pairs + the `/web` mount), replacing the static baseline JSON that the secret-scanning gate blocked.
-- **h265 candidates admitted by save format (TS/MKV/MP4 can stream-copy HEVC) + zero-source observability for the silent HLS drop**: `_h265_copy_format_supported()` reads main's hot-reloaded `video_save_type` and admits HEVC stream copy for TS/MKV/MP4 (the h265 primary candidate now enters the regular probe sequence) while FLV (HEVC-in-FLV is an Enhanced-FLV extension), MP3/M4A and out-of-domain values stay conservatively dropped; main.py's h265→TS forcing block gains the same-predicate guard (no takeover and no "use TS format instead" warning when the save format is already TS/MKV/MP4). When m3u8 candidates are dropped as a whole by the HLS config (global switch / exclusion list) and the round ends with no usable source, a new warning names the cause, the candidate count and the recovery switches — closing the only "zero-log" source-selection cause; healthy rounds that do select a source stay silent.
-
-**🐛 Fixes**
-- **Root cure for the douyin HEVC-origin-room "no usable source this round" deadlock**: streamers were live yet recording was skipped every round, with the status line's cumulative error count stuck at 0 (source-selection failures don't feed error samples, so the status line alone looks healthy). Three individually-correct rules stacked into the deadlock — at the origin tier with `hevc_flv_url` published, the h265 FLV **replaced** the h264 one as the only FLV candidate; `select_source_url` dropped every `codec=h265` candidate before probing; with HLS collection disabled the h264 m3u8 group was dropped silently and record_url (an `.m3u8`) was disabled in tandem — zero usable candidates after filtering. Fix: before the hevc substitution, the replaced h264 origin URL is stored into `flv_url_list` (the fallback takes over when HLS is off/unreachable; entries byte-identical to the hevc URL or already carrying the `codec=h265` marker are not collected). Live verification on a live HEVC-origin room: with HLS off the h264 FLV fallback was selected (this shape was always "no usable source" pre-fix) → `E2E_RESULT: CURED`.
-- **Standalone-edition twin drift (Critical, 2 items)**: ① the probe/recording SSRF and local-file-read chain (default `build_opener` registering FileHandler + no protocol/internal-IP vetting of candidates + ffmpeg lacking `-protocol_whitelist` — three layers stacked so `file://` and cloud-metadata addresses could go from probe to allowed to recorded on disk) — fixed with an explicit handler whitelist, an `_untrusted_stream_target_reason` internal-IP check (covering abbreviated forms like `2130706433`/`0x7f000001`), and `-protocol_whitelist` at both command definition points; ② the full ffmpeg command (Cookie headers and token-bearing stream URLs included) was written round after round in plaintext to `logs/ffmpeg.log` — now masked via `_mask_ffmpeg_cmd_for_log` before writing.
-- **P0 six-pack**: rooms that exit while paused on "disk full" no longer stay in `running_list` forever (the root cause of every room refusing to restart after space recovers); GUI config saving now does a real atomic write (no longer re-tightening 0600 to umask permissions on POSIX); Web password handling unified to strip in three places (passwords with leading/trailing spaces no longer self-lock authentication with 403); `update_config_line` drops the unquoted-value inline-comment fallback heuristic (config values containing ` #` are no longer silently polluted); camelCase credentials in header form (`myToken:`/`sessionKey:`) are masked again; `replace_url` switched to segment-exact matching (sibling room lines whose URLs share a prefix are no longer wrongly commented out by the "dead address auto-comment" path).
-- **31 numbered fixes from the full review**: Shopee short-link landing pages get the double gate (domain-family whitelist + internal-IP check; untrusted → drop the redirect and strip cookies); per-hop internal-IP re-checking on async HTTP redirects; a scheme-whitelist opener for `sync_req` (file/ftp/data handlers no longer registered); raw URLs reaching logs on PandaTV/WinkTV and similar platforms are masked; Kuaishou did / Bilibili buvid device fingerprints no longer shared across proxy exits; an `anchor_name` of None no longer crashes the whole parsing round; the TikTok quality-selection defect where HLS-only rooms "requested smooth but pulled original" with no downgrade notice; Bilibili danmaku host rotation swallowing real disconnects as "fake closes"; the Web auth refusal message no longer swallowed by stdio redirection; `tr()` secondary exceptions no longer replacing the original one; the frontend reauth password moved to a masked dialog and generation tokens on the three polling chains preventing orphaned timer chains; GUI status-line matchers recomputed lazily per language, `after` self-rescheduling chains wrapped in `try/finally` against permanent breakage, a single-flight entry shared by "stop recording"/"quit", per-event fault tolerance in the tail thread; and the collection-time pollution from real-device scripts (real platform connections / output-dir wipes; `pytest --collect-only` 20.55 s → 0.81 s).
-- **Sync-probe internal-IP closure**: the synchronous probe previously had no internal/loopback/cloud-metadata vetting of even the initial URL (the protocol-shape whitelist blocks `file://` but not `http://127.0.0.1:6379`) — a single `_probe_client()` factory + pre-request initial vetting + `RedirectHopRejected` convergence; verified with real egress: public HLS passes while `127.0.0.1:6379`/`169.254.169.254`/`10.0.0.5`/CGNAT are all rejected (including the last-resort candidate).
-- **GUI label clipping on both sides and the DPI freeze (two batches, same root cause)**: `_bind_adaptive_wraplength` adaptive wrapping eradicates pack's symmetric clipping (5 occurrences fixed together); then the synchronous write inside `<Configure>` was replaced with "true debounce (settle only after the storm stays quiet for 120 ms) + hysteresis (skip writes when |Δ| ≤ max(12, 2%)) + TclError race guarding", eradicating the event-storm mutual pumping with CTk's DPI rescaling (whole-window freeze / flickering text / partially rendered elements).
-- **Web panel mobile adaptation**: two-row top bar (fixed 56px → min-height + wrap at ≤768px), `viewport-fit=cover` + `env(safe-area-inset-*)` safe-area handling, `100dvh` dynamic viewport, and in-panel horizontal scrolling for the three data tables on narrow screens — eliminating the top-bar clipping and whole-page horizontal scrolling seen on iPhone 16 Pro Max / Pixel 10.
-- **i18n blind-spot backfill**: user-visible text in the extractor's three blind spots (`print_colored` / `messagebox` / push bodies) all routed through `tr()`, 16 new entries registered across the four language catalogs and the `.mo` recompiled; zh_TW also deduplicated 7 duplicate keys, restoring strict key-set parity across the four catalogs (808 keys; one more entry registered on 10-01 for the h265 zero-source observability warning, 809 keys in the final state).
-
-**⚠️ Breaking Changes / Behavior Changes**
-- **The `fastapi` / `pydantic` runtime dependencies are removed** (details under "Dependency Changes" below): the panel's 24 routes, request/response shapes, security headers, and auth middleware behave identically; the internal request models are read via `.parse()`, with no API-surface change for external consumers. Only custom deployments importing these two packages outside the panel need adjusting.
-
-**📦 Dependency Changes**
-- **Runtime dependencies 23 → 21**: `fastapi>=0.140.0` and `pydantic>=2.13.4` removed; the package-name sets of `requirements.txt` and `pyproject.toml [project.dependencies]` are equal item by item (regression lock `tests/test_regression_gates.py`), and `uv.lock` plus `DouyinLiveRecorder.egg-info` were rebuilt via `scripts/sync_metadata.py` (zero residue of either package).
-- **`urllib3` declared floor 2.7.0 → 2.8.0**: the CI `deps-audit` "floor re-check" measured the old floor itself inside the affected band of CVE-2026-97687 / CVE-2026-97688 / CVE-2026-97689 (all fixed in 2.8.0); `requirements.txt` and `pyproject.toml [project.dependencies]` raised in sync (still 21 entries, package-name sets unchanged), with `uv.lock` and `DouyinLiveRecorder.egg-info` rebuilt via `sync_metadata.py`; the local venv already had 2.8.0 installed, so the resolved set is unchanged.
-- **CI typecheck job now installs pinned `pytest==9.1.1`**: type checking over `tests/` is no longer half-blind (fixtures and the `NoReturn` of `pytest.fail()` are visible again).
-- **Doc-level dependency-notation fix**: the dev-dependency pip line in both READMEs went from 5 packages (missing `pytest-cov`; an environment set up that way cannot run the coverage gate) to the canonical `pip install .[dev]` (pointing at the six entries of `[project.optional-dependencies].dev`).
-
-**🛠️ Repo Maintenance & Docs**
-- **Two full code-review rounds**: `docs/worklog/CODE_REVIEW_2026-09-29_2.md` (all 31 numbered items landed as P0+P1+P2) and the root-level `CODE_REVIEW_2026-09-30.md` (18 per-file deep-audit batches over ≈42,000 lines of production code + 56,200 lines of tests — Critical 2 / Medium 51 / Minor 160, with Mimosa deep-scan cross evidence); P0 is fixed, P1/P2 await later batches, and a dedicated "twin back-port" project is suggested for standalone.
-- **Multiple reconciliations and a slim-down of `AGENTS.md`**: 7 fact syncs (stale readings of test counts / symbol names / call-site counts corrected) + a fidelity-preserving slim-down in 19 places (110,287 → 108,469 bytes; the gate-command bash block and every section heading byte-identical; the three doc locks unchanged at 73 passed / 1 skipped) plus three gate-wording corrections (quality gates now defer to the "Formatting commands (single gate baseline)" section; `pyright`/Pylance positioning clarified as non-gates; a new premise that local gate results extrapolate only when tool versions match the `ci.yml` pinned values); a stop-hook credential-risk flag was assessed as a false positive and the red-line wording made explicit per the suggestion.
-- **Metadata reconciliation**: 15 files fully checked against `pyproject.toml` (version 4.4.0 / 21 dependencies / image & service names / ports & mounts / packaging parameters), with the only drift being the README dev-deps line above; the two `filterwarnings` comment attributions in `pyproject` were corrected from "fastapi testclient" to the `starlette.testclient` body.
-- **Two test-side fixes (no production-code changes)**: the 4 false-reds of `test_gui_stop_exit_singleflight` on Linux CI came from the test double stubbing only the win32 signal branch (POSIX uses `os.kill`) — after adding the POSIX-side stub per the "stdlib stand-ins go through the tested module's namespace" rule, faking `sys.platform` locally reproduces the POSIX path with all 25 criteria of the four scenarios passing; and the wall-clock margin of the `test_notify` timeout case is now derived from the production constants (`taskkill /F /PID` measured at a steady 2.5~3.1s, so the 1s timeout plus ~3s landing exactly on the hand-tuned 4.0s margin is no longer a machine-state false alarm).
-
-**🧪 Tests & Verification**
-- Full `pytest` **3721 passed / 14 skipped / 0 failed / 0 warnings** (measured locally on 2026-10-01, final state; all 14 skips are platform-conditional: missing symlink privileges, Windows chmod read-only-bit semantics, the POSIX-shaped SIGKILL case, h2 installed so the missing-dependency branch is unreachable, etc.).
-- Coverage: all 44 modules above threshold (84.9% overall, per coverage.json); basedpyright 0 errors / 0 warnings; `run_gates.py` 8/8 green.
-- Live verification (09-29 ~ 09-30): Douyin PASS (59 messages / SRT 4,518 bytes), Bilibili PASS (9 / 678 bytes), Huya WARN (connected, no danmaku in that window), Twitch WARN, Douyu SKIP(room offline, parsing healthy), TikTok SKIP(no egress network); standalone `--dry-run` PASS on a real live Huya room (incremental verification of S-01/S-02); the public-HLS segment probe passes while all four classes of internal targets are rejected. Hand-back actions (GUI visual checks, Douyu/TikTok re-runs on live rooms, bundle-size re-measurement) are in [CODE_WIKI.md](CODE_WIKI.md).
-- Live verification (10-01, a live douyin HEVC-origin room "央视网快看"): all three states PASS — HLS off + ts save format → the h265 FLV primary was admitted and selected (codec=h265 probed for real); HLS off + FLV → fell onto the h264 origin fallback (codec=h264); fallback stripped → None with the new zero-source observability warning fired for real.
+> Full entry in the [archive volume](docs/changelog/release-notes-history-en.md) (imported: v4.5.0 / v4.4.0 / v4.3.0).
 
 ### v4.3.0 (2026-09-16 ~ 2026-09-27) — P0 fix for 100% recording failure on ffmpeg master builds (`-thread_queue_size` narrowed upstream to an output-only option) / boolean config parsing unified (`true/false` silently broke 8 settings and blocked 9 overseas platforms) / two full code-review rounds (62 + 106 graded fixes) / supply-chain hardening (official hashes first + GPG verification + Lanzou fallback removed) / four release-chain faults fixed (**the lite package shipped to users briefly never existed**) / Apple Silicon ffmpeg PATH yield policy / per-room log correlation field & `/health` probe endpoint / build artifact size −21.6% / coverage 73.28% → 82.03% (dedicated push) and 83.91% (final, 09-27)
 
-> This release (v4.3.0, 2026-09-16 ~ 09-27) is a convergence cycle focused on **correctness and supply-chain safety**. Four items matter most: ① **P0**: ffmpeg master builds narrowed `-thread_queue_size` to an output-only option, while we still placed it before `-i` — so on such a build **every single recording exited with `-22 (EINVAL)` and produced zero bytes**; ② **boolean config parsing unified**: writing `true/false` in `config.ini` used to be treated as invalid and **silently** fall back to a hardcoded default (no warning, no log), which measurably drifted the effective value of 8 settings — the worst one leaving 9 overseas platforms 100% unable to record; it is now unified so that `是/否`, `true/false`, `1/0`, `yes/no` and `on/off` are all equivalent; ③ **two full code-review rounds** (62 items on 09-19: 12 severe / 22 medium / 28 minor; 106 items from `CODE_REVIEW_2026-09-20` on 09-21: 10 severe / 70 medium / 26 minor) cleared a batch of silent-failure modes at once — SSRF, panel takeover, credentials written to disk in plaintext, danmaku thread livelock, and more; ④ **four release-chain faults** (09-26 ~ 09-27), the last of which is user-visible: `make_zip` finished with `Path.with_suffix(".zip")` while the version itself contains a dot, so lite and full resolved to the same attachment name and the second call truncated the first in place — **one Release ended up with a single attachment carrying neither platform nor variant label, and the lite build was never distributed at all**. **There are breaking changes** — see the dedicated section below. Full root-cause analysis and verification are in [CODE_WIKI.md](CODE_WIKI.md).
-
-**🐛 Fixes**
-- **P0: 100% recording failure on ffmpeg master builds**: `-thread_queue_size` was narrowed upstream to a muxer-only option; placed before `-i`, ffmpeg exits with `Option thread_queue_size … cannot be applied to input url … Error opening input files: Invalid argument` (return code -22). Unrelated to room / platform / CDN — on that build *every* recording fails.
-- **P0: boolean config parsing unified**: the scattered parsers (previously `!= "否"`, `== "是"`, and the front-end `=== '是'`) are unified into `src/config_bool.py::parse_config_bool`; as a result `global_proxy` is no longer wrongly forced to False, restoring resolution for TikTok / SOOP / PandaTV / WinkTV / Flextv / PopkonTV / Twitch / LiveMe / Faceit and other overseas platforms.
-- **Full code review, 62 items (09-19)**: GUI silent hang on empty config; one extra comma in a config line permanently skipping every room after it; missing bounds checks in Tars decoding causing a danmaku-thread livelock; Douyu danmaku silently filtered out (regression of an earlier fix); a hung ffmpeg permanently holding a concurrency slot; zero-byte output judged as success and cancelling circuit-breaker backoff; `config.ini` (with credentials) copied in plaintext into `backup_config/`; the Web panel being take-over-able or lockable through its own API; zero protocol validation on room URLs → blind SSRF; the masking blacklist missing every "credential embedded in the value" URL-type key; zero integrity verification in the install/packaging chain.
-- **`CODE_REVIEW_2026-09-20` landed in full, 106 items (09-21)**: the concurrency semaphore treating "available permits" as capacity (the network concurrency cap effectively out of control); `PUT /api/rooms` bypassing room-entry validation; intranet blocking via a string-prefix blacklist (5 of 7 probe addresses passed); panel auth being hot-disabled by a single write request, with case variants bypassing the password hash / self-lock guard / token revocation; deleting a room on CRLF configs failing permanently while still reporting `{"ok": true}`; Shopee site-suffix parsing producing an illegal domain; fallback decorators mismatched with return contracts (failures disguised as "not live"); the recording watchdog using the wrong baseline for its "stalled" verdict (the real tolerance window was only 30 seconds); the `only_flv` branch missing `flv_url`, causing the time-subtitle thread to spin and write to disk in a loop; an empty runtime-binary hash pinning table in the release chain.
-- **Release chain & supply chain**: macOS arm64 full packages **silently shipped without ffmpeg** (no such artifact upstream — the download point is fixed); the Windows runtime ffmpeg primary source verified healthy by measurement (gyan.dev ships a `.sha256` document that cross-confirms the release-time pin); official SHA256 pins backfilled for 6 of 10 slots.
-- **Test hygiene (09-23)**: one cross-file patch leak (a missing `undo()`) let later tests in the same session issue real network requests, producing 11 "red in full run, green alone" false failures out of 13.
-- **P0: build script polluting the test session (09-23)**: the bare `reconfigure` in `build_exe._ensure_utf8_streams()` broke pytest's fd capture, surfacing as a "GUI failed to start" dialog plus unrelated tests marked FAILED/ERROR (all nine CI jobs run ubuntu and stayed green — never reproduced).
-- **Four release-chain faults (09-26 ~ 09-27, affecting shipped artifacts)**: (1) all eight slots of the pinning table had been turned into the "official signature" marker, so `check_runtime_pins.py --strict` exited rc=1 in the prepare job and releases never even reached the build (hashes re-pinned from the official channels); (2) the Linux bundled-ffmpeg pins came from BtbN's rolling `latest` alias, and upstream republishing the same asset name the same day changed its digest — the release turned red on the SHA256 check that very day (now pinned to the **immutable month-end release tag** `autobuild-2026-08-31-13-27`, where URL and digest are both frozen); (3) **the lite package was never actually distributed**: `make_zip` closed with `Path.with_suffix(".zip")` while the version `4.3.0` itself contains a dot, so `DouyinLiveRecorder-v4.3.0-windows-amd64-lite` and `-full` truncated to the same `DouyinLiveRecorder-v4.3.zip`, the second call truncating the first in place with no error — the Release kept one attachment with neither platform nor variant label; (4) when any platform build failed, the pre-created Release record stayed in the repository as an **empty Release**.
-- **Metadata second-copy drift (09-27)**: `DouyinLiveRecorder.egg-info/PKG-INFO` still carried `Requires-Dist: h2` at the old floor `>=4.3.0` (the manifests had been raised to `>=4.4.1` but never propagated into the metadata), and its embedded README lacked the whole v4.3.0 changelog section; rebuilt and corrected.
-
-**✨ New Features / Improvements**
-- **Per-room log correlation field `extra[room]`**: `src/logger.py` gains `ROOM_FIELD` / `set_room_context()` / `get_room_context()` (internal `ContextVar` + patcher), so interleaved multi-room logs can be sliced per room.
-- **Web panel `/health` probe endpoint**: `GET /health` returns `{"status": "ok", "version": …}`, and the built-in smoke tool `scripts/smoke_test.py` is wired into CI as a real HTTP probe.
-- **W6: Apple Silicon ffmpeg PATH yield policy**: on darwin + arm64 with another native ffmpeg already on `PATH`, the bundled x86_64 build (which only runs through Rosetta translation) is no longer unconditionally prepended; yielding requires all five criteria to hold. Other platforms are unchanged, byte for byte.
-- **Runtime binary integrity**: `build_exe.py` gains the `_PINNED_RUNTIME_SHA256` table plus `--require-pinned`, backed by `scripts/check_runtime_pins.py` (structure mode in the local gate / `--strict` in the release prepare job / `--emit-env` for CI injection); first-time runtime installs now prefer officially published hashes, and release builds add GPG verification plus a full-package self-check.
-- **Build artifact size optimization (09-24)**: excluded runtime-unreachable modules (`PIL._avif`, `pydantic.v1.mypy` which drags in all of mypy, uvicorn's optional implementations, `i18n/*.po`, …) plus zip `compresslevel=9` — the lite artifact went from **82.77MB to 64.88MB (−21.6%)** and the zip from **54.84MB to 42.19MB (−23.1%)**, with a new measurement script `scripts/report_bundle_size.py`.
-- **Five new gates**: `PYTHONUTF8=1` + "any warning fails" (kills the mode where isort silently skips files with Chinese comments under a GBK locale and still exits 0); a decorator-contract AST lock; a test-hygiene AST lock (R1–R4 / R6 "manual MonkeyPatch must pair with undo"); a front-end catalog consistency lock (`data-i18n*` keys compared one-by-one against the four embedded catalogs); a `deps-audit` job and hard failure when coverage data is missing.
-- **Dynamic concurrency floor lowered**: `ConcurrencyScheduler`'s `min_capacity` default changed from 8 to 1.
-- **Bundled-ffmpeg upstreams and satisfaction tiers (09-26 ~ 09-27)**: both Linux architectures moved to BtbN's GPL-complete assets, keyed per `<os>-<arch>` runtime key, with the source endpoint fixed to the immutable month-end tag; the two macOS slots use the **official GPG signature tier** (evermeet publishes no SHA256, so signature verification is that slot's only criterion, with the full 40-hex-digit master fingerprint pinned out of band). Hash pinning and signature verification are two non-interchangeable lines of defense.
-- **`release-guard`: never publish an incomplete release (09-27)**: when a build is not fully green, the empty/partial pre-created Release is reclaimed with `gh release delete` (tags are kept by default, so a re-run republishes cleanly) and a `::warning::` is left behind; `fail_on_unmatched_files` on the upload step is deliberately not relaxed, because that error is the only visible signal of a missing artifact.
-- **Two new checks around `--dual` artifacts (09-27)**: before packaging, stale `DouyinLiveRecorder-v*.zip` leftovers under `dist/` are pruned (so a reused build workspace cannot sweep last run's package into this run's attachment set); after packaging, the lite and full artifact paths must differ **and** both must exist on disk, otherwise the build aborts on the spot.
-- **The CI typecheck job now installs a pinned `pytest==9.1.1` (09-26)**: it previously installed only `requirements.txt + mypy`, so every `pytest.*` reference under `tests/` was checked as `Any` — fixtures and the `NoReturn` of `pytest.fail()` were effectively invisible, leaving the gate half blind.
-- **Documentation size pass (09-27, zero information deleted)**: 73 historical "Files involved (classified by module)" inventories were moved verbatim out of the `CODE_WIKI*.md` changelog into `docs/agent-reference/changelog-file-inventories{,-en}.md` (wiki body −12.3% zh / −5.0% EN), and 109 (zh) / 181 (EN) table cells that an earlier bulk compression had silently truncated with `…` were restored from the pre-compression snapshot. `README.md` / `README_EN.md` are deliberately left uncompressed — user-facing release notes are not degraded.
-
-**⚠️ Breaking Changes / Behavior Changes**
-- **Lanzou ffmpeg fallback removed on Windows at runtime**: automatic installation now has a single primary source (measurement showed that direct link serves a JS-challenge HTML page with all companion hash documents returning 404, i.e. unusable); when automatic installation fails, an explicit manual-install guide is emitted instead. **Windows users who relied on that fallback must place the binary themselves, following the "manual ffmpeg installation on Windows" section of this README.**
-- **The bundled ffmpeg directory is no longer unconditionally prepended on Apple Silicon**: users who installed a native arm64 ffmpeg (e.g. via Homebrew) will now have recording subprocesses use that system copy instead (its version / build options may differ).
-- **Dynamic concurrency floor 8 → 1**: the network concurrency allowance is no longer lifted to 8 under low load.
-- **Boolean config semantics changed**: keys previously written as `true/false`, `1/0`, … were **silently ignored** (falling back to a default); after upgrading they take effect literally — if your config depended on the old wrong fallback value, the effective value changes. Please re-check the 8 affected settings after upgrading.
-- **Runtime dependencies 20 → 23**: newly declared explicitly — `urllib3>=2.7.0` (CVE-2026-44431), `h2>=4.4.1` (PYSEC-2026-3628) and `socksio>=1.0.0` (httpx runtime deps for HTTP/2 and SOCKS); `starlette` lower bound `>=0.49.1` → **`>=1.3.1`** (CVE-2026-48710 plus PYSEC-2026-2280/2281/248/249); `protobuf` keeps its `<8` cap (gencode compatibility guardrail).
-- **Build time**: the `build-release.yml` prepare job now blocks unpinned runtime binaries via `check_runtime_pins.py --strict`.
-- **`build_exe.py --dual --no-zip` now fails fast**: the `--dual` branch never read `no_zip`, so an explicitly typed `--no-zip` was silently ignored while both large zips were still produced. Contradictory flag combinations now abort instead of letting one of the two flags do nothing.
-- **Release attachments regain platform and variant labels — please use the new attachments**: after a re-publish, Windows / Linux / macOS attachments are named `DouyinLiveRecorder-v4.3.0-<os>-<arch>-lite.zip` and `-full.zip`. Any earlier attachment shaped like `DouyinLiveRecorder-v4.3.zip` (no platform segment, no variant segment) is a defective artifact of the bug above: its content was the full package, and the lite package did not exist.
-- **Linux full packages grow substantially**: with the BtbN switch, the bundled ffmpeg asset (uncompressed) is about 126.6 MB for linux64 and 108.8 MB for linuxarm64, versus roughly 41.9 MB for the previous johnvansickle amd64 static build. Choose the `lite` package to keep the download small (binaries are then fetched on first run).
-
-**🛠️ Repo Maintenance & Quality Gates**
-- **Test coverage push (09-21)**: `src/` coverage **73.28% → 82.03%** (tests only, zero product-code changes), plus a layered allowlist (table empty by default, fails when it expires).
-- **Four-language catalogs kept complete and verified**: 594 → **780 entries**, with all four catalogs matching key by key and no empty values; the `.mo` is recompiled whenever they change.
-- **Metadata single-source sync**: `AGENTS.md` dependency count and lower-bound wording, the `CODE_WIKI*.md` dependency tables (16 → 23 entries), `DouyinLiveRecorder.egg-info` regenerated, `_probe_*.py` added to `.dockerignore`, and `[Cookie] ttwid` added to `config/config.ini`.
-- **Type stubs & comment governance**: 7 `.pyi` files under `typings/execjs/` got complete annotations and two abstract-base stubs dropped `six` (switched to `metaclass=ABCMeta`); multiple repo-wide comment-refinement batches (including one 68-file round), and `scripts/check_annotations.py` gained a third blind spot (newline form).
-- **Leftovers of deleted modules cleaned up**: `src/weverse_auth.py` / `tests/test_weverse_auth.py` (deleted 2026-09-23) were removed from structure trees and dependency notes, and their 3 orphan translations were dropped from the four catalogs.
-- **Cross-file consistency sync (09-27)**: `requirements.txt` vs `pyproject.toml [project.dependencies]` — 23 vs 23 package-name sets equal, with all three extras groups matching; `python_build = 3.14` and `node_version = 24` identical in `ci.yml` and `build-release.yml`; the 14 local tool directories and 6 runtime artifact directories present without gaps across `.gitignore`, `.dockerignore`, every pyproject tool exclude and `.coveragerc-concurrency`. The only edit this round was completing the truncated inline comment on `websockets>=14.0` (no specifier changed).
-- **`AGENTS.md` size pass (09-27)**: readings that already existed in `docs/agent-reference/measured-evidence.md` were replaced by pointers and three genuine duplications merged, taking the file from 97,034 to 95,715 B (-1.4%); a token-preservation audit proves no constraint was lost (0 losses among test names, error codes, and constant / environment-variable names).
-
-**🧪 Tests & Verification**
-- Full `pytest`: **3240 passed / 14 skipped / 0 failed** (two measured runs on 09-27, one of them with `--cov=src`). The case previously reported as permanently red on this Windows host, `test_symlinked_system_hit_inside_bundled_dir_keeps_prepending`, is now skipped explicitly by host capability (`symlink not permitted on this host`) and is counted among those 14 skips rather than being a failure.
-- `black --check .` **169 files unchanged**; `isort --check-only .` no reordering; parameterless `mypy` **158 files, 0 issues** (`mypy --platform linux` likewise 0); `basedpyright` (standard) **0 errors / 0 warnings / 0 notes**.
-- Coverage: total `src/` coverage **83.91%**, and `scripts/check_coverage.py` reports **all 42 modules meeting their thresholds** (`src/proto/douyin_pb2.py` is a protoc artifact and explicitly exempt).
-- `node --test tests/frontend/*.mjs` green; `scripts/check_version.py` and `scripts/check_runtime_pins.py` both rc=0; `scripts/compile_po.py --check` reports `zh_CN.mo` in sync with the `.po` (781 entries).
+> Full entry in the [archive volume](docs/changelog/release-notes-history-en.md) (imported: v4.5.0 / v4.4.0 / v4.3.0).
 
 ### Earlier entries (archived)
 
-19 release-note entries from 2024-07-13 to 2026-10-15 (v4.0.0 ~ v4.2.0) have been moved verbatim to [release-notes-history-en.md](docs/changelog/release-notes-history-en.md): 17 of them (v4.0.0 ~ v4.0.9.4) on 2026-09-28, plus 2 more (v4.2.0 / v4.1.0) on 2026-10-18 under the "keep only the three most recent releases" rule; that volume also restores the trailing `…` / mid-sentence cuts left by the previous trimming pass against the `.workbuddy/docold` baseline (exact rule in its header).
-Reason: the changelog alone took 36.6% of this file's characters (45,771 of 124,906). The root document now keeps only the three most recent releases (v4.5.0 / v4.4.0 / v4.3.0) plus this pointer, which is what makes the rest of the document readable.
+Historical release notes have been moved verbatim to [release-notes-history-en.md](docs/changelog/release-notes-history-en.md): v4.0.0 ~ v4.0.9.4 (17 entries) on 2026-09-28, v4.2.0 / v4.1.0 (2 entries) on 2026-10-18, and v4.5.0 / v4.4.0 / v4.3.0 (3 entries) on 2026-10-31; that volume also restores the trailing `…` / mid-sentence cuts left by the previous trimming pass against the `.workbuddy/docold` baseline (exact rule in its header).
+The root document keeps only the current v4.6.0 summary plus this pointer; the full history lives in the archive volume.
 
 ## 💬 For questions or requests, please open an Issue. Stars and Forks are welcome
 
