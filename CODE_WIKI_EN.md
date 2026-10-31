@@ -971,11 +971,8 @@ def host_of(url: str) -> str: ...
 | exejs | >=1.0.1 | JavaScript execution engine (active-maintained successor to PyExecJS, preferred) |
 | PyExecJS | >=1.5.1 | JS execution engine fallback compatibility (used when exejs is not installed) |
 | PySide6 | >=6.12.0 | GUI window layer (`src/gui_qt/`, QSS token themes + Qt widgets) + Web entry system tray (`src/web_tray.py`, migrated from pystray on 2026-10-20; the 6.12 floor is the measured minimum that supports Python 3.14.8) |
-| pystray | >=0.19.5 | System tray (GUI entry `gui.py`; the Web tray uses QSystemTrayIcon since 2026-10-20) |
-| Pillow | >=12.3.0 | Image processing (tray icon generation) |
 | starlette | >=1.3.1 | ASGI framework (`src/web_api.py` migrated from FastAPI to depend on Starlette directly in phase 2; lower bound 0.49.1 → 1.0.1 → 1.3.1, see the CVE/PYSEC notes) |
 | uvicorn[standard] | >=0.51.0 | ASGI server |
-| python-multipart | >=0.0.32 | Form/file upload parsing |
 | websockets | >=14.0 | Danmaku WebSocket client (`src/ws_client.py`; `additional_headers` is a 14.0+ API) |
 | protobuf | >=6.33.5,<8 | Douyin danmaku protocol decoding (`src/proto/douyin_pb2.py`; the `<8` cap is a gencode compatibility guard) |
 | brotli | >=1.2.0 | Bilibili danmaku decompression (protover=3) |
@@ -1748,6 +1745,15 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > Scripts: `tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`
 > (`python file.py <URL> [seconds]`; requires a live room + network; manual channel by default).
 > **Rolling archive**: this section keeps only the current release window; older entries live verbatim in [`docs/changelog/code-wiki-history-en.md`](docs/changelog/code-wiki-history-en.md) (rule stated in the "Changelog Archive Index" above).
+
+### v4.6.0-dev (2026-10-31) — Metadata parity: 15 target files re-checked against `pyproject.toml` as the single source of truth; CODE_WIKI dependency tables and the egg-info artifacts corrected
+
+- **User directive**: treat `pyproject.toml` as the single source of truth for project name/entry points, version, Python requirement, and dependencies/constraints; scan and reconcile `AGENTS.md`, `Dockerfile`, `docker-compose.yaml`, `requirements.txt`, `.gitignore`, `.dockerignore`, `.coveragerc-concurrency`, `config/config.ini`, `README*`, `CODE_WIKI*`, the egg-info, `build_exe.py` and `uv.lock`.
+- **Fact-source readings**: `version = 4.6.0` / `requires-python = ">=3.14"` / **18** runtime dependencies / extras dev 7, gui 1, build 1 / three console scripts `douyin-recorder{,-gui,-web}` / 5 `packages` / 5 `py-modules`.
+- **Fix 1 (CODE_WIKI dependency tables, both languages)**: dropped the `pystray`, `Pillow` and `python-multipart` rows — all three had already left `[project.dependencies]` (legacy tray retired / no `.form()` call site), taking each table from 21 back to **18** rows, aligned item by item with `[project].dependencies`.
+- **Fix 2 (egg-info artifacts)**: rebuilding with `setuptools egg_info` removed the three differences between the embedded PKG-INFO Description and `README.md` (the extra two `gui_motion` lines and the two missing 2026-10-31 historical notes); `SOURCES.txt` dropped 13 stale entries for deleted files (`src/ui_kit.py`, `src/ui_motion.py` plus 11 legacy tests) and restored the missing `tests/test_web_index_structure.py` under setuptools' default manifest. `Version` / `Requires-Dist` / `requires.txt` / `entry_points.txt` / `top_level.txt` are identical before and after; the generated files follow the repository's LF convention from `.gitattributes`.
+- **Left untouched**: `uv.lock` (already 4.6.0 with the same 18 dependencies; `uv lock` was deliberately skipped to avoid unrelated re-resolution); historical readings in `README*` and older changelog entries (append-only convention); the shortened Dockerfile LABEL description is not a pyproject metadata field.
+- **Verification**: `scripts/sync_metadata.py --check` OK; `scripts/check_version.py` PASS; requirements.txt ↔ pyproject package-name sets 18↔18; coverage `omit` 24↔24 and `exclude_also` 4↔4; `tests/test_regression_gates.py` 29 passed; `scripts/run_gates.py` **10/10 green** (pytest fallback 4764 passed, empty warnings summary); `git diff` contains only the files listed above. **DoD step 2 is not applicable** (documentation/generated-artifact sync only; no recording chain / source selection / ffmpeg argument / platform parsing changes).
 
 ### v4.6.0-dev (2026-10-31) — CI tool pins moved to the latest PyPI releases: mypy 2.4.0 → 2.4.1, pytest 9.1.1 → 9.2.0
 

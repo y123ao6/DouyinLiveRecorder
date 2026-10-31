@@ -967,11 +967,8 @@ def host_of(url: str) -> str: ...
 | exejs | >=1.0.1 | JavaScript 执行引擎（PyExecJS 的活跃维护继任者，优先使用） |
 | PyExecJS | >=1.5.1 | JS 执行引擎回退兼容（exejs 未安装时使用） |
 | PySide6 | >=6.12.0 | GUI 窗口层（`src/gui_qt/`，QSS token 主题 + Qt 控件）+ Web 入口系统托盘（`src/web_tray.py`，2026-10-20 起由 pystray 迁来；下界 6.12 为本机实测支持 Python 3.14.8 的最小版） |
-| pystray | >=0.19.5 | 系统托盘（GUI 入口 `gui.py`；Web 托盘 2026-10-20 起改用 QSystemTrayIcon） |
-| Pillow | >=12.3.0 | 图像处理（托盘图标生成） |
 | starlette | >=1.3.1 | ASGI 框架（`src/web_api.py` 阶段2 由 FastAPI 迁移为直接依赖 Starlette 驱动；下限 0.49.1→1.0.1→1.3.1 见 CVE/PYSEC 说明） |
 | uvicorn[standard] | >=0.51.0 | ASGI 服务器 |
-| python-multipart | >=0.0.32 | 表单/文件上传解析 |
 | websockets | >=14.0 | 弹幕 WebSocket 客户端（`src/ws_client.py`；`additional_headers` 为 14.0+ API） |
 | protobuf | >=6.33.5,<8 | 抖音弹幕协议解码（`src/proto/douyin_pb2.py`；上限 <8 为 gencode 兼容护栏） |
 | brotli | >=1.2.0 | B站弹幕解压（protover=3） |
@@ -1760,6 +1757,15 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > 脚本直跑时额外输出 `VERIFICATION_RESULT: {"platform":..., "status":..., ...}` 结构化一行供机器解析。
 > 脚本：`tests/test_{bili,douyin,douyu,huya,twitch}_live_collector.py`（`python file.py <URL> [秒数]`，
 > 需活房间 + 外网，默认人工通道）。
+
+### v4.6.0-dev (2026-10-31) — 元数据对账：以 `pyproject.toml` 为唯一事实源复核 15 个目标文件，修正 CODE_WIKI 依赖表与 egg-info 生成物
+
+- **用户指令**：以 `pyproject.toml` 为唯一事实源（项目名与入口、版本号、Python 版本要求、依赖及版本约束），扫描并同步校验 `AGENTS.md`、`Dockerfile`、`docker-compose.yaml`、`requirements.txt`、`.gitignore`、`.dockerignore`、`.coveragerc-concurrency`、`config/config.ini`、`README*`、`CODE_WIKI*`、egg-info、`build_exe.py` 与 `uv.lock`。
+- **事实源读数**：`version = 4.6.0` / `requires-python = ">=3.14"` / 运行时依赖 **18 条** / extras dev 7·gui 1·build 1 / 三入口 `douyin-recorder{,-gui,-web}` / `packages` 5 项 / `py-modules` 5 项。
+- **修正 1（CODE_WIKI 双语依赖表）**：删除 `pystray`、`Pillow`、`python-multipart` 三行——三者此前已分别移出 `[project.dependencies]`（遗留托盘退役 / 无 `.form()` 调用点），表格由 21 行回到 **18 行**，与 `[project].dependencies` 逐条对齐。
+- **修正 2（egg-info 生成物）**：`PKG-INFO` 内嵌 Description 与 `README.md` 的 3 处差异（多 `gui_motion` 两行、缺 2 处 2026-10-31 历史注）经 `setuptools egg_info` 重建后消除；`SOURCES.txt` 清掉 13 条已删除文件残留（`src/ui_kit.py`、`src/ui_motion.py` + 11 个 legacy 测试），并按 setuptools 默认清单补回漏登记的 `tests/test_web_index_structure.py`。`Version` / `Requires-Dist` / `requires.txt` / `entry_points.txt` / `top_level.txt` 重建前后一致；生成物按 `.gitattributes` 统一为 LF。
+- **未改**：`uv.lock`（4.6.0 / 18 条依赖已一致，刻意跳过 `uv lock` 以免无关重算）；`README*` 与旧更新日志中的历史读数按「只增不改」保留；`Dockerfile` 的 LABEL description 是缩短版标签，不属 pyproject 元数据字段。
+- **验证**：`scripts/sync_metadata.py --check` OK；`scripts/check_version.py` PASS；`requirements.txt` ↔ pyproject 包名集合 18↔18；coverage `omit` 24↔24 / `exclude_also` 4↔4；`tests/test_regression_gates.py` 29 passed；`scripts/run_gates.py` **10/10 全绿**（pytest 兜底 4764 passed、warnings summary 为空）；`git diff` 仅含上述文件。**DoD 第 2 步不适用**（纯文档 / 生成物同步，不涉录制链路 / 选源 / ffmpeg 参数 / 平台解析）。
 
 ### v4.6.0-dev (2026-10-31) — CI 工具版本抬到 PyPI 最新：mypy 2.4.0 → 2.4.1、pytest 9.1.1 → 9.2.0
 
