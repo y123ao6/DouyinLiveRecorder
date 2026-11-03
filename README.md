@@ -934,60 +934,34 @@ brew install node
 
 ## ⏳ 更新日志
 
-### v4.6.0 (2026-10-18 ~ 2026-10-31) — 彻底移除 tkinter 技术栈（PySide6 成为唯一窗口实现）/ 统一 ICO 图标支持（GUI 托盘 / Web 托盘与页面 / 打包产物）/ Web 系统托盘迁 PySide6 与 GUI 日志自适应折行 / 五轮全仓代码审查整改（SSRF 逐跳复检、危险配置键、出站读取上限）/ 行尾钉定与回归锁测试去日期化 / 元数据对账与 CI 工具抬版 / 全仓注释级精简
+### v4.7.0 (2026-11-01) — 发布链钉定全面动态化（node GPG 验签 adopt / ffmpeg 三槽当日官方清单与月末标签解析）/ 运行时钉定随 node v26.13.0 重钉 / 发布构建 Linux GUI 冒烟缺装 Qt 运行库修复 / 发布目录凭据校验误报根治（SEV-2213）/ setuptools 构建下限 84.1.0 与 brotli 下限 1.2.1 安全抬升 / CI Linux 平台敏感用例转平台无关与 POSIX 优雅停止标记补置
 
-> 本版本（v4.6.0，2026-10-18 ~ 10-31）是一次「技术栈收敛 + 安全与质量收口」周期：① **GUI 技术栈彻底收敛到 PySide6**——`gui.py` 由 5022 行 legacy 窗口实现改为 54 行薄入口，tkinter 栈、遗留 pystray 托盘与 `src/ui_kit.py` / `src/ui_motion.py` 全部移除；② **统一 ICO 图标支持**，GUI 托盘 / Web 托盘与页面 / 打包产物三处同源；③ **Web 系统托盘由 pystray 迁到 PySide6**，主线程改由 Qt 事件循环占用；④ **五轮全仓代码审查与整改**（10-18 / 10-19 / 10-21 / 10-29 / 10-30）覆盖 SSRF 逐跳复检、凭据脱敏、危险配置键、出站读取上限与覆盖率机检；⑤ **仓库形态收口**——`.gitattributes` 行尾钉定、回归锁测试去日期化、元数据与文档同源对账。**存在破坏性变更（GUI 技术栈与依赖面）**，见下方专节。详细根因与验证见 [CODE_WIKI.md](CODE_WIKI.md)。
+> 本版本（v4.7.0，2026-11-01）是一次「发布链动态化 + 发布期缺陷收口」周期：① **发布路径钉定动态化**——node 槽以 GPG 验签通过的官方 SHASUMS 为判据（`--pin-source adopt`），ffmpeg 三槽改取构建当日官方清单值（advisory 槽经 `ADVISORY_ADOPT_ACK` 显式放行、linux 随最新月末标签解析直链），上游发新 LTS / 滚动更新不再打断发布，静态钉定表退为回退基线；② **运行时钉定随上游 node v26.13.0 重钉**（Node 26 转 LTS 令首条 lts 漂移，四平台 SHA256 同挂）；③ **发布构建与凭据校验修复**——Linux GUI 冒烟补装 Qt 运行库、发布目录凭据校验收窄到「同键位」比对根治 SEV-2213 误报、POSIX 优雅停止标记补置；④ **安全下限抬升**——setuptools 构建下限 84.1.0（GHSA-xmj3-9gf7-h52w）、brotli 声明下限 1.2.1（PYSEC-2026-4322）；⑤ **CI Linux 三处平台敏感用例转平台无关**。无破坏性变更（运行时依赖清单仍 18 条）。详细根因与验证见 [CODE_WIKI.md](CODE_WIKI.md)。
 
-**✨ 新增功能 / 改进**
-- **统一 ICO 图标支持（GUI 托盘 / Web 托盘与页面 / 打包产物三处同源）**：新增 `assets/app.ico`（16/24/32/48/64/128/256 七档，≤64 写 BMP 帧、≥128 写 PNG 帧）与 `src/ui_icons.py`；生效图标唯一出口 `ui_icons.current_icon_path()`（导入副本 > 内置图标 > `None`），托盘 / 面板 / favicon 三个入口共用同一份校验判据与机器码。GUI 侧栏新增「导入图标…」（扩展名初筛 → 校验 → 落 `config/icons/` → 写回配置 → 立即应用），启动期按 `[GUI] gui_tray_icon` 自动加载。
-- **Web 面板图标导入与标签图标**：`POST /api/icon` 走 base64 JSON 而非 multipart（先解码、后校验、再落盘），坏文件不在 `config/icons/` 留垃圾副本；`GET /favicon.ico` 免鉴权（标签页请求不带 Bearer），无可用图标回 404 而非空 200（空 200 会被浏览器缓存成坏图标）；前端 `uploadIcon()` 先按 512KB 粗筛、成功后追加时间戳破缓存。配置新增 `[Web] web_tray_icon`。
-- **打包产物应用图标**：`build_exe.py` 新增 `icon_spec_value()` / `icon_datas_entries()` / `_copy_app_icon()`——`EXE(icon=)` 决定 exe 文件自身资源（资源管理器 / 任务栏），`datas` 供运行期读取（Qt 窗口图标 / 托盘 / favicon），两条根有意冗余。
-- **Web 系统托盘由 pystray 迁到 PySide6（QSystemTrayIcon + QMenu）**：主线程交给 `run_event_loop()`、uvicorn 改在守护线程驱动；`start()` 的返回值成为降级契约（`False` 时调用方照旧在主线程 `asyncio.run(server.serve())`）；退出链补齐 `setQuitOnLastWindowClosed(False)`、200 ms 看门狗 `QTimer` 与 `aboutToQuit` 置 `should_exit`；菜单四项（显示控制台 / 隐藏控制台 / 打开 Web 界面 / 退出程序）；图标改由 `QPainter` 现画，冻结后不再依赖图标文件是否被收进包。
-- **GUI 托盘菜单补齐「隐藏主窗口 / 设置」**：`bind_actions` 由 2 回调扩为 4 回调（顺序即菜单自上而下的动作项顺序），`retranslate()` 同步四项文案；「设置」对话框在主窗口收进托盘时仍可独立弹出。
-- **GUI 运行日志自动换行随窗口宽度自适应**：`src/gui_qt/widgets.py::TerminalText` 折行模式 `NoWrap` → `WidgetWidth`，Qt 在控件 resize 时对既有块自动重排折行（离屏实测 240px 视口长行折 24 行、拉宽 1500px 重排为 5 行）。
-- **i18n 四语目录持续同步**：Web 托盘悬浮提示的裸 f-string 改走 `i18n.tr` 并入目录（四目录各 +1，键集 1205 → 1206，`zh_CN.mo` 重编为 1207 条）；本轮各批新增词条（审查整改 13 / 17 / 15 条、图标 17 条、终止词条与 2 条新词条）均四目录同批登记、`.mo` 同批重编。
+**🛠️ 发布链与构建（钉定动态化）**
+- **node 槽位 GPG 验签 adopt**：信任分级是命门——node 的 SHASUMS256.txt 属 `signed` 档（分离 GPG 签名 + 发布钥匙 40 位指纹 `C82FA3AE…` 带外钉定，三通道同值），gyan `.sha256` 与 GitHub digest 属 `advisory` 档永不被采纳；build-release.yml 两个构建步加 `--pin-source adopt`（默认档仍 off，本地构建行为零变化）。真链路预演揪出休眠层潜伏缺陷并同批修复：node 的 `.asc` 是内嵌明文的 cleartext 签名，原「两文件 detached」验签形态对真实上游**从来不会成功**——新增 `_PIN_SIG_CLEARTEXT` / `_PIN_SIG_DETACHED` 形态字段，clearsigned 档判据值改从**验签通过的签名文档本体**解析（带取值绑定回归锁）。
+- **ffmpeg 三槽判据动态化**：windows（gyan 滚动 `.sha256`）与 linux（BtbN 最新月末 autobuild 标签解析，digest 与下载直链同一次响应成套产出）按 advisory 采纳——经批准的显式供应链取舍（判据新鲜度 ⇄ 放弃带外认证），以逐槽 `ADVISORY_ADOPT_ACK` 放行标记表达、**不做全局开关**；静态直链表退为回退基线（linux 回退 = 旧月末标签整对、发布继续但显式告警；windows 回退仍 fail-closed）；`_fetch_online_pin` 取数咽喉点新增 https+主机白名单运行时门；新增 14 组回归锁（含三槽姿态锁，删标记即红）。
+- **运行时钉定重钉 node v26.13.0**：`_download_nodejs` 按 `dist/index.json` 首条 lts 自动选版本，Node 26 转 LTS 令首条 lts 漂移，四平台 node SHA256 同挂红；完整性核验（CI 实测哈希与官方 SHASUMS256.txt 逐位一致，纯版本漂移非投毒）后 node × 5 段重钉官方值。
 
 **🐛 修复的问题**
-- **新版 Qt GUI 录制输出完全断路（唯一严重项）**：`recorder.py` 的 `linesReceived` 全仓从未 `emit`、`drain()` 生产调用方为零，GUI 上录制输出整条链不显示。改为「保留队列 + 唤醒信号」：死信号换 `outputReady`，主线程 `_pump_recorder_queue` 一次取空后按批次交付，并按会话号对「手动停止 ended」与「自然 EOF 哨兵」双通道去重；新增 `reclaim_after_natural_end` 让自然结束只由主线程清 `_process`，同时修掉 `_read_queue` 无界增长。
-- **安全面（多轮审查整改）**：主机匹配改标签边界（`evilweibo.com` 不再被 `weibo.com` 子串放行）；消息推送与 `sync_req` 补**逐跳**重定向内网复检与落地闸门；内网判定改 `ipaddress` 结构化（整数 / 八进制 / IPv4-mapped / CGNAT 补齐）；B 站弹幕 host 拒绝 `?` / `#` / `@` / `\`；`--snapshot` 改白名单正向判定；node 安装器 SHA256 基准读取与官方文档不可达均改 fail-closed。
-- **凭据脱敏**：`mask_credentials` 补 ini 行形态、短键名 `sig` / `jwt`、JSON 数值、中文凭据键与「百分号编码查询串」形态；消息推送剥离 netloc 中的 basic-auth userinfo，8 处异常文本改走 `_mask_exc_text`；B 站 buvid3 改「前缀 + 长度」指纹；代理 URL 的 user / password 走 `quote(safe="")`；配置备份补「无 ini 节」与「原子写失败回退」两条明文通道的脱敏。
-- **Web 面板与配置写回**：`web/index.html` 删除文件头残留的孤立 `</body></html>`（面板不再落 quirks 模式）；`read_web_config` / `read_quality_options` / `read_config_safe` 统一走容错解析器（同节重复键不再让认证中间件每请求 500）；`PUT /api/rooms/quality` 与 `toggle_room` 改「写后重解析」语义裁决（缩进注释行不再假成功）；`web_tray_icon` 纳入 `_DANGEROUS_CONFIG_KEYS`，favicon 读取侧复验体积与 ICO 魔数（免鉴权任意文件读链的写侧关断）。
-- **录制链**：录制 Popen 的 `stdin` 由 `DEVNULL` 改回 `PIPE`（否则 `proc.stdin is None`，「写 q」优雅退出整条不可达）；`start()` 失败回滚补 `_room_seq_in_use.pop`（序号不再永久烧号、登记表不再无界累积）；AcFun 排序键收口（缺 bitrate 按 0 排尾，不再整轮吞成未开播）；B 站 `url_info` 的 host / extra 改 `_dig_str`（显式 null 不再 TypeError 被吞）；`ffmpeg -version` / `taskkill` 补超时，录制失败 stderr 临时文件就地清理。
-- **配置与数据完整性**：`URL_config.ini` 新建改 `atomic_write_text`（0600，与 config.ini 同口径）；配置脱敏备份改按行重写（「保留注释与节结构」承诺首次成立）；`update_file` 未命中不落盘、`backup_file` 失败不推进 MD5 基线；`sync_metadata` 三处纯读与 `check_workflow_constants` / `check_annotations` 补不可读兜底（rc=2），不再以 rc=1 + 裸栈冒充「代码不合格」。
-- **打包与发布链**：macOS ffmpeg 取数端点（evermeet Download API）被上游整体 410 下架，改钉**版本化直链** `ffmpeg-9.0.2.zip` / `ffprobe-9.0.2.zip` 与同名 `.sig` 签名档（URL 与签名对象双双不可变）；官方哈希文档链补 2 MiB 限长读取；`smoke_web` 的 loopback 覆盖窗口扩到整个探活循环；egg-info `SOURCES.txt` 清掉 13 条已删除文件残留。
-- **签名脚本钉定**：`liveme.js` 按历史 blob 字节级还原（失配成因是冲突提交把清理提交整体回退，而 `.gitattributes` 对 `src/javascript/*.js` 钉 `-text`），5 份签名脚本 sha256 随即全部匹配；新增 `TestJsPinTable::test_pinned_bytes_match_the_table` 逐文件字节对账锁。
-- **DNS 解析失败归因**：新增 `DNS_UNRESOLVABLE_REASON_PREFIX`，瞬时解析失败不再被归因成「疑似被篡改的流地址」（仍 fail-closed 拒绝）。
-
-**⚠️ 破坏性变更 / 行为变化**
-- **tkinter GUI 技术栈彻底移除，PySide6 成为唯一窗口实现**：`gui.py` 删除 `LiveRecorderGUI` / `AdvancedSettingsWindow` / `_legacy_main()` 与 tkinter 崩溃弹窗；`src/ui_kit.py`、`src/ui_motion.py` 删除，`src/ui_theme.py` / `src/ui_fonts.py` / `src/ui_i18n.py` / `src/ui_scale.py` 只保留 Qt 仍在用的能力。**不再有 tkinter 回退路径**，11 个纯 tkinter 用例文件同批删除。
-- **`config.ini` 删除 `[GUI] gui_motion` 键**（仅服务 legacy 动效层）；旧配置保留该键不再被读取。
-- **运行时依赖 21 → 18 条**：`pystray` / `Pillow` / `python-multipart` 移出 `[project.dependencies]`、`.[gui]` 与 `requirements.txt`；两入口托盘统一为 Qt + `QPainter` 现画图标，`.[gui]` 只剩 `PySide6>=6.12.0`。升级后这三个包不再随项目安装。
-- **Web 入口主线程归属反转**：pystray 版是「主线程跑 uvicorn + 托盘跑守护线程」，Qt 版必须「主线程跑 Qt 事件循环 + uvicorn 在守护线程」；`start()` 返回 `False`（非 Windows / 缺 PySide6 / 托盘不可用）时回落到原主线程形态。
-- **`.gitattributes` 行尾钉定生效**：`* text=auto eol=lf`（仓库 LF 存储 + 检出钉 LF）、`*.bat` / `*.cmd` 钉 CRLF、`*.sh` 钉 LF、`src/javascript/*.js` `-text` 字节冻结；119 个已跟踪文本文件已归一为 LF，旧克隆在重检出前仍可能保持原形态。
-- **macOS 发布链 ffmpeg 不再跟随上游滚动别名**：改为版本化不可变直链后，上游发新版不会自动跟进，抬版需人工同步两支归档版本号并重核签名。
-- **面板写侧安全收紧**：`web_tray_icon` 不再可经 Web 配置写入（`/api/icon` 上传路径直写 config 不受影响）；`GET /favicon.ico` 对非 ICO 内容一律 404；敏感判定补「接口链接」键与「推送配置」节。
+- **发布构建 Linux GUI 冒烟静默死（零输出 + 退出码 1，两平台同构）**：build-release.yml 的 Linux 安装步只装 `ffmpeg xvfb`，PySide6 xcb 平台插件缺系统客户端库；镜像 ci.yml 的 16 个 Qt 运行库包并补 runner 实测多出的 `libxcb-xkb1` / `libxcb-util1`（按超集装；ci.yml 未动，外科手术边界）。
+- **发布目录凭据校验系统性误报（SEV-2213）**：`[推送配置]` 整节在白名单内、值多为泛化开关（`true`/`1800`），「源值子串全文匹配」判据必然命中脱敏模板非敏感节合法保留的同名字面量；改「发布侧同 (节, 键) 位值 == 源值」才判漏脱敏，守卫集合零变化（fail-closed 不回退），正反两条回归锁防「把误报修成豁免」。
+- **POSIX 优雅停止标记缺失（产品缺陷）**：`src/gui_qt/recorder.py` 的 POSIX 分支发 SIGINT 成功后不置 `graceful_signal_sent`，日志谎报「硬杀路径」且方法返回值恒 `False`；补置一行，win32 分支与其余代码零改动；本机经 `sys.platform` 运行时补丁实测优雅路径由恒 `False` 转 `True`。
 
 **📦 依赖变更**
-- **运行时依赖 21 → 19（10-20）→ 18（同日）**：pystray / Pillow 随遗留 tkinter 托盘退役摘除，python-multipart 因全仓无 `.form()` / `UploadFile` 调用点摘除；`uv lock` 重解后一并移除 `pyobjc-core` / `pyobjc-framework-cocoa` / `pyobjc-framework-quartz` 与 `python-xlib` 等平台专属传递依赖，egg-info 程序化重建。
-- **extras 面收敛**：`.[gui]` 由三条收敛为 `PySide6>=6.12.0` 一条；dev 7 条 / build 1 条不变。
-- **CI 工具版本抬到 PyPI 最新**：`ci.yml` 的 `mypy_version` 2.4.0 → 2.4.1、`pytest_version` 9.1.1 → 9.2.0（black 26.10.1 / isort 9.0.2 经核对已是最新，`.pre-commit-config.yaml` 两个 mirror rev 无需跟改）；抬值后四值与本地 `.venv` 实装逐一同值。**CI 实跑未执行**——要等下一次 push 在 GitHub Actions 上真正安装新版本后才算 CI 口径验证。
-- **元数据同源**：`requirements.txt` ↔ `pyproject.toml` 包名集合 18 ↔ 18；CODE_WIKI 双语依赖表删除 pystray / Pillow / python-multipart 三行（21 → 18 行）；`uv.lock` 已是 4.6.0 / 18 条，刻意跳过 `uv lock` 以免无关重算。
-
-**🛠️ 仓库维护与文档**
-- **五轮全仓代码审查与逐项整改**：10-18 报告 85 项中 83 项落地（`L-27` / `L-28` 交回）、10-19 报告 5 项严重全修 + M 级 30/48 + L 级 25/81、10-21 两批（15 项严重全修 + 1 项部分、中等项 28 + 约 55）、10-29 报告严重 7 / 中等 35 / 轻微 14、10-30 报告按 P0 5 + P1 8 + P2 3 + L 组可定位项整改；报告落 `docs/worklog/CODE_REVIEW_*.md`。
-- **行尾钉定落地**：新增 21 行 `.gitattributes`，119 个已跟踪文本文件 blob 由 CRLF 归一为 LF（AST 级内容零改动）；`src/javascript/*.js` 字节冻结的判据写入属性文件，避免跨平台检出翻表。
-- **回归锁测试文件名去日期化**：17 个文件 `git mv` 改名、72 个文件引用同步（生产注释、CI、AGENTS / README / CODE_WIKI 双语与 docs），全仓 `grep regression_2026` 零残留（改名映射记录条目自身为唯一例外）。
-- **门禁与机检新增**：R9（`test_*.py` 收集 0 条）/ R10（join 后必须断言线程退出，零容忍）、`test_outbound_read_caps.py`（httpx 读取上限台账）、`test_exception_log_masking.py`（异常文本脱敏棘轮）、`test_pep758_except_form.py`（PEP 758 形态锁）、`test_ci_pytest_env_parity.py`（跑 pytest 的 job 必须装 `requirements.txt`）；覆盖率阈值 `spider` / `proxy` 50 → 60 并新增「登记阈值 < 全局地板且未走债务表」机检。
-- **死代码与失实注释清理**：删除死模块 `src/ab_sign.py`、`main.py` 51 处 `platform = "未知平台"` 死赋值、18 个未使用 import、38 处未读局部变量与两处零引用函数；修正 11 处注释 / 契约失实（skip 理由、segment_video、motion.js 降级方向等）。
-- **全仓注释级精简（零行为变化）**：133 个代码文件净删 263 行注释（+798 / −1061）；等价性证明覆盖 Python AST、JS / CSS / HTML 剥注释行序（288 文件比对 286 OK）、BOM / 编码 / 行尾零漂移、实测读数零丢失、注释密度 ≥13% 地板与 13 主题存活。
-- **文档同源**：`AGENTS.md`、`docs/agent-reference/project-structure.md`、`measured-evidence.md` 与双语 CODE_WIKI / README 随改动同步；`check_skill_agents_consistency.py` 的「目录→表」检查由 WARN / rc=0 升为 FAIL / rc=1。
+- **setuptools 构建下限 68.0 → 84.1.0**：GHSA-xmj3-9gf7-h52w（恶意 wheel 经 `Wheel.install_as_egg` 路径逃逸）修复版；`[build-system]` 抬下限 + `uv.lock --upgrade-package setuptools` 重算锁面 84.0.0 → 84.2.1。本仓利用路径不可达，属解析面收口。
+- **brotli 声明下限 1.2.0 → 1.2.1**：CI deps-audit「下限复核」抓出旧下限自身落在 PYSEC-2026-4322 受影响段（该形态第五次出现）；requirements.txt 与 pyproject 同批抬升，venv 已装 1.2.1、抬下限不改解析集合。
+- **运行时依赖清单零改动**：仍 18 条、包名集合不变，CI 条数断言不受影响。
 
 **🧪 测试与验证**
-- 各批次终态实测（均在整批最后一次编辑之后）：10-18 全量 `pytest` 4568 passed / 14 skipped / 0 warnings、覆盖率 83.80%（69 模块）、`run_gates.py` 10/10；10-22 4977 passed / 16 skipped、覆盖率 83.84%；10-31 各批 5049 / 5053 / 5054 passed（覆盖率 84.47% / 69 模块），tkinter 移除后 4786 passed / 16 skipped、覆盖率 84.65%（67 模块），元数据对账批次 10/10 门禁 + 4764 passed。
-- `basedpyright` 各批 0 error / 0 warning；`mypy` 本机 + linux + win32 三跑 0 error；`black` / `isort` / `check_annotations.py` / `compile_po.py --check` / `check_version.py` / `check_runtime_pins.py` 全绿。
-- ICO 真机构建：`python build_exe.py --smoke --no-runtime --no-zip` 成功（2m35s），CLI / Web / GUI 三冒烟全通过，三个 exe 内均检出全部 7 帧（10.68MB / 11.00MB / 11.10MB），`assets/app.ico` 同时落在发布根与 `_internal/assets/`。
-- tkinter 移除：全仓产品代码已无 `import tkinter` / `from tkinter`；`import gui` 在 `PySide6` 不可用（`sys.modules['PySide6']=None`）时仍成功；离屏构造 `MainWindow` 成功（5 页），`python gui.py` 离屏运行 6s 无崩溃。
-- 真机 / 端到端交回项：`liveme.js` 修复按 `SKIP(未联网 / 无活 LiveMe 房间)` 记录；`CODE_REVIEW_2026-10-30` 整改的平台解析真实 URL、打包链真机与面板端到端未执行，按 DoD 第 2 步交回用户；macOS 新端点的全量下载 + `gpg --verify` 需 macOS runner 首跑确认。
+- 各批次终态实测：`run_gates.py` 多批 **10/10 全绿**（内置全量 pytest 4764–4766 passed / warnings summary 为空）；`check_coverage.py` 67 模块全达标；`basedpyright` 0 errors / 0 warnings / 0 notes；`check_runtime_pins.py --strict` rc=0；`tests/test_build_exe.py` 各批 138–169 passed。
+- node adopt 真链路预演两轮：修复前 NODATA 暴露 cleartext 形态缺陷，修复后 `GOODSIG`+`VALIDSIG` 完整指纹吻合且判据与静态表一致（读数记 `docs/agent-reference/measured-evidence.md`）。
+- CI Linux 三处平台敏感用例转平台无关：钉定断言改取 `runtime_slot_key()` 当前段、托盘冻结根目录用例改按宿主形态构造假路径、硬杀触发按平台分工（POSIX 用「先收尸再发」真实竞态）；三文件隔离跑 231 passed。
+- 真机 / 端到端交回项：四平台发布构建重跑（Linux GUI 冒烟 Qt 库修复、node v26.13.0 钉定、凭据校验修复、钉定动态化）随 v4.7.0 发布验证，交回用户；Linux 录制环境真机记录 `SKIP(无 Linux 真机)`。
+
+### v4.6.0 (2026-10-18 ~ 2026-10-31) — 彻底移除 tkinter 技术栈（PySide6 成为唯一窗口实现）/ 统一 ICO 图标支持（GUI 托盘 / Web 托盘与页面 / 打包产物）/ Web 系统托盘迁 PySide6 与 GUI 日志自适应折行 / 五轮全仓代码审查整改（SSRF 逐跳复检、危险配置键、出站读取上限）/ 行尾钉定与回归锁测试去日期化 / 元数据对账与 CI 工具抬版 / 全仓注释级精简
+
+> 完整条目见 [归档卷](docs/changelog/release-notes-history-zh.md)（迁入：v4.6.0）。
 
 ### v4.5.0 (2026-10-02 ~ 2026-10-17) — GUI 窗口层迁移 PySide6（Qt6）与界面现代化阶段4~6 收尾 / 移动端与短链平台接入（b23.tv / m.douyu.com / hy.fan / 小红书四类归一）/ Linux arm64 ffmpeg 与 GHCR 多架构镜像 / 启动期字节码缓存清理与发布链在线来源层 / config.ini 重复键容错读取层与 i18n 三批机检 / 全工作区代码审查与两轮元数据对账
 
@@ -1003,8 +977,8 @@ brew install node
 
 ### 更早的更新日志（已归档）
 
-历史发布说明已逐字迁出至 [release-notes-history-zh.md](docs/changelog/release-notes-history-zh.md)：v4.0.0 ~ v4.0.9.4（17 条）于 2026-09-28 迁出，v4.2.0 / v4.1.0（2 条）于 2026-10-18 续迁，v4.5.0 / v4.4.0 / v4.3.0（3 条）于 2026-10-31 续迁；该卷按 `.workbuddy/docold` 基线回补了上一轮粗剪留下的行尾 `…` / 句中截断（口径见其卷首）。
-根文档只保留当前版本 v4.6.0 的概要 + 本指针；完整历史见归档卷。
+历史发布说明已逐字迁出至 [release-notes-history-zh.md](docs/changelog/release-notes-history-zh.md)：v4.0.0 ~ v4.0.9.4（17 条）于 2026-09-28 迁出，v4.2.0 / v4.1.0（2 条）于 2026-10-18 续迁，v4.5.0 / v4.4.0 / v4.3.0（3 条）于 2026-10-31 续迁，v4.6.0（1 条）于 2026-11-04 续迁；该卷按 `.workbuddy/docold` 基线回补了上一轮粗剪留下的行尾 `…` / 句中截断（口径见其卷首）。
+根文档只保留当前版本 v4.7.0 的概要 + 本指针；完整历史见归档卷。
 
 ## 💬 有问题或者需求可以向我提 Issue，欢迎 Star 与 Fork
 

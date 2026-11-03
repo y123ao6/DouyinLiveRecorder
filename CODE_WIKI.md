@@ -1588,7 +1588,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 
 > **本节索引**：以下条目的逐字正文已于 2026-10-31 迁入 [归档卷](docs/changelog/code-wiki-history-zh.md) 的「迁入：当前发布周期」一节；本节仅保留标题索引，按标题原文可在归档卷检索。
 >
-> **v4.6.0 概要（2026-10-18 ~ 2026-10-31）**：① GUI 技术栈全面收敛到 PySide6，tkinter/pystray 遗留实现与 `src/ui_kit.py` / `src/ui_motion.py` 移除；② 统一 ICO 图标支持（GUI 托盘 / Web 托盘与页面 / 打包产物）；③ Web 托盘迁 Qt，运行日志自动折行；④ 五轮全仓审查整改（SSRF 逐跳复检、危险配置键、出站读取上限、凭据脱敏）；⑤ 行尾钉定、回归锁去日期化、元数据对账、CI 工具抬版与全仓注释精简。
+> **v4.7.0 概要（2026-11-01）**：① 发布链钉定动态化——node 槽以 GPG 验签官方 SHASUMS 为判据（`--pin-source adopt`），ffmpeg 三槽取构建当日官方清单值（advisory 经 `ADVISORY_ADOPT_ACK` 显式放行、linux 随最新月末标签解析直链），静态表退为回退基线，上游滚动不再打断发布；② 运行时钉定随 node v26.13.0 重钉（Node 26 转 LTS 首条 lts 漂移）；③ 发布构建修复——Linux GUI 冒烟补装 Qt 运行库（镜像 ci.yml 16 包 + libxcb-xkb1/util1 超集）、发布凭据校验收窄「同键位」比对根治 SEV-2213 误报、POSIX 优雅停止标记补置；④ 安全下限抬升——setuptools 构建下限 84.1.0（GHSA-xmj3-9gf7-h52w）、brotli 1.2.1（PYSEC-2026-4322）；⑤ CI Linux 三处平台敏感用例转平台无关。
 
 ### v4.7.0 (2026-11-01) — 发布构建 Linux GUI 冒烟缺装 Qt 运行库：smoke:gui 两平台同挂「零输出 + 退出码 1」，Linux 安装步镜像 ci.yml 清单并补两缺口
 
