@@ -8,7 +8,7 @@ import re
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -587,6 +587,53 @@ class _RedirectHopRejected(httpx.HTTPError):
         super().__init__(f"重定向逐跳复检拒绝落地目标: {utils.mask_credentials(hop_url)} - {reason}")
 
 
+# ── 跨源重定向的凭据头剥离（CODE_REVIEW_2026-11-04 S-01） ─────────────────
+# httpx 0.28 的 _redirect_headers（_client.py:546-571）把上一跳 request.headers **全量复制**
+# 给下一跳，跨源只 pop Authorization 与 Cookie；平台自定义头（XHS 的 xy-common-params 内含
+# 会话 sid、抖音签名头 x-bogus/a-bogus、ms_token 等）会随 302 一起送到新 host。逐跳复检只拦
+# 内网/协议，对「合法 https + 公网落地目标」不命中，故凭据外带不在它的判定面内，必须单独收口。
+def _is_cross_origin_credential_header(name: str) -> bool:
+    if name.lower() == "xy-common-params":
+        # XHS 会话头键名不含任何凭据词（值是 platform=iOS&sid=<sid>），只能单独登记；
+        # utils.is_credential_key 的键名事实源不为此改表，避免影响 mask_credentials 的既有语料。
+        return True
+    return utils.is_credential_key(name)
+
+
+def strip_cross_origin_credentials(response: httpx.Response) -> None:
+    # 在 response 钩子里改「本跳 request 的 headers」：httpx._send_handling_redirects 的顺序是
+    # 「发本跳 → 调 response 钩子 → _build_redirect_request(request, response)」（_client.py:1694-1704），
+    # 而 _redirect_headers 复制的正是**同一个** request.headers（response.request = request，
+    # _client.py:1733）。故此处剥掉的头不会出现在下一跳，且不需要改 130 处调用点的跟随语义。
+    # 只在「本跳带 Location 且指向跨源」时动手：同源 CDN 跳转是平台常态，剥自定义头会误伤签名链。
+    # 复跑判据：tests/test_async_http.py::TestCrossOriginCredentialStrip（4 条，含反向见证）。
+    location = response.headers.get("location")
+    if not location:
+        return
+    try:
+        request = response.request
+    except RuntimeError, AttributeError:
+        # httpx.Response.request 是 property：未设置时抛 RuntimeError 而**不是** AttributeError，
+        # getattr 的 default 吞不掉（定点测试实测 RuntimeError: The request instance has not been set）。
+        # 预装载替身 / 纯构造响应必须原样放行，不得因新增剥头改变既有失败契约。
+        return
+    request_headers = getattr(request, "headers", None)
+    if request_headers is None:
+        # 最小替身没有 headers：交由逐跳复检照常判定。
+        return
+    current = urlparse(str(response.url))
+    try:
+        target = urlparse(urljoin(str(response.url), location))
+    except ValueError:
+        # 畸形 Location 由 httpx 自己报错；此处按最保守形态剥离，不替它决定放行。
+        target = None
+    if target is not None and (target.scheme, target.netloc) == (current.scheme, current.netloc):
+        return
+    for name in list(request_headers):
+        if _is_cross_origin_credential_header(name):
+            request_headers.pop(name, None)
+
+
 def _redirect_hop_rejection_reason(url: str, proxy_addr: OptionalStr) -> str | None:
     # 逐跳复检的**唯一定义点**：探针与 async_req 的每一跳都走这里，判定不在调用点复制。
     # 两道检查与「请求入口」完全同口径、同一批函数：① scheme 白名单 utils.is_safe_http_url；
@@ -617,6 +664,9 @@ def _build_hop_guard(proxy_addr: OptionalStr) -> Callable[[httpx.Response], Awai
     #     不经 _build_client，由 build_sync_hop_guard 挂上同一判定的同步形态；但「探针已全栈收口」
     #     仍不成立：DNS 重绑定窗口、跳转那一跳已发生的连接、以及 stream_select 内
     #     _is_derived_hop_allowed 那份只认字面量的派生地址闸门都不在本层。
+    #   · 2026-11-04 S-01：新增「跨源重定向剥凭据头」防线，闭合自定义头随 302 外带这一面；
+    #     但该跳的出站连接仍已发生，且剥头名单以 utils._SECRET_KEYS 为准，未登记进该表的
+    #     全新平台凭据头仍可能漏剥——故调用方在发出带凭据请求前仍须自己校验落地 host。
     # 第二职责：判定放行后、该跳响应体被 httpx 物化之前，由 _bounded_response_read 带上限读完并回填。
     # 并进本钩子而不新挂一支：response 钩子的挂载点只有 _build_client 一处，而既有结构锁
     # test_guard_is_installed_on_every_built_client 断言「每支客户端恰好一支 response 钩子」；顺序
@@ -627,7 +677,11 @@ def _build_hop_guard(proxy_addr: OptionalStr) -> Callable[[httpx.Response], Awai
     # [历史注 2026-09-30] 本节早期版本断言「同步探针的钩子留待后续工作包、本次不接线」——该断言已失效：
     # build_sync_hop_guard 现挂同一判定，同步探针与异步侧同源。保留本注只为让后来者不再按旧结论去
     # 别处找第二份实现（判据族只允许一份）。
+    # 第三职责（CODE_REVIEW_2026-11-04 S-01）：钩子返回前先剥跨源凭据头。顺序必须在定罪/读体
+    # 之前——httpx 在钩子返回后才用同一个 request 构造下一跳，放后面就等于没接线。同步侧
+    # build_sync_hop_guard 调同一个 strip_cross_origin_credentials，判定不复制第二份。
     async def _guard(response: httpx.Response) -> None:
+        strip_cross_origin_credentials(response)
         hop_url = str(response.url)
         reason = _redirect_hop_rejection_reason(hop_url, proxy_addr)
         if reason is None:
@@ -659,6 +713,8 @@ def build_sync_hop_guard(proxy_addr: OptionalStr) -> Callable[[httpx.Response], 
     # ② 普通函数交给 AsyncClient → `await None` 当场 TypeError。共用的是判定函数与异常，两个工厂各自
     # 只薄封装一层「取 response.url → 调判定 → 命中即抛」。
     def _guard(response: httpx.Response) -> None:
+        # 与异步侧共用同一份剥头判定：同步探针也走 httpx 的跟随链，跨源时同样会复制自定义头。
+        strip_cross_origin_credentials(response)
         hop_url = str(response.url)
         reason = redirect_hop_rejection_reason(hop_url, proxy_addr)
         if reason is None:

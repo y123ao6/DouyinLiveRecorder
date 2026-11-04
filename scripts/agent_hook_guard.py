@@ -97,8 +97,12 @@ _GIT_DISCARD_RE = re.compile(r"\bgit\s+(checkout|restore|reset)\b", re.IGNORECAS
 
 # 受保护目录名之后的合法边界字符：路径分隔符、引号、空白与常见闭合符；空串（语句结尾）同样算边界。
 # 与 `_protected_hit` 的历史注同因：把「目录名后必须是分隔符」收紧成「必须是边界字符」才能覆盖
-# 引号与尾随空格形态。不含 `;`/`&`/`|`——那些已被 `_statements` 切成独立语句，留在此处无意义。
-_PROTECTED_TAIL_BOUNDARY: frozenset[str] = frozenset({"/", "\\", '"', "'", " ", "\t", "`", ")", "]", "}"})
+# 引号与尾随空格形态。`;`/`&`/`|` 必须并入：`_statements` 只切 `&&`/`||`/`;`/换行，单个 `|`/`&`
+# 不切分，`rm -rf logs|cat` 的目录名后恰是 `|`，不认边界就会把守卫整条跳过
+# （CODE_REVIEW_2026-11-04 M-13 实测：`logs|cat` 与 `logs&cat` 均曾放行）。
+_PROTECTED_TAIL_BOUNDARY: frozenset[str] = frozenset(
+    {"/", "\\", '"', "'", " ", "\t", "`", ")", "]", "}", ";", "&", "|"}
+)
 
 # 过滤面标记：出现任一即认为这条删除命令带了「按名字/路径挑文件」的白名单，
 # AGENTS.md 给出的两条收尾清理命令（-Include *_tmp_*.py / -name '*_tmp_*.py'）都属这一类。

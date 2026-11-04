@@ -1004,3 +1004,109 @@ class TestAsyncReqCapEndToEnd:
         assert await async_req("https://example.com/login", return_cookies=True, include_cookies=True) == ("", {})
         for client in seen:
             await client.aclose()
+
+
+class TestCrossOriginCredentialStrip:
+    # CODE_REVIEW_2026-11-04 S-01：httpx 的 _redirect_headers 跨源只剥 Authorization/Cookie，
+    # 自定义凭据头全量复制给下一跳。本类用真实 _build_client 的 response 钩子 + MockTransport
+    # 验「钩子确实接线」，而不是只调剥头函数——只调函数验不到接线这半条不变量。
+
+    @pytest.mark.asyncio
+    async def test_cross_origin_redirect_strips_credential_headers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(async_http, "_redirect_hop_rejection_reason", lambda url, proxy: None)
+        seen: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(dict(request.headers))
+            if request.url.host == "start.example.com":
+                return httpx.Response(302, headers={"Location": "https://other.example.net/landing"})
+            return httpx.Response(200, text="ok")
+
+        client = async_http._build_client(None, 10, True, False)
+        client._mounts = {}
+        client._transport = httpx.MockTransport(handler)
+        try:
+            resp = await client.get(
+                "https://start.example.com/short",
+                headers={
+                    "User-Agent": "dlr-test",
+                    "Cookie": "cookie-test-value",
+                    "xy-common-params": "platform=iOS&sid=sid-test",
+                    "x-bogus": "sig-test",
+                    "Authorization": "Bearer tok-test",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+        finally:
+            await client.aclose()
+
+        assert len(seen) == 2, f"预期两跳，实际 {len(seen)}"
+        second = {k.lower() for k in seen[1]}
+        for name in ("cookie", "authorization", "xy-common-params", "x-bogus"):
+            assert name not in second, f"跨源第二跳仍带凭据头 {name}"
+        assert seen[1].get("user-agent") == "dlr-test", "普通头被误剥，同源 CDN 跳转会失效"
+
+    @pytest.mark.asyncio
+    async def test_same_origin_redirect_keeps_custom_headers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 反向见证：同源跳转是平台常态，剥过头会让签名链失效。
+        monkeypatch.setattr(async_http, "_redirect_hop_rejection_reason", lambda url, proxy: None)
+        seen: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(dict(request.headers))
+            if request.url.path == "/short":
+                return httpx.Response(302, headers={"Location": "/landing"})
+            return httpx.Response(200, text="ok")
+
+        client = async_http._build_client(None, 10, True, False)
+        client._mounts = {}
+        client._transport = httpx.MockTransport(handler)
+        try:
+            resp = await client.get(
+                "https://start.example.com/short",
+                headers={"xy-common-params": "platform=iOS&sid=sid-test"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+        finally:
+            await client.aclose()
+
+        assert len(seen) == 2
+        assert "xy-common-params" in {k.lower() for k in seen[1]}, "同源跳转被误剥自定义头"
+
+    def test_sync_hop_guard_strips_cross_origin_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 同步探针与异步侧共用同一份剥头判定，不得出现「只修一侧」。
+        monkeypatch.setattr(async_http, "redirect_hop_rejection_reason", lambda url, proxy: None)
+        seen: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(dict(request.headers))
+            if request.url.host == "start.example.com":
+                return httpx.Response(302, headers={"Location": "https://other.example.net/landing"})
+            return httpx.Response(200, text="ok")
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            event_hooks={"response": [async_http.build_sync_hop_guard(None)]},
+        )
+        try:
+            resp = client.get(
+                "https://start.example.com/short",
+                headers={"Cookie": "cookie-test-value", "xy-common-params": "platform=iOS&sid=sid-test"},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+        finally:
+            client.close()
+
+        assert len(seen) == 2
+        second = {k.lower() for k in seen[1]}
+        assert "cookie" not in second and "xy-common-params" not in second
+
+    def test_strip_is_noop_on_response_without_request(self) -> None:
+        # 仓内大量预装载替身没有 request；剥头不得抛异常、也不得改变既有响应契约。
+        response = httpx.Response(302, headers={"Location": "https://other.example.net/landing"})
+        setattr(response, "request", None)
+        async_http.strip_cross_origin_credentials(response)
+        assert response.status_code == 302

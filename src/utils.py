@@ -1198,3 +1198,16 @@ def mask_credentials(text: str) -> str:
     # ①：ini 行兜底放最后——它按「行」整段抹到行尾，必须在前三形态把行内 key=value 处理完之后
     # 再兜一次（幂等），否则会先把 `x=1&token=y` 这种行整段吞掉、丢掉可读的定位信息。
     return _SECRET_INI_LINE_RE.sub(r"\1***", masked)
+
+
+def is_credential_key(name: str) -> bool:
+    # 供跨源重定向剥头复用：与 mask_credentials 共用 _SECRET_KEYS 这一份键名事实源，避免
+    # async_http 另立「哪些请求头算凭据」的名单——两侧漂移就是一次漏剥。判据认「整段等于 /
+    # 以凭据词开头」，并先剥掉自定义头常见的 x- / - / _ 前缀，覆盖 x-token、x-auth、x-session
+    # 这类形态（x-bogus / a-bogus / ms_token 本就在表内，整段命中）。
+    # 反向见证：User-Agent / Accept / Content-Type / Referer / Origin / x-request-id 都不以
+    # 任何凭据词开头，剥头不会把同源 CDN 跳转所需的普通头一并带走。
+    # 复跑判据：tests/test_utils.py::TestCrossOriginCredentialKeys（正向 9 键 + 反向 6 键）。
+    lowered = name.lower()
+    bare = lowered.lstrip("x-_")
+    return any(candidate == key or candidate.startswith(key) for candidate in (lowered, bare) for key in _SECRET_KEYS)

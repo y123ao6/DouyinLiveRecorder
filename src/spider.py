@@ -2592,8 +2592,13 @@ async def get_xhs_stream_url(
         headers["Cookie"] = cookies
 
     # xhslink.com 是分享短链，需先解析出真实落地页 URL 再继续（redirect_url=True 取最终地址）。
+    # 取 Location 不需要任何鉴权：若沿用带 Cookie / sid 的 headers，短链 302 到任意 host 时
+    # 凭据已在落地页 host 校验之前出站（CODE_REVIEW_2026-11-04 S-01）。故单独构造无凭据探针头；
+    # 全局兜底由 async_http.strip_cross_origin_credentials 在跨源跳上再剥一次。
     if link_info["kind"] == "short":
-        url_result = await async_req(url, proxy_addr=proxy_addr, headers=headers, redirect_url=True)
+        landing_trusted = False
+        probe_headers = {k: v for k, v in headers.items() if k.lower() not in ("cookie", "xy-common-params")}
+        url_result = await async_req(url, proxy_addr=proxy_addr, headers=probe_headers, redirect_url=True)
         # 跳转结果不可用（非字符串 / 空串）时直接判失败：继续拿短链本身请求只会拿到 200 空壳页，
         # 用户侧表现为「网址内容获取失败」无限重试，线索指不到「短链已失效」上。
         if not isinstance(url_result, str) or not url_result.strip():
@@ -2626,6 +2631,7 @@ async def get_xhs_stream_url(
                     )
                     return {"anchor_name": "", "is_live": False, "error": e.code}
                 url = link_info["normalized_url"]
+                landing_trusted = True
             else:
                 logger.warning(
                     i18n.tr(
@@ -2641,6 +2647,11 @@ async def get_xhs_stream_url(
                     url=utils.mask_credentials(_landing),
                 )
             )
+        # 只有「白名单 + 内网判定 + 统一解析」三步全过才允许带凭据请求；其余形态一律剥离
+        # Cookie / xy-common-params，把上方注释承诺的「剥离」落成代码（修复前只写在注释里）。
+        if not landing_trusted:
+            headers.pop("Cookie", None)
+            headers.pop("xy-common-params", None)
     else:
         # 长链按统一解析结果请求：分享统计参数已剥离、鉴权参数保留，
         # 动态路径段也原样带上（删掉后页面未必可访问）。
@@ -2656,6 +2667,7 @@ async def get_xhs_stream_url(
         "normalized_url": link_info["normalized_url"],
     }
     # 走到这里 url 已保证落在 XHS 白名单域内（原始短链宿主或可信落地页），故带凭据安全。
+    # 短链分支若未取得可信落地页，上面已把 Cookie / xy-common-params 从 headers 剥掉。
     html_str = await async_req(url, proxy_addr=proxy_addr, headers=headers)
     html_str = _get_str_response(html_str)
     # 内联 __INITIAL_STATE__ 里混有 JS 的 undefined（非法 JSON 字面量），先替换为 null 再解析。

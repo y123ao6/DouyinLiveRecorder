@@ -21,6 +21,47 @@ ROOT = Path(__file__).resolve().parent.parent
 # 这里的锁是**双侧包名集合一致**：单侧遗漏（本次形态）立即变红。
 
 
+# ────────────────────────────── ──────────────────────────────
+# AST 判据 helpers：本文件多处结构锁原先按源码文本切片判「符号存在」，而 `ast.get_source_segment`
+# 会把函数体内注释一并返回、`str.count("x()")` 连 `def x():` 都算一次命中——删掉真实调用点后
+# 断言恒绿（CODE_REVIEW_2026-11-04 M-14）。三处判据统一改走语法节点，注释与 def 行不再参与。
+
+
+def _call_names(source: str) -> set[str]:
+    # 取所有**可执行调用点**的函数名（Name.id / Attribute.attr）。ast.walk 只遍历语法节点，
+    # 注释、字符串字面量与函数定义行都不会进入集合。
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            names.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            names.add(node.func.attr)
+    return names
+
+
+def _executable_source(node: ast.AST) -> str:
+    # ast.unparse 只重建语法节点，注释不参与；用于替代含注释的原文切片。
+    return ast.unparse(node)
+
+
+def _has_if_not_args_attr(source: str, attr: str) -> bool:
+    # 判定 `if not args.<attr>:` 是否作为可执行分支存在，而不是只出现在注释/字符串里。
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if (
+            isinstance(test, ast.UnaryOp)
+            and isinstance(test.op, ast.Not)
+            and isinstance(test.operand, ast.Attribute)
+            and test.operand.attr == attr
+        ):
+            return True
+    return False
+
+
 def _normalize_dist_name(name: str) -> str:
     # PyPI 规范化名（PEP 503）：小写 + 连续 [-_.] 折叠成单个 '-'。只比较**包名**、不管版本
     # 说明符，所以必须在剥离 '[...]'/版本之前就结束解析。
@@ -266,7 +307,8 @@ def test_concurrency_rate_limit_case_drives_src_not_a_local_copy() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name in wanted:
             found.append(node.name)
-            body_src = ast.get_source_segment(source, node) or ""
+            # 原文切片含函数体内注释，注释里写下符号就能喂饱断言；改用去注释的可执行源码。
+            body_src = _executable_source(node)
             assert any(symbol in body_src for symbol in wanted[node.name]), (
                 f"tests/test_concurrency.py::{node.name} 又回到「测试内自建锁/限流/缓存」的假绿形态"
                 f"（体内找不到 {wanted[node.name]} 任一符号）—— SEV-2222/SEV-2223"
@@ -301,7 +343,7 @@ def test_run_gates_keep_going_does_not_affect_exit_code_semantics() -> None:
     # --keep-going 只影响「是否继续跑后续步骤」，不得影响最终退出码：
     # 源码里失败必进 `failed` 列表、且主流程以 `return 1` 收口。锁住这条结构不变量。
     src = (ROOT / "scripts" / "run_gates.py").read_text(encoding="utf-8")
-    assert "if not args.keep_going:" in src, "--keep-going 的收口点已改，需复核是否仍只控制「是否继续」"
+    assert _has_if_not_args_attr(src, "keep_going"), "--keep-going 的收口点已改，需复核是否仍只控制「是否继续」"
     assert re.search(r"if failed:\s*\n\s*print", src), "失败集合未参与最终退出码判定"
 
 
@@ -661,6 +703,21 @@ def test_version_is_read_from_single_source() -> None:
     # 定点锁：版本号必须只经 read_version() 从 pyproject.toml 读一次，
     # 且三个 exe 共享同一个 zip 前缀（避免某入口单独写死版本）。
     src = (ROOT / "build_exe.py").read_text(encoding="utf-8")
-    assert src.count("read_version()") >= 1, "read_version() 不再被调用"
+    # 文本计数会把 `def read_version() -> str:` 也算成一次调用；删掉唯一调用点后恒绿。
+    assert "read_version" in _call_names(src), "read_version() 不再被调用（AST 调用点判据）"
     body = _function_body_source(src, "read_version")
     assert "pyproject.toml" in body, "read_version 不再从 pyproject.toml 读取（事实源被改）"
+
+
+def test_ast_judgements_ignore_def_lines_and_comments() -> None:
+    # M-14 的正向判据 + 反向见证：文本计数确实会被 def 行喂饱，AST 判据必须能区分两者。
+    # 这条同时证明三个 helper 没有退化成子串计数——helper 一退化，本用例立即转红。
+    only_def = "def read_version() -> str:\n    return 'x'\n"
+    with_call = "def read_version() -> str:\n    return 'x'\n\nVERSION = read_version()\n"
+    commented = "# if not args.keep_going:\nVALUE = 1\n"
+    live_branch = "if not args.keep_going:\n    return 1\n"
+    assert "read_version()" in only_def, "语料退化：def 行本就含 read_version() 文本"
+    assert "read_version" not in _call_names(only_def), "def 行被当成调用点，AST 判据已失效"
+    assert "read_version" in _call_names(with_call), "真实调用点未被 AST 判据识别"
+    assert not _has_if_not_args_attr(commented, "keep_going"), "注释被当成可执行分支"
+    assert _has_if_not_args_attr(live_branch, "keep_going"), "真实 if 分支未被识别"

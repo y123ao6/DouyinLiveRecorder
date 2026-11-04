@@ -372,6 +372,14 @@ def check_conventions(root: Path, min_density: float) -> int:
             if not has_module_header(src):
                 problems.append(f"[模块头] {rel}: 前 {MODULE_HEADER_SCAN_LINES} 行内无说明注释")
 
+    if not stats:
+        # 空判定面 = 本条门禁一个文件都没扫到（--root 指错 / 目录不存在 / 源全被排除），不是
+        # 「代码符合注释规范」。与 check_coverage / check_runtime_pins 的 rc=2 分级同口径：打印
+        # 「共扫描 0 个 Python 文件 / 全部通过」且 rc=0 会让 required check 在 CI 上永远空转。
+        # CODE_REVIEW_2026-11-04 M-11 实证：check_conventions(不存在的 root) 返回 0。
+        print("ERROR: 门禁自身失效，共扫描 0 个 Python 文件（请核对 --root 与排除规则）", file=sys.stderr)
+        sys.exit(2)
+
     # 符号可达性（与注释规范同批输出，共用 problems 计数：命中即门禁变红）
     scanned, dangling = check_dangling_symbols(root)
     for item in dangling:
@@ -512,6 +520,12 @@ def check_equivalence(root: Path, baseline: Path) -> int:
     # 由使用者显式重建基线，不得默认放行。
     rel_set = {p.relative_to(baseline).as_posix() for p in baseline.rglob("*") if p.is_file()}
     rel_set |= {p.relative_to(root).as_posix() for p in iter_source_files(root)}
+    if not rel_set:
+        # 空并集意味着「没有任何文件参与等价性比对」，此时 return 0 等于宣布「逻辑未改动」——
+        # 与 check_conventions 的空判定面同型假绿。基线目录为空或 --root 指错都会走到这里。
+        # CODE_REVIEW_2026-11-04 M-11 同族：按门禁自身失效退 2。
+        print("ERROR: 门禁自身失效，基线 ∪ 当前 为空，等价性判据不成立", file=sys.stderr)
+        sys.exit(2)
 
     for rel_posix in sorted(rel_set):
         rel = Path(rel_posix)

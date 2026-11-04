@@ -128,6 +128,10 @@ def test_cleanup_reaching_protected_dirs_is_blocked(target: str) -> None:
         # 分写、find -delete 与 PowerShell 别名/清空动词都曾让旧判据整条跳过。这些是日常书写
         # 形态而非刻意构造的攻击串，必须逐条钉住。
         ("rm -rf logs ", "R-CLEAN-SCOPE"),
+        # 单 `|`/`&` 不被 _statements 切分：目录名后紧跟它们时旧边界集合会整条跳过守卫
+        # （CODE_REVIEW_2026-11-04 M-13 实测两种形态都曾返回 None 放行）。
+        ("rm -rf logs|cat", "R-CLEAN-SCOPE"),
+        ("rm -rf logs&cat", "R-CLEAN-SCOPE"),
         ('rm -rf "logs"', "R-CLEAN-SCOPE"),
         ("rm -rf 'logs'", "R-CLEAN-SCOPE"),
         ("find logs -type f -delete", "R-CLEAN-SCOPE"),

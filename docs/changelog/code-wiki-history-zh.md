@@ -6300,3 +6300,11 @@ black 全仓 134 文件全绿、isort 全绿、`check_annotations` 全通过、`
 [2026-10-31 更新：当前发布周期 63 条亦已迁入本卷；根文档改为保留标题索引与版本概要。]
 [2026-11-04 更新：根文档概要位由 v4.7.0 接替，原 v4.6.0 概要逐字迁存：
 > **v4.6.0 概要（2026-10-18 ~ 2026-10-31）**：① GUI 技术栈全面收敛到 PySide6，tkinter/pystray 遗留实现与 `src/ui_kit.py` / `src/ui_motion.py` 移除；② 统一 ICO 图标支持（GUI 托盘 / Web 托盘与页面 / 打包产物）；③ Web 托盘迁 Qt，运行日志自动折行；④ 五轮全仓审查整改（SSRF 逐跳复检、危险配置键、出站读取上限、凭据脱敏）；⑤ 行尾钉定、回归锁去日期化、元数据对账、CI 工具抬版与全仓注释精简。]
+
+## 2026-11-04 — 全仓只读审查 S-01 与判定面族整改（v4.7.0 周期内）
+
+- **范围**：`docs/worklog/CODE_REVIEW_2026-11-04.md` 的 S-01（出站重定向凭据头外带）与「门禁全绿 ≠ 防线成立」判定面族 M-11～M-14，共 5 条；其余条目按报告状态留待排期。
+- **S-01 修复**：`src/async_http.py` 新增 `strip_cross_origin_credentials()`，在 response 钩子返回前按 `Location` 判定跨源并剥离凭据类自定义头（httpx 0.28 的 `_redirect_headers` 跨源只自动剥 `Authorization`/`Cookie`）；键名判据复用 `src/utils.py::is_credential_key` 与 `_SECRET_KEYS` 单一事实源，异步/同步两侧钩子共用同一判定。`src/spider.py` 小红书短链改用无凭据探针头解 `Location`，落地页未通过「白名单 + 内网判定 + 统一解析」三步时剥离 `Cookie` 与 `xy-common-params`，把注释承诺落成代码。
+- **判定面修复**：`scripts/check_annotations.py` 空判定面与空等价并集退 2；`scripts/check_skill_agents_consistency.py` 检查 3 的「未标注约束事实源」由 WARN 升级为 errors 且告警即失败；`scripts/agent_hook_guard.py` 受保护目录边界集合纳入单 `|`/`&`/`;`；`tests/test_regression_gates.py` 三处文本/源码切片判据改 AST 语法节点判据。
+- **回归锁**：新增 `TestCrossOriginCredentialStrip`（4 条）、`TestCrossOriginCredentialKeys`（15 个参数化样本）、XHS 短链凭据用例 2 条与判定面用例 4 条；本轮共 13 个文件、+397 行。变异验证把 5 处修复改回失效形态后 6 条回归锁转红，随后按 sha256 逐字节还原，全仓 `MUTATION-` 残留 0。
+- **验证与交回**：`run_gates.py`、全量 pytest（0 警告）、`check_coverage.py`、mypy 平台双跑与 basedpyright 的终态读数见当日工作日志；真机 / 真实 URL 增量验证 **SKIP(无外网与活房间)**，交回用户按 DoD 第 2 步补跑 XHS 短链与咪咕 CDN 跳转两条路径。

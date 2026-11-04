@@ -49,6 +49,24 @@ def _write(root: Path, rel: str, source: str) -> None:
     path.write_text(textwrap.dedent(source), encoding="utf-8")
 
 
+def test_empty_scan_scope_is_rc2_not_silent_pass(tmp_path: Path) -> None:
+    # 空判定面必须按「门禁自身失效」退 2，不能打印「共扫描 0 个文件 / 全部通过」后 rc=0。
+    # 可复核判据：--root 指向不存在的目录时 check_conventions 抛 SystemExit(2)。
+    # CODE_REVIEW_2026-11-04 M-11 修复前的实测值是「RETURN=0」。
+    with pytest.raises(SystemExit) as excinfo:
+        check_annotations.check_conventions(tmp_path / "does-not-exist", 13.0)
+    assert excinfo.value.code == 2
+
+
+def test_empty_equivalence_union_is_rc2(tmp_path: Path) -> None:
+    # 同族：基线 ∪ 当前 为空时等价性判据没有比对对象，不得按「逻辑未改动」放行。
+    baseline = tmp_path / "empty-baseline"
+    baseline.mkdir()
+    with pytest.raises(SystemExit) as excinfo:
+        check_annotations.check_equivalence(tmp_path, baseline)
+    assert excinfo.value.code == 2
+
+
 def test_dangling_call_site_is_reported(tmp_path: Path) -> None:
     # 复现「定义已删除、调用点留在 `and` 右侧」的形态：短路会在多数场景遮住它，肉眼易误判
     _write(

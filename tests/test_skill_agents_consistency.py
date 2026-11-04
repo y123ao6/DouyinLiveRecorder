@@ -145,6 +145,23 @@ def test_skill_md_without_agents_reference_is_rc1(tmp_path: Path, monkeypatch: p
     assert checker.main() == 1
 
 
+def test_agents_mentioned_without_fact_source_is_rc1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 检查 3 的实体判据是「声明 AGENTS.md 为约束事实源」，出现 AGENTS.md 字样不等于声明。
+    # 修复前只进 warnings、main() 仍返回 0（CODE_REVIEW_2026-11-04 M-12），故这里必须断言 rc=1。
+    _make_skill(tmp_path, "some-skill")
+    skill_md = tmp_path / ".agents" / "skills" / "some-skill" / "SKILL.md"
+    skill_md.write_text(
+        "---\nname: some-skill\ndescription: 触发词\n---\n\n# some-skill\n\n本技能参考 AGENTS.md 的写法。\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "AGENTS.md").write_text(
+        _build_agents_md([("某技能", ".agents/skills/some-skill/")]),
+        encoding="utf-8",
+    )
+    _point_checker_at(monkeypatch, tmp_path)
+    assert checker.main() == 1
+
+
 def test_dangling_agents_section_reference_is_rc1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # 引用了 AGENTS.md 里不存在的章节标题（章节被改名/删除后 Skill 会静默断链）
     _make_skill(tmp_path, "some-skill", section="早已删除的章节")

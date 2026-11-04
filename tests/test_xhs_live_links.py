@@ -14,7 +14,7 @@
 #   4) 作者主页  https://www.xiaohongshu.com/user/profile/<用户ID>（既有监控兼容）
 
 import json
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -749,3 +749,56 @@ def test_xhs_link_creates_and_starts_recording_job(
 
     assert commands, "开播后必须拉起录制子进程"
     assert any("live-source-play.xhscdn.com" in arg for arg in commands[0]), commands[0]
+
+
+# CODE_REVIEW_2026-11-04 S-01：短链解重定向必须在带凭据请求之前完成 host 校验，
+# 或干脆不带凭据发探针。下面两条锁住「第一次请求无凭据」与「不可信落地页后仍无凭据」。
+# 两条用例都把 async_req 换成只记录 headers 的替身：断言的是「请求发出时带了什么」，
+# 不依赖真实 XHS 响应结构、也不发起网络（AGENTS「测试不得依赖真实网络」）。
+# 落地页可信与否完全由替身返回值决定，正好覆盖「可信放行 / 不可信剥离」两条分支。
+@pytest.mark.asyncio
+async def test_short_link_redirect_probe_carries_no_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    async def _fake(url: str, **kwargs: Any) -> str:
+        headers = cast("dict[str, str]", kwargs.get("headers") or {})
+        calls.append(dict(headers))
+        if kwargs.get("redirect_url"):
+            return f"https://www.xiaohongshu.com/livestream/{LIVE_ROOM_ID}"
+        return "<script>window.__INITIAL_STATE__={}</script>"
+
+    monkeypatch.setattr(sp, "async_req", _fake)
+    # 落地页内网判定按仓内既有 DNS seam 打桩成公网，避免用例依赖真实解析。
+    monkeypatch.setattr(sp.web_config, "_resolve_host_ips", lambda host: ["93.184.216.34"])
+    monkeypatch.setenv("XHS_SESSION_SID", "sid-test-value")
+    await sp.get_xhs_stream_url(f"https://xhslink.com/o/{SHORT_CODE}", cookies="cookie-test-value")
+
+    assert len(calls) >= 2, f"短链应至少发两次请求，实际 {len(calls)}"
+    first = {k.lower() for k in calls[0]}
+    assert "cookie" not in first and "xy-common-params" not in first, "解重定向探针仍带凭据"
+    assert "user-agent" in first, "探针头不应把普通头一并去掉"
+
+
+@pytest.mark.asyncio
+async def test_untrusted_short_link_landing_strips_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 落地页非白名单时 url 保持原始短链：若不在这一步剥离，后续 __INITIAL_STATE__
+    # 请求会把 Cookie 与会话 sid 再送一次，正是 S-01 的第二段链路。
+    calls: list[dict[str, str]] = []
+
+    async def _fake(url: str, **kwargs: Any) -> str:
+        headers = cast("dict[str, str]", kwargs.get("headers") or {})
+        calls.append(dict(headers))
+        if kwargs.get("redirect_url"):
+            return "https://evil.example.net/landing"
+        return "<html></html>"
+
+    monkeypatch.setattr(sp, "async_req", _fake)
+    monkeypatch.setattr(sp.web_config, "_resolve_host_ips", lambda host: ["93.184.216.34"])
+    monkeypatch.setenv("XHS_SESSION_SID", "sid-test-value")
+    await sp.get_xhs_stream_url(f"https://xhslink.com/o/{SHORT_CODE}", cookies="cookie-test-value")
+
+    assert len(calls) >= 2, f"落地页不可信时仍应继续请求原始短链，实际 {len(calls)} 次"
+    for index, headers in enumerate(calls):
+        lowered = {k.lower() for k in headers}
+        assert "cookie" not in lowered, f"第 {index + 1} 次请求仍带 Cookie"
+        assert "xy-common-params" not in lowered, f"第 {index + 1} 次请求仍带会话头"

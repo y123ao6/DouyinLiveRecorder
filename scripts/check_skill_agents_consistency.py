@@ -223,7 +223,10 @@ def main() -> int:
             if "AGENTS.md" not in skill_text:
                 errors.append(f"[FAIL] {rel_path_clean}/SKILL.md 未引用 AGENTS.md 作为约束事实源")
             elif "约束事实源" not in skill_text and "事实源" not in skill_text:
-                warnings.append(f"[WARN] {rel_path_clean}/SKILL.md 引用了 AGENTS.md 但未标注「约束事实源」")
+                # 「只发 WARN 而 rc=0」与 AGENTS.md「告警即失败」同回路判定冲突，且本项的实体
+                # 判据是「必须声明 AGENTS.md 为约束事实源」——出现 AGENTS.md 字样不等于完成了声明。
+                # CODE_REVIEW_2026-11-04 M-12：升为 errors，不得再留放行面。
+                errors.append(f"[FAIL] {rel_path_clean}/SKILL.md 引用了 AGENTS.md 但未标注「约束事实源」")
 
         # 检查 4: SKILL.md 引用的 AGENTS.md 章节必须存在
         refs = _extract_skill_referenced_sections(skill_text)
@@ -258,8 +261,10 @@ def main() -> int:
         print(f"\n✗ 发现 {len(errors)} 个错误、{len(warnings)} 个警告")
         return 1
     elif warnings:
-        print(f"\n✓ 无错误，{len(warnings)} 个警告")
-        return 0
+        # 告警即失败：保留这条回路是为了让后人在 warnings 里新增判据时不会重新得到 rc=0 放行面。
+        # 检查 5 已把「只告警 rc=0」升级为硬失败，本分支不得再与之分叉。
+        print(f"\n✗ {len(warnings)} 个警告（告警即失败）")
+        return 1
     else:
         print(f"\n✓ 全部 {len(table_entries)} 个 Skill 条目与 AGENTS.md 一致")
         return 0

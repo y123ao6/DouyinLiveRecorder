@@ -1351,3 +1351,32 @@ class TestDecodeErrorsNeverEscape:
         with pytest.raises(subprocess.CalledProcessError) as excinfo:
             await run_node_script_async(str(script), "https://example/x", timeout=5)
         assert excinfo.value.returncode == 3
+
+
+# CODE_REVIEW_2026-11-04 S-01：跨源剥头依赖 utils.is_credential_key，
+# 漏判会「凭据随 302 外带」，误判会「剥掉同源 CDN 跳转所需的普通头」。
+class TestCrossOriginCredentialKeys:
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "cookie",
+            "authorization",
+            "x-bogus",
+            "a-bogus",
+            "ms_token",
+            "ttwid",
+            "x-token",
+            "x-auth",
+            "signature-header",
+        ],
+    )
+    def test_credential_header_names_are_recognized(self, name: str) -> None:
+        assert utils_module.is_credential_key(name) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        ["user-agent", "accept", "content-type", "referer", "origin", "x-request-id"],
+    )
+    def test_plain_header_names_are_not_stripped(self, name: str) -> None:
+        assert utils_module.is_credential_key(name) is False
