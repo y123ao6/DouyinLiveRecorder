@@ -71,7 +71,8 @@ The hand-maintained sources are the **5** root documents (`AGENTS.md` plus the C
 - **Project Name**: DouyinLiveRecorder (Douyin Live Recorder)
 - **Description**: A live-stream recorder for 60+ platforms (Douyin, TikTok, YouTube, Kuaishou, etc.), with looped recording, multi-room recording and message push
 - **Version**: 4.7.0 (single source of truth: `pyproject.toml`)
-- **Python**: >=3.14
+- **Python**: >=3.14 (compatible through 3.15; source of truth `pyproject.toml [tool.douyin-live-recorder]`, regression lock `tests/test_runtime_version_compat.py`)
+- **Node.js**: both 24.22.2 / 26.13.0 LTS lines are supported (CI runs tests and runtime detection on both; Docker switches via `NODE_MAJOR`)
 - **Author / License**: y123ao6 / MIT
 - **Entry points**: `douyin-recorder` → `main:main`; `douyin-recorder-gui` → `gui:main`; `douyin-recorder-web` → `web:main`
 - **Project URL**: [GitHub](https://github.com/y123ao6/DouyinLiveRecorder)
@@ -118,7 +119,7 @@ Platforms that support actual quality feedback and downgrade alerting: Douyin, T
 
 | Technology | Purpose |
 | --- | --- |
-| Python 3.14+ | Core programming language |
+| Python 3.14 / 3.15 | Core programming language |
 | asyncio + httpx | Asynchronous network requests and async decorators |
 | FFmpeg | Video recording and transcoding |
 | Node.js + exejs/PyExecJS | Run JavaScript signing algorithms (exejs preferred, PyExecJS fallback) |
@@ -1053,9 +1054,9 @@ Disabling this option keeps the manually entered name unchanged.
 
 #### Prerequisites
 
-- Python 3.14+
+- Python 3.14 / 3.15 (floor 3.14; 3.13 and below cannot parse PEP 758 parenthesized-free multi-except syntax)
 - FFmpeg
-- Node.js
+- Node.js 24 / 26 LTS (verified on 24.22.2 / 26.13.0)
 
 #### Install Dependencies
 
@@ -1088,7 +1089,7 @@ python web.py
 
 ### Method 2: Run with Docker
 
-#### Dockerfile Multi-stage Build Notes (base image `python:3.14-slim-bookworm`)
+#### Dockerfile Multi-stage Build Notes (base image `python:${PYTHON_VERSION}-slim-bookworm`, default 3.14; `NODE_MAJOR` defaults to 24, can switch to 26)
 
 ```dockerfile
 # Stage 1: builder
@@ -1251,11 +1252,11 @@ Workflow file: `.github/workflows/ci.yml`, runs on push to main / PR, ensuring c
 
 | Job | Environment | Content |
 | --- | --- | --- |
-| `static` | py3.14 | `black --check` + `isort --check` + `check_version.py` + `check_workflow_constants.py` + `check_runtime_pins.py` + `compile_po.py --check` + `check_annotations.py` + `check_skill_agents_consistency.py` + `sync_metadata.py --check` |
-| `typecheck` | py3.14 | Install requirements + pinned mypy/pytest, then run `mypy` (linux target) and `mypy --platform win32`; scope comes entirely from `pyproject.toml [tool.mypy].files` |
-| `test` | py3.14 | `pytest --cov=src --cov-report=term-missing` (global `fail_under=60` gate, `fail-fast: false`) + the `scripts/check_coverage.py` per-module gate (runs once on the minimum version) + coverage.xml upload + optional Codecov |
+| `static` | py3.15 (highest supported) | `black --check` (py314/py315 dual targets) + `isort --check` + `check_version.py` + `check_workflow_constants.py` + `check_runtime_pins.py` + `compile_po.py --check` + `check_annotations.py` + `check_skill_agents_consistency.py` + `sync_metadata.py --check` |
+| `typecheck` | py3.14 (lowest supported) | Install requirements + pinned mypy/pytest, then run `mypy` (linux target), `mypy --platform win32` and a `mypy --python-version 3.15` recheck; scope comes entirely from `pyproject.toml [tool.mypy].files` |
+| `test` | py3.14/3.15 × node24/26 | `pytest --cov=src --cov-report=term-missing` (global `fail_under=60` gate, `fail-fast: false`) + frontend `.mjs` cases on both Node lines + the `scripts/check_coverage.py` per-module gate (runs once on the minimum combination) + coverage.xml upload + optional Codecov |
 | `concurrency-test` | py3.14 | Concurrency-specific: under `COVERAGE_RCFILE=.coveragerc-concurrency` runs `test_concurrency_rate_limit.py` + `test_concurrency.py` + `test_async_http_lock.py` (dedicated config sets no global threshold) |
-| `integration-verify` | py3.14 + Node 24 | apt install ffmpeg; verify the ffmpeg/node binaries are discoverable, and call `check_ffmpeg_installed()` / `check_nodejs_installed()` to verify detection logic |
+| `integration-verify` | py3.14 + Node 24/26 | runs on both `node_matrix` lines; apt install ffmpeg; verify the ffmpeg/node binaries are discoverable, and call `check_ffmpeg_installed()` / `check_nodejs_installed()` to verify detection logic |
 | `build-verify` | py3.14 packaging interpreter | `build_exe.py --smoke --no-runtime --no-zip` (lite packaging + CLI/Web/GUI three-entry smoke, on Linux via `xvfb-run -a`); release-grade full packaging is left to build-release.yml |
 | `ci-summary` | — | The only required check: aggregates the results of all upstream jobs (skipped counts as passed — path-filter skips never leave branch protection permanently pending) |
 
@@ -1507,6 +1508,8 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > **Section index**: the verbatim bodies below were moved to the [archive volume](docs/changelog/code-wiki-history-en.md) ("Imported: current release window") on 2026-10-31; this section keeps only the heading index. Search the archive by the original heading text.
 >
 > **v4.7.0 summary (2026-11-01)**: (1) release-path dynamic pinning - the node slot takes the GPG-verified official SHASUMS as its criterion (`--pin-source adopt`), the three ffmpeg slots take the build-day official manifest values (advisory explicitly acknowledged via `ADVISORY_ADOPT_ACK`, linux resolving the direct link alongside the newest month-end tag), and the static tables are demoted to the fallback baseline, so upstream promotions no longer break releases; (2) runtime pins re-pinned to node v26.13.0 (Node 26's LTS promotion moved the first-lts pointer); (3) release-build fixes - the Linux GUI smoke gains the Qt runtime libs (mirroring ci.yml's 16 packages plus the libxcb-xkb1/util1 superset), the release credential check narrows to "same key position" eradicating the SEV-2213 false positive, and the POSIX graceful-stop flag is added; (4) security floors raised - setuptools build floor 84.1.0 (GHSA-xmj3-9gf7-h52w), brotli 1.2.1 (PYSEC-2026-4322); (5) three CI Linux platform-sensitive tests made platform-agnostic.
+
+### v4.7.0 (2026-11-07) — Runtime compatibility extended to Python 3.15 / Node.js 26.13.0: declarations, dual CI matrices, dual Docker build args and regression locks cover both old and new ends
 
 ### v4.7.0 (2026-11-04) — Remediation of review S-01 and the gate-judgement family: strip credential headers on cross-origin redirects, rc=2 on empty scan scope, warnings-as-failure, delete-guard boundary fix, AST-based regression assertions
 

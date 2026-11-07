@@ -25,17 +25,19 @@
 
 ## Python 版本
 
-- **最低要求 / 目标 / mypy 检查版本**: Python >= 3.14（`requires-python = ">=3.14"`）。
+- **最低要求 / 目标 / mypy 检查版本**: Python >= 3.14（`requires-python = ">=3.14"`）；同时兼容 3.15，兼容范围事实源是 `pyproject.toml [tool.douyin-live-recorder]`（回归锁 `tests/test_runtime_version_compat.py`）。
+- **兼容范围**：Python 3.14 / 3.15，Node.js 24.22.2 / 26.13.0。CI `test` job 按 py3.14/3.15 × node24/26 四组合跑全量 pytest，`integration-verify` 按 node24/26 双线验证 `check_nodejs_installed()`；Docker 用 `PYTHON_VERSION`（默认 3.14）/ `NODE_MAJOR`（默认 24）两个构建参数切换，两条 Node 线的 NodeSource 脚本都钉 SHA256、未登记主版本 fail-closed。
+- **最低线不抬**：mypy / basedpyright / pyrightconfig 一律按 `3.14` 裁决（保住旧版类型语义面），3.15 由 CI `mypy --python-version 3.15` 追加复核；black 目标写 `['py314','py315']`，black 按最低公共特性集排版，输出与只写 py314 逐字相同。
 - **3.14 破坏性变更**: `asyncio.get_event_loop()` 不再隐式创建事件循环（口径见 dlr-dev-playbook `references/concurrency-model.md`）；`pkg_resources`、PEP 594 亡故电池模块已移除；新代码统一走 `ctypes.WinDLL`（对齐 web.py，而非 `ctypes.windll`）。
-- 语法/编译检查一律用项目 venv 的 Python 3.14（3.13 做 `compileall`/`py_compile` 会误报 PEP 758 语法，见 dlr-dev-playbook `references/known-pitfalls.md`）。
+- 语法/编译检查一律用项目 venv 的 Python 3.14（3.13 做 `compileall`/`py_compile` 会误报 PEP 758 语法，见 dlr-dev-playbook `references/known-pitfalls.md`）；3.15 侧另有独立 venv 实测口径，不替代 3.14 的基准地位。
 
 ## 代码风格
 
 > 配置摘录自 `pyproject.toml [tool.*]`，配置本体才是事实源；门禁命令见「格式化命令」。
 
-- **Black**: `line-length = 120`、`target-version = ['py314']`；排除 `.git`/`.venv`/`build`/`dist`/`__pycache__`/`.pyc`/`node`/`ffmpeg`、运行期产物目录与本地工具目录（`.agents`/`.workbuddy`/`typings` 等，完整清单见配置本体）。
+- **Black**: `line-length = 120`、`target-version = ['py314', 'py315']`；排除 `.git`/`.venv`/`build`/`dist`/`__pycache__`/`.pyc`/`node`/`ffmpeg`、运行期产物目录与本地工具目录（`.agents`/`.workbuddy`/`typings` 等，完整清单见配置本体）。
 - **isort**: `profile = "black"`、`line_length = 120`、`known_first_party = ["src", "i18n"]`。
-- **mypy**: `python_version = "3.14"`；**不带路径参数**（范围取 `[tool.mypy].files`）；平台双跑 `mypy --platform linux` / `mypy --platform win32`。typings/ 存根告警见 dlr-dev-playbook `references/static-check-adjudication.md`。
+- **mypy**: `python_version = "3.14"`（最低支持版本，勿抬到 3.15）；**不带路径参数**（范围取 `[tool.mypy].files`）；平台双跑 `mypy --platform linux` / `mypy --platform win32`，CI 另跑一趟 `mypy --python-version 3.15`。typings/ 存根告警见 dlr-dev-playbook `references/static-check-adjudication.md`。
 - **except 多异常写法**: 本仓统一 `except A, B:`（PEP 758 无括号）。新增写无括号，存量不为对齐而批量改；需 `as` 绑定时回退加括号。
 
 ### 注释约定
@@ -135,7 +137,7 @@ docker compose up -d
 
 ```bash
 # PYTHONUTF8=1 属门禁语义、不得删（MID-63）：GBK locale 下 isort 会对含中文注释文件静默跳过、rc 仍 0。
-PYTHONUTF8=1 python -m black --check --diff --line-length 120 --target-version py314 .
+PYTHONUTF8=1 python -m black --check --diff --line-length 120 --target-version py314 --target-version py315 .
 PYTHONUTF8=1 python -m isort --check-only --diff --profile black --line-length 120 .
 mypy                      # 不带路径，范围取 pyproject [tool.mypy].files（本机平台目标）
 mypy --platform linux     # 平台双跑：本机非 linux 时补测 linux 目标（涉平台专属符号必查）

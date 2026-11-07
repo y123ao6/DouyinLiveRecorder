@@ -1,8 +1,15 @@
 # =============================================================================
 # DouyinLiveRecorder 容器镜像（多阶段构建）
-# 基础镜像：python:3.14-slim-bookworm（Debian 12，最小 Python 运行时）
-# 平台与版本清单的事实源是 pyproject.toml，此处不再复述
+# 基础镜像：python:${PYTHON_VERSION}-slim-bookworm（Debian 12，最小 Python 运行时）
+#   PYTHON_VERSION 默认 3.14（最低支持版本），--build-arg PYTHON_VERSION=3.15 可切到新版；
+#   NODE_MAJOR 默认 24，--build-arg NODE_MAJOR=26 切到 Node 26 LTS。两条 Node 线的
+#   NodeSource 脚本哈希都钉在下方，未登记的主版本直接 fail-closed，不静默回落。
+# 平台与版本清单的事实源是 pyproject.toml 的 [tool.douyin-live-recorder]，此处不再复述
 # =============================================================================
+
+# 全局 ARG 必须写在第一个 FROM 之前：FROM 里的变量由 Docker 在这一层做替换；
+# 两个 FROM 共用同一变量，避免出现「构建阶段 3.15、运行阶段 3.14」的半拉子镜像。
+ARG PYTHON_VERSION=3.14
 
 # -----------------------------------------------------------------------------
 # 阶段1：构建阶段 —— 只把 Python 依赖装进 /opt/venv
@@ -10,7 +17,7 @@
 # 构建期引入只会拖慢层缓存；弹幕采集链的 websockets / protobuf / brotli 随
 # requirements.txt 一并装入 /opt/venv，运行时直接可用。
 # -----------------------------------------------------------------------------
-FROM python:3.14-slim-bookworm AS builder
+FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
 
 # 无缓冲输出便于容器日志、禁止写字节码减小体积、关闭 pip 缓存与版本检查
 ENV PYTHONUNBUFFERED=1 \
@@ -53,7 +60,7 @@ RUN /opt/venv/bin/pip install --upgrade pip \
 # -----------------------------------------------------------------------------
 # 阶段2：运行阶段 - 最小化运行镜像
 # -----------------------------------------------------------------------------
-FROM python:3.14-slim-bookworm
+FROM python:${PYTHON_VERSION}-slim-bookworm
 
 # 默认时区，可被 --build-arg TZ / .env 覆盖
 ARG TZ=Asia/Shanghai
@@ -83,24 +90,31 @@ ENV PYTHONUNBUFFERED=1 \
 
 # 运行时依赖：ffmpeg（录制与转码）、tzdata（配合 TZ）、curl（取 NodeSource 脚本）、
 #   procps（提供 pgrep，供下方 HEALTHCHECK 判活）、ca-certificates（HTTPS 抓取根证书）、
-#   nodejs 24 LTS（PyExecJS / exejs 跑各平台 JS 签名脚本；2026-08 实测兼容 Node 24.19.0，
-#   全部签名脚本 + migu.js 重写版通过，与 src/node_install.py 拉取的最新稳定版同代）。
+#   nodejs 24 / 26 LTS（PyExecJS / exejs 跑各平台 JS 签名脚本；2026-08 实测 Node 24.19.0
+#   全部签名脚本 + migu.js 重写版通过，2026-11-07 两条 LTS 线均经本机全量用例验证）。
 # apt-get upgrade -y：牺牲一点可重现性换及时安全补丁。
 # NodeSource 脚本「先下载 → 校验 SHA256 → 一致才执行」：原写法 `curl -fsSL <url> | bash -`
 #   无哈希校验，源站或 CDN 被替换即以 root 权限在构建期执行任意代码（构建期无运行时隔离，
-#   危害等同生产 RCE）；此处钉哈希，与 src/ffmpeg_install.py 的 trust-on-first-use 互补。
-# 升级 NodeSource 主版本必须同步改下面两个变量，否则构建失败（fail-closed）；
-#   当前哈希对应 2026-09-12 抓取的 setup_24.x（3907 字节）。
-ARG NODESOURCE_SETUP_URL=https://deb.nodesource.com/setup_24.x
-ARG NODESOURCE_SETUP_SHA256=6e3d580f5bd7ccf2aa1e8df8d35c60d78e873c3ff8beb282c9bebd914904ad72
+#   危害等同生产 RCE）；此处两条线各钉一份哈希，与 src/ffmpeg_install.py 的 trust-on-first-use 互补。
+# 升级 NodeSource 主版本必须同步改下面三个变量（主版本白名单 / 两个哈希），否则构建失败（fail-closed）；
+#   24 的哈希对应 2026-09-12 抓取的 setup_24.x、26 的对应 2026-11-07 抓取的 setup_26.x（均 3907 字节）。
+# 未登记的 NODE_MAJOR 必须 exit 1：静默回落到「碰巧能装」的那一档等于把版本声明变成摆设。
+ARG NODE_MAJOR=24
+ARG NODESOURCE_SETUP_SHA256_24=6e3d580f5bd7ccf2aa1e8df8d35c60d78e873c3ff8beb282c9bebd914904ad72
+ARG NODESOURCE_SETUP_SHA256_26=4b735bb6ffba89e2965fa4219ec24c598b19d7ca63796ff6afaa324583333384
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     tzdata \
     curl \
     procps \
     ca-certificates \
-    && curl -fsSL "${NODESOURCE_SETUP_URL}" -o /tmp/nodesource_setup.sh \
-    && echo "${NODESOURCE_SETUP_SHA256}  /tmp/nodesource_setup.sh" | sha256sum -c - \
+    && case "$NODE_MAJOR" in \
+         24) setup_url=https://deb.nodesource.com/setup_24.x; setup_sha="$NODESOURCE_SETUP_SHA256_24" ;; \
+         26) setup_url=https://deb.nodesource.com/setup_26.x; setup_sha="$NODESOURCE_SETUP_SHA256_26" ;; \
+         *) echo "[build] NODE_MAJOR=$NODE_MAJOR 不在受支持范围 (24|26)" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "${setup_url}" -o /tmp/nodesource_setup.sh \
+    && echo "${setup_sha}  /tmp/nodesource_setup.sh" | sha256sum -c - \
     && bash /tmp/nodesource_setup.sh \
     && rm -f /tmp/nodesource_setup.sh \
     && apt-get install -y nodejs \

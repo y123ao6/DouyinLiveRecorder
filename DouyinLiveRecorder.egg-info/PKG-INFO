@@ -22,6 +22,7 @@ Classifier: Operating System :: Microsoft :: Windows :: Win32
 Classifier: Operating System :: POSIX :: Linux
 Classifier: Programming Language :: Python :: 3
 Classifier: Programming Language :: Python :: 3.14
+Classifier: Programming Language :: Python :: 3.15
 Classifier: Topic :: Multimedia :: Video :: Capture
 Classifier: Topic :: Communications :: Chat
 Requires-Python: >=3.14

@@ -738,17 +738,18 @@ ports:
 - **健康检查**：自动检测 `main.py` 或 `web.py` 进程是否存活
 - **资源限制**：默认限制 2 CPU / 2G 内存（可在 docker-compose.yaml 调整）
 - **日志轮转**：单文件 50MB，最多保留 3 份
-- **内置 Node.js 24 LTS**：用于运行 JavaScript 签名脚本
+- **内置 Node.js LTS（24 / 26 两条线）**：用于运行 JavaScript 签名脚本；镜像默认 24，`--build-arg NODE_MAJOR=26` 切到 26，两条线的 NodeSource 脚本都钉 SHA256
 
 ## 🛠️ 开发指南
 
 ### 环境要求
 
-- Python >= 3.14
+- Python >= 3.14（已实测兼容 3.15；CI 按 3.14 / 3.15 双版本跑全量测试，兼容范围事实源见 `pyproject.toml [tool.douyin-live-recorder]`）
 - FFmpeg (Windows 版启动时自动从官方源下载；Linux 依次为 `yum` → `apt` → 官方月末构建直下、macOS 走 Homebrew，
   包管理器路线需 root/管理员，三条都失败时手动安装)
-- Node.js (Windows 下自动下载并解压到程序目录；Linux 按发行版走 `yum`（RHEL 系，需 EPEL）或 `apt`、macOS 走 Homebrew，
-  包管理器路线需 root/管理员，失败时手动安装)
+- Node.js 24 / 26 两条 LTS 均受支持（已实测 24.22.2 / 26.13.0；Windows 下自动下载并解压到程序目录，Linux 按发行版走
+  `yum`（RHEL 系，需 EPEL）或 `apt`、macOS 走 Homebrew，包管理器路线需 root/管理员，失败时手动安装）
+- 容器镜像另可用 `--build-arg PYTHON_VERSION=3.15` / `--build-arg NODE_MAJOR=26` 切换运行时；两项默认值仍为 3.14 / 24
 
 ### 安装开发依赖
 

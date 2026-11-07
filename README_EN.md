@@ -755,19 +755,22 @@ ports:
 - **Health check**: automatically detects whether the `main.py` or `web.py` process is alive
 - **Resource limits**: defaults to 2 CPU / 2G memory (adjustable in docker-compose.yaml)
 - **Log rotation**: single file 50MB, up to 3 retained
-- **Built-in Node.js 24 LTS**: for running JavaScript signature scripts
+- **Built-in Node.js LTS (24 / 26 lines)**: for running JavaScript signature scripts; the image defaults to 24, `--build-arg NODE_MAJOR=26` switches to 26, and both NodeSource scripts are pinned by SHA256
 
 ## 🛠️ Development Guide
 
 ### Environment requirements
 
-- Python >= 3.14
+- Python >= 3.14 (verified against 3.15; CI runs the full test suite on both 3.14 and 3.15; the supported-range
+  source of truth is `pyproject.toml [tool.douyin-live-recorder]`)
 - FFmpeg (downloaded automatically from the official source on Windows at startup; on Linux the app tries
   `yum` → `apt` → the official month-end build, on macOS it uses Homebrew — the package-manager routes need
   root/administrator, so install manually when all of them fail)
-- Node.js (downloaded and unpacked into the program directory automatically on Windows; on Linux the app uses
-  `yum` (RHEL-family, requires EPEL) or `apt`, on macOS it uses Homebrew — the package-manager routes need
-  root/administrator, so install manually when they fail)
+- Both Node.js 24 / 26 LTS lines are supported (verified on 24.22.2 / 26.13.0; downloaded and unpacked into the
+  program directory automatically on Windows; on Linux the app uses `yum` (RHEL-family, requires EPEL) or `apt`,
+  on macOS it uses Homebrew — the package-manager routes need root/administrator, so install manually when they fail)
+- Container images can also switch runtimes with `--build-arg PYTHON_VERSION=3.15` / `--build-arg NODE_MAJOR=26`;
+  both still default to 3.14 / 24
 
 ### Install dev dependencies
 

@@ -196,6 +196,7 @@ tests/test_regression_web_g.py
 tests/test_regression_wp_b_netguard.py
 tests/test_room.py
 tests/test_run_gates.py
+tests/test_runtime_version_compat.py
 tests/test_scheduler.py
 tests/test_scripts_error_paths.py
 tests/test_shopee_landing_guard.py

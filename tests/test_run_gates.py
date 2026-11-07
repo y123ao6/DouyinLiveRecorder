@@ -51,7 +51,9 @@ def test_extract_matches_agents_section() -> None:
     # 真源解析：首条必须是 black 的逐字门禁命令（含显式传参），证明清单来自章节而非脚本内复制
     cmds = run_gates.extract_gate_commands(ROOT / "AGENTS.md")
     assert len(cmds) >= MIN_GATE_COMMANDS
-    assert cmds[0] == "python -m black --check --diff --line-length 120 --target-version py314 ."
+    assert cmds[0] == (
+        "python -m black --check --diff --line-length 120 --target-version py314 --target-version py315 ."
+    )
     assert any(c.startswith("python -m isort --check-only") for c in cmds)
     # 行尾注释必须被剥掉（cmd.exe 不识别 #，保留会把注释当参数）
     assert all("#" not in c for c in cmds)
@@ -76,7 +78,7 @@ def test_extract_empty_when_section_renamed(tmp_path: Path) -> None:
     ("cmd", "expect_write"),
     [
         # 门禁合法形态：带检查开关
-        ("python -m black --check --diff --line-length 120 --target-version py314 .", False),
+        ("python -m black --check --diff --line-length 120 --target-version py314 --target-version py315 .", False),
         ("python -m isort --check-only --diff --profile black --line-length 120 .", False),
         # 写型形态：必须拦
         ("python -m black .", True),

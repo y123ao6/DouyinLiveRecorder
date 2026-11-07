@@ -71,7 +71,8 @@
 - **项目名称**: DouyinLiveRecorder (抖音直播录制器)
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具，支持循环录制、多人录制、消息推送
 - **版本**: 4.7.0（唯一事实源 `pyproject.toml`）
-- **Python**: >=3.14
+- **Python**: >=3.14（兼容至 3.15；范围事实源 `pyproject.toml [tool.douyin-live-recorder]`，回归锁 `tests/test_runtime_version_compat.py`）
+- **Node.js**: 24.22.2 / 26.13.0 两条 LTS 均受支持（CI 双线跑测试与运行时探测，Docker 用 `NODE_MAJOR` 切换）
 - **作者 / 开源协议**: y123ao6 / MIT
 - **入口**: `douyin-recorder` → `main:main`；`douyin-recorder-gui` → `gui:main`；`douyin-recorder-web` → `web:main`
 - **项目地址**: [GitHub](https://github.com/y123ao6/DouyinLiveRecorder)
@@ -118,7 +119,7 @@
 
 | 技术 | 用途 |
 | --- | --- |
-| Python 3.14+ | 核心编程语言 |
+| Python 3.14 / 3.15 | 核心编程语言 |
 | asyncio + httpx | 异步网络请求与异步装饰器 |
 | FFmpeg | 视频录制与转码 |
 | Node.js + exejs/PyExecJS | 运行 JavaScript 签名算法（exejs 优先，PyExecJS 回退） |
@@ -1135,9 +1136,9 @@ https://live.douyin.com/745964462470
 
 #### 前置要求
 
-- Python 3.14+
+- Python 3.14 / 3.15（下限 3.14，3.13 及以下解析不了 PEP 758 无括号多异常语法）
 - FFmpeg
-- Node.js
+- Node.js 24 / 26 LTS（已实测 24.22.2 / 26.13.0）
 
 #### 安装依赖
 
@@ -1170,7 +1171,7 @@ python web.py
 
 ### 方式 2: Docker 运行
 
-#### Dockerfile 多阶段构建说明（基础镜像 `python:3.14-slim-bookworm`）
+#### Dockerfile 多阶段构建说明（基础镜像 `python:${PYTHON_VERSION}-slim-bookworm`，默认 3.14；`NODE_MAJOR` 默认 24，可切 26）
 
 ```dockerfile
 # 阶段 1: builder
@@ -1336,11 +1337,11 @@ def _app_root() -> str:
 
 | Job | 运行环境 | 内容 |
 | --- | --- | --- |
-| `static` | py3.14 | `black --check` + `isort --check` + `check_version.py` + `check_workflow_constants.py` + `check_runtime_pins.py` + `compile_po.py --check` + `check_annotations.py` + `check_skill_agents_consistency.py` + `sync_metadata.py --check` |
-| `typecheck` | py3.14 | 安装 requirements + 固定版 mypy/pytest 后运行无参 `mypy`（linux 目标）与 `mypy --platform win32`；范围由 `pyproject.toml [tool.mypy].files` 定义 |
-| `test` | py3.14 | `pytest --cov=src --cov-report=term-missing`（全局 `fail_under=60` 门禁，`fail-fast: false`）+ `scripts/check_coverage.py` 逐模块门禁（仅最低版本跑一次）+ coverage.xml 上传 + 可选 Codecov |
+| `static` | py3.15（最高支持版本） | `black --check`（py314/py315 双目标）+ `isort --check` + `check_version.py` + `check_workflow_constants.py` + `check_runtime_pins.py` + `compile_po.py --check` + `check_annotations.py` + `check_skill_agents_consistency.py` + `sync_metadata.py --check` |
+| `typecheck` | py3.14（最低支持版本） | 安装 requirements + 固定版 mypy/pytest 后运行无参 `mypy`（linux 目标）、`mypy --platform win32` 与 `mypy --python-version 3.15` 复核趟；范围由 `pyproject.toml [tool.mypy].files` 定义 |
+| `test` | py3.14/3.15 × node24/26 | `pytest --cov=src --cov-report=term-missing`（全局 `fail_under=60` 门禁，`fail-fast: false`）+ 前端 `.mjs` 用例在两条 Node 线上各跑一次 + `scripts/check_coverage.py` 逐模块门禁（仅最低版本组合跑一次）+ coverage.xml 上传 + 可选 Codecov |
 | `concurrency-test` | py3.14 | 并发专项：`COVERAGE_RCFILE=.coveragerc-concurrency` 下跑 `test_concurrency_rate_limit.py` + `test_concurrency.py` + `test_async_http_lock.py`（专用配置不设全局阈值） |
-| `integration-verify` | py3.14 + Node 24 | apt 装 ffmpeg；验证 ffmpeg/node 二进制可发现，并调 `check_ffmpeg_installed()` / `check_nodejs_installed()` 验证探测逻辑 |
+| `integration-verify` | py3.14 + Node 24/26 | 按 `node_matrix` 双线；apt 装 ffmpeg；验证 ffmpeg/node 二进制可发现，并调 `check_ffmpeg_installed()` / `check_nodejs_installed()` 验证探测逻辑 |
 | `build-verify` | py3.14 打包解释器 | `build_exe.py --smoke --no-runtime --no-zip`（lite 打包 + CLI/Web/GUI 三入口冒烟，Linux 经 `xvfb-run -a`）；发布级完整打包留给 build-release.yml |
 | `ci-summary` | — | 唯一 required check：汇总上游全部 job 结果（skipped 视为通过——路径过滤跳过不会让分支保护永久 pending） |
 
@@ -1589,6 +1590,8 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > **本节索引**：以下条目的逐字正文已于 2026-10-31 迁入 [归档卷](docs/changelog/code-wiki-history-zh.md) 的「迁入：当前发布周期」一节；本节仅保留标题索引，按标题原文可在归档卷检索。
 >
 > **v4.7.0 概要（2026-11-01）**：① 发布链钉定动态化——node 槽以 GPG 验签官方 SHASUMS 为判据（`--pin-source adopt`），ffmpeg 三槽取构建当日官方清单值（advisory 经 `ADVISORY_ADOPT_ACK` 显式放行、linux 随最新月末标签解析直链），静态表退为回退基线，上游滚动不再打断发布；② 运行时钉定随 node v26.13.0 重钉（Node 26 转 LTS 首条 lts 漂移）；③ 发布构建修复——Linux GUI 冒烟补装 Qt 运行库（镜像 ci.yml 16 包 + libxcb-xkb1/util1 超集）、发布凭据校验收窄「同键位」比对根治 SEV-2213 误报、POSIX 优雅停止标记补置；④ 安全下限抬升——setuptools 构建下限 84.1.0（GHSA-xmj3-9gf7-h52w）、brotli 1.2.1（PYSEC-2026-4322）；⑤ CI Linux 三处平台敏感用例转平台无关。
+
+### v4.7.0 (2026-11-07) — 运行时兼容范围扩到 Python 3.15 / Node.js 26.13.0：声明、CI 双矩阵、Docker 双构建参数与回归锁同时覆盖新旧两端
 
 ### v4.7.0 (2026-11-04) — 全仓只读审查 S-01 与判定面族整改：跨源重定向剥离凭据头、空判定面退 2、告警即失败、删除守卫边界补齐、回归锁判据改 AST
 

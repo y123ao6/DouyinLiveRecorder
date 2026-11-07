@@ -1,6 +1,6 @@
 [project]
 name = "DouyinLiveRecorder"
-version = "4.7.0"
+version = "4.8.0"
 description = "支持抖音、TikTok、YouTube、快手等60+平台的直播录制工具，支持循环录制、多人录制、消息推送"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -33,6 +33,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Multimedia :: Video :: Capture",
     "Topic :: Communications :: Chat",
 ]
@@ -152,9 +153,19 @@ src = ["javascript/*.js"]
 # 注：i18n/ 翻译目录不是 Python 包（无 __init__.py），无法通过 package-data 分发；
 # .mo 文件随 git 仓库、发布 zip（build_exe.py）与 Docker 镜像分发。
 
+# 运行时兼容范围的唯一事实源（CI 矩阵 / Docker 构建参数 / 静态检查目标 / 文档均按此对齐，
+# 回归锁在 tests/test_runtime_version_compat.py）。下限保持 3.14：全库 PEP 758 无括号多异常
+# 写法在 3.13 及以下连解析都过不了，抬下限会立刻丢掉旧版；3.15 为新增上界，不是替换。
+# Node.js 两条 LTS 同时受支持：24.22.2 是旧线，26.13.0 是当前 dist/index.json 的首条 LTS。
+[tool.douyin-live-recorder]
+python_versions = ["3.14", "3.15"]
+node_versions = ["24.22.2", "26.13.0"]
+
 [tool.black]
 line-length = 120
-target-version = ['py314']
+# 两个目标都列出：black 按最低公共特性集排版，故 py315 入列不改变任何现有格式（本机
+# 26.10.1 实测 246 files unchanged，与只写 py314 的结论逐字相同）。
+target-version = ['py314', 'py315']
 include = '\.pyi?$'
 exclude = '''
 /(
@@ -225,6 +236,8 @@ extend_skip = [
 extend_skip_glob = ["*.pyc", "pytest-cache-files-*"]
 
 [tool.mypy]
+# 基准取**最低**支持版本：改成 3.15 会丢掉 3.14 的类型语义面；3.15 由 ci.yml typecheck job
+# 追加一趟 `mypy --python-version 3.15` 覆盖（本机 2.4.1 实测 245 source files / 0 issues）。
 python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
@@ -357,6 +370,8 @@ exclude_also = [
 # venvPath 用工作区相对路径指向 .venv：basedpyright 不支持 ${env:...} / ~ 展开，配置里也不
 # 写死机器专属绝对路径。.venv 已被 .gitignore 忽略，各开发者自行创建：
 #   python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+# 同 mypy：本地严格度补充也按最低支持版本裁决；3.15 语义由 CI 的追加 mypy 趟把关。
+# pyrightconfig.json 必须同值（tests/test_pyright_config_parity.py 同源锁）。
 pythonVersion = "3.14"
 typeCheckingMode = "standard"
 venvPath = "."

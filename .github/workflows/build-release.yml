@@ -97,7 +97,9 @@ jobs:
           # python_build : 打包解释器版本（3.14，与 ci.yml 的 python_build 同值）——
           #                发布二进制的解释器一经验证不轻易变更；
           #                ci.yml 的 build-verify job 使用同一版本，保证验证环境 == 发布环境。
-          # node_version : 与 ci.yml 同值；供冒烟测试期间 JS 签名脚本可用
+          # node_version : 与 ci.yml 同值（最低支持主版本 24）；供冒烟测试期间 JS 签名脚本可用。
+          #                发布包内置的 node 由 build_exe.py 按 dist/index.json 首条 LTS 选取，
+          #                当前为 v26.13.0；两条 LTS 的运行时兼容由 ci.yml 的 node_matrix 双线验证。
           #                （full 版本内置的 node 由 build_exe.py 自行下载，与此无关）。
           {
             echo "python_build=3.14"

@@ -30,9 +30,10 @@ body:
   - type: dropdown
     attributes:
       label: 🐍 如果是使用源代码运行，请选择你的Python环境版本
-      description: 请选择你运行程序的Python版本；当前源码仅支持 Python 3.14+。
+      description: 请选择你运行程序的Python版本；当前源码支持 Python 3.14 / 3.15（下限 3.14+）。
       options:
         - Python 3.14
+        - Python 3.15
         - Other (请在问题中说明)
     validations:
       required: false
