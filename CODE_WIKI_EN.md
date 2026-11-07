@@ -70,7 +70,7 @@ The hand-maintained sources are the **5** root documents (`AGENTS.md` plus the C
 
 - **Project Name**: DouyinLiveRecorder (Douyin Live Recorder)
 - **Description**: A live-stream recorder for 60+ platforms (Douyin, TikTok, YouTube, Kuaishou, etc.), with looped recording, multi-room recording and message push
-- **Version**: 4.7.0 (single source of truth: `pyproject.toml`)
+- **Version**: 4.8.0 (single source of truth: `pyproject.toml`)
 - **Python**: >=3.14 (compatible through 3.15; source of truth `pyproject.toml [tool.douyin-live-recorder]`, regression lock `tests/test_runtime_version_compat.py`)
 - **Node.js**: both 24.22.2 / 26.13.0 LTS lines are supported (CI runs tests and runtime detection on both; Docker switches via `NODE_MAJOR`)
 - **Author / License**: y123ao6 / MIT
@@ -1509,7 +1509,7 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 >
 > **v4.7.0 summary (2026-11-01)**: (1) release-path dynamic pinning - the node slot takes the GPG-verified official SHASUMS as its criterion (`--pin-source adopt`), the three ffmpeg slots take the build-day official manifest values (advisory explicitly acknowledged via `ADVISORY_ADOPT_ACK`, linux resolving the direct link alongside the newest month-end tag), and the static tables are demoted to the fallback baseline, so upstream promotions no longer break releases; (2) runtime pins re-pinned to node v26.13.0 (Node 26's LTS promotion moved the first-lts pointer); (3) release-build fixes - the Linux GUI smoke gains the Qt runtime libs (mirroring ci.yml's 16 packages plus the libxcb-xkb1/util1 superset), the release credential check narrows to "same key position" eradicating the SEV-2213 false positive, and the POSIX graceful-stop flag is added; (4) security floors raised - setuptools build floor 84.1.0 (GHSA-xmj3-9gf7-h52w), brotli 1.2.1 (PYSEC-2026-4322); (5) three CI Linux platform-sensitive tests made platform-agnostic.
 
-### v4.7.0 (2026-11-07) — Runtime compatibility extended to Python 3.15 / Node.js 26.13.0: declarations, dual CI matrices, dual Docker build args and regression locks cover both old and new ends
+### v4.8.0 (2026-11-07) — Runtime compatibility extended to Python 3.15 / Node.js 26.13.0: declarations, dual CI matrices, dual Docker build args and regression locks cover both old and new ends
 
 ### v4.7.0 (2026-11-04) — Remediation of review S-01 and the gate-judgement family: strip credential headers on cross-origin redirects, rc=2 on empty scan scope, warnings-as-failure, delete-guard boundary fix, AST-based regression assertions
 

@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-- **名称 / 版本**: DouyinLiveRecorder 4.7.0（唯一事实源 `pyproject.toml` 的 `version`，动态读取见「关键约定」#1）
+- **名称 / 版本**: DouyinLiveRecorder 4.8.0（唯一事实源 `pyproject.toml` 的 `version`，动态读取见「关键约定」#1）
 - **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具
 - **许可证**: MIT
 
