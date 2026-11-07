@@ -1,12 +1,21 @@
 # 保留字符时拼出结构错位的代理 URL（authority 被切成 path/query/fragment）。
 
+import ast
+import os
+import pathlib
 import sys
 from urllib.parse import unquote, urlsplit
 
 import pytest
 from pytest import MonkeyPatch
 
-from src.proxy import ProxyDetector, ProxyInfo
+import src.proxy as proxy_mod
+from src.proxy import (
+    ProxyDetector,
+    ProxyInfo,
+    normalize_no_proxy_env,
+    resolve_environment_proxy,
+)
 
 
 class TestProxyInfo:
@@ -350,3 +359,102 @@ class TestProxyUrlPercentEncodesCredentials:
         assert ProxyInfo().proxy_url == ""
         with pytest.raises(ValueError, match="IP or port"):
             ProxyInfo("", "8080")
+
+
+class TestNoProxyEnvNormalization:
+    # 生产侧启动归一化（与 tests/conftest.py 收集前守卫共用 src/proxy.py 单一实现）。
+    # 根因与形态表见 tests/test_no_proxy_env_guard.py；这里只锁进程级接线面。
+
+    def test_env_normalization_both_names_and_idempotent(self, monkeypatch: MonkeyPatch) -> None:
+        # Windows 环境变量大小写不敏感：NO_PROXY 与 no_proxy 实为同一键，逐名验证
+        for name in ("NO_PROXY", "no_proxy"):
+            monkeypatch.setenv(name, "localhost,[::1],::1")
+            normalize_no_proxy_env()
+            assert os.environ[name] == "localhost,::1,::1"
+            normalize_no_proxy_env()
+            assert os.environ[name] == "localhost,::1,::1"
+            monkeypatch.delenv(name)
+
+    def test_env_normalization_absent_is_noop(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        normalize_no_proxy_env()
+        assert "NO_PROXY" not in os.environ
+        assert "no_proxy" not in os.environ
+
+
+class TestResolveEnvironmentProxy:
+    # 显式环境代理解析（httpx trust_env=False 的替代路径）：只替换模块全局引用 getproxies，
+    # 不污染 urllib stdlib 本体（测试约定 §4）。
+
+    def test_precedence_all_over_https_over_http(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            proxy_mod, "getproxies", lambda: {"http": "http://h:1", "https": "http://s:2", "all": "http://a:3"}
+        )
+        assert resolve_environment_proxy() == "http://a:3"
+        monkeypatch.setattr(proxy_mod, "getproxies", lambda: {"http": "http://h:1", "https": "http://s:2"})
+        assert resolve_environment_proxy() == "http://s:2"
+        monkeypatch.setattr(proxy_mod, "getproxies", lambda: {"http": "http://h:1"})
+        assert resolve_environment_proxy() == "http://h:1"
+
+    def test_schemeless_registry_value_gets_http_prefix(self, monkeypatch: MonkeyPatch) -> None:
+        # Windows 注册表存 host:port 无 scheme 形态，与 httpx 自身 get_environment_proxies 同口径
+        monkeypatch.setattr(proxy_mod, "getproxies", lambda: {"https": "proxy.corp:3128"})
+        assert resolve_environment_proxy() == "http://proxy.corp:3128"
+
+    def test_no_key_ignored_and_empty_means_direct(self, monkeypatch: MonkeyPatch) -> None:
+        # 'no' 键（NO_PROXY 派生）不是代理；空表 → None（直连）
+        monkeypatch.setattr(proxy_mod, "getproxies", lambda: {"no": "localhost,[::1]"})
+        assert resolve_environment_proxy() is None
+        monkeypatch.setattr(proxy_mod, "getproxies", lambda: {})
+        assert resolve_environment_proxy() is None
+
+
+class TestHttpClientExplicitEnvLocks:
+    # ② 结构锁：src/ 与根目录 .py 的每个 httpx.Client/AsyncClient 构造点必须
+    # trust_env=False + 显式 proxy=（httpx 0.28.1 隐式环境路径遇 NO_PROXY 方括号 IPv6 即崩）。
+    # 扫描面与 M-04（test_regression_net.py）同口径；摘掉任一构造点的 trust_env=False 即红。
+
+    def test_every_client_construction_disables_trust_env(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        targets = [*root.glob("src/**/*.py"), *root.glob("*.py")]
+        offenders: list[str] = []
+        total = 0
+        for path in targets:
+            text = path.read_text(encoding="utf-8")
+            for marker in ("httpx.AsyncClient(", "httpx.Client("):
+                search_from = 0
+                while True:
+                    match_at = text.find(marker, search_from)
+                    if match_at < 0:
+                        break
+                    search_from = match_at + 1
+                    total += 1
+                    window = text[match_at : match_at + 500]
+                    if "trust_env=False" not in window or "proxy=" not in window:
+                        line_no = text.count("\n", 0, match_at) + 1
+                        offenders.append(f"{path.name}:{line_no}")
+        # 扫描面非空自检：已知 6 个构造点（async_http / room×2 / spider / stream_select / main），
+        # 总数不足说明判据失效或构造被搬走，绿灯不能是「什么都没查」
+        assert total >= 6, f"构造点扫描面失效：仅扫到 {total} 处（预期 >= 6）"
+        assert not offenders, f"httpx 构造点未显式 trust_env=False + proxy=（NO_PROXY 崩溃回归）：{offenders}"
+
+    def test_startup_normalizes_no_proxy_at_both_entries(self) -> None:
+        # ① 接线锁：main.py 模块级（CLI / Web / 录制子进程共用 import main）与 GUI 入口
+        # （src/gui_qt/app.py main()，GUI 进程不 import main）都必须调用 normalize_no_proxy_env。
+        root = pathlib.Path(__file__).resolve().parents[1]
+
+        def _is_norm_call(node: ast.AST) -> bool:
+            return (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "normalize_no_proxy_env"
+            )
+
+        main_tree = ast.parse((root / "main.py").read_text(encoding="utf-8-sig"))
+        assert any(_is_norm_call(n) for n in main_tree.body), "main.py 模块级缺 normalize_no_proxy_env() 调用"
+        app_tree = ast.parse((root / "src" / "gui_qt" / "app.py").read_text(encoding="utf-8-sig"))
+        app_mains = [n for n in ast.walk(app_tree) if isinstance(n, ast.FunctionDef) and n.name == "main"]
+        assert app_mains, "src/gui_qt/app.py 找不到 main() 入口"
+        assert any(_is_norm_call(n) for n in ast.walk(app_mains[0])), "GUI 入口缺 normalize_no_proxy_env() 调用"

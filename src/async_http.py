@@ -17,6 +17,7 @@ import i18n
 from . import http_config as config
 from . import utils
 from .logger import logger
+from .proxy import resolve_environment_proxy
 
 OptionalStr = str | None
 OptionalDict = dict[str, str] | None
@@ -73,13 +74,18 @@ def _build_client(
     # 的 GET + 三条 POST 分支、get_response_status 的 HEAD + Range-GET 全部自动被覆盖，判定不必在
     # 调用点复制第二份（见 _redirect_hop_rejection_reason）。闭包只多带一个信息：本次出站是否经代理
     # （决定要不要按本机 DNS 结果定罪）；客户端缓存键、复用作用域、keepalive 形态均未动。
+    # trust_env=False + 显式环境代理解析：httpx 0.28.1 的隐式环境路径遇 NO_PROXY 方括号 IPv6
+    # 即崩（根因见 src/proxy.py）；钩子必须拿**有效**代理（含环境解析值），否则「是否经代理」
+    # 的判定口径与实际传输漂移。
+    effective_proxy = proxy_addr or resolve_environment_proxy()
     return httpx.AsyncClient(
-        proxy=proxy_addr,
+        proxy=effective_proxy,
         timeout=timeout,
         verify=verify,
         http2=http2,
         limits=_httpx_limits,
-        event_hooks={"response": [_build_hop_guard(proxy_addr)]},
+        trust_env=False,
+        event_hooks={"response": [_build_hop_guard(effective_proxy)]},
     )
 
 

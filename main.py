@@ -126,7 +126,7 @@ from src.notify import (
     remove_room_from_running,
     run_script,
 )
-from src.proxy import ProxyDetector
+from src.proxy import ProxyDetector, normalize_no_proxy_env, resolve_environment_proxy
 from src.recorder_status import display_info, get_status
 from src.scheduler import ConcurrencyScheduler, ResizableSemaphore, host_of
 from src.startup_cleanup import purge_stale_bytecode_caches
@@ -777,7 +777,12 @@ def direct_download_stream(
 
             # headers 只逐请求传，不挂 client 级：client 头会跟随经该 client 的每一个请求
             # （含重定向），一旦复用就会带出录制的 Referer/Cookie（与 src/stream_select.py 探针同口径）。
-            with httpx.Client(timeout=30, verify=_http_config.get_effective_ssl_verify(platform)) as client:
+            with httpx.Client(
+                timeout=30,
+                verify=_http_config.get_effective_ssl_verify(platform),
+                proxy=resolve_environment_proxy(),
+                trust_env=False,
+            ) as client:
                 with client.stream("GET", source_url, headers=headers, follow_redirects=True) as response:
                     if response.status_code != 200:
                         logger.error(
@@ -4765,6 +4770,11 @@ _ssl_exempt_applied = False
 from i18n import translated_print
 
 builtins.print = translated_print  # type: ignore[assignment]
+
+# 启动期归一化宿主 NO_PROXY 的方括号 IPv6（httpx 0.28.1 解析即崩，根因与取舍见
+# src/proxy.py::normalize_no_proxy_env）。模块级调用：CLI / Web（web.py import main）/
+# 录制子进程（python main.py）三路入口共用此初始化；GUI 进程不 import main，由其入口自行调用。
+normalize_no_proxy_env()
 
 try:
     if skip_proxy_check:

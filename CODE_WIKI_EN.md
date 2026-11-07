@@ -1509,6 +1509,12 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 >
 > **v4.7.0 summary (2026-11-01)**: (1) release-path dynamic pinning - the node slot takes the GPG-verified official SHASUMS as its criterion (`--pin-source adopt`), the three ffmpeg slots take the build-day official manifest values (advisory explicitly acknowledged via `ADVISORY_ADOPT_ACK`, linux resolving the direct link alongside the newest month-end tag), and the static tables are demoted to the fallback baseline, so upstream promotions no longer break releases; (2) runtime pins re-pinned to node v26.13.0 (Node 26's LTS promotion moved the first-lts pointer); (3) release-build fixes - the Linux GUI smoke gains the Qt runtime libs (mirroring ci.yml's 16 packages plus the libxcb-xkb1/util1 superset), the release credential check narrows to "same key position" eradicating the SEV-2213 false positive, and the POSIX graceful-stop flag is added; (4) security floors raised - setuptools build floor 84.1.0 (GHSA-xmj3-9gf7-h52w), brotli 1.2.1 (PYSEC-2026-4322); (5) three CI Linux platform-sensitive tests made platform-agnostic.
 
+### v4.8.0 (2026-11-07) — Production-side dual hardening against the NO_PROXY crash: startup process-env normalization plus trust_env=False with explicit environmental-proxy resolution at every httpx construction site
+
+### v4.8.0 (2026-11-07) — Test-side fix for the httpx 0.28.1 NO_PROXY bracketed-IPv6 crash: pytest_configure normalizes [::1], turning 41 host-environment pre-existing failures green
+
+### v4.8.0 (2026-11-07) — i18n four-catalog full reconciliation: 1206 → 913 keys (294 orphan/legacy forms dropped, 1 source-changed build string replaced); zh_CN.mo recompiled and gettext-load verified
+
 ### v4.8.0 (2026-11-07) — Runtime compatibility extended to Python 3.15 / Node.js 26.13.0: declarations, dual CI matrices, dual Docker build args and regression locks cover both old and new ends
 
 ### v4.7.0 (2026-11-04) — Remediation of review S-01 and the gate-judgement family: strip credential headers on cross-origin redirects, rc=2 on empty scan scope, warnings-as-failure, delete-guard boundary fix, AST-based regression assertions

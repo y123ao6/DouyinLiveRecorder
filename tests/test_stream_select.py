@@ -1800,8 +1800,11 @@ class _ProxyContractClient(_StreamAsGet):
     # event_hooks（逐跳复检钩子）。这里既记录钩子条数（供「两处自建都挂上了钩子」的行为锁断言），
     # 也把 event_hooks 一并交给**真实** httpx 构造：桩若把实参形状写错，真 httpx 会当场抛错，
     # 契约仍由 httpx 本体判定、不在本文件自实现。
+    # 2026-11-07：_probe_client 新增 trust_env=False（NO_PROXY 方括号 IPv6 加固），签名同步跟住，
+    # 并记录取值供「构造点确实禁用隐式环境路径」的行为断言。
     proxies: list[str | None] = []
     response_hook_counts: list[int] = []
+    trust_env_values: list[bool] = []
     instantiated = 0
     close_calls = 0
 
@@ -1811,6 +1814,7 @@ class _ProxyContractClient(_StreamAsGet):
         timeout: int = 10,
         proxy: str | None = None,
         verify: bool = True,
+        trust_env: bool = True,
         # 实参类型必须与 httpx.Client 的 event_hooks 声明兼容（typeshed 要 Mapping[str, list[Callable]]，
         # 写 list[object] 会在下一行透传给真客户端时报 arg-type）；Any 只用于这一处打桩签名，
         # 判据本身仍走 ast 收窄。
@@ -1819,7 +1823,10 @@ class _ProxyContractClient(_StreamAsGet):
         _ProxyContractClient.instantiated += 1
         _ProxyContractClient.proxies.append(proxy)
         _ProxyContractClient.response_hook_counts.append(len((event_hooks or {}).get("response") or []))
-        real = _REAL_SYNC_CLIENT(timeout=timeout, proxy=proxy, verify=verify, event_hooks=event_hooks)
+        _ProxyContractClient.trust_env_values.append(trust_env)
+        real = _REAL_SYNC_CLIENT(
+            timeout=timeout, proxy=proxy, verify=verify, trust_env=trust_env, event_hooks=event_hooks
+        )
         real.close()
 
     def close(self) -> None:
@@ -1836,6 +1843,7 @@ def _reset_proxy_contract_client() -> None:
     # 类级计数/记录会跨用例累积，逐用例显式重置（不复用其它用例的假客户端类，避免互相污染）
     _ProxyContractClient.proxies = []
     _ProxyContractClient.response_hook_counts = []
+    _ProxyContractClient.trust_env_values = []
     _ProxyContractClient.instantiated = 0
     _ProxyContractClient.close_calls = 0
 
@@ -1857,6 +1865,8 @@ def test_select_source_url_bare_proxy_addr_normalized_before_construct() -> None
     assert _ProxyContractClient.close_calls == 1
     # WP-J：构造点收敛到 _probe_client 后，整轮共用客户端必须带上恰一支 response 逐跳复检钩子
     assert _ProxyContractClient.response_hook_counts == [1], "select_source_url 的客户端未挂逐跳复检钩子"
+    # NO_PROXY 加固：构造点必须禁用 httpx 隐式环境路径（摘掉 trust_env=False 本断言转红）
+    assert _ProxyContractClient.trust_env_values == [False], "探针客户端未禁用 trust_env 隐式环境路径"
 
 
 def test_select_source_url_empty_proxy_addr_becomes_none() -> None:

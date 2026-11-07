@@ -68,6 +68,7 @@ from .cookie_cache import fetch_cookies as _cache_fetch_cookies
 from .cookie_cache import invalidate_generic as _cache_invalidate_generic
 from .cookie_cache import singleflight as _cache_singleflight
 from .logger import logger, script_path
+from .proxy import resolve_environment_proxy
 from .room import UnsupportedUrlError, get_sec_user_id, get_unique_id, is_user_homepage_url
 from .ttwid import get_ttwid as _shared_get_ttwid
 from .utils import generate_random_string, trace_error_decorator, trace_error_decorator_or_none
@@ -4050,11 +4051,15 @@ async def login_popkontv(
         # 直建点必须挂与 async_http._build_client 同一逐跳复检钩子——
         # 直建 AsyncClient 的 SSRF 防线原本只靠前置闸门，「响应头到达后才触发」的形态让
         # 「公网 → 302 → 内网/元数据」的跳转落点不被复检；挂钩后本点与主线两个合法接线点同判据。
+        # trust_env=False + 显式环境代理（httpx 0.28.1 隐式路径遇 NO_PROXY 方括号 IPv6 即崩）；
+        # 钩子拿有效代理，「是否经代理」判定口径与传输一致。
+        effective_proxy = proxy_addr or resolve_environment_proxy()
         async with httpx.AsyncClient(
-            proxy=proxy_addr,
+            proxy=effective_proxy,
             timeout=20,
             verify=http_config.ssl_verify,
-            event_hooks={"response": [_build_hop_guard(proxy_addr)]},
+            trust_env=False,
+            event_hooks={"response": [_build_hop_guard(effective_proxy)]},
         ) as client:
             response = await client.post(url, json=data, headers=headers)
             response.raise_for_status()

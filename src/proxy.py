@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import cast
 from urllib.parse import quote
+from urllib.request import getproxies
 
 # loguru 的 logger 为模块级单例，src.logger 对其做过的配置在此同样生效；
 # 直接从此处导入可避免基于 basedpyright 的 "未从 src.utils 导出" 告警。
@@ -22,6 +23,53 @@ import i18n
 # requests / httpx 所认集合的并集）；其余形态（"proxy-protocol://" 之类）一律按「没有 scheme」
 # 处理——把垃圾串拼进 proxy_url 只会变成下游更难归因的 InvalidURL。
 _PROXY_SCHEMES = frozenset(("http", "https", "socks5", "socks5h", "socks4", "socks4a"))
+
+
+def normalize_no_proxy_value(value: str) -> str:
+    # 只把「纯方括号 + 合法 IPv6」条目去括号（[::1] → ::1），其余条目原样。
+    # 根因：httpx 0.28.1（最新稳定版，无上游修复可抬）的 get_environment_proxies 用
+    # ipaddress.IPv6Address 判 NO_PROXY 条目，不接受 URL 方括号形态，[::1] 落入通配兜底
+    # 产出非法挂载键 'all://*[::1]'，Client/AsyncClient 构造时 URLPattern 端口解析即抛
+    # InvalidURL: Invalid port ':1]'。裸 ::1 走正确的 'all://[::1]' bypass 分支，语义不变。
+    # 边界：带端口方括号（[::1]:8080）/ 方括号 IPv4 / CIDR 不在 curl NO_PROXY 惯例内，不动；
+    # 条目去首尾空格与 httpx 自身的 host.strip() 消费口径一致。
+    # 回归锁：tests/test_no_proxy_env_guard.py 与 tests/test_proxy.py（含启动接线锁）。
+    def _fix(entry: str) -> str:
+        match = re.fullmatch(r"\[([0-9a-fA-F:]+)\]", entry)
+        if match:
+            try:
+                ipaddress.IPv6Address(match.group(1))
+            except ValueError:
+                return entry
+            return match.group(1)
+        return entry
+
+    return ",".join(_fix(entry.strip()) for entry in value.split(","))
+
+
+def normalize_no_proxy_env() -> None:
+    # 进程级幂等归一化，启动期调用（main.py 模块级 / GUI 入口 / pytest 收集前）。
+    # Windows 环境变量大小写不敏感，两名实为同一键；POSIX 两名可共存，
+    # getproxies_environment 对名字 lower() 后取值——两名都归一在两类平台都正确。
+    for name in ("NO_PROXY", "no_proxy"):
+        if name in os.environ:
+            os.environ[name] = normalize_no_proxy_value(os.environ[name])
+
+
+def resolve_environment_proxy() -> str | None:
+    # 显式环境代理解析（替代 httpx trust_env=True 的隐式路径，构造点统一 trust_env=False）：
+    # getproxies() 覆盖环境变量 + Windows 注册表 + macOS 系统配置；按 all > https > http 取首非空。
+    # 取舍（2026-11-07 变更日志）：httpx 原按 http/https 分设挂载被收敛为单代理——本仓出站
+    # 统一为 https 平台端点；NO_PROXY bypass 不再由 httpx 应用于经代理请求——出站只走公网
+    # 目标，内网目标由 SSRF 守卫前置拦截；SSL_CERT_FILE/.netrc 不再隐式读取（产品 SSL
+    # 控制面是 config.ini）。无 scheme 的值（注册表 host:port 形态）补 http:// 前缀，
+    # 与 httpx 自身 get_environment_proxies 同口径。
+    proxies = getproxies()
+    for scheme in ("all", "https", "http"):
+        value = proxies.get(scheme)
+        if value:
+            return value if "://" in value else f"http://{value}"
+    return None
 
 
 def _is_ip_literal_without_port(value: str) -> bool:

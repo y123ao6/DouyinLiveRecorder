@@ -1591,6 +1591,12 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 >
 > **v4.7.0 概要（2026-11-01）**：① 发布链钉定动态化——node 槽以 GPG 验签官方 SHASUMS 为判据（`--pin-source adopt`），ffmpeg 三槽取构建当日官方清单值（advisory 经 `ADVISORY_ADOPT_ACK` 显式放行、linux 随最新月末标签解析直链），静态表退为回退基线，上游滚动不再打断发布；② 运行时钉定随 node v26.13.0 重钉（Node 26 转 LTS 首条 lts 漂移）；③ 发布构建修复——Linux GUI 冒烟补装 Qt 运行库（镜像 ci.yml 16 包 + libxcb-xkb1/util1 超集）、发布凭据校验收窄「同键位」比对根治 SEV-2213 误报、POSIX 优雅停止标记补置；④ 安全下限抬升——setuptools 构建下限 84.1.0（GHSA-xmj3-9gf7-h52w）、brotli 1.2.1（PYSEC-2026-4322）；⑤ CI Linux 三处平台敏感用例转平台无关。
 
+### v4.8.0 (2026-11-07) — NO_PROXY 崩溃生产侧双层加固：启动期进程环境归一化 + 全部 httpx 构造点 trust_env=False 显式环境代理解析
+
+### v4.8.0 (2026-11-07) — httpx 0.28.1 NO_PROXY 方括号 IPv6 崩溃的测试侧修复：pytest_configure 归一化 [::1]，41 条宿主环境既有失败转绿
+
+### v4.8.0 (2026-11-07) — i18n 四语目录全量对账：1206 → 913 键（移除 294 孤儿/旧形态、替换 1 条源文变更构建串），zh_CN.mo 重编并验证 gettext 加载
+
 ### v4.8.0 (2026-11-07) — 运行时兼容范围扩到 Python 3.15 / Node.js 26.13.0：声明、CI 双矩阵、Docker 双构建参数与回归锁同时覆盖新旧两端
 
 ### v4.7.0 (2026-11-04) — 全仓只读审查 S-01 与判定面族整改：跨源重定向剥离凭据头、空判定面退 2、告警即失败、删除守卫边界补齐、回归锁判据改 AST

@@ -344,12 +344,17 @@ def _probe_client(timeout: int, proxy_addr: str | None, verify: bool) -> httpx.C
     # 本模块有模块级 import main、main 又 import 本模块，新增模块级出边会改变初始化顺序；
     # 本函数每轮选源只走 1~2 次，多一次已缓存的 sys.modules 查找没有成本。
     from src.async_http import build_sync_hop_guard
+    from src.proxy import resolve_environment_proxy
 
+    # trust_env=False + 显式环境代理（httpx 0.28.1 隐式路径遇 NO_PROXY 方括号 IPv6 即崩）；
+    # 钩子拿有效代理（含环境解析值），「是否经代理」判定口径与传输一致。
+    effective_proxy = proxy_addr or resolve_environment_proxy()
     return httpx.Client(
         timeout=timeout,
-        proxy=proxy_addr,
+        proxy=effective_proxy,
         verify=verify,
-        event_hooks={"response": [build_sync_hop_guard(proxy_addr)]},
+        trust_env=False,
+        event_hooks={"response": [build_sync_hop_guard(effective_proxy)]},
     )
 
 

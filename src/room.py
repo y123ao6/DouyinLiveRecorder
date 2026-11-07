@@ -16,6 +16,7 @@ import i18n
 from src.logger import logger
 
 from . import JS_SCRIPT_PATH, http_config, utils
+from .proxy import resolve_environment_proxy
 from .ttwid import get_ttwid as _shared_get_ttwid
 
 
@@ -149,11 +150,15 @@ async def get_sec_user_id(
         # 函数内 import：与上方 _outbound_target_reason 同理由（本模块不做 async_http 模块级依赖）。
         from .async_http import _build_hop_guard
 
+        # trust_env=False + 显式环境代理（httpx 0.28.1 隐式路径遇 NO_PROXY 方括号 IPv6 即崩）；
+        # 钩子拿有效代理，「是否经代理」判定口径与传输一致。
+        effective_proxy = proxy_addr or resolve_environment_proxy()
         async with httpx.AsyncClient(
-            proxy=proxy_addr,
+            proxy=effective_proxy,
             timeout=15,
             verify=http_config.ssl_verify,
-            event_hooks={"response": [_build_hop_guard(proxy_addr)]},
+            trust_env=False,
+            event_hooks={"response": [_build_hop_guard(effective_proxy)]},
         ) as client:
             response = await client.get(url, headers=headers, follow_redirects=True)
             redirect_url = response.url
@@ -264,11 +269,15 @@ async def get_unique_id(url: str, proxy_addr: str | None = None, headers: dict[s
         # follow_redirects=True 的跳转落点必须逐跳复检。
         from .async_http import _build_hop_guard
 
+        # trust_env=False + 显式环境代理（httpx 0.28.1 隐式路径遇 NO_PROXY 方括号 IPv6 即崩）；
+        # 钩子拿有效代理，「是否经代理」判定口径与传输一致。
+        effective_proxy = proxy_addr or resolve_environment_proxy()
         async with httpx.AsyncClient(
-            proxy=proxy_addr,
+            proxy=effective_proxy,
             timeout=15,
             verify=http_config.ssl_verify,
-            event_hooks={"response": [_build_hop_guard(proxy_addr)]},
+            trust_env=False,
+            event_hooks={"response": [_build_hop_guard(effective_proxy)]},
         ) as client:
             # 快速路径：网页端主页链接的 sec_user_id 已在路径中，无需发请求跟随重定向，
             # 可省去一次约 70KB 的主页 HTML 下载。

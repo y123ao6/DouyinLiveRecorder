@@ -69,6 +69,12 @@ def main() -> None:
     from PySide6.QtCore import QObject, Qt, QThread, Signal
     from PySide6.QtWidgets import QApplication
 
+    # GUI 进程不 import main（录制引擎走子进程），启动归一化须在此自行调用：
+    # 宿主 NO_PROXY 方括号 IPv6 会让 httpx 0.28.1 客户端构造即崩（见 src/proxy.py）。
+    from src.proxy import normalize_no_proxy_env
+
+    normalize_no_proxy_env()
+
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv[:])
     app.setApplicationName("DouyinLiveRecorder")

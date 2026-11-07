@@ -6308,3 +6308,33 @@ black 全仓 134 文件全绿、isort 全绿、`check_annotations` 全通过、`
 - **判定面修复**：`scripts/check_annotations.py` 空判定面与空等价并集退 2；`scripts/check_skill_agents_consistency.py` 检查 3 的「未标注约束事实源」由 WARN 升级为 errors 且告警即失败；`scripts/agent_hook_guard.py` 受保护目录边界集合纳入单 `|`/`&`/`;`；`tests/test_regression_gates.py` 三处文本/源码切片判据改 AST 语法节点判据。
 - **回归锁**：新增 `TestCrossOriginCredentialStrip`（4 条）、`TestCrossOriginCredentialKeys`（15 个参数化样本）、XHS 短链凭据用例 2 条与判定面用例 4 条；本轮共 13 个文件、+397 行。变异验证把 5 处修复改回失效形态后 6 条回归锁转红，随后按 sha256 逐字节还原，全仓 `MUTATION-` 残留 0。
 - **验证与交回**：`run_gates.py`、全量 pytest（0 警告）、`check_coverage.py`、mypy 平台双跑与 basedpyright 的终态读数见当日工作日志；真机 / 真实 URL 增量验证 **SKIP(无外网与活房间)**，交回用户按 DoD 第 2 步补跑 XHS 短链与咪咕 CDN 跳转两条路径。
+
+## 2026-11-07 — i18n 四语目录全量对账清理（v4.8.0 周期内）
+
+- **口径与基线**：活跃串集 = 提取器（print/logger/tr/T 首参，851 条有价值串，缺失 0）∪ 按名 tr/T 候选（复用 `tests/test_i18n_catalog_coverage.py` 解析）∪ 盲区（print_colored 常量；messagebox 随 tkinter 退役已无残留）；工具串（[build]/[smoke:*]）沿用 2026-10-28 清理的保留决定。四文件原键集 1206 条逐项相等。
+- **三道甄别**：对 355 条「目录有、扫描器无」条目：① 运行时 + 构建/维护脚本常量/f-string 模板 AST 比对；② 全仓文本级搜索（含 web/app.js、index.html、UTF-16 的 StopRecording.vbs）；③ 逐条上下文核验（剔除子串/注释假命中）。保留 62（17 按名候选 + 33 AST 常量 + 11 工具串简化占位符形态 + 1 替换新键），移除 294（195 无痕迹孤儿 + 99 子串/注释/前端自管/VBS 假命中，含 1 条源文变更旧形态）。
+- **孤儿主要来源**：tkinter 退役后 Tk 形态词条（三空格导航、emoji 按钮标签等）失去消费点；消息模板化（tr 迁移）后旧裸碎片与迁移前旧形态失效；部分面板文案由 web/app.js 内嵌字典自管，后端同名键成孤儿 msgid。
+- **源文变更替换**：`[build] 完成。发布目录：{RELEASE_DIR}（已生成 lite + full 两个 zip）` → 现行形态（补 zip 名占位符 {lite_zip_name}/{full_zip_name}，对应 build_exe.py --dual 分支），四语译文同步更新；为本轮唯一源文变更条目。
+- **不变量**：四文件键集逐项相等（913 键，po 含头 914）；保留译文对 git HEAD 逐键比对零改动；占位符一致性 0 失配、空译文 0；JSON/YAML 语法合法，原有缩进与引号风格保留（含尾部两条 4 空格缩进条目与 YAML 多行 `? :` 显式键块），四文件均纯 LF 无 BOM。
+- **编译与验证**：`scripts/compile_po.py`（GNU msgfmt 兼容实现，本机无 msgfmt 工具链）产出 zh_CN.mo（914 条含头 / 132064 字节），`--check` 字节级同步；gettext 直载 913 条、英文 msgid 命中简中译文、移除键回落原文；i18n 七个测试文件 91 passed；提取器缺失 0、疑似冗余 355 → 62（全数为有意保留）；全量 pytest / run_gates / 覆盖率门禁终态读数见当日工作日志。
+- **边界声明**：web/app.js 内嵌四语面板字典、StopRecording.vbs 与根 index.html 的自包含文案不在后端目录消费面，未并入（与 app.js「孤儿 msgid」架构警示同源）；前端字典与 data-i18n 键的一致性由 tests/frontend/test_quality_ui.mjs 锁定，本轮未改。
+- **顺带修正**：两处测试注释的恒等惯例示例键（'Disk space remaining is below' 已移除）换为现存条目 'ffmpeg is not installed.'（tests/test_regression_main.py / tests/test_regression_postprocess.py，纯注释级）。
+- **DoD #2 豁免**：纯数据清理不涉及录制链路行为，豁免真机验证（与 2026-10-28 先例同口径）。
+
+## 2026-11-07 — httpx 0.28.1 NO_PROXY 方括号 IPv6 崩溃的测试侧修复（v4.8.0 周期内）
+
+- **根因**：`urllib.getproxies()` 把宿主 `NO_PROXY` 收作 `{'no': ...}`；httpx 0.28.1 `get_environment_proxies` 逐条目建 bypass 挂载时 `is_ipv6_hostname('[::1]')` 为 False（`ipaddress.IPv6Address` 不接受 URL 方括号），落入通配兜底产出非法挂载键 `all://*[::1]`，`Client.__init__` 建 `URLPattern` 时端口解析抛 `InvalidURL: Invalid port ':1]'`——凡 `trust_env=True` 且 `proxy=None` 的 Client/AsyncClient 构造即崩。最新稳定版 httpx 仍为 0.28.1（仅 1.0.dev 预发布），无上游修复可抬。
+- **修复**：`tests/conftest.py` 新增 `normalize_no_proxy_value`（只对「纯方括号 + 合法 IPv6」条目去括号，其余条目原样；条目去首尾空格与 httpx 自身 `host.strip()` 消费口径一致），并在 `pytest_configure`（收集前）归一化 `NO_PROXY`/`no_proxy` 两名。只改测试进程环境，生产代码零改动；裸 `::1` 走 httpx 正确的 `all://[::1]` bypass 分支，语义不变。
+- **回归锁**：`tests/test_no_proxy_env_guard.py` 7 条（形态表 / 非 IPv6 保留 / 空格 / 幂等 / 接线 / httpx 可构造且 bypass 挂载保留 / 「httpx 修好后转红提醒收回守卫」的根因见证）。变异验证：摘接线 → 1 红、归一化改恒等 → 4 红，均当场还原；`test_test_hygiene.py` 对新文件自动派生 4 条卫生用例亦绿。
+- **验证**：宿主 `NO_PROXY` 原样保留跑全量 pytest **4847 passed / 16 skipped / 0 警告**（227.42s；较基线 +11 = 7 新用例 + 4 卫生派生；覆盖率 84.63%）；`check_coverage` 67 模块 PASS；mypy 双平台 247 文件零问题；basedpyright 0/0/0；run_gates 终态见当日工作日志。
+- **交回用户（生产侧决策）**：生产 httpx 构造点（`src/async_http._build_client`、`src/room.py` 两处、`src/spider.py` 直建点、`src/stream_select._probe_client`、`main.py` 直下分支）在 `proxy=None` 时同走环境解析路径——此类宿主未配置代理时应用同样会崩。候选：① 启动期归一化进程级 NO_PROXY；② 构造点改 `trust_env=False` 并显式解析环境代理；③ 待 httpx 1.0 上游修复后抬版。本次不擅自改生产行为。
+- **DoD #2 豁免**：纯测试基础设施改动，生产行为零变化。
+
+## 2026-11-07 — NO_PROXY 崩溃生产侧双层加固（v4.8.0 周期内，用户批准①②方向）
+
+- **① 启动期归一化**：`src/proxy.py` 新增 `normalize_no_proxy_value` / `normalize_no_proxy_env`（单一事实源，conftest 收集前守卫改为复用，删除第二份实现）；main.py 模块级调用（CLI / Web「web.py import main」/ 录制子进程三路共用），GUI 进程不 import main，由 `src/gui_qt/app.py::main` 入口自调。
+- **② 构造点显式化**：6 个 httpx 构造点（`async_http._build_client`、`room.py`×2、`spider.py` 直建、`stream_select._probe_client`、`main.py` 直下）统一 `trust_env=False` + `proxy=显式值或 resolve_environment_proxy()`；解析器经 `getproxies()` 按 all>https>http 取首非空、无 scheme 补 http:// 前缀。**逐跳钩子改拿有效代理**（含环境解析值），保住「是否经代理」的 SSRF 判定口径。
+- **已登记取舍**：SSL_CERT_FILE/SSL_CERT_DIR/.netrc 不再隐式读取（产品 SSL 控制面是 config.ini）；NO_PROXY bypass 不再由 httpx 应用于经代理请求（出站只走公网平台端点，内网目标由 SSRF 守卫前置拦截）；http/https 分设代理收敛为单代理（出站统一 https）。回滚方式：revert 本变更集（src/proxy.py、main.py、src/gui_qt/app.py、src/async_http.py、src/room.py、src/spider.py、src/stream_select.py、tests/conftest.py 及对应测试）。
+- **回归锁与变异验证**：`tests/test_proxy.py` 新增 `TestNoProxyEnvNormalization`/`TestResolveEnvironmentProxy`/`TestHttpClientExplicitEnvLocks`（构造点 trust_env+proxy 结构锁、扫描面 >=6 非空自检、main/GUI 双入口 AST 接线锁）；`test_stream_select.py` 契约替身签名跟住 trust_env 并新增行为断言。变异三发均红：摘构造点 trust_env → 结构锁+契约断言双红；摘 main 启动调用 → 接线锁红；解析优先级倒置 → 单测红；均当场还原，残留 0。
+- **真网增量验证（DoD #2）**：恶意 NO_PROXY 原样注入、**未经归一化**时 `_build_client` 构造成功（②独立见证，trust_env=False）；真实 HTTPS GET pypi.org → 200 / HTTP/2；`import main` 触发①归一化（[::1]→::1）；真实公共测试流 `https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8` 经 `select_source_url` 探针+分片校验原样返回（PASS）。直播间录制增量（ffmpeg 拉流）未跑——本次不改 ffmpeg 参数/平台解析，受影响面（客户端构造/代理解析/选源探针）已真网覆盖。
+- **门禁**：mypy 双平台 247 文件零问题、basedpyright 0/0/0；全量 pytest 与 run_gates 终态读数见当日工作日志。known-pitfalls「HTTP 客户端复用与连接管理」新增硬约束条目。

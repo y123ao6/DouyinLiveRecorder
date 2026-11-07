@@ -153,7 +153,7 @@ def _assert_registered(msgids: set[str] | list[str], cats: dict[str, dict[str, s
         assert not missing, f"msgid 未并入这些语言目录：{missing} <- {msgid[:60]!r}"
         for lang in ("en_US", "en_GB", "zh_TW"):
             # 只断言「非空」：英文源串的 en_US/en_GB 译文按本仓惯例本就是恒等同文
-            # （如 'Disk space remaining is below'），加「不得等于 msgid」会把恒等惯例打成假失败。
+            # （如 'ffmpeg is not installed.'），加「不得等于 msgid」会把恒等惯例打成假失败。
             assert cats[lang][msgid].strip(), f"{lang} 译文为空：{msgid[:40]!r}"
 
 

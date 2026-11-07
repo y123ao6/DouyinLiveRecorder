@@ -1,5 +1,5 @@
 # pytest 全局配置与 autouse fixture：测试环境的确定性隔离（运行时检查 / 日志 / 弹幕枢纽 /
-# 凭据缓存 / 翻译 / 标准流编码守卫）。
+# 凭据缓存 / 翻译 / 标准流编码守卫 / NO_PROXY 方括号 IPv6 归一化）。
 
 import os
 import shutil
@@ -28,6 +28,13 @@ def pytest_configure(config: Any) -> None:
     # 测试进程导入 main 会注册日志归档 atexit；pytest 退出并非「停止录制」事件，
     # 禁用归档以免改名开发者工作副本里的真实 logs/ 日志（归档专项用例内自行 delenv）
     os.environ.setdefault("DOUYIN_DISABLE_LOG_ARCHIVE", "1")
+    # 宿主 NO_PROXY 含方括号 IPv6（curl 风格合法写法）时 httpx 0.28.1 裸客户端构造即崩，
+    # 收集前归一化大小写两个变量名，测试不再依赖宿主代理绕过列表的具体写法。
+    # 实现复用生产侧单一事实源 src/proxy.py（启动期 main.py / GUI 入口同调此函数）；
+    # 函数内 import：须先置好上面的 DOUYIN_* 旗标再触发 src 包导入期初始化。
+    from src.proxy import normalize_no_proxy_env
+
+    normalize_no_proxy_env()
 
 
 @pytest.fixture(autouse=True)
