@@ -162,6 +162,7 @@ tests/test_logger_room_context.py
 tests/test_machine_validation_fixes.py
 tests/test_main_fixes.py
 tests/test_msg_push.py
+tests/test_no_proxy_env_guard.py
 tests/test_node_install.py
 tests/test_notify.py
 tests/test_notify_script_guard.py

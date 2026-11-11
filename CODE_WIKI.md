@@ -60,7 +60,7 @@
 | 文件 | 内容 |
 | --- | --- |
 | `code-wiki-history-zh.md` / `-en.md` | CODE_WIKI 更新日志历史条目（含 2026-10-31 迁入的当前发布周期条目） |
-| `release-notes-history-zh.md` / `-en.md` | README 发布说明历史条目（含 2026-10-31 迁入的 v4.5.0 / v4.4.0 / v4.3.0） |
+| `release-notes-history-zh.md` / `-en.md` | README 发布说明历史条目（含 2026-10-31 迁入的 v4.5.0 / v4.4.0 / v4.3.0 与 2026-11-04 迁入的 v4.6.0） |
 
 > 滚动规则：根文档只保留当前发布周期的概要/索引，详细条目逐字迁入本目录；归档卷只增不改。
 
@@ -69,7 +69,7 @@
 ### 项目基本信息
 
 - **项目名称**: DouyinLiveRecorder (抖音直播录制器)
-- **描述**: 支持抖音、TikTok、YouTube、快手等 60+ 平台的直播录制工具，支持循环录制、多人录制、消息推送
+- **描述**: 支持抖音、TikTok、YouTube、快手等 51 个平台的直播录制工具，支持循环录制、多人录制、消息推送
 - **版本**: 4.8.0（唯一事实源 `pyproject.toml`）
 - **Python**: >=3.14（兼容至 3.15；范围事实源 `pyproject.toml [tool.douyin-live-recorder]`，回归锁 `tests/test_runtime_version_compat.py`）
 - **Node.js**: 24.22.2 / 26.13.0 两条 LTS 均受支持（CI 双线跑测试与运行时探测，Docker 用 `NODE_MAJOR` 切换）
@@ -79,7 +79,7 @@
 
 ### 功能特性
 
-- ✅ 支持 60+ 个直播平台（抖音、TikTok、YouTube、快手、虎牙、斗鱼、B站、小红书等）
+- ✅ 支持 51 个直播平台（抖音、TikTok、YouTube、快手、虎牙、斗鱼、B站、小红书等）
 - ✅ 循环值守直播状态，开播自动录制，断播自动停止
 - ✅ 多种视频格式输出：TS、MKV、FLV、MP4、MP3、M4A
 - ✅ 命令行 + GUI + Web 管理面板三模式运行
@@ -92,7 +92,7 @@
 
 ### 已支持平台
 
-归纳自 `README.md`，当前已列出 **51** 个平台（README 对外标称 60+，含持续添加中的平台）：
+归纳自 `README.md`，当前已列出 **51** 个平台（持续添加平台中）：
 
 **国内站点（37 个）**：抖音 | 快手 | 虎牙 | 斗鱼 | YY | B站 | 小红书 | bigo | blued | 网易CC | 千度热播 | 猫耳FM | Look直播 | TwitCasting | 百度 | 微博 | 酷狗 | 花椒 | 流星 | Acfun | 畅聊 | 映客 | 音播 | 知乎 | 嗨秀 | VV星球 | 17Live | 浪Live | 飘飘 | 六间房 | 乐嗨 | 花猫 | 淘宝 | 京东 | 咪咕 | 连接 | 来秀
 
@@ -203,7 +203,7 @@ DouyinLiveRecorder/
 ├── assets/                              # 应用图标（app.ico）
 ├── src/                                 # 核心源码包
 │   ├── __init__.py                     # 包初始化 + Node.js 环境配置 + 弹幕注册表/工厂（get_danmaku_class / get_danmaku_collector）
-│   ├── spider.py                       # 直播数据爬虫（60+ 平台）
+│   ├── spider.py                       # 直播数据爬虫（51 个平台）
 │   ├── stream.py                       # 直播流地址解析（含画质回采）
 │   ├── room.py                         # 直播间信息解析
 │   ├── utils.py                        # 工具函数库
@@ -1590,6 +1590,10 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > **本节索引**：以下条目的逐字正文已于 2026-10-31 迁入 [归档卷](docs/changelog/code-wiki-history-zh.md) 的「迁入：当前发布周期」一节；本节仅保留标题索引，按标题原文可在归档卷检索。
 >
 > **v4.7.0 概要（2026-11-01）**：① 发布链钉定动态化——node 槽以 GPG 验签官方 SHASUMS 为判据（`--pin-source adopt`），ffmpeg 三槽取构建当日官方清单值（advisory 经 `ADVISORY_ADOPT_ACK` 显式放行、linux 随最新月末标签解析直链），静态表退为回退基线，上游滚动不再打断发布；② 运行时钉定随 node v26.13.0 重钉（Node 26 转 LTS 首条 lts 漂移）；③ 发布构建修复——Linux GUI 冒烟补装 Qt 运行库（镜像 ci.yml 16 包 + libxcb-xkb1/util1 超集）、发布凭据校验收窄「同键位」比对根治 SEV-2213 误报、POSIX 优雅停止标记补置；④ 安全下限抬升——setuptools 构建下限 84.1.0（GHSA-xmj3-9gf7-h52w）、brotli 1.2.1（PYSEC-2026-4322）；⑤ CI Linux 三处平台敏感用例转平台无关。
+
+### v4.8.0 (2026-11-08) — 平台数表述统一为 51（D 项获批修复）：pyproject description / AGENTS.md / Dockerfile LABEL / CODE_WIKI 双语「60+」改 51，egg-info 重生同步内嵌 README 正文
+
+### v4.8.0 (2026-11-08) — 元数据同源对账：19 个目标文件零漂移；ci.yml 两处 FastAPI 旧称更正 Starlette、build_exe.py 两处 web_host 默认值注释更正、归档索引补记 v4.6.0 迁入
 
 ### v4.8.0 (2026-11-07) — NO_PROXY 崩溃生产侧双层加固：启动期进程环境归一化 + 全部 httpx 构造点 trust_env=False 显式环境代理解析
 

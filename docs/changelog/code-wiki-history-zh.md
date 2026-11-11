@@ -6338,3 +6338,19 @@ black 全仓 134 文件全绿、isort 全绿、`check_annotations` 全通过、`
 - **回归锁与变异验证**：`tests/test_proxy.py` 新增 `TestNoProxyEnvNormalization`/`TestResolveEnvironmentProxy`/`TestHttpClientExplicitEnvLocks`（构造点 trust_env+proxy 结构锁、扫描面 >=6 非空自检、main/GUI 双入口 AST 接线锁）；`test_stream_select.py` 契约替身签名跟住 trust_env 并新增行为断言。变异三发均红：摘构造点 trust_env → 结构锁+契约断言双红；摘 main 启动调用 → 接线锁红；解析优先级倒置 → 单测红；均当场还原，残留 0。
 - **真网增量验证（DoD #2）**：恶意 NO_PROXY 原样注入、**未经归一化**时 `_build_client` 构造成功（②独立见证，trust_env=False）；真实 HTTPS GET pypi.org → 200 / HTTP/2；`import main` 触发①归一化（[::1]→::1）；真实公共测试流 `https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8` 经 `select_source_url` 探针+分片校验原样返回（PASS）。直播间录制增量（ffmpeg 拉流）未跑——本次不改 ffmpeg 参数/平台解析，受影响面（客户端构造/代理解析/选源探针）已真网覆盖。
 - **门禁**：mypy 双平台 247 文件零问题、basedpyright 0/0/0；全量 pytest 与 run_gates 终态读数见当日工作日志。known-pitfalls「HTTP 客户端复用与连接管理」新增硬约束条目。
+
+## 2026-11-08 — 元数据同源对账（v4.8.0 周期内，纯注释/文档改动）
+
+- **范围与基线**：以 pyproject.toml 为唯一事实源核对用户枚举的 19 个目标文件；工作区与 HEAD（c1291b7）一致、自该提交以来零新增/修改/删除，检查范围即目标全集。结论：19 项全部一致（版本 4.8.0、三入口、Python >=3.14 兼 3.15、Node 24.22.2/26.13.0、18 条依赖逐项、镜像/端口/挂载、打包参数与路径），必须修改项为 0。
+- **门禁见证**：`check_version.py` PASS、`sync_metadata.py --check` OK（uv.lock=4.8.0、egg-info=4.8.0）、`check_workflow_constants.py` PASS（python_build=3.14、node_version=24 双侧同值）。
+- **获批更正（用户批准「可选项 + 顺带发现 B/C」，共 6 处）**：ci.yml 两处 FastAPI 旧称更正 Starlette（头部技术栈事实、Web 冒烟动机注；依赖清单无 fastapi、有 starlette>=1.3.1，pyproject filterwarnings 注释同源）；build_exe.py `smoke_web` 两处「config 默认 web_host=0.0.0.0」证伪更正（一处删错误默认宣称、保留条件句，一处改 127.0.0.1；事实源 `src/web_config.py` 默认与 config.ini 基线均为 127.0.0.1）；CODE_WIKI 双语归档索引补记 v4.6.0 于 2026-11-04 迁入 release-notes-history 卷（归档卷双侧 :42 实证）。
+- **未改动**：README 双语更新日志止于 v4.7.0 属正常（git tag 止于 v4.7.0，v4.8.0 未打 tag 未发布，2026-10-28 确立口径）；顺带发现 D（README「51 个平台」与 pyproject description「60+」表述不一）不在批准范围，未改动，交回用户。
+- **DoD 豁免**：纯注释/文档改动执行 1+4+6；终态门禁读数见当日工作日志。
+
+## 2026-11-08 — 平台数表述统一为 51（v4.8.0 周期内，D 项获批修复）
+
+- **决策**：用户裁定实际平台数按 51 计（README 功能表与「已支持平台」枚举 37 国内 + 14 海外 = 51 为事实基准），「60+」对外标称作废。
+- **改动面（描述性文案，10 处）**：pyproject.toml description、AGENTS.md 描述、Dockerfile LABEL description、CODE_WIKI 双语（描述 / 功能特性 / 「已支持平台」括号注 / 中文目录树 spider.py 注释）「60+」→ 51；CODE_WIKI「README 对外标称 60+」括号注本身失实（README 实标 51），一并改为「持续添加平台中」。
+- **生成物**：`sync_metadata.py` 重生 egg-info——PKG-INFO Summary 随 description 改 51；内嵌 README 正文整体重同步（原停留 v4.6.0 era：「对外标称 60+」、旧 Node/Python 表述、v4.6.0 更新日志），SOURCES.txt 补 HEAD 新增 `tests/test_no_proxy_env_guard.py`；PKG-INFO 由 setuptools 的 Windows CRLF 归一回 LF（.gitattributes eol=lf）；uv.lock 零变化（description 不入锁）。
+- **刻意不动（D 范围外）**：源码注释「60+」（src/spider.py、src/stream_select.py、main.py、tests/test_spider_platform.py）、历史归档（docs/changelog、docs/worklog 审查报告，逐字记录）、设计稿 docs/gui-redesign；「50+」表述对 51 仍成立未改。
+- **DoD 豁免**：纯描述/文档/生成物改动，执行 1+4+6；终态门禁读数见当日工作日志。

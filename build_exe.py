@@ -2454,13 +2454,13 @@ def _force_loopback_web_host(raw: bytes) -> "bytes | None":
 
 
 def smoke_web(timeout: int = 90, port: int = 8000) -> None:
-    # 探测地址同时覆盖 IPv4(127.0.0.1) 与主机名(localhost)：config 默认 web_host=0.0.0.0 时两者均可达；
+    # 探测地址同时覆盖 IPv4(127.0.0.1) 与主机名(localhost)：web_host=0.0.0.0 时两者均可达；
     # 若 web_host 改为 localhost，macOS 会优先解析为 IPv6(::1)，仅探 IPv4 会误判失败。
     # timeout 取较大值：macOS arm64 冷启动加载 uvicorn/starlette/httpx 较重，40s 易超时（平台性能差异，
     # 非应用缺陷）。
     # 用 ProxyHandler({}) 构造「无代理」opener：macOS 上 urllib 默认读系统代理配置（SystemConfiguration），
     # CI runner 的 localhost 请求可能被路由到不存在的代理而挂起，即便服务已正常监听。
-    # 安全护栏（web.py C1）：未启用 Web 认证时拒绝监听非回环地址（config 默认 web_host=0.0.0.0）。
+    # 安全护栏（web.py C1）：未启用 Web 认证时拒绝监听非回环地址（config 默认 web_host=127.0.0.1）。
     # 冒烟不得靠注入 DOUYIN_WEB_ALLOW_INSECURE=1 放行：绑定 0.0.0.0 即对所有网卡可达，自建/长期存活的
     # CI runner 上，最长 90 秒的窗口内任何人都能以**无认证**身份读写全部配置、遍历 downloads、启停录制。
     # 改为把本次冒烟的配置**显式覆盖为回环地址**（护栏保持生效）：临时改写发布目录 config/config.ini 的

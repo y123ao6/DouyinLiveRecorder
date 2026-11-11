@@ -60,7 +60,7 @@ The hand-maintained sources are the **5** root documents (`AGENTS.md` plus the C
 | File | Content |
 | --- | --- |
 | `code-wiki-history-zh.md` / `-en.md` | CODE_WIKI changelog history (including the current release window imported on 2026-10-31) |
-| `release-notes-history-zh.md` / `-en.md` | README release-note history (including v4.5.0 / v4.4.0 / v4.3.0 imported on 2026-10-31) |
+| `release-notes-history-zh.md` / `-en.md` | README release-note history (including v4.5.0 / v4.4.0 / v4.3.0 imported on 2026-10-31 and v4.6.0 imported on 2026-11-04) |
 
 > Rotation rule: the root documents keep only the current release-window summary/index; detailed entries are moved verbatim into this directory. Archive volumes are append-only.
 
@@ -69,7 +69,7 @@ The hand-maintained sources are the **5** root documents (`AGENTS.md` plus the C
 ### Project Basic Information
 
 - **Project Name**: DouyinLiveRecorder (Douyin Live Recorder)
-- **Description**: A live-stream recorder for 60+ platforms (Douyin, TikTok, YouTube, Kuaishou, etc.), with looped recording, multi-room recording and message push
+- **Description**: A live-stream recorder for 51 platforms (Douyin, TikTok, YouTube, Kuaishou, etc.), with looped recording, multi-room recording and message push
 - **Version**: 4.8.0 (single source of truth: `pyproject.toml`)
 - **Python**: >=3.14 (compatible through 3.15; source of truth `pyproject.toml [tool.douyin-live-recorder]`, regression lock `tests/test_runtime_version_compat.py`)
 - **Node.js**: both 24.22.2 / 26.13.0 LTS lines are supported (CI runs tests and runtime detection on both; Docker switches via `NODE_MAJOR`)
@@ -79,7 +79,7 @@ The hand-maintained sources are the **5** root documents (`AGENTS.md` plus the C
 
 ### Features
 
-- ✅ Supports 60+ live streaming platforms (Douyin, TikTok, YouTube, Kuaishou, Huya, Douyu, Bilibili, Xiaohongshu, etc.)
+- ✅ Supports 51 live streaming platforms (Douyin, TikTok, YouTube, Kuaishou, Huya, Douyu, Bilibili, Xiaohongshu, etc.)
 - ✅ Continuously monitors live status; auto-records when a stream starts and auto-stops when it ends
 - ✅ Multiple output video formats: TS, MKV, FLV, MP4, MP3, M4A
 - ✅ Three run modes: CLI + GUI + Web management panel
@@ -92,7 +92,7 @@ The hand-maintained sources are the **5** root documents (`AGENTS.md` plus the C
 
 ### Supported Platforms
 
-Summarized from `README.md`; currently **51** platforms are listed (README advertises 60+ externally, including platforms still being added):
+Summarized from `README.md`; currently **51** platforms are listed (more being added):
 
 **Domestic sites (37)**: Douyin | Kuaishou | Huya | Douyu | YY | Bilibili | Xiaohongshu | bigo | blued | NetEase CC | Qiandu Rebo | Maoer FM | Look Live | TwitCasting | Baidu | Weibo | Kugou | Huajiao | Liuxing | Acfun | Changliao | Inke | Yinbo | Zhihu | Haixiu | VV Planet | 17Live | Lang Live | Piaopiao | 6Rooms | Lehai | Huamao | Taobao | JD | Migu | Lianjie | Laixiu
 
@@ -1508,6 +1508,10 @@ python scripts/smoke_test.py -c scripts/smoke_web.json -r smoke_report.html -f h
 > **Section index**: the verbatim bodies below were moved to the [archive volume](docs/changelog/code-wiki-history-en.md) ("Imported: current release window") on 2026-10-31; this section keeps only the heading index. Search the archive by the original heading text.
 >
 > **v4.7.0 summary (2026-11-01)**: (1) release-path dynamic pinning - the node slot takes the GPG-verified official SHASUMS as its criterion (`--pin-source adopt`), the three ffmpeg slots take the build-day official manifest values (advisory explicitly acknowledged via `ADVISORY_ADOPT_ACK`, linux resolving the direct link alongside the newest month-end tag), and the static tables are demoted to the fallback baseline, so upstream promotions no longer break releases; (2) runtime pins re-pinned to node v26.13.0 (Node 26's LTS promotion moved the first-lts pointer); (3) release-build fixes - the Linux GUI smoke gains the Qt runtime libs (mirroring ci.yml's 16 packages plus the libxcb-xkb1/util1 superset), the release credential check narrows to "same key position" eradicating the SEV-2213 false positive, and the POSIX graceful-stop flag is added; (4) security floors raised - setuptools build floor 84.1.0 (GHSA-xmj3-9gf7-h52w), brotli 1.2.1 (PYSEC-2026-4322); (5) three CI Linux platform-sensitive tests made platform-agnostic.
+
+### v4.8.0 (2026-11-08) - Platform count unified to 51 (finding D approved fix): "60+" changed to 51 in pyproject description / AGENTS.md / Dockerfile LABEL / bilingual CODE_WIKI; egg-info regenerated to re-sync the embedded README body
+
+### v4.8.0 (2026-11-08) — Metadata parity audit: 19 target files zero-drift; two stale FastAPI mentions in ci.yml corrected to Starlette, two web_host default-value comments corrected in build_exe.py, archive index catches up on the v4.6.0 import
 
 ### v4.8.0 (2026-11-07) — Production-side dual hardening against the NO_PROXY crash: startup process-env normalization plus trust_env=False with explicit environmental-proxy resolution at every httpx construction site
 

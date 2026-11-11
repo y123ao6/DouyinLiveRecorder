@@ -1,7 +1,7 @@
 [project]
 name = "DouyinLiveRecorder"
 version = "4.8.0"
-description = "支持抖音、TikTok、YouTube、快手等60+平台的直播录制工具，支持循环录制、多人录制、消息推送"
+description = "支持抖音、TikTok、YouTube、快手等51个平台的直播录制工具，支持循环录制、多人录制、消息推送"
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }

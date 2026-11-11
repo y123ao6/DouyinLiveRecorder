@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 # 技术栈事实（本文件所有步骤均按此适配，勿凭猜测改动）：
 #   · 纯 Python 项目（requires-python >= 3.14，兼容至 3.15；black target py314/py315），**无前端构建**
-#     —— web/ 仅为 FastAPI 的静态资源（index.html / app.js / style.css），
+#     —— web/ 仅为 Starlette 的静态资源（index.html / app.js / style.css），
 #        仓库内不存在 package.json / lock 文件，故 **不需要 npm ci / node build**。
 #   · Node.js 仅作为「JS 签名脚本运行时」：src/javascript/*.js 由 exejs / PyExecJS
 #     调起，src/node_install.py 负责探测与自动下载 —— 因此 CI 只需保证 node 可执行，
@@ -689,7 +689,7 @@ jobs:
           slug: y123ao6/DouyinLiveRecorder
 
       # ── Web 面板 HTTP 冒烟（运行中的真实服务，非 TestClient）──────────────
-      # 动机：pytest 全程用 FastAPI TestClient 且注入了 fake main，从不监听端口——
+      # 动机：pytest 全程用 Starlette TestClient 且注入了 fake main，从不监听端口——
       # 「面板进程能否真的起来并应答」这条链路（import 期崩溃、路由未注册、鉴权中间件
       # 误挡探活、静态资源目录缺失、uvicorn 绑定失败）此前完全没有门禁。
       # 位置：排在覆盖率相关步骤之后（而非之前），避免冒烟变红时反而压制掉 coverage.xml / Codecov 上报。

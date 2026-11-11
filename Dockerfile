@@ -77,7 +77,7 @@ ARG APP_VERSION
 # 的署名保留在 README「上游项目」行与 main.py 版权头
 LABEL maintainer="y123ao6 <zmzx0690@agent.qq.com>" \
       version="${APP_VERSION}" \
-      description="支持抖音、TikTok、YouTube等60+平台直播录制工具" \
+      description="支持抖音、TikTok、YouTube等51个平台直播录制工具" \
       url="https://github.com/y123ao6/DouyinLiveRecorder"
 
 # 运行时行为：无缓冲、不写字节码、UTF-8 输出、时区、彩色终端、venv 入 PATH
